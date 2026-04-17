@@ -284,11 +284,18 @@ class FolderSyncPlan:
 
 @dataclass(frozen=True, slots=True)
 class AccountSyncPlan:
-    """All planned operations for one account."""
+    """All planned operations for one account.
+
+    ``creates`` lists folders that exist in the local mirror but not on
+    the server yet.  They are executed with ``CREATE`` before any
+    per-folder op runs, so a ``PushMoveOp`` that targets a newly-created
+    folder has a live destination on the server.
+    """
 
     account_name: str
     folders: tuple[FolderSyncPlan, ...]
     skipped_folders: tuple[str, ...] = ()
+    creates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,7 +306,12 @@ class SyncPlan:
 
     def is_empty(self) -> bool:
         """True when no operations are planned across all accounts."""
-        return not any(f.ops for a in self.accounts for f in a.folders)
+        for a in self.accounts:
+            if a.creates:
+                return False
+            if any(f.ops for f in a.folders):
+                return False
+        return True
 
     def count_ops(self, op_type: type) -> int:
         """Count planned operations of a given type across all accounts."""
@@ -560,15 +572,40 @@ class ImapSyncService:
             f for f in all_server_folders if folder_policy.should_sync(f)
         ]
 
+        # Folders that exist in the local mirror but not on the server
+        # yet (and pass the sync policy) get a CREATE op at the head of
+        # the execution pass.  This is the signal for any locally-created
+        # folder — whether from the TUI's "new folder" action or from
+        # archiving into a fresh folder — to be propagated upstream.
+        mirror = self._mirror_factory(account)
+        try:
+            mirror_folder_names = {
+                f.folder_name
+                for f in mirror.list_folders(account_name=account.name)
+            }
+        except Exception:
+            logger.exception(
+                "Failed to list mirror folders for %r", account.name,
+            )
+            mirror_folder_names = set()
+        server_folder_set = set(all_server_folders)
+        creates = tuple(
+            sorted(
+                name for name in mirror_folder_names - server_folder_set
+                if folder_policy.should_sync(name)
+            )
+        )
+
         # Share one DB connection for all planning-phase index reads.
         with self._index.connection():
-            return self._plan_folders_inner(
+            plan = self._plan_folders_inner(
                 account=account, session=session,
                 folder_policy=folder_policy,
                 all_server_folders=all_server_folders,
                 server_folders=server_folders,
                 progress=progress, reconnect=reconnect,
             )
+        return dataclasses.replace(plan, creates=creates)
 
     def _plan_folders_inner(
         self,
@@ -1093,6 +1130,25 @@ class ImapSyncService:
         folder_results: list[FolderSyncResult] = []
         skipped = list(plan.skipped_folders)
         try:
+            # Propagate local folder creations to the server first so any
+            # PushMoveOp that targets a new folder has a live destination.
+            for folder_name in plan.creates:
+                try:
+                    session.create_folder(folder_name)
+                    logger.info(
+                        "Created server folder %s/%s",
+                        account.name, folder_name,
+                    )
+                    if progress is not None:
+                        progress(ProgressInfo(
+                            f"{account.name}: created {folder_name}",
+                        ))
+                except Exception:
+                    logger.exception(
+                        "Failed to create folder %s/%s",
+                        account.name, folder_name,
+                    )
+
             for folder_plan in plan.folders:
                 if (
                     folder_plan.needs_confirmation

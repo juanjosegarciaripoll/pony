@@ -29,9 +29,14 @@ All v1 features are implemented and tested (250 tests, 2 skipped):
   `uid IS NULL` is now the canonical signal for "push this row to the
   server." New plan ops: `PushMoveOp`, `PushAppendOp`, `LinkLocalOp`.
   Per-account `archive_folder` config. Maildir and mbox both support
-  cross-folder move of mirror files. Auto-creates the archive folder on
-  the server on first use; auto-detects and uses RFC 6851 `UID MOVE` when
+  cross-folder move of mirror files. Uses RFC 6851 `UID MOVE` when
   supported, falls back to `COPY` + `\Deleted` + `EXPUNGE` otherwise.
+- **Phase 18**: Local folder creation. `N` key opens a one-line dialog;
+  the folder is created in the mirror immediately. Sync compares mirror
+  folders against server folders at the top of the execution pass and
+  issues `IMAP CREATE` for any that are local-only — subsuming the
+  archive-folder auto-create path. `MirrorRepository.create_folder` and
+  `ImapClientSession.create_folder` added; both are idempotent.
 
 ## Infrastructure
 

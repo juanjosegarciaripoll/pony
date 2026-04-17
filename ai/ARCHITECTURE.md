@@ -95,6 +95,13 @@ from the folder the server still has the message in), ``PushAppendOp`` (APPEND
 when the server has no copy), or ``LinkLocalOp`` (adopt a freshly-assigned
 UID into the existing row). There is no separate pending-operations queue.
 
+Folder creation uses the same principle one level up: any folder that the
+mirror exposes but the server doesn't is propagated via an ``IMAP CREATE`` at
+the top of the execution pass. The TUI ``N`` action just adds an empty
+directory to the mirror; the archive action does the same implicitly via
+``MirrorRepository.move_message_to_folder`` when it needs to land a message in
+a folder that doesn't exist yet.
+
 ### Send (`smtp_sender.py`, `compose_utils.py`)
 
 `SMTPSender` handles SSL and STARTTLS. Reply/forward quoting preserves

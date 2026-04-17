@@ -62,6 +62,15 @@ class MirrorRepository(Protocol):
         """
         ...
 
+    def create_folder(self, *, account_name: str, folder_name: str) -> None:
+        """Create an empty folder in the mirror (idempotent).
+
+        A folder that exists only in the local mirror signals intent: the
+        sync engine detects the mirror/server mismatch and issues an IMAP
+        ``CREATE`` on the next pass.
+        """
+        ...
+
 
 class IndexRepository(Protocol):
     """Interface for metadata index implementations."""
@@ -298,7 +307,14 @@ class ImapClientSession(Protocol):
         Uses IMAP ``UID MOVE`` (RFC 6851) when the server advertises the
         ``MOVE`` capability, otherwise falls back to ``UID COPY`` +
         ``STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on the source folder.
-        Creates *target_folder* if it does not exist on the server.
+        """
+        ...
+
+    def create_folder(self, folder_name: str) -> None:
+        """Create a folder on the server (idempotent).
+
+        Returns immediately when the folder already exists.  Used by the
+        sync engine to propagate locally-created folders upstream.
         """
         ...
 

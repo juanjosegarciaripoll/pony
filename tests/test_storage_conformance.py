@@ -101,6 +101,29 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         self.assertEqual(result, stored)
         self.assertEqual(len(repository.list_messages(folder=inbox)), 1)
 
+    def test_create_folder_makes_empty_folder_visible(self) -> None:
+        repository = self.make_repository()
+        repository.create_folder(
+            account_name=self.account_name, folder_name="Projects",
+        )
+        names = [f.folder_name for f in repository.list_folders(
+            account_name=self.account_name,
+        )]
+        self.assertIn("Projects", names)
+
+    def test_create_folder_is_idempotent(self) -> None:
+        repository = self.make_repository()
+        repository.create_folder(
+            account_name=self.account_name, folder_name="Archive",
+        )
+        repository.create_folder(
+            account_name=self.account_name, folder_name="Archive",
+        )
+        names = [f.folder_name for f in repository.list_folders(
+            account_name=self.account_name,
+        )]
+        self.assertEqual(names.count("Archive"), 1)
+
 
 class MaildirMirrorRepositoryTestCase(MirrorRepositoryConformanceMixin):
     """Run conformance tests against Maildir backend."""

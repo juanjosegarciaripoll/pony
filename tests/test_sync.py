@@ -57,6 +57,10 @@ class FakeImapSession:
         self.extra_flags: dict[tuple[str, int], frozenset[str]] = {}
         self.deleted_uids: list[int] = []
         self.moves: list[tuple[str, int, str]] = []
+        self.created_folders: list[str] = []
+        # Ordered log of side-effecting calls (create, move, append, ...)
+        # so tests can assert on sequencing — e.g. CREATE before MOVE.
+        self.call_log: list[str] = []
 
     def list_folders(self) -> Sequence[str]:
         return list(self.folders.keys())
@@ -144,18 +148,30 @@ class FakeImapSession:
         self, source_folder: str, uid: int, target_folder: str,
     ) -> None:
         # Record the call so tests can assert PushMoveOp executed.
+        self.call_log.append(f"move:{source_folder}->{target_folder}:{uid}")
         self.moves.append((source_folder, uid, target_folder))
+        # Mirror real IMAP: MOVE to a non-existent mailbox is an error.
+        # This turns "forgot to CREATE before MOVE" into a test failure.
+        if target_folder not in self.folders:
+            raise OSError(
+                f"MOVE target folder does not exist: {target_folder!r}"
+            )
         source = self.folders.get(source_folder, {})
         entry = source.pop(uid, None)
         if entry is None:
             return
-        target = self.folders.setdefault(target_folder, {})
+        target = self.folders[target_folder]
         new_uid = max(target.keys(), default=0) + 2000
         target[new_uid] = entry
         # Carry over custom flags when present.
         extra = self.extra_flags.pop((source_folder, uid), frozenset())
         if extra:
             self.extra_flags[(target_folder, new_uid)] = extra
+
+    def create_folder(self, folder_name: str) -> None:
+        self.call_log.append(f"create:{folder_name}")
+        self.created_folders.append(folder_name)
+        self.folders.setdefault(folder_name, {})
 
     def logout(self) -> None:
         pass
@@ -1534,6 +1550,96 @@ class LocalMoveSyncTestCase(unittest.TestCase):
 
         self.assertFalse(session.moves)
         self.assertEqual(len(session.folders["INBOX"]), 1)
+
+    def test_archive_to_brand_new_folder_creates_it_server_side(self) -> None:
+        """Archiving to a folder that doesn't exist on the server yet causes
+        the sync engine to CREATE it before executing the PushMoveOp."""
+        raw = _make_raw_message("Pioneer", "<pioneer@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<pioneer@example.com>", frozenset(), raw)},
+                # no Archive folder on the server yet
+            },
+        )
+        service.sync()
+
+        # TUI-style archive: move mirror bytes to Archive (creates the
+        # mirror dir via _ensure_folder_dirs) and shift the index row.
+        inbox = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=inbox)
+        row = rows[0]
+        from pony.domain import MessageRef
+        new_mirror_ref = mirror.move_message_to_folder(
+            message_ref=MessageRef(
+                account_name="personal",
+                folder_name="INBOX",
+                message_id=row.storage_key,
+            ),
+            target_folder="Archive",
+        )
+        new_row = dataclasses.replace(
+            row,
+            message_ref=dataclasses.replace(
+                row.message_ref, folder_name="Archive",
+            ),
+            storage_key=new_mirror_ref.message_id,
+            uid=None,
+            server_flags=frozenset(),
+            extra_imap_flags=frozenset(),
+            synced_at=None,
+        )
+        with index.connection():
+            index.delete_message(message_ref=row.message_ref)
+            index.upsert_message(message=new_row)
+
+        service.sync()
+
+        self.assertIn("Archive", session.created_folders)
+        self.assertIn(
+            ("INBOX", 1, "Archive"), session.moves,
+            "Expected UID MOVE after the CREATE",
+        )
+        self.assertIn("Archive", session.folders)
+        self.assertEqual(len(session.folders["Archive"]), 1)
+        # CREATE must precede the MOVE in the session call log — otherwise
+        # the fake raises OSError on the MOVE.  Verify the ordering directly.
+        create_idx = session.call_log.index("create:Archive")
+        move_idx = session.call_log.index("move:INBOX->Archive:1")
+        self.assertLess(
+            create_idx, move_idx,
+            f"CREATE must precede MOVE but got {session.call_log!r}",
+        )
+
+    def test_tui_created_folder_propagates_upstream(self) -> None:
+        """Creating an empty folder in the mirror results in a server CREATE
+        on the next sync, even with no messages to push."""
+        service, _, mirror, session = _setup(
+            server_folders={"INBOX": {}},
+        )
+        service.sync()  # establish baseline
+
+        mirror.create_folder(
+            account_name="personal", folder_name="Projects",
+        )
+        service.sync()
+
+        self.assertIn("Projects", session.created_folders)
+        self.assertIn("Projects", session.folders)
+
+    def test_create_folder_skipped_when_server_already_has_it(self) -> None:
+        """If the server already has the folder, no CREATE is issued."""
+        service, _, mirror, session = _setup(
+            server_folders={"INBOX": {}, "Archive": {}},
+        )
+        service.sync()
+
+        # Create the folder locally — it's already on the server too.
+        mirror.create_folder(
+            account_name="personal", folder_name="Archive",
+        )
+        service.sync()
+
+        self.assertNotIn("Archive", session.created_folders)
 
     def test_read_only_source_suppresses_push_move(self) -> None:
         raw = _make_raw_message("Kept", "<kept@example.com>")

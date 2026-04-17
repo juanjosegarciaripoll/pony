@@ -216,6 +216,11 @@ class MaildirMirrorRepository(MirrorRepository):
             message_id=message_ref.message_id,
         )
 
+    def create_folder(self, *, account_name: str, folder_name: str) -> None:
+        """Create an empty Maildir-backed folder (idempotent)."""
+        self._require_account(account_name)
+        self._ensure_folder_dirs(folder_name)
+
     def _open_maildir(self, *, folder_name: str) -> mailbox.Maildir:
         if folder_name == "INBOX":
             maildir = mailbox.Maildir(self._root_dir, create=True)
@@ -386,6 +391,14 @@ class MboxMirrorRepository(MirrorRepository):
             folder_name=target_folder,
             message_id=new_key,
         )
+
+    def create_folder(self, *, account_name: str, folder_name: str) -> None:
+        """Create an empty mbox-backed folder (idempotent)."""
+        self._require_account(account_name)
+        # _open_mbox opens the file with create=True; flush materialises
+        # an empty file on disk even with no messages added.
+        mbox = self._open_mbox(folder_name=folder_name)
+        mbox.flush()
 
     def _open_mbox(self, *, folder_name: str) -> mailbox.mbox:
         # mailbox.mbox uses int keys at runtime; typeshed stubs incorrectly

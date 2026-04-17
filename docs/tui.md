@@ -101,6 +101,7 @@ server on the next sync.
 | ++shift+f++ | Toggle the starred/flagged flag |
 | ++d++ | Move to trash (sets `local_status = trashed`; pushed to server on next sync) |
 | ++shift+a++ | Archive to the account's `archive_folder` (local move; pushed to server on next sync) |
+| ++shift+n++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
 
 !!! info "Trash vs. delete"
     `d` marks the message for deletion locally. It stays in the local mirror
@@ -114,6 +115,15 @@ server on the next sync.
     sync executes `UID MOVE` on the server (or `COPY` + `EXPUNGE` on servers
     that don't support RFC 6851). Archiving is refused when the source or
     target folder is read-only or excluded from sync.
+
+!!! info "New folder"
+    `N` opens a one-line input for a folder name. The folder is created
+    immediately in the account's local mirror (Maildir directory or mbox
+    file). The next sync compares local mirror folders against server
+    folders and issues `IMAP CREATE` for any folder that exists only
+    locally — so the freshly-created folder appears on the server too.
+    Local-only accounts do not have a server side, so the action is
+    disabled for them.
 
 ---
 

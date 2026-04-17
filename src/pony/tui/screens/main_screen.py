@@ -66,6 +66,7 @@ class MainScreen(Screen[None]):
         Binding("F", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
+        Binding("N", "new_folder", "New folder"),
         Binding("ctrl+1", "save_attachment('1')", "Save att. 1", show=False),
         Binding("ctrl+2", "save_attachment('2')", "Save att. 2", show=False),
         Binding("ctrl+3", "save_attachment('3')", "Save att. 3", show=False),
@@ -554,6 +555,69 @@ class MainScreen(Screen[None]):
 
     def action_archive(self) -> None:
         self.archive_current_message()
+
+    # ------------------------------------------------------------------
+    # Folder management
+    # ------------------------------------------------------------------
+
+    def action_new_folder(self) -> None:
+        """Prompt for a name and create the folder in the local mirror."""
+        account = self._account_for_new_folder()
+        if account is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Select a folder or account first.", severity="warning",
+            )
+            return
+        from .new_folder_screen import NewFolderScreen
+
+        def _on_name(name: str | None) -> None:
+            if not name:
+                return
+            self._create_folder(account.name, name)
+
+        self.app.push_screen(NewFolderScreen(), _on_name)  # pyright: ignore[reportUnknownMemberType]
+
+    def _account_for_new_folder(self) -> AccountConfig | None:
+        """Pick the account to create a folder in.
+
+        Uses the currently-open folder's account; falls back to the sole
+        IMAP account when exactly one is configured.  Folders can only be
+        created on IMAP accounts — local accounts have no server side.
+        """
+        if self._current_folder_ref is not None:
+            name = self._current_folder_ref.account_name
+            for a in self._config.accounts:
+                if a.name == name and isinstance(a, AccountConfig):
+                    return a
+        imap = [
+            a for a in self._config.accounts if isinstance(a, AccountConfig)
+        ]
+        if len(imap) == 1:
+            return imap[0]
+        return None
+
+    def _create_folder(self, account_name: str, folder_name: str) -> None:
+        """Create *folder_name* in the account's local mirror and refresh."""
+        mirror = self._mirrors.get(account_name)
+        if mirror is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Unknown account {account_name!r}.", severity="error",
+            )
+            return
+        try:
+            mirror.create_folder(
+                account_name=account_name, folder_name=folder_name,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Failed to create folder {folder_name!r}.",
+                severity="error",
+            )
+            return
+        self.query_one(FolderPanel).refresh_folders()
+        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+            f"Folder {folder_name!r} created locally; run sync to propagate."
+        )
 
     # ------------------------------------------------------------------
     # Compose entry points

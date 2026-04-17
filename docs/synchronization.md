@@ -154,6 +154,25 @@ of each sync.
 
 ---
 
+## Creating folders
+
+The TUI `N` action creates an empty folder in the local mirror. On the
+next sync, the planner compares the set of folders the mirror exposes
+against the set of folders the server returns; any folder present only
+locally and passing the sync policy gets an `IMAP CREATE` at the top of
+the execution pass.
+
+This is the same machinery the archive action relies on: moving a message
+into a folder that doesn't exist yet creates the mirror directory as a
+side effect, and the next sync pushes the `CREATE` upstream before the
+`UID MOVE` runs. You don't need to pre-create the archive folder on the
+server — just set `archive_folder = "..."` and archive something.
+
+`CREATE` is idempotent (no-op if the folder already exists on the
+server). Deletion of folders is intentionally not supported.
+
+---
+
 ## Archive and local moves
 
 The `A` key in the TUI archives the selected message into the account's

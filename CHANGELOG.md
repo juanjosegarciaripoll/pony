@@ -14,7 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `archive_folder = "..."` on any IMAP account. The move is applied
   immediately in the local mirror and index; the next sync pushes it to
   the server. The archive folder is created on the server automatically
-  on first use.
+  on first use via the same machinery that handles manual folder
+  creation.
+- **New folder action**: press ++shift+n++ in the TUI to create a folder
+  in the current account's local mirror. The next sync compares local
+  mirror folders against server folders and issues `IMAP CREATE` for any
+  folder that exists only locally. Deletion of folders is intentionally
+  not supported.
 - **Generalised local-move sync**: `uid IS NULL` on an index row is now
   the canonical signal that a row must be pushed to the server. The sync
   planner introduces three new operation types that cover archive and
@@ -26,10 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
       copy of the message anywhere.
     - `LinkLocalOp` — adopt a freshly-assigned server UID into the
       existing pending row, no refetch, no duplicate mirror file.
+- **Local-only folders propagate upstream**: the planner diffs mirror
+  folders against server folders at the top of the execution pass; any
+  folder present only locally and passing the sync policy gets a
+  server-side `CREATE` before per-folder ops run. `AccountSyncPlan`
+  gains a `creates` field.
 - `MirrorRepository.move_message_to_folder()` for cross-folder relocation
   of mirror bytes (rename in Maildir; copy-and-delete in mbox).
+- `MirrorRepository.create_folder()` for creating empty mirror folders
+  (idempotent).
 - `ImapClientSession.move_message()` in the session protocol, with RFC
   6851 `UID MOVE` fast path and a compatible fallback.
+- `ImapClientSession.create_folder()` (idempotent).
 
 ### Changed
 

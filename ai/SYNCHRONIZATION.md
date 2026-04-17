@@ -91,6 +91,22 @@ All values are Python `re.fullmatch()` patterns.
 - Local deletions restored on next sync (RestoreOp)
 - Typical use: Sent, [Gmail]/All Mail, shared mailboxes
 
+## Account-level pre-phase: folder creation
+
+Before any per-folder reconciliation runs, the planner compares the set
+of folders the local mirror exposes (``MirrorRepository.list_folders``)
+with the set of folders the server returns (``LIST``). Every folder
+present locally, passing the sync policy (``folders.should_sync``), and
+missing on the server is queued for a server-side ``CREATE``.
+
+This is the sole signal sync needs for locally-created folders to
+propagate upstream — whether the user created them explicitly via the
+TUI ``N`` action or implicitly by archiving into a folder that didn't
+exist yet. Creating is idempotent (skipped when the folder already
+exists server-side). ``CREATE`` runs before any ``PushMoveOp``, so a
+move that targets a freshly-created folder always has a live
+destination.
+
 ## Per-folder reconciliation algorithm
 
 ```

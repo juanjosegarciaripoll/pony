@@ -382,24 +382,28 @@ class ImapSession:
                 self._conn.expunge()
         self._retry(_do, f"EXPUNGE {folder_name}")
 
+    def create_folder(self, folder_name: str) -> None:
+        """Create a folder on the server (idempotent — no-op if it exists)."""
+        def _do() -> None:
+            if self._conn.folder_exists(folder_name):
+                return
+            logger.debug("CREATE %s", folder_name)
+            with _imap_errors(f"CREATE {folder_name!r}"):
+                self._conn.create_folder(folder_name)
+        self._retry(_do, f"CREATE {folder_name}")
+
     def move_message(
         self, source_folder: str, uid: int, target_folder: str,
     ) -> None:
         """Move one message from *source_folder* to *target_folder*.
 
-        Ensures *target_folder* exists, then uses ``UID MOVE`` (RFC 6851)
-        when available, falling back to ``UID COPY`` + ``STORE +FLAGS
-        \\Deleted`` + ``EXPUNGE`` on the source.
+        The target folder must already exist on the server; callers
+        should invoke :meth:`create_folder` first when in doubt.  Uses
+        ``UID MOVE`` (RFC 6851) when the server advertises it, otherwise
+        falls back to ``UID COPY`` + ``STORE +FLAGS \\Deleted`` +
+        ``EXPUNGE`` on the source.
         """
-        def _ensure_target() -> None:
-            if self._conn.folder_exists(target_folder):
-                return
-            logger.debug("CREATE %s", target_folder)
-            with _imap_errors(f"CREATE {target_folder!r}"):
-                self._conn.create_folder(target_folder)
-
         def _do() -> None:
-            _ensure_target()
             self._ensure_selected(source_folder)
             if b"MOVE" in self._conn.capabilities():
                 logger.debug(
