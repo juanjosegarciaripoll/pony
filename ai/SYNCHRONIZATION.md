@@ -223,3 +223,31 @@ Custom server flags (`$Important`, `$Junk`, etc.) are preserved in
 - Planning: per-folder scanning progress
 - Execution: per-operation progress
 - TUI: ProgressBar widget; CLI: `\r`-overwriting counter line
+
+## Known limitations
+
+Behaviours that are understood, surfaced by audit, and intentionally
+deferred. New work in the sync engine should not regress these further
+without a plan to fix them.
+
+- **ReUploadOp is not idempotent under a crash between APPEND and
+  commit.** `_execute_reupload` calls `session.append_message(...)`
+  before the index transaction clears the old `uid`. If the process
+  dies after the APPEND lands on the server but before the enclosing
+  `with self._index.connection()` block commits, the next sync sees
+  the same C-1 state (server-deleted, locally-modified) and re-emits
+  ReUploadOp, producing a duplicate on the server. A proper fix needs
+  UIDPLUS-based dedup on retry or an explicit two-phase marker on the
+  row; both are out of scope for v1.
+
+- **Messages in excluded server folders are invisible to dedup.**
+  `remote_mid_map` is built only from folders that pass
+  `folder_policy.should_sync`.  If a message with Message-ID `M` lives
+  on the server in an excluded folder (typically `[Gmail]/All Mail`)
+  and a pending `uid=NULL` row for `M` exists locally in a synced
+  folder, Step 5 sees `M` as "not on the server" and emits
+  `PushAppendOp`, producing a second copy on the server. Users who
+  include an aggregate folder in their account already hit a related
+  warning (see SYNC_AUDIT 7b). Clean fixes would require scanning
+  excluded folders for dedup only, which conflicts with the intended
+  meaning of the exclude policy.

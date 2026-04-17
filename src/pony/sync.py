@@ -272,13 +272,21 @@ type SyncOp = (
 
 @dataclass(frozen=True, slots=True)
 class FolderSyncPlan:
-    """All planned operations for one folder."""
+    """All planned operations for one folder.
+
+    ``is_new`` marks a folder that exists only in the local mirror at
+    plan time — the server will receive a ``CREATE`` for it in this
+    sync's pre-phase.  No IMAP scan happened, so ``uid_validity`` /
+    ``highest_uid`` carry placeholder zeros and the post-execute
+    watermark recording is skipped; the next sync does the real scan.
+    """
 
     folder_name: str
     uid_validity: int
     highest_uid: int  # used to update the watermark after execution
     ops: tuple[SyncOp, ...]
     needs_confirmation: bool = False  # C-6: mass-deletion threshold exceeded
+    is_new: bool = False
     scan_ms: int = 0  # wall time for the IMAP metadata scan (fetch_uid_to_message_id)
 
 
@@ -351,29 +359,22 @@ def _synthetic_message_id(
 def _merge_flags(
     *,
     local: frozenset[MessageFlag],
-    base: frozenset[MessageFlag],
+    base: frozenset[MessageFlag],  # noqa: ARG001  # reserved for future 3-way merge
     remote: frozenset[MessageFlag],
-) -> tuple[frozenset[MessageFlag], bool]:
-    """Compute the merged flag set and whether a conflict was detected.
+) -> frozenset[MessageFlag]:
+    """Return the union of local and remote flag sets, minus ``\\Deleted``.
 
     ``\\Deleted`` is stripped before merging — it requires explicit user
     confirmation (SYNCHRONIZATION.md C-1/C-2) and must never be
     propagated by automatic union.
 
-    A conflict is reported only when both sides changed independently
-    *and* they disagree on the result.  Two clients independently
-    marking a message as SEEN is convergent, not conflicting.
+    ``base`` is accepted for parity with a proper three-way merge so that
+    a future refinement can distinguish "both sides set SEEN independently"
+    (convergent) from "both sides set incompatible flags" (a real
+    conflict) without changing the signature.
     """
     deleted = frozenset({MessageFlag.DELETED})
-    local_clean = local - deleted
-    remote_clean = remote - deleted
-    base_clean = base - deleted
-
-    server_changed = remote_clean != base_clean
-    local_changed = local_clean != base_clean
-    conflict = server_changed and local_changed and (local_clean != remote_clean)
-    merged = local_clean | remote_clean
-    return merged, conflict
+    return (local - deleted) | (remote - deleted)
 
 
 # ---------------------------------------------------------------------------
@@ -754,11 +755,47 @@ class ImapSyncService:
         # Build local-pending map: Message-ID → folder name for index rows
         # that have no UID yet and are still ACTIVE.  These rows represent
         # local moves or appends that sync will reconcile on this pass.
+        #
+        # Two invariants:
+        #
+        #   (a) The target folder must be syncable and writable — a pending
+        #       row pointing at a read-only or excluded folder cannot be
+        #       pushed to the server, so skip it rather than emitting a
+        #       doomed PushMoveOp.
+        #   (b) A Message-ID must not map to more than one folder.  If two
+        #       pending rows share the same mid (pathological), we can't
+        #       pick one deterministically — keep the first, warn on the
+        #       rest.  The losers stay uid=NULL until the winner completes
+        #       and the user resolves the duplicate.
         local_pending_mid_folder: dict[str, str] = {}
         for row in self._index.list_pending_rows(account_name=account.name):
             mid = row.message_ref.message_id
-            if mid:
-                local_pending_mid_folder[mid] = row.message_ref.folder_name
+            if not mid:
+                continue
+            folder = row.message_ref.folder_name
+            if folder_policy.is_read_only(folder):
+                logger.warning(
+                    "Pending row %r in read-only folder %s/%s — cannot "
+                    "push to server; skipping",
+                    mid, account.name, folder,
+                )
+                continue
+            if not folder_policy.should_sync(folder):
+                logger.warning(
+                    "Pending row %r in excluded folder %s/%s — cannot "
+                    "push to server; skipping",
+                    mid, account.name, folder,
+                )
+                continue
+            if mid in local_pending_mid_folder:
+                logger.warning(
+                    "Duplicate pending Message-ID %r in %s/%s "
+                    "(already mapped to %s); keeping the first mapping",
+                    mid, account.name, folder,
+                    local_pending_mid_folder[mid],
+                )
+                continue
+            local_pending_mid_folder[mid] = folder
 
         syncable = [f for f in server_folders if f in folder_uid_maps]
         logger.info(
@@ -847,9 +884,10 @@ class ImapSyncService:
             ops.append(PushAppendOp(message_ref=row.message_ref))
         return FolderSyncPlan(
             folder_name=folder_name,
-            uid_validity=0,  # sentinel: folder not yet on the server
+            uid_validity=0,  # no scan yet — folder about to be CREATEd
             highest_uid=0,
             ops=tuple(ops),
+            is_new=True,
         )
 
     def _plan_folder(
@@ -1090,7 +1128,7 @@ class ImapSyncService:
                         )
                     )
             elif server_changed and local_changed:
-                merged, _ = _merge_flags(
+                merged = _merge_flags(
                     local=local_row.local_flags,
                     base=base,
                     remote=current_remote,
@@ -1373,12 +1411,11 @@ class ImapSyncService:
                         total=total_ops,
                     ))
 
-            # Update the watermark after all ops for this folder.
-            # Brand-new folder plans carry uid_validity=0 as a sentinel
-            # (no server scan happened yet).  Skip recording in that case
-            # — the next sync will scan the now-existing server folder
-            # and establish the real watermark.
-            if plan.uid_validity > 0:
+            # Update the watermark after all ops for this folder.  Brand-
+            # new folders (is_new=True) haven't been scanned on the server
+            # yet — their uid_validity/highest_uid are placeholders, so
+            # skip recording.  The next sync does the real scan.
+            if not plan.is_new:
                 self._index.record_folder_sync_state(
                     state=FolderSyncState(
                         account_name=account.name,

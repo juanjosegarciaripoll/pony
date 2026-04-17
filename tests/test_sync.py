@@ -859,7 +859,7 @@ class DeletedFlagMergeTestCase(unittest.TestCase):
     def test_deleted_flag_stripped_from_merge(self) -> None:
         from pony.sync import _merge_flags
 
-        merged, conflict = _merge_flags(
+        merged = _merge_flags(
             local=frozenset({MessageFlag.SEEN}),
             base=frozenset(),
             remote=frozenset({MessageFlag.DELETED}),
@@ -867,27 +867,26 @@ class DeletedFlagMergeTestCase(unittest.TestCase):
         self.assertNotIn(MessageFlag.DELETED, merged)
         self.assertIn(MessageFlag.SEEN, merged)
 
-    def test_same_change_both_sides_no_conflict(self) -> None:
-        """3c: convergent changes are not conflicts."""
+    def test_convergent_changes_union_cleanly(self) -> None:
+        """3c: when both sides set the same flag, union still yields just that flag."""
         from pony.sync import _merge_flags
 
-        merged, conflict = _merge_flags(
+        merged = _merge_flags(
             local=frozenset({MessageFlag.SEEN}),
             base=frozenset(),
             remote=frozenset({MessageFlag.SEEN}),
         )
-        self.assertFalse(conflict)
         self.assertEqual(merged, frozenset({MessageFlag.SEEN}))
 
-    def test_real_conflict_still_detected(self) -> None:
+    def test_divergent_changes_union(self) -> None:
+        """When sides set different flags, the merge is the union of both."""
         from pony.sync import _merge_flags
 
-        merged, conflict = _merge_flags(
+        merged = _merge_flags(
             local=frozenset({MessageFlag.FLAGGED}),
             base=frozenset(),
             remote=frozenset({MessageFlag.SEEN}),
         )
-        self.assertTrue(conflict)
         self.assertEqual(merged, frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}))
 
 
