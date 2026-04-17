@@ -208,7 +208,10 @@ def build_linux_appimage(version: str) -> Path:
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         appimage_path = ARTIFACTS_DIR / f"pony-linux-v{version}.AppImage"
-        env = {**os.environ, "ARCH": "x86_64"}
+        # APPIMAGE_EXTRACT_AND_RUN=1 makes appimagetool self-extract rather
+        # than mount via FUSE, which avoids needing libfuse on the host
+        # (required on GitHub Actions ubuntu runners and many CI environments).
+        env = {**os.environ, "ARCH": "x86_64", "APPIMAGE_EXTRACT_AND_RUN": "1"}
         subprocess.run(
             [str(tool), str(appdir), str(appimage_path)],
             check=True,
