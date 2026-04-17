@@ -2,6 +2,8 @@
 title: Home
 ---
 
+<img src="assets/pony-express.png" alt="Pony Express" width="180" align="right">
+
 # Pony Express
 
 Pony Express is a terminal-first mail user agent written in Python. It

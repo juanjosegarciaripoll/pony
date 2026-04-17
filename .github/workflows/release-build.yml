@@ -121,12 +121,25 @@ jobs:
               print(f"Using existing PyInstaller spec file: {spec_files[0]}")
           else:
               print(f"No .spec file found; building from entry point: {entry}")
-          subprocess.run([
+
+          # Pick the platform-specific icon.  PyInstaller requires .ico on
+          # Windows and .icns on macOS; Linux binaries carry no embedded
+          # icon, so the flag is omitted there.
+          icon_paths = {
+              "Windows": "icons/pony-express.ico",
+              "macOS":   "icons/pony-express.icns",
+          }
+          icon = icon_paths.get(os.getenv("RUNNER_OS", ""))
+          cmd = [
               "python", "-m", "pyinstaller",
               "--noconfirm", "--clean", "--onedir",
               "--name", os.getenv("APP_NAME"),
-              target
-          ], check=True)
+          ]
+          if icon and os.path.exists(icon):
+              cmd.extend(["--icon", icon])
+              print(f"Embedding icon: {icon}")
+          cmd.append(target)
+          subprocess.run(cmd, check=True)
           PY
         shell: bash
 

@@ -6,6 +6,8 @@ repo_name: juanjosegarciaripoll/pony
 
 theme:
   name: material
+  logo: assets/pony-express.png
+  favicon: assets/pony-express.png
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default

@@ -1,3 +1,5 @@
+<img src="icons/pony-express.png" alt="Pony Express" width="160" align="right">
+
 # Pony Express
 
 Pony Express is a terminal-first mail user agent written in Python 3.13. It

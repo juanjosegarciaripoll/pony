@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `ImapClientSession.move_message()` in the session protocol, with RFC
   6851 `UID MOVE` fast path and a compatible fallback.
 - `ImapClientSession.create_folder()` (idempotent).
+- **Application icon**: a coral pony-head + envelope mark ships under
+  `icons/` as `.png`, `.svg`, `.ico` (Windows), and `.icns` (macOS).
+  Release builds embed the platform-appropriate icon via PyInstaller's
+  `--icon` flag; the MkDocs site uses it as the header logo and
+  favicon; the README displays it above the title.
 
 ### Changed
 
