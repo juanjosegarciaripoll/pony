@@ -5,6 +5,16 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0]
+
+### Added
+
+- **Embedded MCP server**: add `[mcp]` to `config.toml` to have the MCP
+  HTTP server start automatically in a background thread when `pony tui`
+  launches. A TUI notification shows the URL on startup. Recommended for
+  users who keep the TUI open and want simultaneous AI assistant access
+  without managing a separate process.
+
 ## [0.3.0] - 2026-04-17
 ### Added
 
@@ -29,10 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for Streamable HTTP (Docker / remote deployments). HTTP mode is
   compatible with running `pony tui` in a separate process. New runtime
   dependency: `mcp>=1.0`.
-- **Embedded MCP server**: add `[mcp]` to `config.toml` to have the MCP
-  HTTP server start automatically in a background thread when `pony tui`
-  launches. A TUI notification shows the URL on startup. Recommended for
-  users who keep the TUI open and want simultaneous AI assistant access.
 - **`scripts/build.py`**: cross-platform local build script. Run with
   `uv run python scripts/build.py [--installer] [--skip-tests]
   [--skip-docs]`. Artifacts land in `artifacts/`.
