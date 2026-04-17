@@ -3,14 +3,6 @@ name: Create Release
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: 'Version bump type'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
       prerelease:
         description: 'Mark as pre-release'
         required: false
@@ -41,55 +33,86 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute new version and update files
+      - name: Read version from CHANGELOG and update files
         id: version
         run: |
           python - <<'PY'
           import os, re, sys
           from datetime import date
 
-          bump = "${{ inputs.bump }}"
+          # --- 1. Read new version from CHANGELOG.md ---
+          #
+          # Expected workflow:
+          #   1. Developer writes a new "## [X.Y.Z]" section (no date) at the
+          #      top of the changelog and commits it to main.
+          #   2. Developer triggers this workflow.
+          #   3. The workflow reads X.Y.Z as the release version, stamps the
+          #      date, updates pyproject.toml + version.py, tags, and releases.
+          #
+          # CHANGELOG.md is the single source of truth for the release version.
 
-          # --- 1. Read and bump version in pyproject.toml ---
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              changelog = f.read()
 
-          with open("pyproject.toml", "r", encoding="utf-8") as f:
-              text = f.read()
-
-          match = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', text, re.MULTILINE)
-          if not match:
-              print("ERROR: Could not find version in pyproject.toml", file=sys.stderr)
+          undated = re.search(
+              r'^## \[(\d+\.\d+\.\d+)\]\s*$',
+              changelog,
+              re.MULTILINE,
+          )
+          if not undated:
+              print(
+                  "ERROR: No undated '## [X.Y.Z]' heading found in CHANGELOG.md.\n"
+                  "Write a new changelog section for the release before "
+                  "triggering this workflow.",
+                  file=sys.stderr,
+              )
               sys.exit(1)
 
-          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
-          old = f"{major}.{minor}.{patch}"
-
-          if bump == "major":
-              major += 1
-              minor = 0
-              patch = 0
-          elif bump == "minor":
-              minor += 1
-              patch = 0
-          elif bump == "patch":
-              patch += 1
-
-          new = f"{major}.{minor}.{patch}"
+          new = undated.group(1)
           tag = f"v{new}"
           today = date.today().isoformat()
 
-          print(f"Bumping {old} -> {new} ({bump})")
+          # --- 2. Read current version from pyproject.toml, validate bump ---
 
-          new_text = re.sub(
+          with open("pyproject.toml", "r", encoding="utf-8") as f:
+              pyproject = f.read()
+
+          match = re.search(
+              r'^version\s*=\s*"(\d+\.\d+\.\d+)"', pyproject, re.MULTILINE,
+          )
+          if not match:
+              print("ERROR: Could not find version in pyproject.toml", file=sys.stderr)
+              sys.exit(1)
+          old = match.group(1)
+
+          def as_tuple(v: str) -> tuple[int, int, int]:
+              a, b, c = v.split(".")
+              return int(a), int(b), int(c)
+
+          if as_tuple(new) <= as_tuple(old):
+              print(
+                  f"ERROR: CHANGELOG version {new} is not greater than "
+                  f"pyproject.toml version {old}. Write a higher version "
+                  "in the changelog before releasing.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print(f"Releasing {old} -> {new}")
+
+          # --- 3. Update pyproject.toml ---
+
+          pyproject = re.sub(
               r'^(version\s*=\s*)"[^"]+"',
               f'\\1"{new}"',
-              text,
+              pyproject,
               count=1,
               flags=re.MULTILINE,
           )
           with open("pyproject.toml", "w", encoding="utf-8") as f:
-              f.write(new_text)
+              f.write(pyproject)
 
-          # --- 2. Update version.py ---
+          # --- 4. Update version.py ---
 
           ver_path = "src/pony/version.py"
           with open(ver_path, "r", encoding="utf-8") as f:
@@ -104,51 +127,18 @@ jobs:
           with open(ver_path, "w", encoding="utf-8") as f:
               f.write(ver_text)
 
-          # --- 3. Update CHANGELOG.md ---
-          #
-          # Expected workflow:
-          #   1. Developer writes a new "## [X.Y.Z]" section (no date) at the
-          #      top of the changelog and commits it to main.
-          #   2. Developer triggers this workflow.
-          #   3. The workflow stamps the date on that heading, adds the
-          #      comparison link, and commits.
-          #
-          # If there is no undated heading, the workflow fails — write the
-          # changelog before releasing.
+          # --- 5. Stamp date on the CHANGELOG heading ---
 
-          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
-              changelog = f.read()
-
-          # Find the first heading that has a version but no date:
-          #   ## [X.Y.Z]          <- undated (we stamp this)
-          #   ## [X.Y.Z] - DATE   <- already released
-          undated = re.search(
-              r'^## \[(\d+\.\d+\.\d+)\]\s*$',
-              changelog,
-              re.MULTILINE,
+          changelog = (
+              changelog[:undated.start()]
+              + f"## [{new}] - {today}"
+              + changelog[undated.end():]
           )
 
-          if undated:
-              # Stamp the date on the undated heading
-              changelog = changelog[:undated.start()] + \
-                  f"## [{new}] - {today}" + \
-                  changelog[undated.end():]
-          else:
-              # No undated section found — insert a minimal one after the
-              # preamble (after the first blank line following the title block)
-              insert_re = re.search(r'^## \[', changelog, re.MULTILINE)
-              if insert_re:
-                  pos = insert_re.start()
-              else:
-                  pos = len(changelog)
-              changelog = (
-                  changelog[:pos]
-                  + f"## [{new}] - {today}\n\n"
-                  + changelog[pos:]
-              )
-
-          # Add or update the version link at the bottom
-          version_link = f"[{new}]: https://github.com/juanjosegarciaripoll/pony/releases/tag/{tag}"
+          version_link = (
+              f"[{new}]: https://github.com/juanjosegarciaripoll/pony"
+              f"/releases/tag/{tag}"
+          )
           if f"[{new}]:" in changelog:
               changelog = re.sub(
                   rf'^\[{re.escape(new)}\]:.*$',
@@ -163,7 +153,7 @@ jobs:
           with open("CHANGELOG.md", "w", encoding="utf-8") as f:
               f.write(changelog)
 
-          # --- 4. Write outputs ---
+          # --- 6. Write outputs ---
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"version={new}\n")

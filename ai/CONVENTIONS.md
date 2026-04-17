@@ -75,8 +75,12 @@ New runtime dependencies require explicit approval.
 - Both updated atomically by the release GitHub Action
 - `pony --version` reads from `version.py` (works in PyInstaller bundles)
 - CHANGELOG.md follows Keep a Changelog format
-- Release workflow: manually dispatched, bumps version, stamps changelog date,
-  tags, creates GitHub release
+- Release workflow: manually dispatched. CHANGELOG.md is the source of truth
+  for the release version — write a new undated `## [X.Y.Z]` heading, then
+  trigger the workflow. It reads X.Y.Z from the changelog, propagates it to
+  `pyproject.toml` and `version.py`, stamps the date, tags, and creates the
+  GitHub release. Fails if the changelog version is not strictly greater than
+  the current `pyproject.toml` version.
 
 ## TUI conventions
 
