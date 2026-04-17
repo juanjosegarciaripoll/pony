@@ -50,6 +50,18 @@ class MirrorRepository(Protocol):
         """Delete a message from local mirror storage."""
         ...
 
+    def move_message_to_folder(
+        self, *, message_ref: MessageRef, target_folder: str,
+    ) -> MessageRef:
+        """Relocate a stored message to *target_folder*.
+
+        Returns the new :class:`MessageRef` — the ``message_id`` may change
+        (for backends whose storage key is folder-scoped, e.g. mbox).
+        The raw bytes are preserved; flag state remains whatever the
+        original file carried.
+        """
+        ...
+
 
 class IndexRepository(Protocol):
     """Interface for metadata index implementations."""
@@ -162,6 +174,16 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def list_pending_rows(
+        self, *, account_name: str
+    ) -> Sequence[IndexedMessage]:
+        """Return ACTIVE messages with ``uid IS NULL`` for one account.
+
+        These are local rows the user created (e.g. by archiving) that
+        have not yet been reconciled with the server.
+        """
+        ...
+
     def clear_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> None:
@@ -266,6 +288,18 @@ class ImapClientSession(Protocol):
 
     def expunge(self, folder_name: str) -> None:
         """Expunge all \\Deleted messages in the given folder."""
+        ...
+
+    def move_message(
+        self, source_folder: str, uid: int, target_folder: str,
+    ) -> None:
+        """Move one message from *source_folder* to *target_folder*.
+
+        Uses IMAP ``UID MOVE`` (RFC 6851) when the server advertises the
+        ``MOVE`` capability, otherwise falls back to ``UID COPY`` +
+        ``STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on the source folder.
+        Creates *target_folder* if it does not exist on the server.
+        """
         ...
 
     def logout(self) -> None:

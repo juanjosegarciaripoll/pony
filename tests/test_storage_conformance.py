@@ -68,6 +68,39 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         payload = repository.get_message_bytes(message_ref=stored)
         self.assertIn(b"Subject: flag-test", payload)
 
+    def test_move_message_to_folder_relocates_bytes(self) -> None:
+        repository = self.make_repository()
+        inbox = FolderRef(account_name=self.account_name, folder_name="INBOX")
+        stored = repository.store_message(
+            folder=inbox, raw_message=sample_message_bytes("to-archive"),
+        )
+
+        moved = repository.move_message_to_folder(
+            message_ref=stored, target_folder="Archive",
+        )
+
+        self.assertEqual(moved.folder_name, "Archive")
+        self.assertEqual(repository.list_messages(folder=inbox), ())
+        archive = FolderRef(
+            account_name=self.account_name, folder_name="Archive",
+        )
+        self.assertEqual(len(repository.list_messages(folder=archive)), 1)
+
+        payload = repository.get_message_bytes(message_ref=moved)
+        self.assertIn(b"Subject: to-archive", payload)
+
+    def test_move_message_to_same_folder_is_noop(self) -> None:
+        repository = self.make_repository()
+        inbox = FolderRef(account_name=self.account_name, folder_name="INBOX")
+        stored = repository.store_message(
+            folder=inbox, raw_message=sample_message_bytes("stay"),
+        )
+        result = repository.move_message_to_folder(
+            message_ref=stored, target_folder="INBOX",
+        )
+        self.assertEqual(result, stored)
+        self.assertEqual(len(repository.list_messages(folder=inbox)), 1)
+
 
 class MaildirMirrorRepositoryTestCase(MirrorRepositoryConformanceMixin):
     """Run conformance tests against Maildir backend."""

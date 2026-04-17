@@ -104,8 +104,9 @@ username      = "jsmith"
 credentials_source = "command"
 password_command   = ["pass", "show", "corp/imap"]
 
-sent_folder   = "Sent Items"   # override auto-discovery
-drafts_folder = "Drafts"
+sent_folder    = "Sent Items"   # override auto-discovery
+drafts_folder  = "Drafts"
+archive_folder = "Archive"      # target for the A key in the TUI
 
 [accounts.mirror]
 path   = "mirrors/work"
@@ -189,6 +190,7 @@ See [Credential backends](#credential-backends) below for details.
 |---|---|---|---|
 | `sent_folder` | string | *(auto)* | Exact folder name where sent messages are saved; auto-discovered by fuzzy match if omitted |
 | `drafts_folder` | string | *(auto)* | Exact folder name for saved drafts; auto-discovered if omitted |
+| `archive_folder` | string | *(none)* | Target for the `A` key in the TUI. Omit to disable archiving. Must not be in `folders.exclude` or `folders.read_only`. Pony creates it on the server on first archive if it does not already exist. |
 | `markdown_compose` | bool | `false` | Default Markdown mode for this account; overrides the global setting |
 | `signature` | string | *(none)* | Text appended below the cursor in replies and forwards |
 

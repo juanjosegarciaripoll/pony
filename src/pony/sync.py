@@ -92,6 +92,9 @@ class FolderSyncResult:
     flag_conflicts_merged: int
     deleted_on_server: int
     moved_on_server: int
+    moved_to_server: int = 0   # PushMoveOp: local moves pushed to server
+    appended_to_server: int = 0  # PushAppendOp: local-only messages APPENDed
+    linked_local: int = 0      # LinkLocalOp: pending rows adopted a server UID
     scan_ms: int = 0    # IMAP metadata scan (fetch_uid_to_message_id)
     fetch_ms: int = 0   # IMAP body downloads (fetch_messages_batch)
     ingest_ms: int = 0  # MIME parse + mirror write + index write
@@ -185,6 +188,51 @@ class PushDeleteOp:
 
 
 @dataclass(frozen=True, slots=True)
+class PushMoveOp:
+    """Local move: push a server-side move to reflect the local state.
+
+    The message exists on the server in the current folder (``uid``) and
+    a local row with ``uid=NULL`` exists in ``target_folder`` — evidence
+    that the user moved the message locally.  The executor runs ``UID
+    MOVE`` from the current folder to ``target_folder`` on the server.
+    The resulting UID in the target folder is picked up on the next sync.
+    """
+
+    uid: int
+    message_id: str
+    target_folder: str
+
+
+@dataclass(frozen=True, slots=True)
+class PushAppendOp:
+    """Upload a local row with ``uid=NULL`` via IMAP ``APPEND``.
+
+    Emitted when a local row exists with no UID and the message is not
+    present on the server anywhere — the local state is the source of
+    truth and needs to be pushed.
+    """
+
+    message_ref: MessageRef
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLocalOp:
+    """Adopt a new server UID into an existing ``uid=NULL`` local row.
+
+    Emitted when a remote UID appears for a Message-ID that already has
+    a local row in the same folder with no UID (e.g. the row that a
+    previous PushMoveOp created in the target folder).  No bytes are
+    fetched; the row is updated with the UID and the server's flag
+    baseline.
+    """
+
+    uid: int
+    message_ref: MessageRef
+    server_flags: frozenset[MessageFlag]
+    extra_imap_flags: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class ReUploadOp:
     """C-1: message deleted on server but locally modified — re-upload."""
 
@@ -209,6 +257,9 @@ type SyncOp = (
     | PushFlagsOp
     | MergeFlagsOp
     | PushDeleteOp
+    | PushMoveOp
+    | PushAppendOp
+    | LinkLocalOp
     | ReUploadOp
     | RestoreOp
 )
@@ -662,6 +713,15 @@ class ImapSyncService:
                     row.message_ref.folder_name
                 )
 
+        # Build local-pending map: Message-ID → folder name for index rows
+        # that have no UID yet and are still ACTIVE.  These rows represent
+        # local moves or appends that sync will reconcile on this pass.
+        local_pending_mid_folder: dict[str, str] = {}
+        for row in self._index.list_pending_rows(account_name=account.name):
+            mid = row.message_ref.message_id
+            if mid:
+                local_pending_mid_folder[mid] = row.message_ref.folder_name
+
         syncable = [f for f in server_folders if f in folder_uid_maps]
         logger.info(
             "Account %r: planning %d folder(s): %s",
@@ -681,6 +741,7 @@ class ImapSyncService:
                     uid_to_flags=folder_flags_maps[folder_name],
                     remote_mid_map=remote_mid_map,
                     local_mid_folders=local_mid_folders,
+                    local_pending_mid_folder=local_pending_mid_folder,
                     read_only=folder_policy.is_read_only(folder_name),
                 )
                 folder_plan = dataclasses.replace(
@@ -712,6 +773,7 @@ class ImapSyncService:
         uid_to_flags: dict[int, FlagSet],
         remote_mid_map: dict[str, tuple[str, int]],
         local_mid_folders: dict[str, set[str]],
+        local_pending_mid_folder: dict[str, str],
         read_only: bool = False,
     ) -> FolderSyncPlan:
         # Always-fresh SELECT; see ImapClientSession.get_uid_validity.
@@ -814,17 +876,55 @@ class ImapSyncService:
                         ServerDeleteOp(uid=uid, message_id=known_mid)
                     )
 
-        # Step 2: new messages on server.
+        # Track pending Message-IDs we handled via Link/PushMove so step 5
+        # doesn't try to APPEND them.
+        _handled_pending_mids: set[str] = set()
+
+        # Step 2: new UIDs on the server in this folder.
+        #
+        # Extended to recognise local-pending rows (uid=NULL):
+        #   - Same folder  → LinkLocalOp (adopt the UID, no refetch).
+        #   - Other folder → PushMoveOp (move server-side to match the
+        #                    local state).  Skipped for read-only sources.
+        #   - Otherwise    → FetchNewOp (genuinely new server message, or
+        #                    a second-folder copy that will dedup by msgid).
         for uid in remote_uids - local_uids:
             mid = uid_to_mid.get(uid, "")
-            ops.append(
-                FetchNewOp(
-                    uid=uid,
-                    message_id=mid,
-                    server_flags=remote_flags.get(uid, frozenset()),
-                    extra_imap_flags=remote_extra.get(uid, frozenset()),
-                )
+            pending_folder = (
+                local_pending_mid_folder.get(mid) if mid else None
             )
+            if pending_folder == folder_name:
+                ops.append(
+                    LinkLocalOp(
+                        uid=uid,
+                        message_ref=MessageRef(
+                            account_name=account.name,
+                            folder_name=folder_name,
+                            message_id=mid,
+                        ),
+                        server_flags=remote_flags.get(uid, frozenset()),
+                        extra_imap_flags=remote_extra.get(uid, frozenset()),
+                    )
+                )
+                _handled_pending_mids.add(mid)
+            elif pending_folder is not None and not read_only:
+                ops.append(
+                    PushMoveOp(
+                        uid=uid,
+                        message_id=mid,
+                        target_folder=pending_folder,
+                    )
+                )
+                _handled_pending_mids.add(mid)
+            else:
+                ops.append(
+                    FetchNewOp(
+                        uid=uid,
+                        message_id=mid,
+                        server_flags=remote_flags.get(uid, frozenset()),
+                        extra_imap_flags=remote_extra.get(uid, frozenset()),
+                    )
+                )
 
         # Track messages restored by C-2 so Step 4 skips them.
         _restored_mids: set[str] = set()
@@ -928,6 +1028,25 @@ class ImapSyncService:
                 ops.append(
                     PushDeleteOp(server_uid=server_uid, message_ref=row.message_ref)
                 )
+
+        # Step 5: push local-pending rows (uid=NULL, ACTIVE) that weren't
+        # matched by a server UID.  If the Message-ID is already on the
+        # server in some other folder, the PushMoveOp emitted during that
+        # folder's plan will handle it.  Otherwise we APPEND the mirror
+        # bytes to this folder so the message reaches the server.
+        if not read_only:
+            for row in index_rows:
+                if row.local_status != MessageStatus.ACTIVE:
+                    continue
+                if row.uid is not None:
+                    continue
+                mid = row.message_ref.message_id
+                if not mid or mid in _handled_pending_mids:
+                    continue
+                if mid in remote_mid_map:
+                    # Another folder's plan will move it to us.
+                    continue
+                ops.append(PushAppendOp(message_ref=row.message_ref))
 
         # C-6: mass-deletion safety halt.  If >20% of previously-known
         # UIDs disappeared in one pass, flag the folder for confirmation.
@@ -1072,6 +1191,9 @@ class ImapSyncService:
             "flag_conflicts_merged": 0,
             "deleted_on_server": 0,
             "moved_on_server": 0,
+            "moved_to_server": 0,
+            "appended_to_server": 0,
+            "linked_local": 0,
         }
 
         # Pipelined execution: a background thread pre-fetches message
@@ -1166,6 +1288,9 @@ class ImapSyncService:
             flag_conflicts_merged=counters["flag_conflicts_merged"],
             deleted_on_server=counters["deleted_on_server"],
             moved_on_server=counters["moved_on_server"],
+            moved_to_server=counters["moved_to_server"],
+            appended_to_server=counters["appended_to_server"],
+            linked_local=counters["linked_local"],
             scan_ms=plan.scan_ms,
             fetch_ms=sum(fetch_ns) // 1_000_000,
             ingest_ms=sum(ingest_ns) // 1_000_000,
@@ -1292,6 +1417,38 @@ class ImapSyncService:
                 self._index.delete_message(message_ref=op.message_ref)
                 mirror.delete_message(message_ref=op.message_ref)
 
+            case PushMoveOp():
+                session.move_message(
+                    folder_name, op.uid, op.target_folder,
+                )
+                counters["moved_to_server"] += 1
+                logger.info(
+                    "Pushed local move: %s/%s UID %d -> %s",
+                    account.name, folder_name, op.uid, op.target_folder,
+                )
+
+            case PushAppendOp():
+                self._execute_push_append(
+                    op, account=account, folder_name=folder_name,
+                    session=session, mirror=mirror,
+                )
+                counters["appended_to_server"] += 1
+
+            case LinkLocalOp():
+                row = self._index.get_message(message_ref=op.message_ref)
+                if row is not None:
+                    self._index.upsert_message(
+                        message=dataclasses.replace(
+                            row,
+                            uid=op.uid,
+                            server_flags=op.server_flags,
+                            base_flags=op.server_flags,
+                            extra_imap_flags=op.extra_imap_flags,
+                            synced_at=now,
+                        )
+                    )
+                counters["linked_local"] += 1
+
             case RestoreOp():
                 local_row = self._index.get_message(
                     message_ref=op.message_ref,
@@ -1351,6 +1508,44 @@ class ImapSyncService:
                     extra_imap_flags=frozenset(), synced_at=None,
                 )
             )
+
+    def _execute_push_append(
+        self,
+        op: PushAppendOp,
+        *,
+        account: AccountConfig,
+        folder_name: str,
+        session: ImapClientSession,
+        mirror: MirrorRepository,
+    ) -> None:
+        """APPEND a local-only message's mirror bytes to the server.
+
+        Leaves ``uid=NULL`` — the next sync picks up the server's assigned
+        UID via :class:`LinkLocalOp`.
+        """
+        row = self._index.get_message(message_ref=op.message_ref)
+        if row is None:
+            return
+        mirror_ref = MessageRef(
+            account_name=account.name,
+            folder_name=folder_name,
+            message_id=row.storage_key,
+        )
+        try:
+            raw = mirror.get_message_bytes(message_ref=mirror_ref)
+        except Exception:
+            logger.exception(
+                "Cannot APPEND %r — mirror read failed",
+                op.message_ref.message_id,
+            )
+            return
+        session.append_message(
+            folder_name, raw, row.local_flags, row.extra_imap_flags,
+        )
+        logger.info(
+            "APPENDed local message %r to %s/%s",
+            op.message_ref.message_id, account.name, folder_name,
+        )
 
     def _run_cleanup(self) -> None:
         """Periodic DB cleanup: stale accounts, expired trash."""

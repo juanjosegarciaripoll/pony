@@ -32,6 +32,8 @@ Terminal-first, cross-platform. Includes:
 - Sync progress reporting
 - Mirror integrity diagnostics
 - Cross-platform path handling
+- Per-account archive folder (`A` key) — local move reconciled via UID MOVE
+  on next sync
 
 ## Deferred scope
 

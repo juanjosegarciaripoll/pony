@@ -15,6 +15,11 @@ first.
   user, not silently resolved.
 - **Message-ID as stable identity.** IMAP UIDs are ephemeral; `Message-ID`
   headers are the durable cross-folder identity.
+- **`uid IS NULL` means "expected on server in this folder, not yet confirmed."**
+  A local row with a null UID is the sole signal that sync must push the row
+  to the server — either by `UID MOVE` (from wherever the server currently
+  holds the message) or by `APPEND`.  No separate pending-operations table,
+  no status marker: the uid column carries the intent.
 
 ## Message identity
 
@@ -91,16 +96,25 @@ All values are Python `re.fullmatch()` patterns.
 ```
 remote  <- IMAP: SELECT folder, FETCH UID ALL FLAGS
 local   <- index: messages WHERE folder = ? AND uid IS NOT NULL
+pending <- index (account-wide): messages WHERE uid IS NULL AND status=ACTIVE
+           — map msgid -> folder; built once per account before per-folder work
 
 Step 1: Deletions on server
   for uid in local - remote:
     if message_id found in another folder -> move (update local folder)
     else -> server deleted: trash locally (or re-upload if locally modified)
 
-Step 2: New messages on server
+Step 2: New UIDs on server in this folder
   for uid in remote - local:
-    if message_id already in index -> copy/second folder (add index row)
-    else -> genuinely new: fetch body, ingest into mirror + index
+    mid = message_id for this uid
+    if pending[mid] == this folder:
+      -> LinkLocalOp: adopt the UID onto the existing uid=NULL row
+    elif pending[mid] is another folder G and this folder is writable:
+      -> PushMoveOp: UID MOVE on the server from this folder to G
+    elif mid already in index (in any other folder, with a valid UID):
+      -> copy/second folder: add an index row for this folder
+    else:
+      -> FetchNewOp: fetch body, ingest into mirror + index
 
 Step 3: Flag reconciliation for surviving messages
   for uid in remote AND local:
@@ -115,9 +129,42 @@ Step 4: Push local deletions (writable folders only)
   for trashed messages with known uid:
     STORE +FLAGS (\Deleted), EXPUNGE
 
-Step 5: Commit
+Step 5: Push local-pending rows (writable folders only)
+  for rows in this folder with uid=NULL and status=ACTIVE:
+    if mid is on the server in another folder -> skip; that folder's
+      Step 2 will emit PushMoveOp and place it here.
+    else -> PushAppendOp: APPEND the mirror bytes to this folder.
+    (The resulting server UID is adopted on the next sync via
+     Step 2's LinkLocalOp branch.)
+
+Step 6: Commit
   Update folder_sync_state: highest_uid, synced_at
 ```
+
+### Local moves (archive)
+
+The TUI `A` action archives the selected message by applying a purely
+local move:
+
+1. Rename (Maildir) or copy-and-delete (mbox) the mirror file into the
+   archive folder's directory.
+2. Delete the source index row.
+3. Insert a new index row at ``(account, archive_folder, message_id)``
+   with ``uid=NULL``, ``local_status=ACTIVE``, and the same ``local_flags``
+   / ``base_flags`` as the source.
+
+The message disappears from the source folder and appears in the archive
+folder immediately in the TUI.  On the next sync:
+
+- The source folder's Step 2 sees the remote UID, the pending row in the
+  archive folder, and emits a ``PushMoveOp`` that runs ``UID MOVE``
+  server-side.
+- The following sync's archive-folder Step 2 picks up the resulting UID
+  and emits ``LinkLocalOp`` to adopt it — no refetch, no duplicate row.
+
+If the server loses the message between archive and sync (another client
+purged it), the archive folder's Step 5 emits ``PushAppendOp`` and uploads
+the mirror bytes.  The message is never destroyed locally.
 
 ## Flag merge policy
 
@@ -139,6 +186,7 @@ Custom server flags (`$Important`, `$Junk`, etc.) are preserved in
 | C-6 | Mass deletion (>20% gone) | Halt folder, require confirmation |
 | C-7 | Duplicate Message-ID | Synthetic ID for second occurrence |
 | C-8 | Missing Message-ID | Deterministic synthetic from content hash |
+| C-9 | Local move (archive) pending | `uid=NULL` row in target; Step 2 emits PushMoveOp in source or PushAppendOp if server has no copy |
 
 ## Trash workflow
 

@@ -188,6 +188,7 @@ def _parse_imap_account(raw: object) -> AccountConfig:
         folders=folders,
         sent_folder=_optional_string(data, "sent_folder"),
         drafts_folder=_optional_string(data, "drafts_folder"),
+        archive_folder=_optional_string(data, "archive_folder"),
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
     )

@@ -24,6 +24,11 @@
 #                  If omitted, the folder closest to "Sent" is auto-discovered.
 # - drafts_folder: Name of the folder where draft messages are saved on cancel.
 #                  If omitted, the folder closest to "Drafts" is auto-discovered.
+# - archive_folder:Target folder for the "A" key in the TUI.  Archiving moves
+#                  the selected message into this folder locally; the next sync
+#                  pushes the move to the server via UID MOVE.  Omit to disable
+#                  the archive action.  The folder must be synced (not matched
+#                  by folders.exclude) and not read-only.
 #
 # Accounts are defined as an array of tables. Two account types are supported:
 #
@@ -78,6 +83,8 @@ imap_host = "imap.example.com"
 smtp_host = "smtp.example.com"
 username = "user@example.com"
 credentials_source = "password"
+# Archive the selected message with the "A" key to this folder.
+archive_folder = "Archive"
 
 [accounts.mirror]
 path = "mirrors/personal"

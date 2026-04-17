@@ -154,6 +154,35 @@ of each sync.
 
 ---
 
+## Archive and local moves
+
+The `A` key in the TUI archives the selected message into the account's
+`archive_folder`. The move is applied **locally** and immediately: the mirror
+file is relocated and the index row's folder changes. The row's `uid` is set
+to `NULL` — the marker that tells sync the row is waiting for the server to
+catch up.
+
+On the next sync:
+
+- The **source folder's** planning step sees the server UID and the local
+  `uid=NULL` row in the archive folder, and emits a `UID MOVE` to the archive
+  folder (or `COPY` + `EXPUNGE` on servers without RFC 6851 MOVE support).
+  Pony creates the archive folder on the server if it doesn't already exist.
+- The **next** sync of the archive folder picks up the fresh UID the server
+  assigned and adopts it into the existing row — no refetch, no duplicate.
+
+If the server lost the message between archive and sync (deleted by another
+client), the archive folder's planning step instead emits an `APPEND` so
+the mirror bytes reach the server. **Archiving never destroys a message.**
+
+`A` is a no-op — with a warning — when:
+
+- the account has no `archive_folder` configured,
+- the source folder is read-only (Pony can't remove the server-side copy),
+- the archive folder is excluded from sync or is itself read-only.
+
+---
+
 ## Periodic cleanup
 
 Each sync pass also performs housekeeping:

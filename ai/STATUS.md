@@ -2,7 +2,7 @@
 
 ## Current version
 
-0.1.0 (first feature-complete release)
+0.2.0 (adds archive action and `uid=NULL`-based local-move sync)
 
 ## What's done
 
@@ -25,6 +25,13 @@ All v1 features are implemented and tested (250 tests, 2 skipped):
   counter)
 - **Phase 16**: TUI binding isolation (bindings moved from PonyApp to
   MainScreen, three App classes formalized, SyncConfirmScreen uses callback)
+- **Phase 17**: Archive action (`A` key) + generalised local-move sync.
+  `uid IS NULL` is now the canonical signal for "push this row to the
+  server." New plan ops: `PushMoveOp`, `PushAppendOp`, `LinkLocalOp`.
+  Per-account `archive_folder` config. Maildir and mbox both support
+  cross-folder move of mirror files. Auto-creates the archive folder on
+  the server on first use; auto-detects and uses RFC 6851 `UID MOVE` when
+  supported, falls back to `COPY` + `\Deleted` + `EXPUNGE` otherwise.
 
 ## Infrastructure
 

@@ -5,6 +5,44 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0]
+
+### Added
+
+- **Archive action**: press ++shift+a++ in the TUI to move the selected
+  message into the account's archive folder. Configure with
+  `archive_folder = "..."` on any IMAP account. The move is applied
+  immediately in the local mirror and index; the next sync pushes it to
+  the server. The archive folder is created on the server automatically
+  on first use.
+- **Generalised local-move sync**: `uid IS NULL` on an index row is now
+  the canonical signal that a row must be pushed to the server. The sync
+  planner introduces three new operation types that cover archive and
+  any future local mutation that round-trips through sync:
+    - `PushMoveOp` — run `UID MOVE` (RFC 6851) or `UID COPY` +
+      `\Deleted` + `EXPUNGE` when a local pending row is in a different
+      folder than the server's current location.
+    - `PushAppendOp` — `APPEND` the mirror bytes when the server has no
+      copy of the message anywhere.
+    - `LinkLocalOp` — adopt a freshly-assigned server UID into the
+      existing pending row, no refetch, no duplicate mirror file.
+- `MirrorRepository.move_message_to_folder()` for cross-folder relocation
+  of mirror bytes (rename in Maildir; copy-and-delete in mbox).
+- `ImapClientSession.move_message()` in the session protocol, with RFC
+  6851 `UID MOVE` fast path and a compatible fallback.
+
+### Changed
+
+- Release workflow: CHANGELOG.md is now the source of truth for the
+  release version. Write a new undated `## [X.Y.Z]` heading and trigger
+  the workflow; it propagates the version to `pyproject.toml` and
+  `version.py`, stamps the date, and tags. The only guard is that the
+  tag `vX.Y.Z` must not already exist.
+- Sync algorithm documentation (`ai/SYNCHRONIZATION.md` and
+  `docs/synchronization.md`) updated to describe the `uid IS NULL`
+  signal, the new operation types, and the local-move flow. Conflict
+  taxonomy gains C-9 for pending local moves.
+
 ## [0.1.0]
 
 First feature-complete release of Pony Express.

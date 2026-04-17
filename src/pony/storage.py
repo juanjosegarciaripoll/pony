@@ -188,6 +188,34 @@ class MaildirMirrorRepository(MirrorRepository):
         if path is not None:
             path.unlink(missing_ok=True)
 
+    def move_message_to_folder(
+        self, *, message_ref: MessageRef, target_folder: str,
+    ) -> MessageRef:
+        """Rename the Maildir file into *target_folder*'s directory.
+
+        The filename (and therefore the ``message_id``) is preserved —
+        Maildir filenames are globally unique, so the new ref still
+        identifies the same physical message.
+        """
+        self._require_message_ref(message_ref)
+        if target_folder == message_ref.folder_name:
+            return message_ref
+        src = self._find_message_file(message_ref)
+        if src is None:
+            raise KeyError(f"message not found: {message_ref.message_id}")
+        self._ensure_folder_dirs(target_folder)
+        target_path = self._maildir_folder_path(target_folder)
+        subdir = src.parent.name  # "cur" or "new"
+        dest_dir = target_path / subdir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        src.rename(dest)
+        return MessageRef(
+            account_name=self._account_name,
+            folder_name=target_folder,
+            message_id=message_ref.message_id,
+        )
+
     def _open_maildir(self, *, folder_name: str) -> mailbox.Maildir:
         if folder_name == "INBOX":
             maildir = mailbox.Maildir(self._root_dir, create=True)
@@ -332,6 +360,32 @@ class MboxMirrorRepository(MirrorRepository):
         key = int(message_ref.message_id)
         del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         mbox.flush()
+
+    def move_message_to_folder(
+        self, *, message_ref: MessageRef, target_folder: str,
+    ) -> MessageRef:
+        """Copy the message into *target_folder*'s mbox and remove from source.
+
+        mbox keys are per-file, so the new ref carries a fresh ``message_id``.
+        """
+        self._require_message_ref(message_ref)
+        if target_folder == message_ref.folder_name:
+            return message_ref
+        src = self._open_mbox(folder_name=message_ref.folder_name)
+        key = int(message_ref.message_id)
+        message: mailbox.mboxMessage | None = src.get(key)  # type: ignore[call-overload]
+        if message is None:
+            raise KeyError(f"message not found: {message_ref.message_id}")
+        dest = self._open_mbox(folder_name=target_folder)
+        new_key = str(dest.add(mailbox.mboxMessage(message)))
+        dest.flush()
+        del src[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
+        src.flush()
+        return MessageRef(
+            account_name=self._account_name,
+            folder_name=target_folder,
+            message_id=new_key,
+        )
 
     def _open_mbox(self, *, folder_name: str) -> mailbox.mbox:
         # mailbox.mbox uses int keys at runtime; typeshed stubs incorrectly

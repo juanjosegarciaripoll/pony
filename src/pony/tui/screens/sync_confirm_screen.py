@@ -17,6 +17,7 @@ from ...sync import (
     PullFlagsOp,
     PushDeleteOp,
     PushFlagsOp,
+    PushMoveOp,
     RestoreOp,
     ServerDeleteOp,
     ServerMoveOp,
@@ -83,7 +84,7 @@ def _plan_detail(plan: SyncPlan) -> str:
                 if isinstance(op, FetchNewOp):
                     continue
                 op_name = type(op).__name__.replace("Op", "")
-                if isinstance(op, (ServerDeleteOp, ServerMoveOp)):
+                if isinstance(op, (ServerDeleteOp, ServerMoveOp, PushMoveOp)):
                     detail = op.message_id[:40]
                 elif hasattr(op, "message_ref"):
                     detail = op.message_ref.message_id[:40]

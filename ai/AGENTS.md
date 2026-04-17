@@ -72,6 +72,15 @@ messages or callbacks, **not** by calling private App methods. The
 `SyncConfirmScreen` receives an `on_confirm` callback rather than reaching
 into the App.
 
+## Local mutations and sync
+
+Any change the user makes in the TUI that should round-trip to the server
+(archive, future: drag-to-folder, local compose) is expressed by leaving
+``uid IS NULL`` on the relevant index row. The sync planner is the single
+place that observes this and pushes the work — via ``PushMoveOp``,
+``PushAppendOp``, or ``LinkLocalOp``. Don't invent parallel queues or
+status flags for this.
+
 ## What NOT to do
 
 - Don't mock the database in tests -- use real SQLite via `SqliteIndexRepository`.
@@ -79,3 +88,5 @@ into the App.
 - Don't use `self.app._private_method()` from screens.
 - Don't create documentation files unless asked.
 - Don't add emojis to code or docs unless asked.
+- Don't add a separate "pending mutations" table for user actions that
+  belong in the sync model — set ``uid=NULL`` on the index row instead.

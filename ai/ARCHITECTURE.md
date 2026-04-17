@@ -88,6 +88,13 @@ flag merge with union policy. Mass-deletion protection at 20% threshold.
 Progress callbacks via `ProgressInfo` dataclass. See `ai/SYNCHRONIZATION.md`
 for the full algorithm.
 
+Local mutations from the TUI (archive, future local compose) are recorded by
+leaving ``uid IS NULL`` on the relevant index row. The planner treats these
+rows as "push to server in this folder" — emitting ``PushMoveOp`` (UID MOVE
+from the folder the server still has the message in), ``PushAppendOp`` (APPEND
+when the server has no copy), or ``LinkLocalOp`` (adopt a freshly-assigned
+UID into the existing row). There is no separate pending-operations queue.
+
 ### Send (`smtp_sender.py`, `compose_utils.py`)
 
 `SMTPSender` handles SSL and STARTTLS. Reply/forward quoting preserves

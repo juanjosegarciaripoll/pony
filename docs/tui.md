@@ -100,12 +100,20 @@ server on the next sync.
 | ++u++ | Mark current message as unread |
 | ++shift+f++ | Toggle the starred/flagged flag |
 | ++d++ | Move to trash (sets `local_status = trashed`; pushed to server on next sync) |
+| ++shift+a++ | Archive to the account's `archive_folder` (local move; pushed to server on next sync) |
 
 !!! info "Trash vs. delete"
     `d` marks the message for deletion locally. It stays in the local mirror
     until the next sync, when Pony sends an EXPUNGE to the server and purges
     the local copy. In a read-only folder, `d` is a no-op that self-corrects
     on the next sync.
+
+!!! info "Archive"
+    `A` requires `archive_folder = "..."` on the account. The selected message
+    moves into that folder immediately in the mirror and the index; the next
+    sync executes `UID MOVE` on the server (or `COPY` + `EXPUNGE` on servers
+    that don't support RFC 6851). Archiving is refused when the source or
+    target folder is read-only or excluded from sync.
 
 ---
 

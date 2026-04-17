@@ -95,6 +95,10 @@ class AccountConfig:
     # Composer: folder name overrides (None = auto-discover by name matching)
     sent_folder: str | None = None
     drafts_folder: str | None = None
+    # Archive target for the `A` key in the TUI.  When set, archiving a
+    # message locally moves it into this folder; the next sync propagates
+    # the move to the server.  None disables the archive action.
+    archive_folder: str | None = None
     # Composer: default Markdown composition mode for this account
     markdown_compose: bool = False
     # Composer: signature text appended after quoted content (None = no signature)

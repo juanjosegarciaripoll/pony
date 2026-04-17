@@ -56,6 +56,7 @@ class FakeImapSession:
         self.stored_extra: list[tuple[int, frozenset[str]]] = []
         self.extra_flags: dict[tuple[str, int], frozenset[str]] = {}
         self.deleted_uids: list[int] = []
+        self.moves: list[tuple[str, int, str]] = []
 
     def list_folders(self) -> Sequence[str]:
         return list(self.folders.keys())
@@ -138,6 +139,23 @@ class FakeImapSession:
         folder = self.folders.get(folder_name, {})
         for uid in list(self.deleted_uids):
             folder.pop(uid, None)
+
+    def move_message(
+        self, source_folder: str, uid: int, target_folder: str,
+    ) -> None:
+        # Record the call so tests can assert PushMoveOp executed.
+        self.moves.append((source_folder, uid, target_folder))
+        source = self.folders.get(source_folder, {})
+        entry = source.pop(uid, None)
+        if entry is None:
+            return
+        target = self.folders.setdefault(target_folder, {})
+        new_uid = max(target.keys(), default=0) + 2000
+        target[new_uid] = entry
+        # Carry over custom flags when present.
+        extra = self.extra_flags.pop((source_folder, uid), frozenset())
+        if extra:
+            self.extra_flags[(target_folder, new_uid)] = extra
 
     def logout(self) -> None:
         pass
@@ -1370,3 +1388,211 @@ class ProgressCallbackTestCase(unittest.TestCase):
         self.assertGreater(len(per_op), 0)
         # Last per-op event should have current == total.
         self.assertEqual(per_op[-1].current, per_op[-1].total)
+
+
+class LocalMoveSyncTestCase(unittest.TestCase):
+    """Local archive moves are pushed to the server via UID MOVE and then
+    the resulting UID is adopted into the existing local row."""
+
+    def _archive_locally(
+        self,
+        index: SqliteIndexRepository,
+        *,
+        source: str,
+        target: str,
+        message_id: str,
+    ) -> None:
+        """Simulate the TUI ``A`` action at the index level."""
+        ref = FolderRef(account_name="personal", folder_name=source)
+        rows = index.list_folder_messages(folder=ref)
+        row = next(r for r in rows if r.message_ref.message_id == message_id)
+        new_ref = dataclasses.replace(
+            row.message_ref, folder_name=target,
+        )
+        new_row = dataclasses.replace(
+            row,
+            message_ref=new_ref,
+            uid=None,
+            server_flags=frozenset(),
+            extra_imap_flags=frozenset(),
+            synced_at=None,
+        )
+        with index.connection():
+            index.delete_message(message_ref=row.message_ref)
+            index.upsert_message(message=new_row)
+
+    def test_archive_push_move_and_link_over_two_syncs(self) -> None:
+        raw = _make_raw_message("Archive me", "<archive@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<archive@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+        )
+        service.sync()  # ingest into INBOX
+
+        # User archives locally.
+        self._archive_locally(
+            index,
+            source="INBOX",
+            target="Archive",
+            message_id="<archive@example.com>",
+        )
+
+        # First post-archive sync: emits PushMoveOp (UID MOVE on server).
+        service.sync()
+
+        self.assertIn(
+            ("INBOX", 1, "Archive"), session.moves,
+            "Expected UID MOVE from INBOX to Archive",
+        )
+        # Server-side: INBOX now empty, Archive has the message.
+        self.assertNotIn(1, session.folders["INBOX"])
+        self.assertEqual(len(session.folders["Archive"]), 1)
+        new_uid = next(iter(session.folders["Archive"]))
+
+        # Local Archive row still has uid=NULL at this point
+        # (PushMoveOp does not update it; next sync adopts the uid).
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0].uid)
+
+        # Second sync: LinkLocalOp adopts the new UID into the pending row.
+        service.sync()
+
+        rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].uid, new_uid)
+        self.assertEqual(
+            rows[0].message_ref.message_id, "<archive@example.com>",
+        )
+
+    def test_archive_appended_when_server_has_no_copy(self) -> None:
+        raw = _make_raw_message("Orphan", "<orphan@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<orphan@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+        )
+        service.sync()
+        self._archive_locally(
+            index,
+            source="INBOX",
+            target="Archive",
+            message_id="<orphan@example.com>",
+        )
+
+        # After local move there is no INBOX row, but the Maildir file is
+        # still in INBOX's directory.  Relocate it to simulate the TUI.
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        archive_rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(archive_rows), 1)
+        storage_key = archive_rows[0].storage_key
+        from pony.domain import MessageRef
+        new_ref = mirror.move_message_to_folder(
+            message_ref=MessageRef(
+                account_name="personal",
+                folder_name="INBOX",
+                message_id=storage_key,
+            ),
+            target_folder="Archive",
+        )
+        # Index row's storage_key updates to the new ref's message_id.
+        updated = dataclasses.replace(
+            archive_rows[0], storage_key=new_ref.message_id,
+        )
+        index.upsert_message(message=updated)
+
+        # Simulate: between archive and sync, another client purged the
+        # message from INBOX.  The server now has it nowhere.
+        session.folders["INBOX"].pop(1, None)
+
+        service.sync()
+
+        # Expected: APPEND to Archive.  No UID MOVE executed.
+        self.assertFalse(session.moves)
+        self.assertEqual(len(session.folders["Archive"]), 1)
+        appended_uid, (appended_mid, _, appended_raw) = next(
+            iter(session.folders["Archive"].items())
+        )
+        self.assertEqual(appended_mid, "<orphan@example.com>")
+        self.assertEqual(appended_raw, raw)
+        self.assertGreater(appended_uid, 0)
+
+    def test_idempotent_when_nothing_to_push(self) -> None:
+        raw = _make_raw_message("Quiet", "<quiet@example.com>")
+        service, _, _, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<quiet@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+        )
+        service.sync()
+        service.sync()
+
+        self.assertFalse(session.moves)
+        self.assertEqual(len(session.folders["INBOX"]), 1)
+
+    def test_read_only_source_suppresses_push_move(self) -> None:
+        raw = _make_raw_message("Kept", "<kept@example.com>")
+        # Set up with a read-only INBOX.
+        tmp = TMP_ROOT / "sync" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+        mirror = MaildirMirrorRepository(
+            account_name="personal", root_dir=tmp / "mirror",
+        )
+        index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
+        index.initialize()
+
+        account = AccountConfig(
+            name="personal",
+            email_address="bob@example.com",
+            imap_host="imap.example.com",
+            smtp_host="smtp.example.com",
+            username="bob",
+            credentials_source="plaintext",
+            mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
+            folders=FolderConfig(read_only=("INBOX",)),
+        )
+        config = AppConfig(accounts=(account,))
+        session = FakeImapSession(folders={
+            "INBOX": {1: ("<kept@example.com>", frozenset(), raw)},
+            "Archive": {},
+        })
+
+        class _Creds:
+            def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
+                return "pw"
+
+        service = ImapSyncService(
+            config=config,
+            mirror_factory=lambda _acc: mirror,
+            index=index,
+            credentials=_Creds(),
+            session_factory=lambda _acc, _pw: session,
+        )
+        service.sync()
+
+        # Simulate the "archive" at the index level.  The TUI refuses this
+        # for a read-only source, but the planner must also be safe.
+        ref = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=ref)
+        row = rows[0]
+        new_ref = dataclasses.replace(row.message_ref, folder_name="Archive")
+        with index.connection():
+            index.delete_message(message_ref=row.message_ref)
+            index.upsert_message(
+                message=dataclasses.replace(
+                    row, message_ref=new_ref, uid=None,
+                    server_flags=frozenset(),
+                    extra_imap_flags=frozenset(), synced_at=None,
+                )
+            )
+
+        service.sync()
+
+        # INBOX is read-only → no PushMoveOp; server-side INBOX intact.
+        self.assertFalse(session.moves)
+        self.assertIn(1, session.folders["INBOX"])

@@ -192,6 +192,29 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(sample_config(), base_dir=base_dir)
         self.assertIsNone(config.bbdb_path)
 
+    def test_archive_folder_parsed(self) -> None:
+        from pony.domain import AccountConfig
+
+        data = sample_config()
+        account_raw = data["accounts"][0]  # type: ignore[index]
+        account_raw["archive_folder"] = "Archive"
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        account = config.accounts[0]
+        assert isinstance(account, AccountConfig)
+        self.assertEqual(account.archive_folder, "Archive")
+
+    def test_archive_folder_defaults_to_none(self) -> None:
+        from pony.domain import AccountConfig
+
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        account = config.accounts[0]
+        assert isinstance(account, AccountConfig)
+        self.assertIsNone(account.archive_folder)
+
 
 class FolderPolicyTestCase(unittest.TestCase):
     """Validate FolderConfig.should_sync and is_read_only semantics."""

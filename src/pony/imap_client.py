@@ -382,6 +382,50 @@ class ImapSession:
                 self._conn.expunge()
         self._retry(_do, f"EXPUNGE {folder_name}")
 
+    def move_message(
+        self, source_folder: str, uid: int, target_folder: str,
+    ) -> None:
+        """Move one message from *source_folder* to *target_folder*.
+
+        Ensures *target_folder* exists, then uses ``UID MOVE`` (RFC 6851)
+        when available, falling back to ``UID COPY`` + ``STORE +FLAGS
+        \\Deleted`` + ``EXPUNGE`` on the source.
+        """
+        def _ensure_target() -> None:
+            if self._conn.folder_exists(target_folder):
+                return
+            logger.debug("CREATE %s", target_folder)
+            with _imap_errors(f"CREATE {target_folder!r}"):
+                self._conn.create_folder(target_folder)
+
+        def _do() -> None:
+            _ensure_target()
+            self._ensure_selected(source_folder)
+            if b"MOVE" in self._conn.capabilities():
+                logger.debug(
+                    "UID MOVE %d from %s to %s",
+                    uid, source_folder, target_folder,
+                )
+                with _imap_errors(
+                    f"MOVE on {source_folder!r} -> {target_folder!r}",
+                ):
+                    self._conn.move([uid], target_folder)
+                return
+            logger.debug(
+                "UID COPY %d from %s to %s (MOVE not supported)",
+                uid, source_folder, target_folder,
+            )
+            with _imap_errors(
+                f"COPY on {source_folder!r} -> {target_folder!r}",
+            ):
+                self._conn.copy([uid], target_folder)
+            with _imap_errors(f"DELETE on {source_folder!r}"):
+                self._conn.delete_messages([uid])
+            with _imap_errors(f"EXPUNGE on {source_folder!r}"):
+                self._conn.expunge()
+
+        self._retry(_do, f"MOVE {source_folder}->{target_folder}")
+
     # ------------------------------------------------------------------
     # Server summary helpers (not part of ImapClientSession protocol)
     # ------------------------------------------------------------------

@@ -655,6 +655,29 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
 
+    def list_pending_rows(
+        self, *, account_name: str
+    ) -> Sequence[IndexedMessage]:
+        """Return ACTIVE rows with ``uid IS NULL`` for one account."""
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    account_name, folder_name, message_id,
+                    sender, recipients, cc, subject, body_preview,
+                    storage_key, has_attachments,
+                    local_flags, base_flags, local_status, received_at,
+                    uid, server_flags, extra_imap_flags,
+                    trashed_at, synced_at
+                FROM messages
+                WHERE account_name = ?
+                  AND uid IS NULL
+                  AND local_status = ?
+                """,
+                (account_name, MessageStatus.ACTIVE.value),
+            ).fetchall()
+        return tuple(_indexed_message_from_row(row) for row in rows)
+
     def clear_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> None:

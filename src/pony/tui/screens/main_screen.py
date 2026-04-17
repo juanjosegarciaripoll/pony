@@ -65,6 +65,7 @@ class MainScreen(Screen[None]):
         Binding("u", "mark_unread", "Mark unread"),
         Binding("F", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
+        Binding("A", "archive", "Archive"),
         Binding("ctrl+1", "save_attachment('1')", "Save att. 1", show=False),
         Binding("ctrl+2", "save_attachment('2')", "Save att. 2", show=False),
         Binding("ctrl+3", "save_attachment('3')", "Save att. 3", show=False),
@@ -448,6 +449,95 @@ class MainScreen(Screen[None]):
         self._index.upsert_message(message=updated)
         self._reload_current_folder(msg)
 
+    def archive_current_message(self) -> None:
+        """Move the selected message into the account's archive folder.
+
+        The move is applied locally (index + mirror) immediately; the
+        next sync pushes the move to the server via ``UID MOVE``.
+        Refuses to act when the account has no ``archive_folder`` or
+        when the source/target folder cannot accept the move.
+        """
+        msg = self.get_current_message()
+        if msg is None:
+            return
+        account = next(
+            (
+                a for a in self._config.accounts
+                if a.name == msg.message_ref.account_name
+                and isinstance(a, AccountConfig)
+            ),
+            None,
+        )
+        if account is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Archive requires an IMAP account.", severity="warning",
+            )
+            return
+        target = account.archive_folder
+        if not target:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "No archive_folder configured for this account.",
+                severity="warning",
+            )
+            return
+        source = msg.message_ref.folder_name
+        if source == target:
+            return
+        if account.folders.is_read_only(source):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Cannot archive from read-only folder {source!r}.",
+                severity="warning",
+            )
+            return
+        if not account.folders.should_sync(target):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Archive folder {target!r} is excluded from sync.",
+                severity="warning",
+            )
+            return
+        if account.folders.is_read_only(target):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Archive folder {target!r} is read-only.",
+                severity="warning",
+            )
+            return
+
+        mirror = self._mirrors[account.name]
+        storage_ref = MessageRef(
+            account_name=account.name,
+            folder_name=source,
+            message_id=msg.storage_key,
+        )
+        try:
+            new_mirror_ref = mirror.move_message_to_folder(
+                message_ref=storage_ref, target_folder=target,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Failed to move message in local mirror.",
+                severity="error",
+            )
+            return
+
+        new_row = dataclasses.replace(
+            msg,
+            message_ref=MessageRef(
+                account_name=account.name,
+                folder_name=target,
+                message_id=msg.message_ref.message_id,
+            ),
+            storage_key=new_mirror_ref.message_id,
+            uid=None,
+            server_flags=frozenset(),
+            extra_imap_flags=frozenset(),
+            synced_at=None,
+        )
+        with self._index.connection():
+            self._index.delete_message(message_ref=msg.message_ref)
+            self._index.upsert_message(message=new_row)
+        self._reload_current_folder(msg)
+        self.app.notify(f"Archived to {target}.")  # pyright: ignore[reportUnknownMemberType]
+
     def action_mark_read(self) -> None:
         self.toggle_flag(MessageFlag.SEEN)
 
@@ -461,6 +551,9 @@ class MainScreen(Screen[None]):
 
     def action_trash(self) -> None:
         self.trash_current_message()
+
+    def action_archive(self) -> None:
+        self.archive_current_message()
 
     # ------------------------------------------------------------------
     # Compose entry points
