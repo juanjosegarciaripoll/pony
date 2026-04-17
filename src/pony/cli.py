@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable debug logging to stderr.",
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("doctor", help="Inspect local Pony Express setup.")
     subparsers.add_parser(
@@ -257,6 +257,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
+
+    if args.command is None:
+        args.command = "tui"
+        args.account = None
 
     if args.command == "doctor":
         return run_doctor(paths=paths, config_path=args.config)

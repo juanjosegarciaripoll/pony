@@ -24,8 +24,8 @@ else:
     )
 
 a = Analysis(
-    ["src/pony/__main__.py"],
-    pathex=[],
+    ["pony_entry.py"],
+    pathex=["src"],
     binaries=[],
     datas=datas,
     hiddenimports=[],
