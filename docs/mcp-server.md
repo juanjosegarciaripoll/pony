@@ -265,8 +265,17 @@ returned up to `limit`.
 
 ### `list_folders`
 
-Return every folder present in the local mirror, grouped by account.  Useful
-for discovering what folders exist before calling `list_messages`.
+Return all accounts and their folders in one call.  Each entry in the result
+contains an account name and a sorted list of folder names belonging to it.
+Use this to discover what accounts and folders exist before calling
+`list_messages`.
+
+```json
+[
+  {"account": "work",     "folders": ["Archive", "INBOX", "Sent"]},
+  {"account": "personal", "folders": ["INBOX", "Sent", "Trash"]}
+]
+```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

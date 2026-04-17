@@ -155,25 +155,25 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     @mcp.tool()  # type: ignore[untyped-decorator]
     def list_folders(  # pyright: ignore[reportUnusedFunction]
         account: str | None = None,
-    ) -> list[dict[str, str]]:
-        """List all local mirror folders.
+    ) -> list[dict[str, Any]]:
+        """List all accounts and their local mirror folders.
 
-        Pass *account* to restrict to one account; omit for all accounts.
+        Returns one entry per account, each containing the account name and a
+        sorted list of its folder names.  Pass *account* to restrict to one
+        account; omit for all accounts.
         """
-        results: list[dict[str, str]] = []
+        results: list[dict[str, Any]] = []
         for acc in config.accounts:
             if account and acc.name != account:
                 continue
             mirror = mirrors.get(acc.name)
             if mirror is None:
                 continue
-            for folder_ref in mirror.list_folders(account_name=acc.name):
-                results.append(
-                    {
-                        "account": folder_ref.account_name,
-                        "folder": folder_ref.folder_name,
-                    }
-                )
+            folders = sorted(
+                ref.folder_name
+                for ref in mirror.list_folders(account_name=acc.name)
+            )
+            results.append({"account": acc.name, "folders": folders})
         return results
 
     # ------------------------------------------------------------------
