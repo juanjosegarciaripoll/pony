@@ -43,8 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   signal, the new operation types, and the local-move flow. Conflict
   taxonomy gains C-9 for pending local moves.
 
-## [0.1.0]
-
+## [0.1.0] - 2026-04-17
 First feature-complete release of Pony Express.
 
 ### Added
@@ -101,3 +100,4 @@ First feature-complete release of Pony Express.
   deployment.
 - **Release automation**: PyInstaller-based multi-platform builds (Linux,
   macOS, Windows) triggered by GitHub releases.
+[0.1.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.1.0
