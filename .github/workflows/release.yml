@@ -251,3 +251,10 @@ jobs:
             --title "Pony Express ${{ steps.version.outputs.version }}" \
             --notes-file release_body.md \
             $PRERELEASE_FLAG
+
+      - name: Trigger release builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release-build.yml \
+            --ref "${{ steps.version.outputs.tag }}"

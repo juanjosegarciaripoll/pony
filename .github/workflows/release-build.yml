@@ -1,12 +1,10 @@
 name: Release Build
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*.*.*'
-  release:
-    types:
-      - published
 
 env:
   APP_NAME: pony
@@ -113,7 +111,6 @@ jobs:
           path: artifacts/
 
       - name: Upload release assets
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
