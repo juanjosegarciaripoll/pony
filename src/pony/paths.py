@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys as _sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,3 +70,16 @@ class AppPaths:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+
+
+def bundled_docs_path() -> Path | None:
+    """Return path to bundled HTML docs when running as a PyInstaller binary.
+
+    Returns None when running from source (docs are on GitHub Pages instead).
+    """
+    meipass: str | None = getattr(_sys, "_MEIPASS", None)
+    if getattr(_sys, "frozen", False) and meipass is not None:
+        candidate = Path(meipass) / "site"
+        if candidate.exists():
+            return candidate
+    return None

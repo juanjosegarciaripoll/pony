@@ -2,7 +2,7 @@
 
 ## Current version
 
-0.2.0 (adds archive action and `uid=NULL`-based local-move sync)
+0.3.0 (adds standalone executable with bundled documentation and platform installers)
 
 ## What's done
 
@@ -37,6 +37,18 @@ All v1 features are implemented and tested (250 tests, 2 skipped):
   issues `IMAP CREATE` for any that are local-only — subsuming the
   archive-folder auto-create path. `MirrorRepository.create_folder` and
   `ImapClientSession.create_folder` added; both are idempotent.
+- **Phase 19**: Standalone executable with bundled documentation and
+  platform installers. `pony.spec` controls PyInstaller `--onedir` builds
+  and bundles the MkDocs `site/` tree and `config-sample.toml`.
+  `paths.bundled_docs_path()` detects frozen context. `pony docs` opens
+  bundled docs in a browser, falling back to the GitHub Pages URL.
+  `scripts/build.py` provides a cross-platform local build pipeline (tests,
+  docs, binary, packaging). Platform installers: Inno Setup `.exe`
+  (Windows), `.dmg` via `hdiutil` (macOS), AppImage via `appimagetool`
+  (Linux). Portable archives (ZIP / tar.gz) for Homebrew, Scoop, and
+  other package managers. `release-build.yml` updated to use `uv`, build
+  docs before PyInstaller, and drop the deprecated
+  `upload-release-asset@v1` action.
 
 ## Infrastructure
 

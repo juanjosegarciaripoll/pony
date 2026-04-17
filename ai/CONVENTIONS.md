@@ -82,6 +82,34 @@ New runtime dependencies require explicit approval.
   and creates the GitHub release. The only guard is that the tag `vX.Y.Z`
   must not already exist.
 
+## Build process
+
+The standalone binary is the primary distribution format. The build chain is:
+
+```
+docs/ (MkDocs source) → site/ (HTML) → pony.spec → dist/pony/ → installers + archives
+```
+
+Install build tools:
+```bash
+uv sync --group build --group docs
+```
+
+Local build commands:
+```bash
+uv run mkdocs build --strict               # generate site/ from docs/
+uv run python scripts/build.py             # full build: tests + docs + binary + archive
+uv run python scripts/build.py --installer # also produce platform installer
+uv run python scripts/build.py --skip-tests --skip-docs --installer  # binary + installer only
+```
+
+Rules:
+- `site/` must not be committed; it is generated at build time and gitignored
+- Data files bundled into the binary are declared in `pony.spec` (`datas` list)
+- `paths.bundled_docs_path()` is the single place to detect frozen (PyInstaller) execution
+- Platform installers: Inno Setup (Windows), `hdiutil` (macOS), `appimagetool` (Linux)
+- Portable archives (ZIP / tar.gz) are suitable for Scoop, Homebrew, and similar
+
 ## TUI conventions
 
 - Each screen owns its own `BINDINGS` list

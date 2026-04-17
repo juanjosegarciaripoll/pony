@@ -55,3 +55,6 @@ dev = [
 docs = [
     "mkdocs-material>=9.6.0",
 ]
+build = [
+    "pyinstaller>=6.0",
+]

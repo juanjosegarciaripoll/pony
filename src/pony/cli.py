@@ -136,9 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     compose_parser.add_argument(
         "--subject", default="", help="Pre-fill the Subject field."
     )
-    compose_parser.add_argument(
-        "--body", default="", help="Pre-fill the message body."
-    )
+    compose_parser.add_argument("--body", default="", help="Pre-fill the message body.")
     md_group = compose_parser.add_mutually_exclusive_group()
     md_group.add_argument(
         "--markdown",
@@ -163,9 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_subparsers.add_parser(
         "edit", help="Open the config file in $EDITOR (default)."
     )
-    config_subparsers.add_parser(
-        "show", help="Print the config file to stdout."
-    )
+    config_subparsers.add_parser("show", help="Print the config file to stdout.")
 
     account_parser = subparsers.add_parser("account", help="Manage accounts.")
     account_subparsers = account_parser.add_subparsers(
@@ -228,6 +224,11 @@ def build_parser() -> argparse.ArgumentParser:
         "path",
         nargs="?",
         help="Input file path (default: bbdb_path from config).",
+    )
+
+    subparsers.add_parser(
+        "docs",
+        help="Open the Pony Express documentation in a browser.",
     )
 
     return parser
@@ -323,8 +324,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Default: open the interactive browser.
         return run_contacts_browse(paths=paths)
 
+    if args.command == "docs":
+        return run_docs()
+
     parser.error("Unhandled command.")
     return 2
+
+
+def run_docs() -> int:
+    """Open the documentation in the default browser."""
+    import webbrowser
+
+    from .paths import bundled_docs_path
+
+    bundled = bundled_docs_path()
+    if bundled is not None:
+        url = (bundled / "index.html").as_uri()
+        print(f"Opening bundled docs: {url}")
+    else:
+        url = "https://juanjosegarciaripoll.github.io/pony/"
+        print(f"Opening online docs: {url}")
+    webbrowser.open(url)
+    return 0
 
 
 def run_doctor(*, paths: AppPaths, config_path: Path | None) -> int:
@@ -442,8 +463,10 @@ def run_sync(
                 + (f", fetch {_fmt_ms(f.fetch_ms)}" if f.fetch_ms else "")
                 + (f", ingest {_fmt_ms(f.ingest_ms)}" if f.ingest_ms else "")
             )
-    expected = 1 if account else sum(
-        1 for a in config.accounts if isinstance(a, AccountConfig)
+    expected = (
+        1
+        if account
+        else sum(1 for a in config.accounts if isinstance(a, AccountConfig))
     )
     failed = expected - len(result.accounts)
     if failed:
@@ -494,13 +517,11 @@ def _bbdb_auto_sync(
                 last_imported = float(marker.read_text().strip())
         if bbdb_mtime > last_imported:
             created, updated = import_bbdb_contacts(
-                index=index, bbdb_path=bbdb_path,
+                index=index,
+                bbdb_path=bbdb_path,
             )
             if created or updated:
-                print(
-                    f"BBDB import: {created} new, {updated} updated"
-                    f" from {bbdb_path}"
-                )
+                print(f"BBDB import: {created} new, {updated} updated from {bbdb_path}")
             # Record the source file's mtime so we don't re-import
             # until Emacs edits it again.
             with contextlib.suppress(OSError):
@@ -602,62 +623,70 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
             for op in folder_plan.ops:
                 if isinstance(op, ServerDeleteOp):
                     hit = mid_to_row.get(op.message_id)
-                    rows.append((
-                        "server→trash",
-                        acc.account_name,
-                        folder_plan.folder_name,
-                        hit.sender if hit else "",
-                        hit.subject if hit else op.message_id,
-                    ))
+                    rows.append(
+                        (
+                            "server→trash",
+                            acc.account_name,
+                            folder_plan.folder_name,
+                            hit.sender if hit else "",
+                            hit.subject if hit else op.message_id,
+                        )
+                    )
                 elif isinstance(op, ServerMoveOp):
                     hit = mid_to_row.get(op.message_id)
-                    rows.append((
-                        f"move→{op.new_folder}",
-                        acc.account_name,
-                        folder_plan.folder_name,
-                        hit.sender if hit else "",
-                        hit.subject if hit else op.message_id,
-                    ))
+                    rows.append(
+                        (
+                            f"move→{op.new_folder}",
+                            acc.account_name,
+                            folder_plan.folder_name,
+                            hit.sender if hit else "",
+                            hit.subject if hit else op.message_id,
+                        )
+                    )
                 elif isinstance(op, PushDeleteOp):
                     hit = mid_to_row.get(op.message_ref.message_id)
-                    rows.append((
-                        "expunge",
-                        op.message_ref.account_name,
-                        op.message_ref.folder_name,
-                        hit.sender if hit else "",
-                        hit.subject if hit else op.message_ref.message_id,
-                    ))
+                    rows.append(
+                        (
+                            "expunge",
+                            op.message_ref.account_name,
+                            op.message_ref.folder_name,
+                            hit.sender if hit else "",
+                            hit.subject if hit else op.message_ref.message_id,
+                        )
+                    )
                 elif isinstance(op, RestoreOp):
                     hit = mid_to_row.get(op.message_ref.message_id)
-                    rows.append((
-                        "restore",
-                        op.message_ref.account_name,
-                        op.message_ref.folder_name,
-                        hit.sender if hit else "",
-                        hit.subject if hit else op.message_ref.message_id,
-                    ))
+                    rows.append(
+                        (
+                            "restore",
+                            op.message_ref.account_name,
+                            op.message_ref.folder_name,
+                            hit.sender if hit else "",
+                            hit.subject if hit else op.message_ref.message_id,
+                        )
+                    )
                 elif isinstance(op, MergeFlagsOp):
-                    flag_str = ",".join(
-                        sorted(f.value for f in op.merged_flags)
-                    ) or "—"
-                    rows.append((
-                        f"merge({flag_str})",
-                        op.message_ref.account_name,
-                        op.message_ref.folder_name,
-                        "",
-                        op.message_ref.message_id,
-                    ))
+                    flag_str = ",".join(sorted(f.value for f in op.merged_flags)) or "—"
+                    rows.append(
+                        (
+                            f"merge({flag_str})",
+                            op.message_ref.account_name,
+                            op.message_ref.folder_name,
+                            "",
+                            op.message_ref.message_id,
+                        )
+                    )
                 elif isinstance(op, PushFlagsOp):
-                    flag_str = ",".join(
-                        sorted(f.value for f in op.new_flags)
-                    ) or "—"
-                    rows.append((
-                        f"push({flag_str})",
-                        op.message_ref.account_name,
-                        op.message_ref.folder_name,
-                        "",
-                        op.message_ref.message_id,
-                    ))
+                    flag_str = ",".join(sorted(f.value for f in op.new_flags)) or "—"
+                    rows.append(
+                        (
+                            f"push({flag_str})",
+                            op.message_ref.account_name,
+                            op.message_ref.folder_name,
+                            "",
+                            op.message_ref.message_id,
+                        )
+                    )
 
     if not rows:
         return "(no deletions, moves, flag conflicts, or expunges planned)"
@@ -781,13 +810,9 @@ def run_server_summary(
     index.initialize()
     credentials = build_credentials_provider(config, index)
 
-    imap_accounts = [
-        a for a in config.accounts if isinstance(a, AccountConfig)
-    ]
+    imap_accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
     accounts = (
-        [a for a in imap_accounts if a.name == account]
-        if account
-        else imap_accounts
+        [a for a in imap_accounts if a.name == account] if account else imap_accounts
     )
     if account and not accounts:
         raise SystemExit(f"No account named {account!r} in config.")
@@ -816,8 +841,7 @@ def run_server_summary(
 
         col_w = max((len(f) for f in folders), default=20)
         header = (
-            f"      {'Folder':<{col_w}}"
-            f"  {'Messages':>9}  {'Unseen':>6}  Last message"
+            f"      {'Folder':<{col_w}}  {'Messages':>9}  {'Unseen':>6}  Last message"
         )
         print(header)
         print("  " + "-" * (len(header) - 2))
@@ -846,10 +870,7 @@ def run_server_summary(
                 last = "—"
 
             unseen_str = str(unseen) if unseen else ""
-            print(
-                f"  {tag} {folder:<{col_w}}"
-                f"  {messages:>9}  {unseen_str:>6}  {last}"
-            )
+            print(f"  {tag} {folder:<{col_w}}  {messages:>9}  {unseen_str:>6}  {last}")
 
         print()
         print("  [I] = ignored (excluded from sync)")
@@ -905,9 +926,7 @@ def run_local_summary(
         else:
             folder_rows = _mbox_folders(acc.mirror.path)
 
-        all_folders = sorted(
-            set(list(folder_rows) + list(index_rows))
-        )
+        all_folders = sorted(set(list(folder_rows) + list(index_rows)))
 
         if not all_folders:
             print("  (no folders found)")
@@ -1002,9 +1021,7 @@ def _mbox_folders(root: Path) -> dict[str, int | None]:
     return result
 
 
-def _query_index(
-    db_path: Path, account_name: str
-) -> dict[str, tuple[int, str | None]]:
+def _query_index(db_path: Path, account_name: str) -> dict[str, tuple[int, str | None]]:
     """Return {folder_name: (message_count, last_sync_str)} from the index."""
     if not db_path.exists():
         return {}
@@ -1199,7 +1216,8 @@ def run_compose(
 
     # --markdown/--no-markdown override; fall back to account default
     effective_markdown = (
-        markdown_mode if markdown_mode is not None
+        markdown_mode
+        if markdown_mode is not None
         else selected.markdown_compose or config.markdown_compose
     )
 
@@ -1252,8 +1270,10 @@ def run_account_test(
         return 1
 
     print(f"Testing {account_name}…")
-    print(f"  IMAP: {account.imap_host}:{account.imap_port}"
-          f" (SSL={'yes' if account.imap_ssl else 'no'})")
+    print(
+        f"  IMAP: {account.imap_host}:{account.imap_port}"
+        f" (SSL={'yes' if account.imap_ssl else 'no'})"
+    )
     print(f"  User: {account.username}")
 
     try:
@@ -1320,7 +1340,8 @@ def run_account_add(
         )
         return 0
     return run_account_add_interactive(
-        paths=paths, config_path=config_path,
+        paths=paths,
+        config_path=config_path,
     )
 
 
@@ -1364,13 +1385,12 @@ def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
 
     print(f"Opening {config_file} in {editor}…")
     return subprocess.run(
-        [editor, str(config_file)], check=False,  # noqa: S603
+        [editor, str(config_file)],
+        check=False,  # noqa: S603
     ).returncode
 
 
-def run_account_add_interactive(
-    *, paths: AppPaths, config_path: Path | None
-) -> int:
+def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) -> int:
     """Interactive wizard that prompts for account details and appends to config."""
     import getpass
 
@@ -1387,9 +1407,11 @@ def run_account_add_interactive(
             existing = load_config(config_file)
             dupes = [a for a in existing.accounts if a.name == name]
             if dupes:
-                answer = input(
-                    f"Account {name!r} already exists. Replace it? [y/N] "
-                ).strip().lower()
+                answer = (
+                    input(f"Account {name!r} already exists. Replace it? [y/N] ")
+                    .strip()
+                    .lower()
+                )
                 if answer not in ("y", "yes"):
                     print("Cancelled.")
                     return 0
@@ -1402,14 +1424,12 @@ def run_account_add_interactive(
     imap_ssl = _prompt("IMAP SSL/TLS (yes/no) [yes]: ", default="yes")
     imap_ssl_bool = imap_ssl.lower() in ("yes", "y", "true", "1", "")
     imap_port_default = "993" if imap_ssl_bool else "143"
-    imap_port = _prompt(f"IMAP port [{imap_port_default}]: ",
-                        default=imap_port_default)
+    imap_port = _prompt(f"IMAP port [{imap_port_default}]: ", default=imap_port_default)
     smtp_host = _prompt("SMTP server: ", default=_guess_smtp_host(email))
     smtp_ssl = _prompt("SMTP SSL/TLS (yes/no) [yes]: ", default="yes")
     smtp_ssl_bool = smtp_ssl.lower() in ("yes", "y", "true", "1", "")
     smtp_port_default = "465" if smtp_ssl_bool else "587"
-    smtp_port = _prompt(f"SMTP port [{smtp_port_default}]: ",
-                        default=smtp_port_default)
+    smtp_port = _prompt(f"SMTP port [{smtp_port_default}]: ", default=smtp_port_default)
     username = _prompt("Username: ", default=email)
 
     print("\nCredentials source:")
@@ -1428,8 +1448,9 @@ def run_account_add_interactive(
     elif cred_source == "encrypted":
         pass  # Password is prompted after the config is saved.
 
-    mirror_format = _prompt("Mirror format (maildir/mbox) [maildir]: ",
-                            default="maildir")
+    mirror_format = _prompt(
+        "Mirror format (maildir/mbox) [maildir]: ", default="maildir"
+    )
     if mirror_format not in ("maildir", "mbox"):
         mirror_format = "maildir"
 
@@ -1486,13 +1507,13 @@ def run_account_add_interactive(
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
             index.store_credential(
-                account_name=name, encrypted=encrypt_password(pw),
+                account_name=name,
+                encrypted=encrypt_password(pw),
             )
             print("Password encrypted and stored.")
         else:
             print(
-                f"No password entered — run "
-                f"`pony account set-password {name}` later.",
+                f"No password entered — run `pony account set-password {name}` later.",
             )
 
     return 0
@@ -1727,9 +1748,7 @@ def import_bbdb_contacts(
                 first = contact.first_name or existing.first_name
                 last = contact.last_name or existing.last_name
                 org = contact.organization or existing.organization
-                notes_parts = [
-                    p for p in (existing.notes, contact.notes) if p
-                ]
+                notes_parts = [p for p in (existing.notes, contact.notes) if p]
                 notes = existing.notes if existing.notes else contact.notes
                 if (
                     existing.notes
@@ -1799,7 +1818,6 @@ def try_load_config(config_path: Path | None) -> AppConfig | None:
         return None
 
 
-
 def require_config(config_path: Path | None) -> AppConfig:
     """Load config, offering interactive recovery on failure."""
     try:
@@ -1813,21 +1831,19 @@ def require_config(config_path: Path | None) -> AppConfig:
 
         if not config_file.exists():
             print(f"No config file found at {config_file}.\n")
-            answer = input(
-                "Would you like to set up an account now? [Y/n] "
-            )
+            answer = input("Would you like to set up an account now? [Y/n] ")
             if (
                 answer.strip().lower() in ("", "y", "yes")
                 and run_account_add_interactive(
-                    paths=paths, config_path=config_path,
-                ) == 0
+                    paths=paths,
+                    config_path=config_path,
+                )
+                == 0
             ):
                 return load_config(config_path)
         else:
             print(f"Configuration error: {error}\n")
-            answer = input(
-                "Would you like to open the config file to fix it? [Y/n] "
-            )
+            answer = input("Would you like to open the config file to fix it? [Y/n] ")
             if answer.strip().lower() in ("", "y", "yes"):
                 run_config_edit(paths=paths, config_path=config_path)
                 # Retry after editing.

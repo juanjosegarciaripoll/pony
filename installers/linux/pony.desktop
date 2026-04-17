@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Pony Express
+GenericName=Mail User Agent
+Comment=Terminal-first mail user agent
+Exec=pony
+Icon=pony-express
+Type=Application
+Categories=Network;Email;
+Terminal=true
+Keywords=mail;email;imap;terminal;

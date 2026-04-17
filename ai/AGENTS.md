@@ -23,6 +23,10 @@ over SMTP with optional Markdown rendering.
 | `ai/CONVENTIONS.md` | Engineering rules, coding style, quality gates |
 | `ai/STATUS.md` | Current version, what's done, what's next |
 | `config-sample.toml` | Configuration reference (keep in sync with code) |
+| `pony.spec` | PyInstaller build spec (bundles `site/` + `config-sample.toml`) |
+| `scripts/build.py` | Local standalone build script (tests + docs + binary + installers) |
+| `installers/windows/pony.iss` | Inno Setup script for Windows installer |
+| `installers/linux/pony.desktop` | Desktop entry for Linux AppImage |
 
 ## How to work
 
@@ -81,6 +85,53 @@ place that observes this and pushes the work — via ``PushMoveOp``,
 ``PushAppendOp``, or ``LinkLocalOp``. Don't invent parallel queues or
 status flags for this.
 
+## Building the standalone executable
+
+The primary distribution artifact is a platform-native binary built with
+PyInstaller. The `pony.spec` file controls what is bundled.
+
+### Prerequisites
+
+```bash
+uv sync --group build --group docs
+```
+
+### Full local build
+
+```bash
+uv run python scripts/build.py             # portable archive only
+uv run python scripts/build.py --installer # archive + platform installer
+```
+
+Options: `--skip-tests`, `--skip-docs`, `--version X.Y.Z`
+
+### Artifacts produced
+
+| Platform | Installer | Portable archive |
+|---|---|---|
+| Windows | `pony-windows-vX.Y.Z-setup.exe` | `pony-windows-vX.Y.Z.zip` |
+| macOS | `pony-macos-vX.Y.Z.dmg` | `pony-macos-vX.Y.Z.tar.gz` |
+| Linux | `pony-linux-vX.Y.Z.AppImage` | `pony-linux-vX.Y.Z.tar.gz` |
+
+Artifacts land in `artifacts/`. An `artifacts.json` manifest lists all paths.
+
+### Bundled resources
+
+`pony.spec` adds two data trees to the binary:
+- `site/` — pre-built HTML documentation (from `uv run mkdocs build --strict`)
+- `config-sample.toml` — configuration reference
+
+`src/pony/paths.py::bundled_docs_path()` returns the path to the `site/` tree
+when running as a frozen binary; returns `None` when running from source.
+The `pony docs` CLI command uses this to open docs offline or fall back to the
+GitHub Pages URL.
+
+### Spec file maintenance
+
+When adding new data files that must ship in the binary, add them to the
+`datas` list in `pony.spec`. Never commit the `site/` directory — it is
+generated at build time and is already gitignored.
+
 ## What NOT to do
 
 - Don't mock the database in tests -- use real SQLite via `SqliteIndexRepository`.
@@ -90,3 +141,4 @@ status flags for this.
 - Don't add emojis to code or docs unless asked.
 - Don't add a separate "pending mutations" table for user actions that
   belong in the sync model — set ``uid=NULL`` on the index row instead.
+- Don't commit the `site/` build artifact; it is generated at build time.

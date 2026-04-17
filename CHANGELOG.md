@@ -5,6 +5,40 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0]
+
+### Added
+
+- **Standalone executables with bundled documentation**: each release now
+  ships two artifacts per platform — a platform installer and a portable
+  archive suitable for Homebrew, Scoop, or similar package managers.
+    - **Windows**: Inno Setup `.exe` installer (with optional PATH
+      registration) and a portable `.zip`.
+    - **macOS**: drag-to-Applications `.dmg` and a portable `.tar.gz`.
+    - **Linux**: self-contained `.AppImage` and a portable `.tar.gz`.
+- **Offline documentation**: the pre-built MkDocs HTML site is bundled
+  inside the binary via PyInstaller's `--add-data`. `pony docs` opens
+  the bundled docs in the default browser; falls back to the GitHub Pages
+  URL when running from source.
+- **`pony docs` command**: open the documentation without leaving the
+  terminal.
+- **`scripts/build.py`**: cross-platform local build script. Run with
+  `uv run python scripts/build.py [--installer] [--skip-tests]
+  [--skip-docs]`. Artifacts land in `artifacts/`.
+- **`pony.spec`**: PyInstaller spec file controlling what is bundled
+  (docs, config sample, platform icon). Replaces the ad-hoc command
+  previously generated inline by the CI workflow.
+
+### Changed
+
+- **`release-build.yml`** modernised: switched from bare `pip install` to
+  `uv sync`; MkDocs site is built before PyInstaller so docs are always
+  bundled; Inno Setup is installed via Chocolatey on Windows runners;
+  deprecated `actions/upload-release-asset@v1` replaced with
+  `gh release upload`.
+- **`pyproject.toml`**: added `[dependency-groups] build` group containing
+  `pyinstaller>=6.0`. Install with `uv sync --group build`.
+
 ## [0.2.0]
 
 ### Added
