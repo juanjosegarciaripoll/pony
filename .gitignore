@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# User configuration (contains credentials)
+config.toml
+
+# Virtual environments
+.venv
+.uv-cache/
+.tmp-tests/
+.ruff_cache/
+.mypy_cache/
+__pypackages__/
+
+# Pony data
+mirrors/
+log*.txt
+log*.html
+
+# MkDocs build output
+site/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# AI assistant state
+.claude/

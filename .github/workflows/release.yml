@@ -1,0 +1,259 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump version and create release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute new version and update files
+        id: version
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          from datetime import date
+
+          bump = "${{ inputs.bump }}"
+
+          # --- 1. Read and bump version in pyproject.toml ---
+
+          with open("pyproject.toml", "r", encoding="utf-8") as f:
+              text = f.read()
+
+          match = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', text, re.MULTILINE)
+          if not match:
+              print("ERROR: Could not find version in pyproject.toml", file=sys.stderr)
+              sys.exit(1)
+
+          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+          old = f"{major}.{minor}.{patch}"
+
+          if bump == "major":
+              major += 1
+              minor = 0
+              patch = 0
+          elif bump == "minor":
+              minor += 1
+              patch = 0
+          elif bump == "patch":
+              patch += 1
+
+          new = f"{major}.{minor}.{patch}"
+          tag = f"v{new}"
+          today = date.today().isoformat()
+
+          print(f"Bumping {old} -> {new} ({bump})")
+
+          new_text = re.sub(
+              r'^(version\s*=\s*)"[^"]+"',
+              f'\\1"{new}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          with open("pyproject.toml", "w", encoding="utf-8") as f:
+              f.write(new_text)
+
+          # --- 2. Update version.py ---
+
+          ver_path = "src/pony/version.py"
+          with open(ver_path, "r", encoding="utf-8") as f:
+              ver_text = f.read()
+          ver_text = re.sub(
+              r'^(__version__:\s*str\s*=\s*)"[^"]+"',
+              f'\\1"{new}"',
+              ver_text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          with open(ver_path, "w", encoding="utf-8") as f:
+              f.write(ver_text)
+
+          # --- 3. Update CHANGELOG.md ---
+          #
+          # Expected workflow:
+          #   1. Developer writes a new "## [X.Y.Z]" section (no date) at the
+          #      top of the changelog and commits it to main.
+          #   2. Developer triggers this workflow.
+          #   3. The workflow stamps the date on that heading, adds the
+          #      comparison link, and commits.
+          #
+          # If there is no undated heading, the workflow fails — write the
+          # changelog before releasing.
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              changelog = f.read()
+
+          # Find the first heading that has a version but no date:
+          #   ## [X.Y.Z]          <- undated (we stamp this)
+          #   ## [X.Y.Z] - DATE   <- already released
+          undated = re.search(
+              r'^## \[(\d+\.\d+\.\d+)\]\s*$',
+              changelog,
+              re.MULTILINE,
+          )
+
+          if undated:
+              # Stamp the date on the undated heading
+              changelog = changelog[:undated.start()] + \
+                  f"## [{new}] - {today}" + \
+                  changelog[undated.end():]
+          else:
+              # No undated section found — insert a minimal one after the
+              # preamble (after the first blank line following the title block)
+              insert_re = re.search(r'^## \[', changelog, re.MULTILINE)
+              if insert_re:
+                  pos = insert_re.start()
+              else:
+                  pos = len(changelog)
+              changelog = (
+                  changelog[:pos]
+                  + f"## [{new}] - {today}\n\n"
+                  + changelog[pos:]
+              )
+
+          # Add or update the version link at the bottom
+          version_link = f"[{new}]: https://github.com/juanjosegarciaripoll/pony/releases/tag/{tag}"
+          if f"[{new}]:" in changelog:
+              changelog = re.sub(
+                  rf'^\[{re.escape(new)}\]:.*$',
+                  version_link,
+                  changelog,
+                  count=1,
+                  flags=re.MULTILINE,
+              )
+          else:
+              changelog = changelog.rstrip() + "\n" + version_link + "\n"
+
+          with open("CHANGELOG.md", "w", encoding="utf-8") as f:
+              f.write(changelog)
+
+          # --- 4. Write outputs ---
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"version={new}\n")
+              out.write(f"tag={tag}\n")
+              out.write(f"old_version={old}\n")
+          PY
+
+      - name: Build release body from CHANGELOG and README
+        id: changelog
+        run: |
+          python - <<'PY'
+          import os, re
+
+          version = "${{ steps.version.outputs.version }}"
+          tag = "${{ steps.version.outputs.tag }}"
+
+          # --- Extract changelog section for this version ---
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              changelog = f.read()
+
+          pattern = rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)"
+          match = re.search(pattern, changelog, re.DOTALL)
+          changes = match.group(1).strip() if match else ""
+
+          # --- Extract one-liner from README ---
+
+          with open("README.md", "r", encoding="utf-8") as f:
+              readme = f.read()
+
+          # Grab the first paragraph after the # heading
+          desc_match = re.search(r'^# .+\n\n(.+?)(?:\n\n|\Z)', readme, re.DOTALL)
+          description = desc_match.group(1).strip() if desc_match else ""
+
+          # --- Compose release body ---
+
+          parts = []
+          if description:
+              parts.append(description)
+          if changes:
+              parts.append("## What's new\n\n" + changes)
+
+          parts.append(
+              "## Install\n\n"
+              "```bash\n"
+              "git clone https://github.com/juanjosegarciaripoll/pony.git\n"
+              "cd pony\n"
+              f"git checkout {tag}\n"
+              "uv sync\n"
+              "```\n\n"
+              "Pre-built binaries for Linux, macOS, and Windows are attached below.\n\n"
+              "**[Full documentation](https://juanjosegarciaripoll.github.io/pony/)** "
+              "| **[Changelog](https://github.com/juanjosegarciaripoll/pony/blob/main/CHANGELOG.md)**"
+          )
+
+          body = "\n\n".join(parts)
+
+          with open("release_body.md", "w", encoding="utf-8") as f:
+              f.write(body)
+
+          print(f"Release body ({len(body)} chars):")
+          print(body[:800])
+          PY
+
+      - name: Commit version bump
+        run: |
+          git add pyproject.toml CHANGELOG.md src/pony/version.py
+          git commit -m "Release ${{ steps.version.outputs.tag }}
+
+          Bump version ${{ steps.version.outputs.old_version }} -> ${{ steps.version.outputs.version }}"
+
+      - name: Create tag
+        run: |
+          git tag -a "${{ steps.version.outputs.tag }}" \
+            -m "Release ${{ steps.version.outputs.version }}"
+
+      - name: Push commit and tag
+        run: |
+          git push origin HEAD
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "Pony Express ${{ steps.version.outputs.version }}" \
+            --notes-file release_body.md \
+            $PRERELEASE_FLAG

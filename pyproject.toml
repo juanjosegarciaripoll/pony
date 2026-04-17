@@ -1,0 +1,57 @@
+[project]
+name = "pony"
+version = "0.1.0"
+description = "Pony Express standalone mail user agent"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "imapclient>=3.0.0",
+    "markdown-it-py>=3.0.0",
+    "textual>=8.2.3",
+]
+
+[project.scripts]
+pony = "pony.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pony"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ARG", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pony"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["pony"]
+
+[[tool.mypy.overrides]]
+module = "imapclient.*"
+ignore_missing_imports = true
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.0",
+    "mypy>=1.20.0",
+    "pyinstrument>=5.1.2",
+    "pytest>=9.0.3",
+    "ruff>=0.15.10",
+]
+docs = [
+    "mkdocs-material>=9.6.0",
+]

@@ -1,0 +1,191 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  release:
+    types:
+      - published
+
+env:
+  APP_NAME: pony
+  PYTHON_VERSION: '3.13'
+  # Customize this if your CLI entrypoint is different or if you want to build from a spec
+  PYINSTALLER_ENTRY_POINT: src/pony/__main__.py
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Extract tag from event
+        id: tag
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          tag = ""
+          event_name = os.getenv("GITHUB_EVENT_NAME", "")
+          if event_name == "release":
+              event_path = os.getenv("GITHUB_EVENT_PATH", "")
+              if event_path:
+                  with open(event_path, "r", encoding="utf-8") as f:
+                      payload = json.load(f)
+                  tag = payload.get("release", {}).get("tag_name", "") or ""
+          if not tag:
+              ref = os.getenv("GITHUB_REF", "")
+              if ref.startswith("refs/tags/"):
+                  tag = ref[len("refs/tags/") :]
+          if not tag:
+              raise SystemExit("Unable to determine release tag from GitHub event.")
+          print(f"tag={tag}")
+          with open(os.environ['GITHUB_OUTPUT'], "a", encoding="utf-8") as out:
+              out.write(f"tag={tag}\n")
+          PY
+        shell: bash
+
+      - name: Validate semver tag
+        run: |
+          if [[ ! "${{ steps.tag.outputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${{ steps.tag.outputs.tag }}' is not a valid semver tag."
+            echo "Use tags like v0.1.0, v1.2.3, etc."
+            exit 1
+          fi
+          echo "Validated tag: ${{ steps.tag.outputs.tag }}"
+        shell: bash
+
+  build:
+    name: Build and package
+    needs: validate-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/AppData/Local/pip/Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml', '**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install .
+          fi
+          python -m pip install pytest pyinstaller
+        shell: bash
+
+      - name: Run tests
+        run: python -m pytest
+        shell: bash
+
+      - name: Build with PyInstaller
+        run: |
+          python -m pyinstaller --version
+          python - <<'PY'
+          import glob
+          import os
+          import subprocess
+
+          entry = os.getenv("PYINSTALLER_ENTRY_POINT")
+          spec_files = sorted(glob.glob("*.spec"))
+          target = spec_files[0] if spec_files else entry
+          if spec_files:
+              print(f"Using existing PyInstaller spec file: {spec_files[0]}")
+          else:
+              print(f"No .spec file found; building from entry point: {entry}")
+          subprocess.run([
+              "python", "-m", "pyinstaller",
+              "--noconfirm", "--clean", "--onedir",
+              "--name", os.getenv("APP_NAME"),
+              target
+          ], check=True)
+          PY
+        shell: bash
+
+      - name: Package build output
+        id: package
+        run: |
+          python - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          app = os.getenv("APP_NAME")
+          tag = os.getenv("TAG")
+          runner_os = os.getenv("RUNNER_OS", "")
+          mapping = {"Linux": "linux", "macOS": "macos", "Windows": "windows"}
+          platform = mapping.get(runner_os)
+          if not platform:
+              raise SystemExit(f"Unsupported RUNNER_OS: {runner_os}")
+
+          dist_root = Path("dist")
+          dist_dirs = [p for p in dist_root.iterdir() if p.is_dir()]
+          if not dist_dirs:
+              raise SystemExit("No PyInstaller output found in dist/")
+          dist_dir = dist_dirs[0]
+          out_dir = Path("artifacts")
+          out_dir.mkdir(exist_ok=True)
+
+          if platform == "windows":
+              archive_name = f"{app}-{platform}-{tag}.zip"
+              archive_path = out_dir / archive_name
+              with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as z:
+                  for path in dist_dir.rglob("*"):
+                      z.write(path, path.relative_to(dist_dir.parent))
+          else:
+              archive_name = f"{app}-{platform}-{tag}.tar.gz"
+              archive_path = out_dir / archive_name
+              with tarfile.open(archive_path, "w:gz") as tar:
+                  tar.add(dist_dir, arcname=dist_dir.name)
+
+          print(f"artifact_name={archive_name}")
+          print(f"artifact_path={archive_path}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"artifact_name={archive_name}\n")
+              out.write(f"artifact_path={archive_path}\n")
+          PY
+        shell: bash
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.platform }}-${{ env.TAG }}
+          path: ${{ steps.package.outputs.artifact_path }}
+
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ steps.package.outputs.artifact_path }}
+          asset_name: ${{ steps.package.outputs.artifact_name }}
+          asset_content_type: ${{ matrix.platform == 'windows' && 'application/zip' || 'application/gzip' }}

@@ -1,0 +1,139 @@
+# Pony Express Configuration Sample
+#
+# This file demonstrates the TOML configuration structure for Pony Express.
+# Copy this file to config.toml and customize the values for your accounts.
+#
+# Top-level options:
+# - use_utf8:          Enable Unicode characters in the TUI (e.g. 📎 for attachments).
+#                      Set to false for terminals that don't support Unicode (default: false).
+# - editor:            Path to an external editor used for composing messages.
+#                      If omitted or not executable, the built-in inline editor is used.
+#                      Example: editor = "/usr/bin/vim"
+# - markdown_compose:  Global default for Markdown composition mode (default: false).
+#                      When true, all new messages open in Markdown mode unless the
+#                      account sets markdown_compose = false.  Toggle per-message
+#                      with ctrl+x m inside the composer.
+# - bbdb_path:         Path to a BBDB v3 file for Emacs interop.  When set, the
+#                      contacts database is automatically exported to this file after
+#                      every sync.  Use `pony contacts export` to export manually.
+#                      Tilde (~), environment variables ($HOME, %USERPROFILE%)
+#                      are expanded.  Example: bbdb_path = "~/.bbdb"
+#
+# Per-account optional composer options:
+# - sent_folder:   Name of the folder where sent messages are saved.
+#                  If omitted, the folder closest to "Sent" is auto-discovered.
+# - drafts_folder: Name of the folder where draft messages are saved on cancel.
+#                  If omitted, the folder closest to "Drafts" is auto-discovered.
+#
+# Accounts are defined as an array of tables. Two account types are supported:
+#
+# IMAP accounts (account_type = "imap", or omit account_type — the default):
+# - name: A unique identifier for the account
+# - email_address: The primary email address
+# - imap_host: IMAP server hostname
+# - imap_port: IMAP port (default: 993 when imap_ssl=true, 143 otherwise)
+# - imap_ssl: Use TLS for IMAP (default: true)
+# - smtp_host: SMTP server hostname
+# - smtp_port: SMTP port (default: 465 when smtp_ssl=true, 587 otherwise)
+# - smtp_ssl: Use TLS for SMTP (default: true)
+# - username: Login username (often the email address)
+# - credentials_source: Either "password" or "app-password"
+# - mirror: Local storage configuration
+#
+# Local accounts (account_type = "local"):
+# Point Pony at a Maildir or mbox tree managed by another tool
+# (e.g. offlineimap, getmail, procmail).  The sync command skips local
+# accounts entirely; browsing and composing work normally, but sending
+# requires selecting an IMAP account in the From: field.
+# - name: A unique identifier for the account
+# - email_address: The address shown in From: when composing
+# - mirror: Local storage configuration (same structure as IMAP accounts)
+#
+# Mirror configuration:
+# - path: Directory path for local mail storage.
+#         Tilde (~) and environment variables ($HOME, %USERPROFILE%) are expanded.
+#         Relative paths resolve against Pony's data directory
+#         (e.g. ~/.local/share/pony on Linux, %LOCALAPPDATA%/pony on Windows).
+#         Use an absolute path to store mirrors elsewhere.
+# - format: Either "maildir" or "mbox"
+# - trash_retention_days: Days to keep deleted messages in trash (default: 30)
+#
+# Folder sync policy (optional — omit the [accounts.folders] section to sync all):
+# - include:   Regex whitelist of folder names to sync. Empty or omitted = sync all.
+# - exclude:   Folders never synced, even if matched by include. Takes precedence.
+# - read_only: Folders synced server-to-local only. Local flag changes and
+#              deletions are never pushed back. Automatically included in sync
+#              (unless also matched by exclude), even when include is non-empty.
+#
+# All three lists are Python re.fullmatch() patterns, so plain names like "INBOX"
+# match exactly, while patterns like "Archive/.*" match subfolders and ".*" matches
+# everything.
+
+use_utf8 = true
+
+[[accounts]]
+name = "Personal"
+email_address = "user@example.com"
+imap_host = "imap.example.com"
+smtp_host = "smtp.example.com"
+username = "user@example.com"
+credentials_source = "password"
+
+[accounts.mirror]
+path = "mirrors/personal"
+format = "maildir"
+trash_retention_days = 30
+
+# Sync all folders except Spam and Trash; treat Sent as read-only.
+[accounts.folders]
+exclude   = ["Spam", "Trash"]
+read_only = ["Sent"]
+
+# Example of a second account (Gmail)
+[[accounts]]
+name = "Work"
+email_address = "employee@company.com"
+imap_host = "imap.company.com"
+smtp_host = "smtp.company.com"
+username = "employee@company.com"
+credentials_source = "app-password"
+
+[accounts.mirror]
+path = "mirrors/work"
+format = "mbox"
+trash_retention_days = 14
+
+# Sync INBOX and Archive (including all subfolders); exclude all Gmail system
+# folders; treat everything under Sent as read-only.
+[accounts.folders]
+include   = ["INBOX", "Archive", "Archive/.*", "Sent Mail"]
+exclude   = ["\\[Gmail\\]/.*"]
+read_only = ["Sent Mail"]
+
+# ── Local accounts ───────────────────────────────────────────────────────────
+#
+# These accounts are backed by local mail directories managed by an external
+# tool.  Pony never connects to any server for them; they are read-only from
+# a sync perspective but fully browsable and composable in the TUI.
+
+# Local account backed by a Maildir tree (e.g. delivered by offlineimap).
+[[accounts]]
+account_type  = "local"
+name          = "Archive"
+email_address = "user@example.com"
+
+[accounts.mirror]
+path   = "mirrors/archive"   # directory containing the Maildir subfolders
+format = "maildir"
+trash_retention_days = 90
+
+# Local account backed by an mbox file (e.g. a procmail or getmail spool).
+[[accounts]]
+account_type  = "local"
+name          = "Spool"
+email_address = "user@example.com"
+
+[accounts.mirror]
+path   = "mirrors/spool"     # directory containing the mbox file(s)
+format = "mbox"
+trash_retention_days = 30
