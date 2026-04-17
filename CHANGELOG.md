@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   URL when running from source.
 - **`pony docs` command**: open the documentation without leaving the
   terminal.
+- **MCP server** (`pony mcp-server`): exposes read-only mail operations as
+  MCP tools for use with Claude Desktop, Claude Code, and any network MCP
+  client. Tools: `search_messages`, `list_folders`, `list_messages`,
+  `get_message`, `get_message_body`, `search_contacts`, `get_sync_status`.
+  Runs over stdio by default (local use, Claude Desktop); pass `--port N`
+  for Streamable HTTP (Docker / remote deployments). HTTP mode is
+  compatible with running `pony tui` in a separate process. New runtime
+  dependency: `mcp>=1.0`.
+- **Embedded MCP server**: add `[mcp]` to `config.toml` to have the MCP
+  HTTP server start automatically in a background thread when `pony tui`
+  launches. A TUI notification shows the URL on startup. Recommended for
+  users who keep the TUI open and want simultaneous AI assistant access.
 - **`scripts/build.py`**: cross-platform local build script. Run with
   `uv run python scripts/build.py [--installer] [--skip-tests]
   [--skip-docs]`. Artifacts land in `artifacts/`.

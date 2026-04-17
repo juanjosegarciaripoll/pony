@@ -42,6 +42,7 @@ nav:
   - Contacts: contacts.md
   - Synchronization: synchronization.md
   - Architecture: architecture.md
+  - MCP Server: mcp-server.md
   - Development: development.md
 
 markdown_extensions:

@@ -23,6 +23,7 @@ over SMTP with optional Markdown rendering.
 | `ai/CONVENTIONS.md` | Engineering rules, coding style, quality gates |
 | `ai/STATUS.md` | Current version, what's done, what's next |
 | `config-sample.toml` | Configuration reference (keep in sync with code) |
+| `src/pony/mcp_server.py` | FastMCP server — 7 read-only mail tools (stdio + HTTP) |
 | `pony.spec` | PyInstaller build spec (bundles `site/` + `config-sample.toml`) |
 | `scripts/build.py` | Local standalone build script (tests + docs + binary + installers) |
 | `installers/windows/pony.iss` | Inno Setup script for Windows installer |
@@ -142,3 +143,4 @@ generated at build time and is already gitignored.
 - Don't add a separate "pending mutations" table for user actions that
   belong in the sync model — set ``uid=NULL`` on the index row instead.
 - Don't commit the `site/` build artifact; it is generated at build time.
+- Don't add write/mutating tools to the MCP server without explicit approval — read-only is the intended scope.

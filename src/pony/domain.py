@@ -129,6 +129,14 @@ type AnyAccount = AccountConfig | LocalAccountConfig
 
 
 @dataclass(frozen=True, slots=True)
+class McpConfig:
+    """Configuration for the embedded MCP HTTP server."""
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Top-level Pony Express configuration."""
 
@@ -142,6 +150,8 @@ class AppConfig:
     # Path to a BBDB v3 file.  When set, the contacts database is
     # exported to this file after every sync.
     bbdb_path: Path | None = None
+    # When set, start the MCP HTTP server automatically with `pony tui`.
+    mcp: McpConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

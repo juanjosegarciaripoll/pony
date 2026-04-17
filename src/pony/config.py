@@ -25,6 +25,7 @@ from .domain import (
     CredentialsSource,
     FolderConfig,
     LocalAccountConfig,
+    McpConfig,
     MirrorConfig,
     MirrorFormat,
 )
@@ -104,12 +105,22 @@ def _parse_app_config(raw: object) -> AppConfig:
     markdown_compose = _require_bool(data, "markdown_compose", default=False)
     bbdb_raw = _optional_string(data, "bbdb_path")
     bbdb_path = _expand_path(bbdb_raw) if bbdb_raw else None
+    mcp_raw = data.get("mcp")
+    if isinstance(mcp_raw, dict):
+        mcp_data = cast("dict[str, object]", mcp_raw)
+        mcp = McpConfig(
+            host=_optional_string(mcp_data, "host") or "127.0.0.1",
+            port=_require_int(mcp_data, "port", default=8765),
+        )
+    else:
+        mcp = None
     return AppConfig(
         accounts=accounts,
         use_utf8=use_utf8,
         editor=editor,
         markdown_compose=markdown_compose,
         bbdb_path=bbdb_path,
+        mcp=mcp,
     )
 
 

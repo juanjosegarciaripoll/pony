@@ -49,6 +49,20 @@ All v1 features are implemented and tested (250 tests, 2 skipped):
   other package managers. `release-build.yml` updated to use `uv`, build
   docs before PyInstaller, and drop the deprecated
   `upload-release-asset@v1` action.
+- **Phase 20**: MCP server (`pony mcp-server`). `src/pony/mcp_server.py`
+  wraps the existing index and mirror read operations as 7 FastMCP tools:
+  `search_messages`, `list_folders`, `list_messages`, `get_message`,
+  `get_message_body`, `search_contacts`, `get_sync_status`. Runs over
+  stdio (default, for Claude Desktop / Claude Code) or Streamable HTTP
+  (`--host` / `--port`, for Docker and remote deployments). HTTP mode is
+  compatible with running `pony tui` in a separate process — both share
+  the SQLite index read-only. New runtime dependency: `mcp>=1.0`.
+  **Embedded mode**: adding `[mcp]` to `config.toml` starts the MCP HTTP
+  server in a background daemon thread on `pony tui` launch; a TUI
+  notification shows the URL. `McpConfig` dataclass added to `domain.py`;
+  `[mcp]` section parsed in `config.py`; `start_mcp_thread()` in
+  `mcp_server.py` uses `uvicorn` + daemon thread; `PonyApp` wired in
+  `tui/app.py`.
 
 ## Infrastructure
 

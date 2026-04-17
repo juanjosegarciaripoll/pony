@@ -231,6 +231,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the Pony Express documentation in a browser.",
     )
 
+    mcp_parser = subparsers.add_parser(
+        "mcp-server",
+        help="Start an MCP server exposing read-only mail tools.",
+    )
+    mcp_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for HTTP mode (default: 127.0.0.1).",
+    )
+    mcp_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Port for Streamable HTTP transport. Omit to use stdio.",
+    )
+
     return parser
 
 
@@ -327,6 +344,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "docs":
         return run_docs()
 
+    if args.command == "mcp-server":
+        return run_mcp_server_command(
+            config_path=args.config,
+            host=args.host,
+            port=args.port,
+        )
+
     parser.error("Unhandled command.")
     return 2
 
@@ -345,6 +369,19 @@ def run_docs() -> int:
         url = "https://juanjosegarciaripoll.github.io/pony/"
         print(f"Opening online docs: {url}")
     webbrowser.open(url)
+    return 0
+
+
+def run_mcp_server_command(
+    *,
+    config_path: Path | None,
+    host: str,
+    port: int | None,
+) -> int:
+    """Start the MCP server (stdio or Streamable HTTP)."""
+    from .mcp_server import run_mcp_server
+
+    run_mcp_server(config_path=config_path, host=host, port=port)
     return 0
 
 
@@ -1149,6 +1186,7 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
         mirrors=mirrors,
         credentials=credentials,
         contacts=index,
+        config_path=config_path,
     )
     app.run()
     return 0

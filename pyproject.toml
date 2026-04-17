@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "imapclient>=3.0.0",
     "markdown-it-py>=3.0.0",
+    "mcp>=1.0",
     "textual>=8.2.3",
 ]
 

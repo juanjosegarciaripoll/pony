@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
@@ -32,6 +34,7 @@ class PonyApp(App[None]):
         mirrors: dict[str, MirrorRepository],
         credentials: CredentialsProvider,
         contacts: ContactRepository | None = None,
+        config_path: Path | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -40,6 +43,7 @@ class PonyApp(App[None]):
         self._mirrors = mirrors
         self._credentials = credentials
         self._contacts = contacts
+        self._config_path = config_path
 
     def compose(self) -> ComposeResult:
         # Screens are pushed via on_mount; compose yields nothing at app level.
@@ -55,6 +59,16 @@ class PonyApp(App[None]):
                 contacts=self._contacts,
             )
         )
+        if self._config.mcp is not None:
+            from ..mcp_server import start_mcp_thread
+
+            mcp = self._config.mcp
+            start_mcp_thread(self._config_path, mcp)
+            self.notify(
+                f"MCP server listening on http://{mcp.host}:{mcp.port}/mcp",
+                title="MCP",
+                timeout=5,
+            )
 
 
 class ComposeApp(App[None]):
