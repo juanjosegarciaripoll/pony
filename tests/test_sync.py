@@ -125,7 +125,13 @@ class FakeImapSession:
         flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str] = frozenset(),
     ) -> None:
-        folder = self.folders.setdefault(folder_name, {})
+        self.call_log.append(f"append:{folder_name}")
+        # Mirror real IMAP: APPEND to a non-existent mailbox is an error.
+        if folder_name not in self.folders:
+            raise OSError(
+                f"APPEND target folder does not exist: {folder_name!r}"
+            )
+        folder = self.folders[folder_name]
         new_uid = max(folder.keys(), default=0) + 1000
         # Parse Message-ID from raw for test assertions.
         from email import policy as _policy
@@ -1640,6 +1646,70 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         service.sync()
 
         self.assertNotIn("Archive", session.created_folders)
+
+    def test_brand_new_folder_create_and_append_in_one_sync(self) -> None:
+        """A pending row in a local-only folder is CREATEd and APPENDed in
+        the same sync — the create runs first, APPEND follows in the
+        brand-new folder's own plan."""
+        raw = _make_raw_message("Local", "<local@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={"INBOX": {}},
+        )
+        service.sync()  # baseline
+
+        # Stage a purely local message in a purely local folder: no
+        # server-side copy and the archive folder doesn't exist server-side.
+        inbox_ref = FolderRef(account_name="personal", folder_name="INBOX")
+        stored = mirror.store_message(folder=inbox_ref, raw_message=raw)
+        moved = mirror.move_message_to_folder(
+            message_ref=stored, target_folder="Archive",
+        )
+        from datetime import UTC, datetime
+
+        from pony.domain import (
+            IndexedMessage,
+            MessageRef,
+            MessageStatus,
+        )
+        index.upsert_message(
+            message=IndexedMessage(
+                message_ref=MessageRef(
+                    account_name="personal",
+                    folder_name="Archive",
+                    message_id="<local@example.com>",
+                ),
+                sender="alice@example.com",
+                recipients="bob@example.com",
+                cc="",
+                subject="Local",
+                body_preview="",
+                storage_key=moved.message_id,
+                local_flags=frozenset(),
+                base_flags=frozenset(),
+                local_status=MessageStatus.ACTIVE,
+                received_at=datetime.now(tz=UTC),
+                uid=None,
+            )
+        )
+
+        service.sync()
+
+        # Single sync: Archive CREATEd, message APPENDed.
+        self.assertIn("Archive", session.created_folders)
+        self.assertIn("Archive", session.folders)
+        self.assertEqual(len(session.folders["Archive"]), 1)
+        (_uid, (mid, _flags, appended)) = next(
+            iter(session.folders["Archive"].items())
+        )
+        self.assertEqual(mid, "<local@example.com>")
+        self.assertEqual(appended, raw)
+        # CREATE must precede APPEND — otherwise the fake raises OSError.
+        create_idx = session.call_log.index("create:Archive")
+        append_idx = session.call_log.index("append:Archive")
+        self.assertLess(
+            create_idx, append_idx,
+            f"CREATE must precede APPEND but got {session.call_log!r}",
+        )
 
     def test_read_only_source_suppresses_push_move(self) -> None:
         raw = _make_raw_message("Kept", "<kept@example.com>")

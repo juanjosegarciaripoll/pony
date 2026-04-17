@@ -478,7 +478,7 @@ class MainScreen(Screen[None]):
         if not target:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 "No archive_folder configured for this account.",
-                severity="warning",
+                severity="error",
             )
             return
         source = msg.message_ref.folder_name

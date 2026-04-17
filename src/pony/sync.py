@@ -598,14 +598,14 @@ class ImapSyncService:
 
         # Share one DB connection for all planning-phase index reads.
         with self._index.connection():
-            plan = self._plan_folders_inner(
+            return self._plan_folders_inner(
                 account=account, session=session,
                 folder_policy=folder_policy,
                 all_server_folders=all_server_folders,
                 server_folders=server_folders,
+                creates=creates,
                 progress=progress, reconnect=reconnect,
             )
-        return dataclasses.replace(plan, creates=creates)
 
     def _plan_folders_inner(
         self,
@@ -615,6 +615,7 @@ class ImapSyncService:
         folder_policy: FolderConfig,
         all_server_folders: collections.abc.Sequence[str],
         server_folders: list[str],
+        creates: tuple[str, ...] = (),
         progress: ProgressCallback | None = None,
         reconnect: collections.abc.Callable[
             [], ImapClientSession
@@ -794,10 +795,61 @@ class ImapSyncService:
                 continue
             folder_plans.append(folder_plan)
 
+        # Brand-new folders (local mirror only, about to be CREATEd on
+        # the server this pass) still need a plan so their pending
+        # uid=NULL rows get APPENDed in the same sync — the CREATE ops
+        # run first in _execute_account_plan, so the destination exists
+        # by the time APPEND executes.
+        for folder_name in creates:
+            folder_plans.append(
+                self._plan_new_folder(
+                    account=account,
+                    folder_name=folder_name,
+                    remote_mid_map=remote_mid_map,
+                )
+            )
+
         return AccountSyncPlan(
             account_name=account.name,
             folders=tuple(folder_plans),
             skipped_folders=tuple(skipped),
+            creates=creates,
+        )
+
+    def _plan_new_folder(
+        self,
+        *,
+        account: AccountConfig,
+        folder_name: str,
+        remote_mid_map: dict[str, tuple[str, int]],
+    ) -> FolderSyncPlan:
+        """Plan ops for a folder that lives only in the local mirror.
+
+        No IMAP scan is possible yet (the folder doesn't exist on the
+        server).  Emit one :class:`PushAppendOp` for every pending
+        ``uid=NULL`` ACTIVE row whose Message-ID is not also on the
+        server in another folder — messages that *are* on the server get
+        a :class:`PushMoveOp` in the source folder's plan instead.
+        """
+        folder_ref = FolderRef(
+            account_name=account.name, folder_name=folder_name,
+        )
+        rows = self._index.list_folder_messages(folder=folder_ref)
+        ops: list[SyncOp] = []
+        for row in rows:
+            if row.local_status != MessageStatus.ACTIVE:
+                continue
+            if row.uid is not None:
+                continue
+            mid = row.message_ref.message_id
+            if not mid or mid in remote_mid_map:
+                continue
+            ops.append(PushAppendOp(message_ref=row.message_ref))
+        return FolderSyncPlan(
+            folder_name=folder_name,
+            uid_validity=0,  # sentinel: folder not yet on the server
+            highest_uid=0,
+            ops=tuple(ops),
         )
 
     def _plan_folder(
@@ -1322,14 +1374,19 @@ class ImapSyncService:
                     ))
 
             # Update the watermark after all ops for this folder.
-            self._index.record_folder_sync_state(
-                state=FolderSyncState(
-                    account_name=account.name,
-                    folder_name=folder_name,
-                    uid_validity=plan.uid_validity,
-                    highest_uid=plan.highest_uid,
+            # Brand-new folder plans carry uid_validity=0 as a sentinel
+            # (no server scan happened yet).  Skip recording in that case
+            # — the next sync will scan the now-existing server folder
+            # and establish the real watermark.
+            if plan.uid_validity > 0:
+                self._index.record_folder_sync_state(
+                    state=FolderSyncState(
+                        account_name=account.name,
+                        folder_name=folder_name,
+                        uid_validity=plan.uid_validity,
+                        highest_uid=plan.highest_uid,
+                    )
                 )
-            )
 
         # Wait for any async mirror writes to finish before moving on.
         flush = getattr(mirror, "flush_writes", None)
