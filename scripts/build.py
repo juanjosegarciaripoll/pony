@@ -130,6 +130,19 @@ def build_windows_installer(version: str) -> Path:
     dist_dir = str(DIST_DIR)
     iscc = shutil.which("iscc") or shutil.which("ISCC")
     if iscc is None:
+        # Check the default Inno Setup installation directories on Windows.
+        # Winget installs per-user to %LOCALAPPDATA%\Programs; the traditional
+        # EXE/MSI installer uses Program Files (x86).
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        for candidate in [
+            os.path.join(local_appdata, "Programs", "Inno Setup 6", "ISCC.exe"),
+            r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            r"C:\Program Files\Inno Setup 6\ISCC.exe",
+        ]:
+            if Path(candidate).is_file():
+                iscc = candidate
+                break
+    if iscc is None:
         sys.exit(
             "ERROR: iscc not found. Install Inno Setup 6+ from "
             "https://jrsoftware.org/isinfo.php and ensure it is on PATH."
