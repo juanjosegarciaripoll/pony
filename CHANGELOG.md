@@ -5,8 +5,7 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.4.0]
-
+## [0.4.0] - 2026-04-18
 ### Fixed
 
 - **Mirror retrieval for IMAP-synced mail**: the `MirrorRepository`
@@ -223,3 +222,4 @@ First feature-complete release of Pony Express.
   macOS, Windows) triggered by GitHub releases.
 [0.1.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.1.0
 [0.3.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.3.0
+[0.4.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.4.0
