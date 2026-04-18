@@ -29,6 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   preview text. New `pony.html_sanitize` module strips comments (including
   conditional comments), `<head>`, `<style>`, `<script>`, and `<noscript>`
   blocks before tag removal, and decodes HTML entities.
+- **Sync deadlock on folder transitions**: `_execute_folder_plan` ran a
+  background producer thread that called `session.fetch_messages_batch`
+  while the main consumer thread concurrently called other
+  `session.*` methods on the same `imapclient` / `imaplib` session.
+  `imaplib` is not thread-safe; two threads racing one socket
+  occasionally interleaved commands (e.g. two `SELECT INBOX`s with
+  consecutive tags) and deadlocked `imaplib`'s tag dispatcher. The
+  TUI would then freeze with `Q` unable to cancel. Fixed by
+  restructuring per-folder execution into two phases: Phase 1 runs
+  session-free ops (`FetchNewOp`, `ServerDeleteOp`, `ServerMoveOp`,
+  `PullFlagsOp`, `MergeFlagsOp`, `LinkLocalOp`, `RestoreOp`) with the
+  producer holding exclusive use of `session`; Phase 2 runs
+  session-touching ops (`PushFlagsOp`, `PushDeleteOp`, `PushMoveOp`,
+  `PushAppendOp`, `ReUploadOp`) serially on the main thread after the
+  producer has joined. The producer is now the sole thread that ever
+  touches the session while it is running.
 
 ### Changed
 
