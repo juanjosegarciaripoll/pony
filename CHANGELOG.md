@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity is an index-side concern; mirror methods do not see it.
 - **`SqliteIndexRepository.purge_expired_trash`** now returns
   `list[tuple[FolderRef, str]]` so callers can clean the mirror.
+- **TUI `R` / `u` are now explicit set/clear**: pressing `R` always
+  marks the target(s) as read; `u` always marks them unread.  (`R`
+  previously toggled `SEEN`, which is inconsistent with its label
+  and would produce chaotic results on mixed-state bulk selections.)
+  `!` still toggles `FLAGGED`.
+- **Shared TUI key bindings**: `src/pony/tui/bindings.py` now holds
+  `MARK_BINDINGS` (`m` / `Shift+Down` / `Shift+Up`) and
+  `MOTION_BINDINGS` (`n` / `p` / `<` / `>`), used by both the contacts
+  browser and the messages panel.
 
 ### Added
 
@@ -64,6 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Message-ID; sync tests round-trip a synced message through
   `mirror.get_message_bytes` and verify `PushDeleteOp` plus the
   retention purge actually remove mirror files.
+- **Multi-select in the messages panel**: `m` / `Shift+Down` /
+  `Shift+Up` mark rows (the icon cell shows `*` while marked,
+  replacing the normal `!` / `+` / blank glyph — no new column).
+  The existing action keys `R` / `u` / `!` / `d` / `A` act on every
+  marked row when any are marked, falling back to the cursor row
+  otherwise.  Marks clear on folder switch, search entry/exit, and
+  after any bulk action.  Bindings mirror the contacts browser.
 
 ## [0.3.0] - 2026-04-17
 ### Added
