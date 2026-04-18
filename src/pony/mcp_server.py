@@ -158,9 +158,10 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     ) -> list[dict[str, Any]]:
         """List all accounts and their local mirror folders.
 
-        Returns one entry per account, each containing the account name and a
-        sorted list of its folder names.  Pass *account* to restrict to one
-        account; omit for all accounts.
+        Returns one entry per account.  Each folder entry carries its name,
+        the number of indexed messages, the highest-known UID, and the
+        last-sync timestamp (null if never synced).  Pass *account* to
+        restrict to one account; omit for all accounts.
         """
         results: list[dict[str, Any]] = []
         for acc in config.accounts:
@@ -169,10 +170,29 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
             mirror = mirrors.get(acc.name)
             if mirror is None:
                 continue
-            folders = sorted(
-                ref.folder_name
-                for ref in mirror.list_folders(account_name=acc.name)
+            sync_by_folder = {
+                s.folder_name: s
+                for s in index.list_folder_sync_states(account_name=acc.name)
+            } if isinstance(acc, AccountConfig) else {}
+            folder_refs = sorted(
+                mirror.list_folders(account_name=acc.name),
+                key=lambda r: r.folder_name,
             )
+            folders = [
+                {
+                    "name": ref.folder_name,
+                    "message_count": index.count_folder_messages(folder=ref),
+                    "highest_uid": (
+                        sync_by_folder[ref.folder_name].highest_uid
+                        if ref.folder_name in sync_by_folder else None
+                    ),
+                    "synced_at": (
+                        sync_by_folder[ref.folder_name].synced_at
+                        if ref.folder_name in sync_by_folder else None
+                    ),
+                }
+                for ref in folder_refs
+            ]
             results.append({"account": acc.name, "folders": folders})
         return results
 

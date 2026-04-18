@@ -237,6 +237,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Input file path (default: bbdb_path from config).",
     )
 
+    folder_parser = subparsers.add_parser(
+        "folder", help="Inspect mail folders.",
+    )
+    folder_subparsers = folder_parser.add_subparsers(
+        dest="folder_command", required=True,
+    )
+    folder_list = folder_subparsers.add_parser(
+        "list",
+        help="List folders with indexed message counts and sync status.",
+    )
+    folder_list.add_argument(
+        "account", nargs="?", help="Only list folders for one account.",
+    )
+
+    message_parser = subparsers.add_parser(
+        "message", help="Inspect individual messages.",
+    )
+    message_subparsers = message_parser.add_subparsers(
+        dest="message_command", required=True,
+    )
+    message_get = message_subparsers.add_parser(
+        "get", help="Print metadata for one message by ID.",
+    )
+    message_get.add_argument("account")
+    message_get.add_argument("folder")
+    message_get.add_argument("message_id")
+    message_body = message_subparsers.add_parser(
+        "body", help="Print the full body of one message by ID.",
+    )
+    message_body.add_argument("account")
+    message_body.add_argument("folder")
+    message_body.add_argument("message_id")
+
     subparsers.add_parser(
         "docs",
         help="Open the Pony Express documentation in a browser.",
@@ -359,6 +392,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         # Default: open the interactive browser.
         return run_contacts_browse(paths=paths)
+
+    if args.command == "folder" and args.folder_command == "list":
+        return run_folder_list(
+            paths=paths, config_path=args.config, account=args.account,
+        )
+
+    if args.command == "message":
+        if args.message_command == "get":
+            return run_message_get(
+                paths=paths,
+                account=args.account,
+                folder=args.folder,
+                message_id=args.message_id,
+            )
+        if args.message_command == "body":
+            return run_message_body(
+                paths=paths,
+                config_path=args.config,
+                account=args.account,
+                folder=args.folder,
+                message_id=args.message_id,
+            )
 
     if args.command == "docs":
         return run_docs()
@@ -917,6 +972,143 @@ def _build_mirror(acc: AccountConfig) -> MirrorRepository:
             account_name=acc.name, root_dir=acc.mirror.path
         )
     return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
+
+
+def run_folder_list(
+    *, paths: AppPaths, config_path: Path | None, account: str | None,
+) -> int:
+    """List folders with indexed message counts and sync status."""
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
+    if account:
+        accounts = [a for a in accounts if a.name == account]
+        if not accounts:
+            raise SystemExit(f"No account named {account!r} in config.")
+
+    for acc in accounts:
+        mirror = _build_mirror(acc)
+        sync_by_folder = {
+            s.folder_name: s
+            for s in index.list_folder_sync_states(account_name=acc.name)
+        }
+        folder_refs = sorted(
+            mirror.list_folders(account_name=acc.name),
+            key=lambda r: r.folder_name,
+        )
+        print(f"{acc.name}:")
+        if not folder_refs:
+            print("  (no folders)")
+            continue
+        name_width = max(len(r.folder_name) for r in folder_refs)
+        for ref in folder_refs:
+            count = index.count_folder_messages(folder=ref)
+            state = sync_by_folder.get(ref.folder_name)
+            if state is not None:
+                synced = state.synced_at.strftime("%Y-%m-%d %H:%M")
+                sync_suffix = f", last sync {synced}, uid {state.highest_uid}"
+            else:
+                sync_suffix = ", never synced"
+            print(
+                f"  {ref.folder_name:<{name_width}}  "
+                f"{count:>6} messages{sync_suffix}"
+            )
+    return 0
+
+
+def run_message_get(
+    *, paths: AppPaths, account: str, folder: str, message_id: str,
+) -> int:
+    """Print metadata for a single indexed message."""
+    paths.ensure_runtime_dirs()
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    from .domain import MessageRef
+    ref = MessageRef(
+        account_name=account, folder_name=folder, message_id=message_id,
+    )
+    msg = index.get_message(message_ref=ref)
+    if msg is None:
+        raise SystemExit(
+            f"Message not found in index: {account}/{folder}/{message_id}"
+        )
+    flags = ", ".join(sorted(f.value for f in msg.local_flags)) or "(none)"
+    print(f"Account:    {msg.message_ref.account_name}")
+    print(f"Folder:     {msg.message_ref.folder_name}")
+    print(f"Message-ID: {msg.message_ref.message_id}")
+    print(f"From:       {msg.sender}")
+    print(f"To:         {msg.recipients}")
+    if msg.cc:
+        print(f"Cc:         {msg.cc}")
+    print(f"Subject:    {msg.subject}")
+    print(f"Date:       {msg.received_at.isoformat()}")
+    print(f"Flags:      {flags}")
+    print(f"Status:     {msg.local_status.value}")
+    print(f"UID:        {msg.uid if msg.uid is not None else '(unset)'}")
+    print(f"Storage:    {msg.storage_key}")
+    print(f"Attach.:    {'yes' if msg.has_attachments else 'no'}")
+    if msg.body_preview:
+        print()
+        print("Preview:")
+        print(f"  {msg.body_preview}")
+    return 0
+
+
+def run_message_body(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    message_id: str,
+) -> int:
+    """Print the full decoded body of a message from the local mirror."""
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    from .domain import MessageRef
+    from .tui.message_renderer import fmt_size, render_message
+
+    acc = next(
+        (
+            a for a in config.accounts
+            if isinstance(a, AccountConfig) and a.name == account
+        ),
+        None,
+    )
+    if acc is None:
+        raise SystemExit(f"No account named {account!r} in config.")
+
+    ref = MessageRef(
+        account_name=account, folder_name=folder, message_id=message_id,
+    )
+    mirror = _build_mirror(acc)
+    try:
+        raw = mirror.get_message_bytes(message_ref=ref)
+    except (KeyError, FileNotFoundError, OSError) as exc:
+        raise SystemExit(
+            f"Message body not found in mirror: {account}/{folder}/{message_id}"
+        ) from exc
+    rendered = render_message(raw)
+    print(f"From:    {rendered.from_}")
+    print(f"To:      {rendered.to}")
+    if rendered.cc:
+        print(f"Cc:      {rendered.cc}")
+    print(f"Subject: {rendered.subject}")
+    print(f"Date:    {rendered.date}")
+    print()
+    print(rendered.body)
+    if rendered.attachments:
+        print()
+        print("Attachments:")
+        for a in rendered.attachments:
+            print(
+                f"  {a.index}. {a.filename} "
+                f"({a.content_type}, {fmt_size(a.size_bytes)})"
+            )
+    return 0
 
 
 def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) -> int:

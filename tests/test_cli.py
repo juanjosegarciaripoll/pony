@@ -207,6 +207,125 @@ class CliTestCase(unittest.TestCase):
                 run_cli("--config", str(config_path), "rescan", "nonexistent")
             self.assertIn("nonexistent", str(ctx.exception))
 
+    def test_folder_list_shows_counts_and_sync_status(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            message_ref = _seed_one_message(
+                config_path, subject="Folder list probe", body="hello",
+            )
+            output = run_cli("--config", str(config_path), "folder", "list")
+        self.assertIn("personal:", output)
+        self.assertIn("INBOX", output)
+        self.assertIn("1 messages", output)
+        self.assertIn("never synced", output)
+        self.assertIsNotNone(message_ref)  # quiet unused-variable warning
+
+    def test_folder_list_unknown_account_errors(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config", str(config_path),
+                    "folder", "list", "nonexistent",
+                )
+            self.assertIn("nonexistent", str(ctx.exception))
+
+    def test_message_get_prints_metadata(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            message_ref = _seed_one_message(
+                config_path, subject="Metadata probe", body="body-text",
+            )
+            output = run_cli(
+                "--config", str(config_path), "message", "get",
+                message_ref.account_name,
+                message_ref.folder_name,
+                message_ref.message_id,
+            )
+        self.assertIn("Metadata probe", output)
+        self.assertIn("sender@example.com", output)
+        self.assertIn("body-text", output)  # preview shown
+
+    def test_message_get_unknown_errors(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config", str(config_path), "message", "get",
+                    "personal", "INBOX", "does-not-exist",
+                )
+            self.assertIn("not found", str(ctx.exception).lower())
+
+    def test_message_body_renders_from_mirror(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            message_ref = _seed_one_message(
+                config_path,
+                subject="Body probe",
+                body="This is the actual body text.",
+            )
+            output = run_cli(
+                "--config", str(config_path), "message", "body",
+                message_ref.account_name,
+                message_ref.folder_name,
+                message_ref.message_id,
+            )
+        self.assertIn("Subject: Body probe", output)
+        self.assertIn("This is the actual body text.", output)
+
+    def test_message_body_missing_errors(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config", str(config_path), "message", "body",
+                    "personal", "INBOX", "does-not-exist",
+                )
+            self.assertIn(
+                "not found", str(ctx.exception).lower(),
+            )
+
+
+def _seed_one_message(
+    config_path: Path, *, subject: str, body: str,
+):
+    """Seed one real maildir message + matching index row for the personal account.
+
+    Returns the MessageRef of the stored message.
+    """
+    import dataclasses
+    from email.message import EmailMessage
+
+    from pony.config import load_config
+    from pony.domain import FolderRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    msg = EmailMessage()
+    msg["From"] = "sender@example.com"
+    msg["To"] = account.email_address
+    msg["Subject"] = subject
+    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg.set_content(body)
+    raw = msg.as_bytes()
+
+    mirror = MaildirMirrorRepository(
+        account_name=account.name, root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    message_ref = mirror.store_message(folder=folder, raw_message=raw)
+
+    projected = project_rfc822_message(
+        message_ref=message_ref, raw_message=raw,
+        storage_key=message_ref.message_id,
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    index.upsert_message(message=stored)
+    return message_ref
+
 
 def run_cli(*argv: str) -> str:
     """Capture CLI stdout for one invocation."""

@@ -458,6 +458,18 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             return None
         return _indexed_message_from_row(row)
 
+    def count_folder_messages(self, *, folder: FolderRef) -> int:
+        """Return the number of indexed messages in a folder."""
+        with self._use() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM messages
+                WHERE account_name = ? AND folder_name = ?
+                """,
+                (folder.account_name, folder.folder_name),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
         """Return indexed messages for a folder ordered by received date."""
         with self._use() as conn:
