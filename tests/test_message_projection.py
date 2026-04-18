@@ -118,6 +118,38 @@ class HtmlOnlyProjectionTest(unittest.TestCase):
         self.assertFalse(self.msg.has_attachments)
 
 
+class HtmlStyleScriptProjectionTest(unittest.TestCase):
+    """HTML body_preview must strip <style>/<script> content, not just tags."""
+
+    @staticmethod
+    def _html_message(html_body: str) -> bytes:
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = "HTML with style"
+        msg.set_content(html_body, subtype="html")
+        return msg.as_bytes()
+
+    def test_style_block_content_not_in_preview(self) -> None:
+        raw = self._html_message(
+            "<html><head><style>.foo { color: red; }</style></head>"
+            "<body><p>Hello world</p></body></html>"
+        )
+        preview = _project(raw).body_preview
+        self.assertIn("Hello world", preview)
+        self.assertNotIn("color", preview)
+        self.assertNotIn(".foo", preview)
+
+    def test_script_block_content_not_in_preview(self) -> None:
+        raw = self._html_message(
+            "<html><body><script>var x = 1;</script>"
+            "<p>Visible text</p></body></html>"
+        )
+        preview = _project(raw).body_preview
+        self.assertIn("Visible text", preview)
+        self.assertNotIn("var x", preview)
+
+
 class EncodedHeadersProjectionTest(unittest.TestCase):
     """RFC 2047 encoded Subject and From must be decoded to Unicode."""
 

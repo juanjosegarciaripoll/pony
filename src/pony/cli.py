@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import logging
 import shutil
 import sqlite3
@@ -26,6 +27,7 @@ from .domain import (
 from .fixture_flow import run_fixture_ingest
 from .imap_client import ImapAuthError, ImapSession
 from .index_store import SqliteIndexRepository
+from .message_projection import project_rfc822_message
 from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .services import CheckStatus, ServiceStatus, build_service_status
@@ -83,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "fixture-ingest",
         help="Ingest deterministic local fixture messages into SQLite index.",
+    )
+
+    rescan_parser = subparsers.add_parser(
+        "rescan",
+        help="Re-project indexed messages from the local mirror (refresh cached "
+        "fields like body_preview without re-downloading).",
+    )
+    rescan_parser.add_argument(
+        "account", nargs="?", help="Only rescan one account.",
     )
 
     sync_parser = subparsers.add_parser("sync", help="Run mail synchronization.")
@@ -273,6 +284,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "fixture-ingest":
         return run_fixture_ingest_command(paths=paths, config_path=args.config)
+    if args.command == "rescan":
+        return run_rescan(
+            paths=paths, config_path=args.config, account=args.account,
+        )
     if args.command == "search":
         return run_search(paths=paths, config_path=args.config, query=args.query)
     if args.command == "server-summary":
@@ -410,13 +425,6 @@ def run_sync(
     index.initialize()
     credentials = build_credentials_provider(config, index)
 
-    def mirror_factory(acc: AccountConfig) -> MirrorRepository:
-        if acc.mirror.format == "maildir":
-            return MaildirMirrorRepository(
-                account_name=acc.name, root_dir=acc.mirror.path
-            )
-        return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-
     def session_factory(acc: AccountConfig, password: str) -> ImapClientSession:
         return ImapSession(
             host=acc.imap_host,
@@ -428,7 +436,7 @@ def run_sync(
 
     service = ImapSyncService(
         config=config,
-        mirror_factory=mirror_factory,
+        mirror_factory=_build_mirror,
         index=index,
         credentials=credentials,
         session_factory=session_factory,
@@ -810,6 +818,105 @@ def run_fixture_ingest_command(*, paths: AppPaths, config_path: Path | None) -> 
         f"in {paths.index_db_file}."
     )
     return 0
+
+
+def run_rescan(
+    *, paths: AppPaths, config_path: Path | None, account: str | None,
+) -> int:
+    """Re-project indexed messages from the local mirror.
+
+    Refreshes cached projection fields (sender, recipients, subject,
+    body_preview, has_attachments, received_at) without re-downloading
+    from IMAP.  Preserves sync state (flags, uid, status).
+    """
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
+    if account:
+        accounts = [a for a in accounts if a.name == account]
+        if not accounts:
+            raise SystemExit(f"No account named {account!r} in config.")
+
+    total = 0
+    changed = 0
+    missing = 0
+    for acc in accounts:
+        mirror = _build_mirror(acc)
+        print(f"Rescanning {acc.name}...")
+        for folder in mirror.list_folders(account_name=acc.name):
+            messages = index.list_folder_messages(folder=folder)
+            folder_total = len(messages)
+            folder_changed = 0
+            for i, stored in enumerate(messages, start=1):
+                total += 1
+                try:
+                    raw = mirror.get_message_bytes(message_ref=stored.message_ref)
+                except (KeyError, FileNotFoundError):
+                    missing += 1
+                    _rescan_progress(folder.folder_name, i, folder_total)
+                    continue
+                fresh = project_rfc822_message(
+                    message_ref=stored.message_ref,
+                    raw_message=raw,
+                    storage_key=stored.storage_key,
+                )
+                if not _projection_matches(stored, fresh):
+                    merged = dataclasses.replace(
+                        stored,
+                        sender=fresh.sender,
+                        recipients=fresh.recipients,
+                        cc=fresh.cc,
+                        subject=fresh.subject,
+                        body_preview=fresh.body_preview,
+                        has_attachments=fresh.has_attachments,
+                        received_at=fresh.received_at,
+                    )
+                    index.upsert_message(message=merged)
+                    folder_changed += 1
+                _rescan_progress(folder.folder_name, i, folder_total)
+            changed += folder_changed
+            # Final line overwrites the progress ticker and terminates with \n.
+            print(
+                f"\r  {folder.folder_name}: "
+                f"{folder_changed} updated ({folder_total} scanned)"
+                + " " * 20
+            )
+
+    print(
+        f"Rescan complete: {changed}/{total} message(s) updated"
+        + (f", {missing} missing from mirror." if missing else ".")
+    )
+    return 0
+
+
+def _rescan_progress(folder_name: str, done: int, total: int) -> None:
+    """Overwrite-in-place progress ticker; throttled to avoid stdout flooding."""
+    if done != total and done % 20 != 0:
+        return
+    print(f"\r  {folder_name}: {done}/{total}", end="", flush=True)
+
+
+def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
+    return (
+        stored.sender == fresh.sender
+        and stored.recipients == fresh.recipients
+        and stored.cc == fresh.cc
+        and stored.subject == fresh.subject
+        and stored.body_preview == fresh.body_preview
+        and stored.has_attachments == fresh.has_attachments
+        and stored.received_at == fresh.received_at
+    )
+
+
+def _build_mirror(acc: AccountConfig) -> MirrorRepository:
+    if acc.mirror.format == "maildir":
+        return MaildirMirrorRepository(
+            account_name=acc.name, root_dir=acc.mirror.path
+        )
+    return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
 
 
 def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) -> int:

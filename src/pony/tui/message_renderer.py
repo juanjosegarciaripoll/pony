@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from html.parser import HTMLParser
 
+from pony.html_sanitize import strip_invisible_blocks
+
+# Used by build_browser_html() to carry the original email's <style> blocks
+# into the self-contained view so the browser renders with the same styling.
 _STYLE_BLOCK_RE = re.compile(
     r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL,
-)
-_SCRIPT_BLOCK_RE = re.compile(
-    r"<script[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -422,10 +423,6 @@ def fmt_size(n: int) -> str:
 
 
 def _strip_html(html: str) -> str:
-    # Remove <style> and <script> blocks so their content is not treated
-    # as visible text by the tag stripper.
-    html = _STYLE_BLOCK_RE.sub("", html)
-    html = _SCRIPT_BLOCK_RE.sub("", html)
     stripper = _HTMLStripper()
-    stripper.feed(html)
+    stripper.feed(strip_invisible_blocks(html))
     return stripper.result()

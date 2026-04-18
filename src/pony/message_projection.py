@@ -15,6 +15,7 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 
 from .domain import IndexedMessage, MessageRef, MessageStatus
+from .html_sanitize import html_to_preview_text
 
 # Regex to split headers from body at the first blank line.
 _HEADER_BODY_RE = re.compile(rb"\r?\n\r?\n", re.MULTILINE)
@@ -142,7 +143,6 @@ def _parse_date(raw: bytes) -> datetime:
 _CTE_RE = re.compile(
     rb"Content-Transfer-Encoding:\s*(\S+)", re.IGNORECASE,
 )
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _decode_part_body(part_headers: bytes, raw_body: bytes) -> str:
@@ -182,7 +182,7 @@ def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
         text = _decode_part_body(header_block, body)
         # Strip HTML tags if it's an HTML-only message.
         if b"text/html" in header_block.lower():
-            text = _HTML_TAG_RE.sub(" ", text)
+            text = html_to_preview_text(text)
         return _collapse_whitespace(text)
 
     # Multipart: split on boundaries and find text/plain.
@@ -200,7 +200,7 @@ def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
             break
         if b"text/html" in part_hdr.lower() and not html_preview:
             raw_html = _decode_part_body(part_hdr, part_body)
-            html_preview = _HTML_TAG_RE.sub(" ", raw_html)
+            html_preview = html_to_preview_text(raw_html)
 
     result = text_preview or html_preview
     return _collapse_whitespace(result)
