@@ -303,7 +303,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (
                     message.message_ref.account_name,
                     message.message_ref.folder_name,
-                    message.message_ref.message_id,
+                    message.message_ref.rfc5322_id,
                     message.sender,
                     message.recipients,
                     message.cc,
@@ -334,17 +334,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (
                     message_ref.account_name,
                     message_ref.folder_name,
-                    message_ref.message_id,
+                    message_ref.rfc5322_id,
                 ),
             )
 
     def purge_expired_trash(
         self, *, account_name: str, retention_days: int
-    ) -> list[MessageRef]:
+    ) -> list[tuple[FolderRef, str]]:
         """Delete trashed messages older than *retention_days*.
 
-        Returns the list of purged message refs so the caller can clean
-        up mirror files.
+        Returns ``[(folder_ref, storage_key), ...]`` for each purged row so
+        the caller can clean up the corresponding mirror files.
         """
         cutoff = (
             datetime.now(tz=UTC) - timedelta(days=retention_days)
@@ -352,7 +352,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT account_name, folder_name, message_id
+                SELECT account_name, folder_name, storage_key
                 FROM messages
                 WHERE account_name = ?
                   AND local_status = ?
@@ -361,15 +361,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 """,
                 (account_name, MessageStatus.TRASHED.value, cutoff),
             ).fetchall()
-            refs = [
-                MessageRef(
-                    account_name=str(r[0]),
-                    folder_name=str(r[1]),
-                    message_id=str(r[2]),
+            entries = [
+                (
+                    FolderRef(
+                        account_name=str(r[0]), folder_name=str(r[1]),
+                    ),
+                    str(r[2]),
                 )
                 for r in rows
             ]
-            if refs:
+            if entries:
                 conn.execute(
                     """
                     DELETE FROM messages
@@ -380,7 +381,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     """,
                     (account_name, MessageStatus.TRASHED.value, cutoff),
                 )
-        return refs
+        return entries
 
     def list_indexed_accounts(self) -> list[str]:
         """Return all distinct account names from the messages table."""
@@ -451,7 +452,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (
                     message_ref.account_name,
                     message_ref.folder_name,
-                    message_ref.message_id,
+                    message_ref.rfc5322_id,
                 ),
             ).fetchone()
         if row is None:
@@ -731,7 +732,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     operation.operation_id,
                     operation.account_name,
                     operation.message_ref.folder_name,
-                    operation.message_ref.message_id,
+                    operation.message_ref.rfc5322_id,
                     operation.operation_type.value,
                     operation.created_at.isoformat(),
                 ),
@@ -768,7 +769,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 message_ref=MessageRef(
                     account_name=str(row[1]),
                     folder_name=str(row[2]),
-                    message_id=str(row[3]),
+                    rfc5322_id=str(row[3]),
                 ),
                 operation_type=OperationType(row[4]),
                 created_at=datetime.fromisoformat(str(row[5])),
@@ -1099,7 +1100,7 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
         message_ref=MessageRef(
             account_name=str(row[0]),
             folder_name=str(row[1]),
-            message_id=str(row[2]),
+            rfc5322_id=str(row[2]),
         ),
         sender=str(row[3]),
         recipients=str(row[4]),

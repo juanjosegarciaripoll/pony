@@ -87,7 +87,7 @@ def _plan_detail(plan: SyncPlan) -> str:
                 if isinstance(op, (ServerDeleteOp, ServerMoveOp, PushMoveOp)):
                     detail = op.message_id[:40]
                 elif hasattr(op, "message_ref"):
-                    detail = op.message_ref.message_id[:40]
+                    detail = op.message_ref.rfc5322_id[:40]
                 else:
                     detail = ""
                 rows.append(f"    {op_name:<16} {detail}")

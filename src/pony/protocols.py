@@ -22,43 +22,67 @@ from .domain import (
 
 
 class MirrorRepository(Protocol):
-    """Interface for local mirror backends."""
+    """Interface for local mirror backends.
+
+    Methods key off a ``storage_key`` — the backend's own identifier for
+    one stored message (maildir filename, mbox integer, etc.).  The mirror
+    layer is intentionally unaware of RFC 5322 ``Message-ID`` headers;
+    that identity is an index-side concern represented by
+    :class:`MessageRef`.
+
+    Callers that have an :class:`IndexedMessage` pass its
+    ``storage_key`` attribute; callers that have just created a message
+    via :meth:`store_message` already hold the returned storage_key.
+    """
 
     def list_folders(self, *, account_name: str) -> Sequence[FolderRef]:
         """Return all folders for one account."""
         ...
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> MessageRef:
-        """Store one RFC 5322 message and return a stable message reference."""
+    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
+        """Store one RFC 5322 message and return its storage_key."""
         ...
 
-    def list_messages(self, *, folder: FolderRef) -> Sequence[MessageRef]:
-        """Return message references for a folder."""
+    def list_messages(self, *, folder: FolderRef) -> Sequence[str]:
+        """Return the storage_keys of every message in the folder."""
         ...
 
-    def get_message_bytes(self, *, message_ref: MessageRef) -> bytes:
+    def get_message_bytes(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> bytes:
         """Return raw RFC 5322 message bytes."""
         ...
 
     def set_flags(
-        self, *, message_ref: MessageRef, flags: frozenset[MessageFlag]
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        flags: frozenset[MessageFlag],
     ) -> None:
         """Update local flag state."""
         ...
 
-    def delete_message(self, *, message_ref: MessageRef) -> None:
+    def delete_message(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> None:
         """Delete a message from local mirror storage."""
         ...
 
     def move_message_to_folder(
-        self, *, message_ref: MessageRef, target_folder: str,
-    ) -> MessageRef:
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        target_folder: str,
+    ) -> str:
         """Relocate a stored message to *target_folder*.
 
-        Returns the new :class:`MessageRef` — the ``message_id`` may change
-        (for backends whose storage key is folder-scoped, e.g. mbox).
-        The raw bytes are preserved; flag state remains whatever the
-        original file carried.
+        Returns the new storage_key — it may change for backends whose
+        keys are folder-scoped (e.g. mbox), and stays the same for
+        backends whose keys are globally unique (e.g. maildir).  The raw
+        bytes are preserved; flag state remains whatever the original
+        file carried.
         """
         ...
 
@@ -100,8 +124,12 @@ class IndexRepository(Protocol):
 
     def purge_expired_trash(
         self, *, account_name: str, retention_days: int
-    ) -> list[MessageRef]:
-        """Delete trashed messages older than *retention_days*."""
+    ) -> list[tuple[FolderRef, str]]:
+        """Delete trashed messages older than *retention_days*.
+
+        Returns ``[(folder_ref, storage_key), ...]`` so the caller can
+        remove the corresponding mirror files.
+        """
         ...
 
     def list_indexed_accounts(self) -> list[str]:

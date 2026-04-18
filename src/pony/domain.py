@@ -164,11 +164,19 @@ class FolderRef:
 
 @dataclass(frozen=True, slots=True)
 class MessageRef:
-    """A message identity scoped to an account and folder."""
+    """A message's *semantic* identity, scoped to an account and folder.
+
+    ``rfc5322_id`` is the value of the RFC 5322 ``Message-ID:`` header
+    (synthesised when missing).  It is deliberately *not* the backend's
+    on-disk storage key — that lives on :class:`IndexedMessage` as
+    ``storage_key`` and is consumed by :mod:`pony.storage` methods.
+    Mixing the two has been the source of silent failures; keep them
+    apart.
+    """
 
     account_name: str
     folder_name: str
-    message_id: str
+    rfc5322_id: str
 
 
 class MessageFlag(StrEnum):

@@ -18,7 +18,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
-from ...domain import IndexedMessage, MessageRef
+from ...domain import FolderRef, IndexedMessage
 from ...protocols import MirrorRepository
 from ..message_renderer import (
     RenderedMessage,
@@ -98,13 +98,14 @@ class MessageViewPanel(VerticalScroll):
         """Fetch raw bytes from the mirror and render the message."""
         self._rendered: RenderedMessage | None = None
         self._current_message: IndexedMessage | None = message
-        storage_ref = MessageRef(
-            account_name=message.message_ref.account_name,
-            folder_name=message.message_ref.folder_name,
-            message_id=message.storage_key,
-        )
         try:
-            raw = mirror.get_message_bytes(message_ref=storage_ref)
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=message.message_ref.account_name,
+                    folder_name=message.message_ref.folder_name,
+                ),
+                storage_key=message.storage_key,
+            )
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", message.message_ref)
             self._set_content(

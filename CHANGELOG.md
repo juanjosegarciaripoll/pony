@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.4.0]
 
+### Fixed
+
+- **Mirror retrieval for IMAP-synced mail**: the `MirrorRepository`
+  protocol silently required `MessageRef.message_id` to equal the
+  backend's on-disk storage key. For messages ingested from IMAP,
+  that field holds the RFC 5322 `Message-ID` header instead; the real
+  storage key lives on `IndexedMessage.storage_key`. Every caller that
+  did not apply the kludge of rebuilding a `MessageRef(message_id=
+  storage_key)` silently failed:
+    - `pony rescan` counted every synced message as "missing" and never
+      refreshed its projection.
+    - `pony message body` and MCP `get_message_body` returned *"not
+      found in mirror"* / `null` for every synced message.
+    - `PushDeleteOp` silently no-opped the mirror delete; sync removed
+      the index row but left the file behind, so mirrors grew
+      unbounded on every archive.
+    - The retention-based trash purge hit the same bug.
+- **HTML `<style>` / `<script>` content in body previews** ([0.3.x
+  regression]): the previous regex-only tag stripper left the CSS rules
+  from `<style>` blocks and Outlook conditional comments as literal
+  preview text. New `pony.html_sanitize` module strips comments (including
+  conditional comments), `<head>`, `<style>`, `<script>`, and `<noscript>`
+  blocks before tag removal, and decodes HTML entities.
+
+### Changed
+
+- **`MirrorRepository` protocol**: now keys every method off the
+  backend's own `storage_key` (the maildir filename or mbox integer)
+  instead of a `MessageRef`. `store_message`, `list_messages`, and
+  `move_message_to_folder` return `str` storage keys rather than
+  synthetic `MessageRef`s. The layering is now honest: RFC 5322
+  identity is an index-side concern; mirror methods do not see it.
+- **`SqliteIndexRepository.purge_expired_trash`** now returns
+  `list[tuple[FolderRef, str]]` so callers can clean the mirror.
+
 ### Added
 
 - **Embedded MCP server**: add `[mcp]` to `config.toml` to have the MCP
@@ -14,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   launches. A TUI notification shows the URL on startup. Recommended for
   users who keep the TUI open and want simultaneous AI assistant access
   without managing a separate process.
+- **`pony rescan [account]`** CLI command: re-project every indexed
+  message from local mirror bytes. Refreshes cached fields (sender,
+  recipients, subject, body_preview, has_attachments, received_at)
+  without re-downloading from IMAP. Preserves all sync state.
+- **`pony folder list [account]`**, **`pony message get`**, **`pony
+  message body`**: CLI counterparts to the existing read-only MCP
+  tools. `folder list` shows indexed counts and last-sync status per
+  folder.
+- **Richer MCP `list_folders` output**: each folder entry now includes
+  `message_count`, `highest_uid`, and `synced_at` (matching what the
+  CLI displays).
+- Regression tests pinning the mirror identity contract: a conformance
+  case verifies the returned storage_key is distinct from the RFC 5322
+  Message-ID; sync tests round-trip a synced message through
+  `mirror.get_message_bytes` and verify `PushDeleteOp` plus the
+  retention purge actually remove mirror files.
 
 ## [0.3.0] - 2026-04-17
 ### Added

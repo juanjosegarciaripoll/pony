@@ -82,7 +82,7 @@ class MessageListPanel(DataTable[Text]):
         assert self._date_col_key is not None
         assert self._from_col_key is not None
         assert self._subject_col_key is not None
-        mid = msg.message_ref.message_id
+        mid = msg.message_ref.rfc5322_id
         icons, date, sender, subject = self._cells_for(msg)
         self.update_cell(
             row_key=mid, column_key=self._icons_col_key, value=icons,
@@ -113,7 +113,7 @@ class MessageListPanel(DataTable[Text]):
         for msg in msgs:
             self.add_row(
                 *self._cells_for(msg),
-                key=msg.message_ref.message_id,
+                key=msg.message_ref.rfc5322_id,
             )
 
     def load_search_results(
@@ -129,7 +129,7 @@ class MessageListPanel(DataTable[Text]):
         for msg in msgs:
             self.add_row(
                 *self._cells_for(msg),
-                key=msg.message_ref.message_id,
+                key=msg.message_ref.rfc5322_id,
             )
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
@@ -141,7 +141,7 @@ class MessageListPanel(DataTable[Text]):
         # Find the IndexedMessage by its message_id key.
         key = str(event.row_key.value) if event.row_key.value else ""
         for msg in self._messages:
-            if msg.message_ref.message_id == key:
+            if msg.message_ref.rfc5322_id == key:
                 self.post_message(self.MessageSelected(message=msg))
                 return
 
@@ -174,9 +174,9 @@ class MessageListPanel(DataTable[Text]):
 
     def update_message(self, updated: IndexedMessage) -> None:
         """Replace one message in the internal list and restyle its row."""
-        mid = updated.message_ref.message_id
+        mid = updated.message_ref.rfc5322_id
         for i, msg in enumerate(self._messages):
-            if msg.message_ref.message_id == mid:
+            if msg.message_ref.rfc5322_id == mid:
                 self._messages[i] = updated
                 self._update_row(updated)
                 break

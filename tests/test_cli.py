@@ -84,7 +84,7 @@ class CliTestCase(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef, MessageStatus
+        from pony.domain import FolderRef, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
         from pony.paths import AppPaths
@@ -96,11 +96,13 @@ class CliTestCase(unittest.TestCase):
             paths = AppPaths.default()
             paths.ensure_runtime_dirs()
 
+            rfc5322_id = f"<rescan-test-{uuid4().hex}@example.com>"
             html_msg = EmailMessage()
             html_msg["From"] = "sender@example.com"
             html_msg["To"] = account.email_address
             html_msg["Subject"] = "HTML with CSS"
             html_msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+            html_msg["Message-ID"] = rfc5322_id
             html_msg.set_content(
                 "<html><head><style>.x{color:red}</style></head>"
                 "<body><p>Real body text</p></body></html>",
@@ -112,13 +114,18 @@ class CliTestCase(unittest.TestCase):
                 account_name=account.name, root_dir=account.mirror.path,
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
-            message_ref = mirror.store_message(folder=folder, raw_message=raw)
+            storage_key = mirror.store_message(folder=folder, raw_message=raw)
+            message_ref = MessageRef(
+                account_name=account.name,
+                folder_name="INBOX",
+                rfc5322_id=rfc5322_id,
+            )
 
             # Seed the index with a row whose body_preview simulates the
             # pre-fix bug (CSS text leaked into the preview).
             projected = project_rfc822_message(
                 message_ref=message_ref, raw_message=raw,
-                storage_key=message_ref.message_id,
+                storage_key=storage_key,
             )
             import dataclasses
             stale = dataclasses.replace(
@@ -145,7 +152,7 @@ class CliTestCase(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.domain import FolderRef, MessageFlag, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
         from pony.paths import AppPaths
@@ -157,11 +164,13 @@ class CliTestCase(unittest.TestCase):
             paths = AppPaths.default()
             paths.ensure_runtime_dirs()
 
+            rfc5322_id = f"<sync-state-{uuid4().hex}@example.com>"
             msg = EmailMessage()
             msg["From"] = "sender@example.com"
             msg["To"] = account.email_address
             msg["Subject"] = "Sync state test"
             msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+            msg["Message-ID"] = rfc5322_id
             msg.set_content("plain body")
             raw = msg.as_bytes()
 
@@ -169,11 +178,16 @@ class CliTestCase(unittest.TestCase):
                 account_name=account.name, root_dir=account.mirror.path,
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
-            message_ref = mirror.store_message(folder=folder, raw_message=raw)
+            storage_key = mirror.store_message(folder=folder, raw_message=raw)
+            message_ref = MessageRef(
+                account_name=account.name,
+                folder_name="INBOX",
+                rfc5322_id=rfc5322_id,
+            )
 
             projected = project_rfc822_message(
                 message_ref=message_ref, raw_message=raw,
-                storage_key=message_ref.message_id,
+                storage_key=storage_key,
             )
             import dataclasses
             with_sync_state = dataclasses.replace(
@@ -237,7 +251,7 @@ class CliTestCase(unittest.TestCase):
                 "--config", str(config_path), "message", "get",
                 message_ref.account_name,
                 message_ref.folder_name,
-                message_ref.message_id,
+                message_ref.rfc5322_id,
             )
         self.assertIn("Metadata probe", output)
         self.assertIn("sender@example.com", output)
@@ -263,7 +277,7 @@ class CliTestCase(unittest.TestCase):
                 "--config", str(config_path), "message", "body",
                 message_ref.account_name,
                 message_ref.folder_name,
-                message_ref.message_id,
+                message_ref.rfc5322_id,
             )
         self.assertIn("Subject: Body probe", output)
         self.assertIn("This is the actual body text.", output)
@@ -285,13 +299,15 @@ def _seed_one_message(
 ):
     """Seed one real maildir message + matching index row for the personal account.
 
-    Returns the MessageRef of the stored message.
+    Returns the ``MessageRef`` whose ``message_id`` is the RFC 5322
+    header value — matching what IMAP sync populates.  The maildir
+    filename (``storage_key``) is a different string.
     """
     import dataclasses
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import FolderRef, MessageStatus
+    from pony.domain import FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
     from pony.paths import AppPaths
@@ -302,11 +318,13 @@ def _seed_one_message(
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
 
+    rfc5322_id = f"<test-{uuid4().hex}@example.com>"
     msg = EmailMessage()
     msg["From"] = "sender@example.com"
     msg["To"] = account.email_address
     msg["Subject"] = subject
     msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg["Message-ID"] = rfc5322_id
     msg.set_content(body)
     raw = msg.as_bytes()
 
@@ -314,11 +332,15 @@ def _seed_one_message(
         account_name=account.name, root_dir=account.mirror.path,
     )
     folder = FolderRef(account_name=account.name, folder_name="INBOX")
-    message_ref = mirror.store_message(folder=folder, raw_message=raw)
+    storage_key = mirror.store_message(folder=folder, raw_message=raw)
 
+    message_ref = MessageRef(
+        account_name=account.name,
+        folder_name="INBOX",
+        rfc5322_id=rfc5322_id,
+    )
     projected = project_rfc822_message(
-        message_ref=message_ref, raw_message=raw,
-        storage_key=message_ref.message_id,
+        message_ref=message_ref, raw_message=raw, storage_key=storage_key,
     )
     stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
     index = SqliteIndexRepository(database_path=paths.index_db_file)

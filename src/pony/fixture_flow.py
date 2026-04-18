@@ -20,7 +20,7 @@ def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:
         message_ref = MessageRef(
             account_name=account.name,
             folder_name="INBOX",
-            message_id=f"fixture-{account.name}",
+            rfc5322_id=f"fixture-{account.name}",
         )
         raw_fixture = _fixture_message_bytes(
             account_name=account.name, to_address=account.email_address
@@ -28,7 +28,7 @@ def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:
         fixture_message = project_rfc822_message(
             message_ref=message_ref,
             raw_message=raw_fixture,
-            storage_key=message_ref.message_id,
+            storage_key=message_ref.rfc5322_id,
         )
         repository.upsert_message(message=fixture_message)
         created_count += 1

@@ -185,6 +185,7 @@ class PushDeleteOp:
 
     server_uid: int | None  # None if the message is no longer on server
     message_ref: MessageRef
+    storage_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -746,7 +747,7 @@ class ImapSyncService:
         # (messages with a UID are those previously synced from the server).
         local_mid_folders: dict[str, set[str]] = {}
         for row in self._index.list_all_uids(account_name=account.name):
-            mid = row.message_ref.message_id
+            mid = row.message_ref.rfc5322_id
             if mid:
                 local_mid_folders.setdefault(mid, set()).add(
                     row.message_ref.folder_name
@@ -769,7 +770,7 @@ class ImapSyncService:
         #       and the user resolves the duplicate.
         local_pending_mid_folder: dict[str, str] = {}
         for row in self._index.list_pending_rows(account_name=account.name):
-            mid = row.message_ref.message_id
+            mid = row.message_ref.rfc5322_id
             if not mid:
                 continue
             folder = row.message_ref.folder_name
@@ -878,7 +879,7 @@ class ImapSyncService:
                 continue
             if row.uid is not None:
                 continue
-            mid = row.message_ref.message_id
+            mid = row.message_ref.rfc5322_id
             if not mid or mid in remote_mid_map:
                 continue
             ops.append(PushAppendOp(message_ref=row.message_ref))
@@ -944,7 +945,7 @@ class ImapSyncService:
         folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
         index_rows = self._index.list_folder_messages(folder=folder_ref)
         index_by_mid: dict[str, IndexedMessage] = {
-            row.message_ref.message_id: row for row in index_rows
+            row.message_ref.rfc5322_id: row for row in index_rows
         }
 
         # Build known-by-uid from messages that have a UID (previously synced).
@@ -960,7 +961,7 @@ class ImapSyncService:
         # Step 1: messages gone from this folder since last sync.
         for uid in local_uids - remote_uids:
             known = known_by_uid[uid]
-            known_mid = known.message_ref.message_id
+            known_mid = known.message_ref.rfc5322_id
             if known_mid and known_mid in remote_mid_map:
                 new_folder, _ = remote_mid_map[known_mid]
                 # Only treat as a move if the destination did NOT already
@@ -1027,7 +1028,7 @@ class ImapSyncService:
                         message_ref=MessageRef(
                             account_name=account.name,
                             folder_name=folder_name,
-                            message_id=mid,
+                            rfc5322_id=mid,
                         ),
                         server_flags=remote_flags.get(uid, frozenset()),
                         extra_imap_flags=remote_extra.get(uid, frozenset()),
@@ -1061,7 +1062,7 @@ class ImapSyncService:
             known = known_by_uid[uid]
             current_remote = remote_flags.get(uid, frozenset())
             current_extra = remote_extra.get(uid, frozenset())
-            local_row = index_by_mid.get(known.message_ref.message_id)
+            local_row = index_by_mid.get(known.message_ref.rfc5322_id)
 
             if local_row is None:
                 # 1c: the server may have changed the Message-ID header
@@ -1069,14 +1070,14 @@ class ImapSyncService:
                 # current fetch; if it matches a different index row,
                 # use that — the server state will be updated on commit.
                 fresh_mid = uid_to_mid.get(uid, "")
-                if fresh_mid and fresh_mid != known.message_ref.message_id:
+                if fresh_mid and fresh_mid != known.message_ref.rfc5322_id:
                     local_row = index_by_mid.get(fresh_mid)
                     if local_row is not None:
                         logger.warning(
                             "Message-ID changed for UID %d in %s/%s: "
                             "%r → %r",
                             uid, account.name, folder_name,
-                            known.message_ref.message_id, fresh_mid,
+                            known.message_ref.rfc5322_id, fresh_mid,
                         )
                 if local_row is None:
                     continue
@@ -1086,7 +1087,7 @@ class ImapSyncService:
                 if read_only:
                     # Read-only folder: can't push deletion, restore.
                     ops.append(RestoreOp(message_ref=local_row.message_ref))
-                    _restored_mids.add(local_row.message_ref.message_id)
+                    _restored_mids.add(local_row.message_ref.rfc5322_id)
                 elif current_remote != base:
                     # C-2: server changed flags on a locally-trashed message
                     # in a writable folder.  Safe path: cancel the deletion,
@@ -1100,7 +1101,7 @@ class ImapSyncService:
                             extra_imap_flags=current_extra,
                         )
                     )
-                    _restored_mids.add(local_row.message_ref.message_id)
+                    _restored_mids.add(local_row.message_ref.rfc5322_id)
                 # else: no server change → Step 4 handles PushDeleteOp
                 continue
 
@@ -1149,11 +1150,15 @@ class ImapSyncService:
             for row in index_rows:
                 if row.local_status != MessageStatus.TRASHED:
                     continue
-                if row.message_ref.message_id in _restored_mids:
+                if row.message_ref.rfc5322_id in _restored_mids:
                     continue
                 server_uid = row.uid
                 ops.append(
-                    PushDeleteOp(server_uid=server_uid, message_ref=row.message_ref)
+                    PushDeleteOp(
+                        server_uid=server_uid,
+                        message_ref=row.message_ref,
+                        storage_key=row.storage_key,
+                    )
                 )
 
         # Step 5: push local-pending rows (uid=NULL, ACTIVE) that weren't
@@ -1167,7 +1172,7 @@ class ImapSyncService:
                     continue
                 if row.uid is not None:
                     continue
-                mid = row.message_ref.message_id
+                mid = row.message_ref.rfc5322_id
                 if not mid or mid in _handled_pending_mids:
                     continue
                 if mid in remote_mid_map:
@@ -1562,10 +1567,15 @@ class ImapSyncService:
                 else:
                     logger.info(
                         "Message %r already gone — purging local copy",
-                        op.message_ref.message_id,
+                        op.message_ref.rfc5322_id,
                     )
                 self._index.delete_message(message_ref=op.message_ref)
-                mirror.delete_message(message_ref=op.message_ref)
+                mirror.delete_message(
+                    folder=FolderRef(
+                        account_name=account.name, folder_name=folder_name,
+                    ),
+                    storage_key=op.storage_key,
+                )
 
             case PushMoveOp():
                 session.move_message(
@@ -1611,7 +1621,7 @@ class ImapSyncService:
                     )
                     logger.info(
                         "Restored message %r in %s/%s",
-                        op.message_ref.message_id,
+                        op.message_ref.rfc5322_id,
                         account.name, folder_name,
                     )
 
@@ -1626,18 +1636,18 @@ class ImapSyncService:
         """C-1: re-upload a locally-modified message deleted on server."""
         idx_row = self._index.get_message(message_ref=op.message_ref)
         if idx_row is not None:
-            mirror_ref = MessageRef(
-                account_name=account.name,
-                folder_name=folder_name,
-                message_id=idx_row.storage_key,
-            )
             mirror_repo = self._mirror_factory(account)
             try:
-                raw = mirror_repo.get_message_bytes(message_ref=mirror_ref)
+                raw = mirror_repo.get_message_bytes(
+                    folder=FolderRef(
+                        account_name=account.name, folder_name=folder_name,
+                    ),
+                    storage_key=idx_row.storage_key,
+                )
             except Exception:
                 logger.exception(
                     "Cannot re-upload %r — mirror read failed",
-                    op.message_ref.message_id,
+                    op.message_ref.rfc5322_id,
                 )
             else:
                 session.append_message(
@@ -1646,7 +1656,7 @@ class ImapSyncService:
                 )
                 logger.info(
                     "Re-uploaded message %r to %s/%s",
-                    op.message_ref.message_id,
+                    op.message_ref.rfc5322_id,
                     account.name, folder_name,
                 )
         # Clear the UID — the old UID is gone; the APPEND created a new one
@@ -1676,17 +1686,17 @@ class ImapSyncService:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
             return
-        mirror_ref = MessageRef(
-            account_name=account.name,
-            folder_name=folder_name,
-            message_id=row.storage_key,
-        )
         try:
-            raw = mirror.get_message_bytes(message_ref=mirror_ref)
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=account.name, folder_name=folder_name,
+                ),
+                storage_key=row.storage_key,
+            )
         except Exception:
             logger.exception(
                 "Cannot APPEND %r — mirror read failed",
-                op.message_ref.message_id,
+                op.message_ref.rfc5322_id,
             )
             return
         session.append_message(
@@ -1694,7 +1704,7 @@ class ImapSyncService:
         )
         logger.info(
             "APPENDed local message %r to %s/%s",
-            op.message_ref.message_id, account.name, folder_name,
+            op.message_ref.rfc5322_id, account.name, folder_name,
         )
 
     def _run_cleanup(self) -> None:
@@ -1723,13 +1733,14 @@ class ImapSyncService:
                 )
                 if purged:
                     mirror = self._mirror_factory(account)
-                    for ref in purged:
+                    for folder_ref, storage_key in purged:
                         try:
-                            mirror.delete_message(message_ref=ref)
+                            mirror.delete_message(
+                                folder=folder_ref, storage_key=storage_key,
+                            )
                         except Exception:
                             logger.debug(
-                                "Mirror cleanup failed for %r",
-                                ref.message_id,
+                                "Mirror cleanup failed for %r", storage_key,
                             )
                     logger.info(
                         "Cleanup: purged %d expired trashed"
@@ -1774,9 +1785,9 @@ class ImapSyncService:
             # in a thread pool and overlaps with projection + index work.
             store = getattr(mirror, "store_message_async", None)
             if store is not None:
-                mirror_ref = store(folder=folder_ref, raw_message=raw)
+                storage_key = store(folder=folder_ref, raw_message=raw)
             else:
-                mirror_ref = mirror.store_message(
+                storage_key = mirror.store_message(
                     folder=folder_ref, raw_message=raw,
                 )
         except Exception:
@@ -1787,10 +1798,10 @@ class ImapSyncService:
             message_ref=MessageRef(
                 account_name=account.name,
                 folder_name=folder_ref.folder_name,
-                message_id=message_id,
+                rfc5322_id=message_id,
             ),
             raw_message=raw,
-            storage_key=mirror_ref.message_id,
+            storage_key=storage_key,
         )
         # Stamp with server flags and UID (first sync for this message).
         indexed = dataclasses.replace(
@@ -1816,7 +1827,7 @@ class ImapSyncService:
         ref = MessageRef(
             account_name=account.name,
             folder_name=folder_name,
-            message_id=message_id,
+            rfc5322_id=message_id,
         )
         local_row = self._index.get_message(message_ref=ref)
         if local_row is not None:
@@ -1848,14 +1859,14 @@ class ImapSyncService:
         ref = MessageRef(
             account_name=account.name,
             folder_name=folder_name,
-            message_id=message_id,
+            rfc5322_id=message_id,
         )
         local_row = self._index.get_message(message_ref=ref)
         if local_row is not None:
             new_ref = MessageRef(
                 account_name=account.name,
                 folder_name=new_folder,
-                message_id=message_id,
+                rfc5322_id=message_id,
             )
             moved = dataclasses.replace(
                 local_row,

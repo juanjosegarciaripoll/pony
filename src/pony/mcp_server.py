@@ -50,7 +50,7 @@ def _msg_to_dict(msg: Any) -> dict[str, Any]:
     return {
         "account": ref.account_name,
         "folder": ref.folder_name,
-        "message_id": ref.message_id,
+        "message_id": ref.rfc5322_id,
         "sender": msg.sender,
         "recipients": msg.recipients,
         "cc": msg.cc,
@@ -236,7 +236,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         ref = MessageRef(
             account_name=account,
             folder_name=folder,
-            message_id=message_id,
+            rfc5322_id=message_id,
         )
         msg = index.get_message(message_ref=ref)
         return _msg_to_dict(msg) if msg is not None else None
@@ -256,18 +256,26 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         Returns a dict with keys: subject, from, to, cc, date, body, attachments.
         Returns None if the message is not in the local mirror.
         """
-        from .domain import MessageRef
+        from .domain import FolderRef, MessageRef
 
-        ref = MessageRef(
-            account_name=account,
-            folder_name=folder,
-            message_id=message_id,
-        )
         mirror = mirrors.get(account)
         if mirror is None:
             return None
+        # Resolve RFC 5322 Message-ID → backend storage_key via the index.
+        indexed = index.get_message(
+            message_ref=MessageRef(
+                account_name=account,
+                folder_name=folder,
+                rfc5322_id=message_id,
+            ),
+        )
+        if indexed is None:
+            return None
         try:
-            raw = mirror.get_message_bytes(message_ref=ref)
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(account_name=account, folder_name=folder),
+                storage_key=indexed.storage_key,
+            )
         except (KeyError, FileNotFoundError, OSError):
             return None
         if not raw:

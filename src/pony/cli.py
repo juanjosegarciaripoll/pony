@@ -721,7 +721,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                 folder_name=folder_plan.folder_name,
             )
             for msg in index.list_folder_messages(folder=folder_ref):
-                mid_to_row[msg.message_ref.message_id] = msg
+                mid_to_row[msg.message_ref.rfc5322_id] = msg
 
         for folder_plan in acc.folders:
             for op in folder_plan.ops:
@@ -748,25 +748,25 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                         )
                     )
                 elif isinstance(op, PushDeleteOp):
-                    hit = mid_to_row.get(op.message_ref.message_id)
+                    hit = mid_to_row.get(op.message_ref.rfc5322_id)
                     rows.append(
                         (
                             "expunge",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             hit.sender if hit else "",
-                            hit.subject if hit else op.message_ref.message_id,
+                            hit.subject if hit else op.message_ref.rfc5322_id,
                         )
                     )
                 elif isinstance(op, RestoreOp):
-                    hit = mid_to_row.get(op.message_ref.message_id)
+                    hit = mid_to_row.get(op.message_ref.rfc5322_id)
                     rows.append(
                         (
                             "restore",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             hit.sender if hit else "",
-                            hit.subject if hit else op.message_ref.message_id,
+                            hit.subject if hit else op.message_ref.rfc5322_id,
                         )
                     )
                 elif isinstance(op, MergeFlagsOp):
@@ -777,7 +777,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             "",
-                            op.message_ref.message_id,
+                            op.message_ref.rfc5322_id,
                         )
                     )
                 elif isinstance(op, PushFlagsOp):
@@ -788,7 +788,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             "",
-                            op.message_ref.message_id,
+                            op.message_ref.rfc5322_id,
                         )
                     )
 
@@ -908,7 +908,9 @@ def run_rescan(
             for i, stored in enumerate(messages, start=1):
                 total += 1
                 try:
-                    raw = mirror.get_message_bytes(message_ref=stored.message_ref)
+                    raw = mirror.get_message_bytes(
+                        folder=folder, storage_key=stored.storage_key,
+                    )
                 except (KeyError, FileNotFoundError):
                     missing += 1
                     _rescan_progress(folder.folder_name, i, folder_total)
@@ -1028,7 +1030,7 @@ def run_message_get(
     index.initialize()
     from .domain import MessageRef
     ref = MessageRef(
-        account_name=account, folder_name=folder, message_id=message_id,
+        account_name=account, folder_name=folder, rfc5322_id=message_id,
     )
     msg = index.get_message(message_ref=ref)
     if msg is None:
@@ -1038,7 +1040,7 @@ def run_message_get(
     flags = ", ".join(sorted(f.value for f in msg.local_flags)) or "(none)"
     print(f"Account:    {msg.message_ref.account_name}")
     print(f"Folder:     {msg.message_ref.folder_name}")
-    print(f"Message-ID: {msg.message_ref.message_id}")
+    print(f"Message-ID: {msg.message_ref.rfc5322_id}")
     print(f"From:       {msg.sender}")
     print(f"To:         {msg.recipients}")
     if msg.cc:
@@ -1081,12 +1083,28 @@ def run_message_body(
     if acc is None:
         raise SystemExit(f"No account named {account!r} in config.")
 
-    ref = MessageRef(
-        account_name=account, folder_name=folder, message_id=message_id,
+    # Users pass an RFC 5322 Message-ID (from search results); the mirror
+    # keys off the backend's own storage_key.  Resolve one to the other
+    # via the index.
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    indexed = index.get_message(
+        message_ref=MessageRef(
+            account_name=account,
+            folder_name=folder,
+            rfc5322_id=message_id,
+        ),
     )
+    if indexed is None:
+        raise SystemExit(
+            f"Message not found in index: {account}/{folder}/{message_id}"
+        )
     mirror = _build_mirror(acc)
     try:
-        raw = mirror.get_message_bytes(message_ref=ref)
+        raw = mirror.get_message_bytes(
+            folder=FolderRef(account_name=account, folder_name=folder),
+            storage_key=indexed.storage_key,
+        )
     except (KeyError, FileNotFoundError, OSError) as exc:
         raise SystemExit(
             f"Message body not found in mirror: {account}/{folder}/{message_id}"
@@ -1133,7 +1151,7 @@ def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) 
         for hit in hits[:5]:
             lines.append(
                 f" - {hit.message_ref.folder_name}/"
-                f"{hit.message_ref.message_id}: {hit.subject}",
+                f"{hit.message_ref.rfc5322_id}: {hit.subject}",
             )
     lines.append(f"Total hits: {total_hits}")
     print("\n".join(lines))

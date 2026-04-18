@@ -54,7 +54,7 @@ def _index_message(
             message_ref=MessageRef(
                 account_name="test",
                 folder_name=folder,
-                message_id=f"<{storage_key}@test>",
+                rfc5322_id=f"<{storage_key}@test>",
             ),
             sender="a@test.com",
             recipients="b@test.com",

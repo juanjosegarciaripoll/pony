@@ -34,7 +34,7 @@ class UpsertAndListTestCase(unittest.TestCase):
 
         rows = repo.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 2)
-        ids = {r.message_ref.message_id for r in rows}
+        ids = {r.message_ref.rfc5322_id for r in rows}
         self.assertEqual(ids, {"m-1", "m-2"})
 
     def test_upsert_is_idempotent(self) -> None:
@@ -84,7 +84,7 @@ class DeleteMessageTestCase(unittest.TestCase):
         repo = _fresh_repo()
         repo.upsert_message(message=_make_message("m-1"))
 
-        ref = MessageRef(account_name="personal", folder_name="INBOX", message_id="m-1")
+        ref = MessageRef(account_name="personal", folder_name="INBOX", rfc5322_id="m-1")
         repo.delete_message(message_ref=ref)
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
@@ -93,7 +93,7 @@ class DeleteMessageTestCase(unittest.TestCase):
     def test_delete_nonexistent_is_silent(self) -> None:
         repo = _fresh_repo()
         ref = MessageRef(
-            account_name="personal", folder_name="INBOX", message_id="ghost"
+            account_name="personal", folder_name="INBOX", rfc5322_id="ghost"
         )
         repo.delete_message(message_ref=ref)  # must not raise
 
@@ -140,35 +140,35 @@ class SearchTestCase(unittest.TestCase):
         hits = self.repo.search(
             query=SearchQuery(from_address="alice"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_to_address_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(to_address="alice"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_cc_address_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(cc_address="carol"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_subject_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(subject="Re:"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_body_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(body="looks good"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_combined_filters_narrow_results(self) -> None:
@@ -176,7 +176,7 @@ class SearchTestCase(unittest.TestCase):
             query=SearchQuery(from_address="alice", subject="Quarterly"),
             account_name="personal",
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_case_insensitive_by_default(self) -> None:
@@ -205,7 +205,7 @@ class SearchTestCase(unittest.TestCase):
             query=SearchQuery(body="Please review", case_sensitive=True),
             account_name="personal",
         )
-        ids = {h.message_ref.message_id for h in hits_right_case}
+        ids = {h.message_ref.rfc5322_id for h in hits_right_case}
         self.assertEqual(ids, {"m-1"})
 
     def test_cross_account_search_none_returns_all(self) -> None:
@@ -219,7 +219,7 @@ class SearchTestCase(unittest.TestCase):
         self.repo.upsert_message(message=other)
 
         hits = self.repo.search(query=SearchQuery(text="quarterly"), account_name=None)
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertIn("m-1", ids)
         self.assertIn("m-2", ids)
         self.assertIn("m-3", ids)
@@ -236,7 +236,7 @@ class SearchTestCase(unittest.TestCase):
         hits = self.repo.search(
             query=SearchQuery(text="quarterly"), account_name="personal"
         )
-        ids = {h.message_ref.message_id for h in hits}
+        ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertNotIn("m-3", ids)
 
 
@@ -373,7 +373,7 @@ class BatchedTransactionTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = repo.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].message_ref.message_id, "m-0")
+        self.assertEqual(rows[0].message_ref.rfc5322_id, "m-0")
 
     def test_nested_connection_reuses_outer(self) -> None:
         """Nested connection() blocks do not commit early."""
@@ -429,7 +429,7 @@ def _make_message(
         message_ref=MessageRef(
             account_name=account_name,
             folder_name=folder_name,
-            message_id=message_id,
+            rfc5322_id=message_id,
         ),
         sender=sender,
         recipients=recipients,
@@ -456,7 +456,7 @@ def _make_operation(
         message_ref=MessageRef(
             account_name=account_name,
             folder_name="INBOX",
-            message_id="m-1",
+            rfc5322_id="m-1",
         ),
         operation_type=operation_type,
     )

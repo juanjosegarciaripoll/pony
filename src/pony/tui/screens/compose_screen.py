@@ -636,7 +636,7 @@ class ComposeScreen(Screen[bool]):
 
         folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
         try:
-            stored_ref = mirror.store_message(folder=folder_ref, raw_message=raw)
+            storage_key = mirror.store_message(folder=folder_ref, raw_message=raw)
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "Failed to store message in %s/%s: %s",
@@ -646,17 +646,14 @@ class ComposeScreen(Screen[bool]):
             return
 
         parsed = _email.message_from_bytes(raw, policy=_policy.default)
-        message_id = (
-            parsed.get("Message-ID", stored_ref.message_id)
-            or stored_ref.message_id
-        )
+        message_id = parsed.get("Message-ID", storage_key) or storage_key
         projected = project_rfc822_message(
             message_ref=MessageRef(
                 account_name=account.name,
                 folder_name=folder_name,
-                message_id=message_id,
+                rfc5322_id=message_id,
             ),
             raw_message=raw,
-            storage_key=stored_ref.message_id,
+            storage_key=storage_key,
         )
         self._index.upsert_message(message=projected)

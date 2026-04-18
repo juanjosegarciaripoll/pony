@@ -504,14 +504,13 @@ class MainScreen(Screen[None]):
             return
 
         mirror = self._mirrors[account.name]
-        storage_ref = MessageRef(
-            account_name=account.name,
-            folder_name=source,
-            message_id=msg.storage_key,
-        )
         try:
-            new_mirror_ref = mirror.move_message_to_folder(
-                message_ref=storage_ref, target_folder=target,
+            new_storage_key = mirror.move_message_to_folder(
+                folder=FolderRef(
+                    account_name=account.name, folder_name=source,
+                ),
+                storage_key=msg.storage_key,
+                target_folder=target,
             )
         except Exception:  # noqa: BLE001
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -525,9 +524,9 @@ class MainScreen(Screen[None]):
             message_ref=MessageRef(
                 account_name=account.name,
                 folder_name=target,
-                message_id=msg.message_ref.message_id,
+                rfc5322_id=msg.message_ref.rfc5322_id,
             ),
-            storage_key=new_mirror_ref.message_id,
+            storage_key=new_storage_key,
             uid=None,
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
@@ -667,13 +666,14 @@ class MainScreen(Screen[None]):
         if msg is None:
             return
         mirror = self._mirrors[msg.message_ref.account_name]
-        storage_ref = MessageRef(
-            account_name=msg.message_ref.account_name,
-            folder_name=msg.message_ref.folder_name,
-            message_id=msg.storage_key,
-        )
         try:
-            raw = mirror.get_message_bytes(message_ref=storage_ref)
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
         except Exception:  # noqa: BLE001
             self.app.notify("Could not load message for reply.", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return
@@ -709,13 +709,14 @@ class MainScreen(Screen[None]):
         if msg is None:
             return
         mirror = self._mirrors[msg.message_ref.account_name]
-        storage_ref = MessageRef(
-            account_name=msg.message_ref.account_name,
-            folder_name=msg.message_ref.folder_name,
-            message_id=msg.storage_key,
-        )
         try:
-            raw = mirror.get_message_bytes(message_ref=storage_ref)
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
         except Exception:  # noqa: BLE001
             self.app.notify("Could not load message for forward.", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return

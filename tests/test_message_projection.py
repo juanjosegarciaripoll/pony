@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 _REF = MessageRef(
     account_name="personal",
     folder_name="INBOX",
-    message_id="test-msg",
+    rfc5322_id="test-msg",
 )
 
 
@@ -244,7 +244,7 @@ class LegacyProjectionTest(unittest.TestCase):
             message_ref=MessageRef(
                 account_name="personal",
                 folder_name="INBOX",
-                message_id="m-42",
+                rfc5322_id="m-42",
             ),
             raw_message=message.as_bytes(),
             storage_key="m-42",

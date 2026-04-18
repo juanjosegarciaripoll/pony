@@ -262,6 +262,49 @@ def _setup(
 # ---------------------------------------------------------------------------
 
 
+class SyncedMessageRetrievalTestCase(unittest.TestCase):
+    """After sync, bytes must be retrievable via the IndexedMessage.
+
+    Regression test for the mirror identity bug: storage methods take a
+    MessageRef but look up files by ``message_ref.message_id``, while for
+    IMAP-synced messages that field holds the RFC 5322 Message-ID
+    (``<xxx@host>``).  The real maildir filename lives on
+    ``IndexedMessage.storage_key``.  Without the fix, every public
+    retrieval path (pony message body, MCP get_message_body, pony rescan)
+    raises KeyError and silently fails.
+    """
+
+    def test_body_retrievable_via_indexed_ref(self) -> None:
+        raw = _make_raw_message(
+            "Benceno probe",
+            # Deliberately shaped like a real RFC 5322 Message-ID that no
+            # maildir filename could ever match.
+            "<not-a-filename@example.com>",
+        )
+        service, index, mirror, _ = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("<not-a-filename@example.com>", frozenset(), raw),
+                }
+            }
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        # Sanity: the two identifiers really are different — otherwise
+        # this test would pass by the same accident that masked the bug.
+        self.assertNotEqual(row.message_ref.rfc5322_id, row.storage_key)
+
+        # The public retrieval contract: the mirror takes a FolderRef +
+        # storage_key pulled from the IndexedMessage.  This is what
+        # run_rescan, run_message_body, and MCP get_message_body all do.
+        payload = mirror.get_message_bytes(
+            folder=folder, storage_key=row.storage_key,
+        )
+        self.assertEqual(payload, raw)
+
+
 class NewMessagesTestCase(unittest.TestCase):
     """New messages on the server are fetched, mirrored, and indexed."""
 
@@ -281,7 +324,7 @@ class NewMessagesTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        mids = {r.message_ref.message_id for r in rows}
+        mids = {r.message_ref.rfc5322_id for r in rows}
         self.assertIn("<msg1@example.com>", mids)
         self.assertIn("<msg2@example.com>", mids)
 
@@ -323,7 +366,7 @@ class NewMessagesTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].uid, 42)
-        self.assertEqual(rows[0].message_ref.message_id, "<hi@example.com>")
+        self.assertEqual(rows[0].message_ref.rfc5322_id, "<hi@example.com>")
         self.assertIsNotNone(rows[0].synced_at)
 
     def test_sync_is_idempotent(self) -> None:
@@ -468,8 +511,8 @@ class ServerMoveTestCase(unittest.TestCase):
         inbox_rows = index.list_folder_messages(folder=inbox)
         archive_rows = index.list_folder_messages(folder=archive)
 
-        inbox_mids = {r.message_ref.message_id for r in inbox_rows}
-        archive_mids = {r.message_ref.message_id for r in archive_rows}
+        inbox_mids = {r.message_ref.rfc5322_id for r in inbox_rows}
+        archive_mids = {r.message_ref.rfc5322_id for r in archive_rows}
 
         self.assertNotIn("<move@example.com>", inbox_mids)
         self.assertIn("<move@example.com>", archive_mids)
@@ -502,7 +545,7 @@ class UidValidityResetTestCase(unittest.TestCase):
         rows_after = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows_after), 1)
         self.assertEqual(rows_after[0].uid, 10)
-        mids = {r.message_ref.message_id for r in rows_after}
+        mids = {r.message_ref.rfc5322_id for r in rows_after}
         self.assertIn("<reset@example.com>", mids)
 
 
@@ -527,8 +570,8 @@ class SyntheticMessageIdTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
         self.assertTrue(
-            rows[0].message_ref.message_id.startswith("<synthetic-"),
-            f"Expected synthetic ID, got {rows[0].message_ref.message_id!r}",
+            rows[0].message_ref.rfc5322_id.startswith("<synthetic-"),
+            f"Expected synthetic ID, got {rows[0].message_ref.rfc5322_id!r}",
         )
 
     def test_synthetic_id_is_stable_across_syncs(self) -> None:
@@ -651,6 +694,40 @@ class PushDeleteTestCase(unittest.TestCase):
         # Message purged from local index too.
         rows_after = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows_after), 0)
+
+    def test_push_delete_removes_mirror_file(self) -> None:
+        """After PushDeleteOp runs, the message must be gone from the mirror.
+
+        Regression test for the mirror identity bug: before the
+        ``storage_key``-based protocol, ``mirror.delete_message`` received
+        the index's ``MessageRef`` whose ``message_id`` was the RFC 5322
+        header, not the storage key — the delete silently no-opped and
+        the mirror grew unbounded.
+        """
+        raw = _make_raw_message("Erase", "<erase@example.com>")
+        service, index, mirror, _ = _setup(
+            server_folders={"INBOX": {1: ("<erase@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        self.assertIn(
+            row.storage_key,
+            mirror.list_messages(folder=folder),
+            "pre-condition: message must be visible in the mirror",
+        )
+
+        index.upsert_message(
+            message=dataclasses.replace(row, local_status=MessageStatus.TRASHED)
+        )
+        service.sync()
+
+        self.assertNotIn(
+            row.storage_key,
+            mirror.list_messages(folder=folder),
+            "PushDeleteOp must remove the message from the mirror",
+        )
 
     def test_trashed_message_does_not_generate_spurious_flag_ops(self) -> None:
         """A TRASHED message in a writable folder must not also emit PushFlagsOp."""
@@ -822,7 +899,7 @@ class DuplicateMessageIdTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 2)
-        mids = {r.message_ref.message_id for r in rows}
+        mids = {r.message_ref.rfc5322_id for r in rows}
         # One keeps the real ID, the other gets a synthetic one.
         self.assertTrue(
             any(mid.startswith("<synthetic-") for mid in mids),
@@ -994,7 +1071,7 @@ class FetchFailureTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index_repo.list_folder_messages(folder=folder)
-        mids = {r.message_ref.message_id for r in rows}
+        mids = {r.message_ref.rfc5322_id for r in rows}
         # UID 1 and 3 should have been ingested; UID 2 skipped.
         self.assertIn("<good@example.com>", mids)
         self.assertIn("<also-good@example.com>", mids)
@@ -1018,7 +1095,7 @@ class EmptyMessageTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        mids = {r.message_ref.message_id for r in rows}
+        mids = {r.message_ref.rfc5322_id for r in rows}
         self.assertIn("<good2@example.com>", mids)
         self.assertNotIn("<empty@example.com>", mids)
 
@@ -1236,6 +1313,41 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
 class TrashGcTestCase(unittest.TestCase):
     """4d: trash GC purges expired trashed messages."""
 
+    def test_expired_trash_purge_removes_mirror_file(self) -> None:
+        """The retention-based purge must remove the message from the mirror.
+
+        Regression test for the mirror identity bug: the purge loop passed
+        the index's MessageRef (RFC 5322 id) to ``mirror.delete_message``,
+        which looked up files by ``message_id`` and silently failed.  The
+        index row was purged but the file lingered forever.
+        """
+        raw = _make_raw_message("Aged trash", "<aged@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={"INBOX": {1: ("<aged@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        self.assertIn(row.storage_key, mirror.list_messages(folder=folder))
+
+        from datetime import timedelta
+        index.upsert_message(
+            message=dataclasses.replace(
+                row,
+                local_status=MessageStatus.TRASHED,
+                trashed_at=row.received_at - timedelta(days=60),
+            )
+        )
+        del session.folders["INBOX"][1]
+        service.sync()
+
+        self.assertNotIn(
+            row.storage_key,
+            mirror.list_messages(folder=folder),
+            "expired-trash purge must remove the message from the mirror",
+        )
+
     def test_expired_trash_purged_on_sync(self) -> None:
         raw = _make_raw_message("Old trash", "<gc@example.com>")
         service, index, _, session = _setup(
@@ -1319,7 +1431,7 @@ class CleanupTestCase(unittest.TestCase):
         stale_ref = MessageRef(
             account_name="removed-account",
             folder_name="INBOX",
-            message_id="<orphan@example.com>",
+            rfc5322_id="<orphan@example.com>",
         )
         index.upsert_message(
             message=IndexedMessage(
@@ -1426,7 +1538,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         """Simulate the TUI ``A`` action at the index level."""
         ref = FolderRef(account_name="personal", folder_name=source)
         rows = index.list_folder_messages(folder=ref)
-        row = next(r for r in rows if r.message_ref.message_id == message_id)
+        row = next(r for r in rows if r.message_ref.rfc5322_id == message_id)
         new_ref = dataclasses.replace(
             row.message_ref, folder_name=target,
         )
@@ -1486,7 +1598,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].uid, new_uid)
         self.assertEqual(
-            rows[0].message_ref.message_id, "<archive@example.com>",
+            rows[0].message_ref.rfc5322_id, "<archive@example.com>",
         )
 
     def test_archive_appended_when_server_has_no_copy(self) -> None:
@@ -1511,18 +1623,13 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         archive_rows = index.list_folder_messages(folder=archive)
         self.assertEqual(len(archive_rows), 1)
         storage_key = archive_rows[0].storage_key
-        from pony.domain import MessageRef
-        new_ref = mirror.move_message_to_folder(
-            message_ref=MessageRef(
-                account_name="personal",
-                folder_name="INBOX",
-                message_id=storage_key,
-            ),
+        new_storage_key = mirror.move_message_to_folder(
+            folder=FolderRef(account_name="personal", folder_name="INBOX"),
+            storage_key=storage_key,
             target_folder="Archive",
         )
-        # Index row's storage_key updates to the new ref's message_id.
         updated = dataclasses.replace(
-            archive_rows[0], storage_key=new_ref.message_id,
+            archive_rows[0], storage_key=new_storage_key,
         )
         index.upsert_message(message=updated)
 
@@ -1573,13 +1680,9 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         inbox = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=inbox)
         row = rows[0]
-        from pony.domain import MessageRef
-        new_mirror_ref = mirror.move_message_to_folder(
-            message_ref=MessageRef(
-                account_name="personal",
-                folder_name="INBOX",
-                message_id=row.storage_key,
-            ),
+        new_storage_key = mirror.move_message_to_folder(
+            folder=inbox,
+            storage_key=row.storage_key,
             target_folder="Archive",
         )
         new_row = dataclasses.replace(
@@ -1587,7 +1690,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             message_ref=dataclasses.replace(
                 row.message_ref, folder_name="Archive",
             ),
-            storage_key=new_mirror_ref.message_id,
+            storage_key=new_storage_key,
             uid=None,
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
@@ -1659,9 +1762,11 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         # Stage a purely local message in a purely local folder: no
         # server-side copy and the archive folder doesn't exist server-side.
         inbox_ref = FolderRef(account_name="personal", folder_name="INBOX")
-        stored = mirror.store_message(folder=inbox_ref, raw_message=raw)
-        moved = mirror.move_message_to_folder(
-            message_ref=stored, target_folder="Archive",
+        storage_key = mirror.store_message(folder=inbox_ref, raw_message=raw)
+        new_storage_key = mirror.move_message_to_folder(
+            folder=inbox_ref,
+            storage_key=storage_key,
+            target_folder="Archive",
         )
         from datetime import UTC, datetime
 
@@ -1675,14 +1780,14 @@ class LocalMoveSyncTestCase(unittest.TestCase):
                 message_ref=MessageRef(
                     account_name="personal",
                     folder_name="Archive",
-                    message_id="<local@example.com>",
+                    rfc5322_id="<local@example.com>",
                 ),
                 sender="alice@example.com",
                 recipients="bob@example.com",
                 cc="",
                 subject="Local",
                 body_preview="",
-                storage_key=moved.message_id,
+                storage_key=new_storage_key,
                 local_flags=frozenset(),
                 base_flags=frozenset(),
                 local_status=MessageStatus.ACTIVE,

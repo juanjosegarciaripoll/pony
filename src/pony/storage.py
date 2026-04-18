@@ -14,7 +14,7 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
-from .domain import FolderRef, MessageFlag, MessageRef
+from .domain import FolderRef, MessageFlag
 from .protocols import MirrorRepository
 
 # ---------------------------------------------------------------------------
@@ -69,21 +69,17 @@ class MaildirMirrorRepository(MirrorRepository):
         timestamp = time.time()
         return f"{timestamp:.6f}.{pid}.{hostname}"
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> MessageRef:
+    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         self._require_folder(folder)
         folder_path = self._ensure_folder_dirs(folder.folder_name)
         filename = self._make_filename()
         new_path = folder_path / "new" / filename
         new_path.write_bytes(raw_message)
-        return MessageRef(
-            account_name=self._account_name,
-            folder_name=folder.folder_name,
-            message_id=filename,
-        )
+        return filename
 
     def store_message_async(
         self, *, folder: FolderRef, raw_message: bytes,
-    ) -> MessageRef:
+    ) -> str:
         """Generate the filename and return immediately; write in background.
 
         The actual ``write_bytes`` is submitted to a thread pool.  Call
@@ -99,11 +95,7 @@ class MaildirMirrorRepository(MirrorRepository):
             )
         future = self._write_pool.submit(new_path.write_bytes, raw_message)
         self._write_futures.append(future)
-        return MessageRef(
-            account_name=self._account_name,
-            folder_name=folder.folder_name,
-            message_id=filename,
-        )
+        return filename
 
     def flush_writes(self) -> None:
         """Wait for all pending async writes to complete.
@@ -118,44 +110,41 @@ class MaildirMirrorRepository(MirrorRepository):
         for f in done:
             f.result()  # raises if the write failed
 
-    def list_messages(self, *, folder: FolderRef) -> tuple[MessageRef, ...]:
+    def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
         maildir = self._open_maildir(folder_name=folder.folder_name)
-        keys = sorted(str(key) for key in maildir.keys())  # noqa: SIM118
-        return tuple(
-            MessageRef(
-                account_name=self._account_name,
-                folder_name=folder.folder_name,
-                message_id=key,
-            )
-            for key in keys
-        )
+        return tuple(sorted(str(key) for key in maildir.keys()))  # noqa: SIM118
 
-    def get_message_bytes(self, *, message_ref: MessageRef) -> bytes:
-        self._require_message_ref(message_ref)
-        path = self._find_message_file(message_ref)
+    def get_message_bytes(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> bytes:
+        self._require_folder(folder)
+        path = self._find_message_file(
+            folder_name=folder.folder_name, storage_key=storage_key,
+        )
         if path is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         return path.read_bytes()
 
-    def _find_message_file(self, message_ref: MessageRef) -> Path | None:
-        """Locate the Maildir file for a message (handles flag suffixes).
+    def _find_message_file(
+        self, *, folder_name: str, storage_key: str,
+    ) -> Path | None:
+        """Locate the Maildir file for a storage_key (handles flag suffixes).
 
         Uses glob instead of a full directory scan so lookup is fast even
         in folders with thousands of messages.
         """
-        folder_path = self._maildir_folder_path(message_ref.folder_name)
-        key = message_ref.message_id
+        folder_path = self._maildir_folder_path(folder_name)
         for subdir in ("cur", "new"):
             d = folder_path / subdir
             if not d.exists():
                 continue
             # Exact match first (no flag suffix).
-            exact = d / key
+            exact = d / storage_key
             if exact.exists():
                 return exact
         # Suffix fallback: escape glob meta-characters only when needed.
-        escaped = _glob_escape(key)
+        escaped = _glob_escape(storage_key)
         for subdir in ("cur", "new"):
             d = folder_path / subdir
             if not d.exists():
@@ -167,42 +156,58 @@ class MaildirMirrorRepository(MirrorRepository):
         return None
 
     def set_flags(
-        self, *, message_ref: MessageRef, flags: frozenset[MessageFlag]
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        flags: frozenset[MessageFlag],
     ) -> None:
-        self._require_message_ref(message_ref)
-        path = self._find_message_file(message_ref)
+        self._require_folder(folder)
+        path = self._find_message_file(
+            folder_name=folder.folder_name, storage_key=storage_key,
+        )
         if path is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         # Rename the file with Maildir flag suffix in cur/.
         flag_str = _maildir_flags(flags)
-        folder_path = self._maildir_folder_path(message_ref.folder_name)
+        folder_path = self._maildir_folder_path(folder.folder_name)
         cur_dir = folder_path / "cur"
         cur_dir.mkdir(parents=True, exist_ok=True)
-        new_name = f"{message_ref.message_id}!2,{flag_str}"
+        new_name = f"{storage_key}!2,{flag_str}"
         dest = cur_dir / new_name
         path.rename(dest)
 
-    def delete_message(self, *, message_ref: MessageRef) -> None:
-        self._require_message_ref(message_ref)
-        path = self._find_message_file(message_ref)
+    def delete_message(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> None:
+        self._require_folder(folder)
+        path = self._find_message_file(
+            folder_name=folder.folder_name, storage_key=storage_key,
+        )
         if path is not None:
             path.unlink(missing_ok=True)
 
     def move_message_to_folder(
-        self, *, message_ref: MessageRef, target_folder: str,
-    ) -> MessageRef:
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        target_folder: str,
+    ) -> str:
         """Rename the Maildir file into *target_folder*'s directory.
 
-        The filename (and therefore the ``message_id``) is preserved —
-        Maildir filenames are globally unique, so the new ref still
+        The filename (and therefore the storage_key) is preserved —
+        Maildir filenames are globally unique, so the returned key still
         identifies the same physical message.
         """
-        self._require_message_ref(message_ref)
-        if target_folder == message_ref.folder_name:
-            return message_ref
-        src = self._find_message_file(message_ref)
+        self._require_folder(folder)
+        if target_folder == folder.folder_name:
+            return storage_key
+        src = self._find_message_file(
+            folder_name=folder.folder_name, storage_key=storage_key,
+        )
         if src is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         self._ensure_folder_dirs(target_folder)
         target_path = self._maildir_folder_path(target_folder)
         subdir = src.parent.name  # "cur" or "new"
@@ -210,11 +215,7 @@ class MaildirMirrorRepository(MirrorRepository):
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / src.name
         src.rename(dest)
-        return MessageRef(
-            account_name=self._account_name,
-            folder_name=target_folder,
-            message_id=message_ref.message_id,
-        )
+        return storage_key
 
     def create_folder(self, *, account_name: str, folder_name: str) -> None:
         """Create an empty Maildir-backed folder (idempotent)."""
@@ -247,9 +248,6 @@ class MaildirMirrorRepository(MirrorRepository):
 
     def _require_folder(self, folder: FolderRef) -> None:
         self._require_account(folder.account_name)
-
-    def _require_message_ref(self, message_ref: MessageRef) -> None:
-        self._require_account(message_ref.account_name)
 
 
 # ---------------------------------------------------------------------------
@@ -309,88 +307,84 @@ class MboxMirrorRepository(MirrorRepository):
             for name in sorted(set(folder_names))
         )
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> MessageRef:
+    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         parsed = BytesParser(policy=policy.default).parsebytes(raw_message)
         message = mailbox.mboxMessage(parsed)
         key = str(mbox.add(message))
         mbox.flush()
-        return MessageRef(
-            account_name=self._account_name,
-            folder_name=folder.folder_name,
-            message_id=key,
-        )
+        return key
 
-    def list_messages(self, *, folder: FolderRef) -> tuple[MessageRef, ...]:
+    def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
-        keys = sorted(str(key) for key in mbox.keys())  # noqa: SIM118
-        return tuple(
-            MessageRef(
-                account_name=self._account_name,
-                folder_name=folder.folder_name,
-                message_id=key,
-            )
-            for key in keys
-        )
+        return tuple(sorted(str(key) for key in mbox.keys()))  # noqa: SIM118
 
-    def get_message_bytes(self, *, message_ref: MessageRef) -> bytes:
-        self._require_message_ref(message_ref)
-        mbox = self._open_mbox(folder_name=message_ref.folder_name)
-        key = int(message_ref.message_id)
+    def get_message_bytes(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> bytes:
+        self._require_folder(folder)
+        mbox = self._open_mbox(folder_name=folder.folder_name)
+        key = int(storage_key)
         # typeshed declares get(str), but mbox uses int keys at runtime.
         message: mailbox.mboxMessage | None = mbox.get(key)  # type: ignore[call-overload]
         if message is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         return message.as_bytes()
 
     def set_flags(
-        self, *, message_ref: MessageRef, flags: frozenset[MessageFlag]
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        flags: frozenset[MessageFlag],
     ) -> None:
-        self._require_message_ref(message_ref)
-        mbox = self._open_mbox(folder_name=message_ref.folder_name)
-        key = int(message_ref.message_id)
+        self._require_folder(folder)
+        mbox = self._open_mbox(folder_name=folder.folder_name)
+        key = int(storage_key)
         message: mailbox.mboxMessage | None = mbox.get(key)  # type: ignore[call-overload]
         if message is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         updated = mailbox.mboxMessage(message)
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
         mbox.flush()
 
-    def delete_message(self, *, message_ref: MessageRef) -> None:
-        self._require_message_ref(message_ref)
-        mbox = self._open_mbox(folder_name=message_ref.folder_name)
-        key = int(message_ref.message_id)
+    def delete_message(
+        self, *, folder: FolderRef, storage_key: str,
+    ) -> None:
+        self._require_folder(folder)
+        mbox = self._open_mbox(folder_name=folder.folder_name)
+        key = int(storage_key)
         del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         mbox.flush()
 
     def move_message_to_folder(
-        self, *, message_ref: MessageRef, target_folder: str,
-    ) -> MessageRef:
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        target_folder: str,
+    ) -> str:
         """Copy the message into *target_folder*'s mbox and remove from source.
 
-        mbox keys are per-file, so the new ref carries a fresh ``message_id``.
+        mbox keys are per-file, so the returned storage_key is new.
         """
-        self._require_message_ref(message_ref)
-        if target_folder == message_ref.folder_name:
-            return message_ref
-        src = self._open_mbox(folder_name=message_ref.folder_name)
-        key = int(message_ref.message_id)
+        self._require_folder(folder)
+        if target_folder == folder.folder_name:
+            return storage_key
+        src = self._open_mbox(folder_name=folder.folder_name)
+        key = int(storage_key)
         message: mailbox.mboxMessage | None = src.get(key)  # type: ignore[call-overload]
         if message is None:
-            raise KeyError(f"message not found: {message_ref.message_id}")
+            raise KeyError(f"message not found: {storage_key}")
         dest = self._open_mbox(folder_name=target_folder)
         new_key = str(dest.add(mailbox.mboxMessage(message)))
         dest.flush()
         del src[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         src.flush()
-        return MessageRef(
-            account_name=self._account_name,
-            folder_name=target_folder,
-            message_id=new_key,
-        )
+        return new_key
 
     def create_folder(self, *, account_name: str, folder_name: str) -> None:
         """Create an empty mbox-backed folder (idempotent)."""
@@ -419,9 +413,6 @@ class MboxMirrorRepository(MirrorRepository):
 
     def _require_folder(self, folder: FolderRef) -> None:
         self._require_account(folder.account_name)
-
-    def _require_message_ref(self, message_ref: MessageRef) -> None:
-        self._require_account(message_ref.account_name)
 
 
 # ---------------------------------------------------------------------------
