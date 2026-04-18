@@ -9,6 +9,7 @@ from textual.widgets import DataTable, Footer, Header, Input
 
 from ...domain import Contact
 from ...protocols import ContactRepository
+from ..bindings import MARK_BINDINGS
 
 
 class ContactBrowserScreen(Screen[None]):
@@ -19,9 +20,7 @@ class ContactBrowserScreen(Screen[None]):
         Binding("q", "close", "Close", show=False),
         Binding("slash", "search", "Search"),
         Binding("s", "search", "Search", show=False),
-        Binding("m", "mark_down", "Mark"),
-        Binding("shift+down", "mark_down", "Mark ↓", show=False),
-        Binding("shift+up", "mark_up", "Mark ↑", show=False),
+        *MARK_BINDINGS,
         Binding("e", "edit", "Edit"),
         Binding("D", "delete_marked", "Delete marked"),
         Binding("M", "merge_marked", "Merge marked"),

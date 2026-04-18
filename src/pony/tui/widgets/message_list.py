@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import DataTable
 from textual.widgets._data_table import ColumnKey
 
 from ...domain import FolderRef, IndexedMessage, MessageFlag, MessageStatus
 from ...protocols import IndexRepository
+from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 
 
 class MessageListPanel(DataTable[Text]):
@@ -20,17 +20,16 @@ class MessageListPanel(DataTable[Text]):
 
     Columns: status marker, date, from, subject. Read messages are dimmed,
     trashed messages are struck through. The marker column shows ``!`` for
-    flagged, ``+`` for messages with attachments, or blank.
-    Posts ``MessageListPanel.MessageSelected`` when a row is activated.
+    flagged, ``+`` for messages with attachments, ``*`` for marked, or
+    blank.  Posts ``MessageListPanel.MessageSelected`` when a row is
+    activated.
     """
 
     BORDER_TITLE = "Messages"
 
     BINDINGS = [
-        Binding("n", "cursor_down", "Next", show=False),
-        Binding("p", "cursor_up", "Prev", show=False),
-        Binding("<", "cursor_first", "First", show=False),
-        Binding(">", "cursor_last", "Last", show=False),
+        *MOTION_BINDINGS,
+        *MARK_BINDINGS,
     ]
 
     @dataclass
@@ -48,6 +47,7 @@ class MessageListPanel(DataTable[Text]):
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._index = index
         self._messages: list[IndexedMessage] = []
+        self._marked: set[str] = set()  # rfc5322_ids
         self._in_search: bool = False
         self._icons_col_key: ColumnKey | None = None
         self._date_col_key: ColumnKey | None = None
@@ -70,8 +70,12 @@ class MessageListPanel(DataTable[Text]):
         self, msg: IndexedMessage,
     ) -> tuple[Text, Text, Text, Text]:
         style = _row_style(msg)
+        icon = (
+            "*" if msg.message_ref.rfc5322_id in self._marked
+            else _icon_column(msg)
+        )
         return (
-            Text(_icon_column(msg), style=style),
+            Text(icon, style=style),
             Text(_format_date(msg.received_at), style=style),
             Text(_truncate(msg.sender, self._from_max()), style=style),
             Text(msg.subject or "(no subject)", style=style),
@@ -101,6 +105,7 @@ class MessageListPanel(DataTable[Text]):
     def load_folder(self, folder_ref: FolderRef) -> None:
         """Replace the table contents with messages from *folder_ref*."""
         self._in_search = False
+        self._marked.clear()
         self.border_title = "Messages"
         self.clear()
         msgs = list(self._index.list_folder_messages(folder=folder_ref))
@@ -121,6 +126,7 @@ class MessageListPanel(DataTable[Text]):
     ) -> None:
         """Replace the table contents with search results."""
         self._in_search = True
+        self._marked.clear()
         self.border_title = f"Search: {query_raw}  [q=exit]"
         self.clear()
         msgs = list(messages)
@@ -196,6 +202,7 @@ class MessageListPanel(DataTable[Text]):
     def action_exit_search(self) -> None:
         """Post SearchExited to let the screen reload the current folder."""
         self._in_search = False
+        self._marked.clear()
         self.border_title = "Messages"
         self.post_message(self.SearchExited())
 
@@ -216,6 +223,57 @@ class MessageListPanel(DataTable[Text]):
             return None
         self.move_cursor(row=new_row)
         return self._messages[new_row]
+
+    # ------------------------------------------------------------------
+    # Mark / unmark
+    # ------------------------------------------------------------------
+
+    def _toggle_mark_current(self) -> None:
+        msg = self.get_selected_message()
+        if msg is None:
+            return
+        mid = msg.message_ref.rfc5322_id
+        if mid in self._marked:
+            self._marked.discard(mid)
+        else:
+            self._marked.add(mid)
+        self._update_row(msg)
+
+    def action_mark_down(self) -> None:
+        self._toggle_mark_current()
+        self.action_cursor_down()
+
+    def action_mark_up(self) -> None:
+        self._toggle_mark_current()
+        self.action_cursor_up()
+
+    def marked_messages(self) -> list[IndexedMessage]:
+        """Messages currently marked, ordered as they appear in the list."""
+        return [
+            m for m in self._messages
+            if m.message_ref.rfc5322_id in self._marked
+        ]
+
+    def messages_to_act_on(self) -> list[IndexedMessage]:
+        """Marked messages if any, otherwise the cursor row as a singleton.
+
+        Callers implementing bulk actions (trash, archive, flag, read)
+        should iterate this and then call :meth:`clear_marks`.
+        """
+        if self._marked:
+            return self.marked_messages()
+        msg = self.get_selected_message()
+        return [msg] if msg is not None else []
+
+    def clear_marks(self) -> None:
+        """Remove all marks and re-render the rows that were previously marked."""
+        if not self._marked:
+            return
+        previously_marked = set(self._marked)
+        self._marked.clear()
+        for msg in self._messages:
+            if msg.message_ref.rfc5322_id in previously_marked:
+                self._update_row(msg)
 
 
 # ---------------------------------------------------------------------------

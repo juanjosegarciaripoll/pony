@@ -63,7 +63,7 @@ class MainScreen(Screen[None]):
         Binding("w", "open_browser", "Web view"),
         Binding("R", "mark_read", "Mark read", show=False),
         Binding("u", "mark_unread", "Mark unread"),
-        Binding("F", "toggle_flagged", "Flag"),
+        Binding("!", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
         Binding("N", "new_folder", "New folder"),
@@ -328,13 +328,8 @@ class MainScreen(Screen[None]):
             if result is not None:
                 for ar in result.accounts:
                     fetched = sum(f.fetched for f in ar.folders)
-                    merged = sum(
-                        f.flag_conflicts_merged for f in ar.folders
-                    )
-                    parts.append(
-                        f"{ar.account_name}: +{fetched} msgs,"
-                        f" {merged} merged"
-                    )
+                    merged = sum(f.flag_conflicts_merged for f in ar.folders)
+                    parts.append(f"{ar.account_name}: +{fetched} msgs, {merged} merged")
             self.app.notify("Sync complete. " + "  ".join(parts))  # pyright: ignore[reportUnknownMemberType]
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             self.app.screen.dismiss(  # pyright: ignore[reportUnknownMemberType]
@@ -377,7 +372,8 @@ class MainScreen(Screen[None]):
         results = list(self._index.search(query=query, account_name=account_name))
         if folder_ref is not None:
             results = [
-                m for m in results
+                m
+                for m in results
                 if m.message_ref.folder_name == folder_ref.folder_name
             ]
 
@@ -396,9 +392,7 @@ class MainScreen(Screen[None]):
     def _refresh_after_sync(self) -> None:
         self.query_one(FolderPanel).refresh_folders()
         if self._current_folder_ref is not None:
-            self.query_one(MessageListPanel).load_folder(
-                self._current_folder_ref
-            )
+            self.query_one(MessageListPanel).load_folder(self._current_folder_ref)
 
     # ------------------------------------------------------------------
     # Flag and message actions
@@ -414,9 +408,7 @@ class MainScreen(Screen[None]):
         )
 
     def _reload_current_folder(self, msg: IndexedMessage) -> None:
-        self.query_one(MessageListPanel).load_folder(
-            self._folder_ref_from_message(msg)
-        )
+        self.query_one(MessageListPanel).load_folder(self._folder_ref_from_message(msg))
 
     def _mark_seen(self, message: IndexedMessage) -> None:
         if MessageFlag.SEEN in message.local_flags:
@@ -428,50 +420,85 @@ class MainScreen(Screen[None]):
         self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).update_message(updated)
 
-    def toggle_flag(self, flag: MessageFlag) -> None:
-        """Toggle *flag* on the currently selected message and refresh."""
-        msg = self.get_current_message()
-        if msg is None:
+    def _targets(self) -> list[IndexedMessage]:
+        """Messages to act on: marked rows if any, else the cursor row."""
+        return self.query_one(MessageListPanel).messages_to_act_on()
+
+    def set_flag(self, flag: MessageFlag, *, present: bool) -> None:
+        """Add or remove *flag* on every target message and refresh."""
+        targets = self._targets()
+        if not targets:
             return
-        if flag in msg.local_flags:
-            new_flags = msg.local_flags - {flag}
-        else:
-            new_flags = msg.local_flags | {flag}
-        updated = dataclasses.replace(msg, local_flags=new_flags)
-        self._index.upsert_message(message=updated)
-        self._reload_current_folder(msg)
+        with self._index.connection():
+            for msg in targets:
+                new_flags = (
+                    msg.local_flags | {flag} if present
+                    else msg.local_flags - {flag}
+                )
+                if new_flags == msg.local_flags:
+                    continue
+                updated = dataclasses.replace(msg, local_flags=new_flags)
+                self._index.upsert_message(message=updated)
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_current_folder(targets[0])
+
+    def toggle_flag(self, flag: MessageFlag) -> None:
+        """Toggle *flag* on every target message and refresh the list."""
+        targets = self._targets()
+        if not targets:
+            return
+        with self._index.connection():
+            for msg in targets:
+                if flag in msg.local_flags:
+                    new_flags = msg.local_flags - {flag}
+                else:
+                    new_flags = msg.local_flags | {flag}
+                updated = dataclasses.replace(msg, local_flags=new_flags)
+                self._index.upsert_message(message=updated)
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_current_folder(targets[0])
 
     def trash_current_message(self) -> None:
-        """Mark the current message as trashed in the index."""
-        msg = self.get_current_message()
-        if msg is None:
+        """Mark every target message as trashed in the index."""
+        targets = self._targets()
+        if not targets:
             return
-        updated = dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
-        self._index.upsert_message(message=updated)
-        self._reload_current_folder(msg)
+        with self._index.connection():
+            for msg in targets:
+                updated = dataclasses.replace(
+                    msg, local_status=MessageStatus.TRASHED,
+                )
+                self._index.upsert_message(message=updated)
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_current_folder(targets[0])
 
     def archive_current_message(self) -> None:
-        """Move the selected message into the account's archive folder.
+        """Move every target message into the account's archive folder.
 
-        The move is applied locally (index + mirror) immediately; the
-        next sync pushes the move to the server via ``UID MOVE``.
-        Refuses to act when the account has no ``archive_folder`` or
-        when the source/target folder cannot accept the move.
+        Moves are applied locally (index + mirror) immediately; the next
+        sync pushes them to the server via ``UID MOVE``.  Refuses to
+        act when the account has no ``archive_folder`` or when the
+        source/target folder cannot accept the move.
         """
-        msg = self.get_current_message()
-        if msg is None:
+        targets = self._targets()
+        if not targets:
             return
+        # All rows in the current view share one account + source folder,
+        # so the precondition checks only need to run once.
+        sample = targets[0]
         account = next(
             (
-                a for a in self._config.accounts
-                if a.name == msg.message_ref.account_name
+                a
+                for a in self._config.accounts
+                if a.name == sample.message_ref.account_name
                 and isinstance(a, AccountConfig)
             ),
             None,
         )
         if account is None:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Archive requires an IMAP account.", severity="warning",
+                "Archive requires an IMAP account.",
+                severity="warning",
             )
             return
         target = account.archive_folder
@@ -481,7 +508,7 @@ class MainScreen(Screen[None]):
                 severity="error",
             )
             return
-        source = msg.message_ref.folder_name
+        source = sample.message_ref.folder_name
         if source == target:
             return
         if account.folders.is_read_only(source):
@@ -504,47 +531,49 @@ class MainScreen(Screen[None]):
             return
 
         mirror = self._mirrors[account.name]
-        try:
-            new_storage_key = mirror.move_message_to_folder(
-                folder=FolderRef(
-                    account_name=account.name, folder_name=source,
-                ),
-                storage_key=msg.storage_key,
-                target_folder=target,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Failed to move message in local mirror.",
-                severity="error",
-            )
-            return
-
-        new_row = dataclasses.replace(
-            msg,
-            message_ref=MessageRef(
-                account_name=account.name,
-                folder_name=target,
-                rfc5322_id=msg.message_ref.rfc5322_id,
-            ),
-            storage_key=new_storage_key,
-            uid=None,
-            server_flags=frozenset(),
-            extra_imap_flags=frozenset(),
-            synced_at=None,
-        )
+        source_folder = FolderRef(account_name=account.name, folder_name=source)
+        archived = 0
         with self._index.connection():
-            self._index.delete_message(message_ref=msg.message_ref)
-            self._index.upsert_message(message=new_row)
-        self._reload_current_folder(msg)
-        self.app.notify(f"Archived to {target}.")  # pyright: ignore[reportUnknownMemberType]
+            for msg in targets:
+                try:
+                    new_storage_key = mirror.move_message_to_folder(
+                        folder=source_folder,
+                        storage_key=msg.storage_key,
+                        target_folder=target,
+                    )
+                except Exception:  # noqa: BLE001
+                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                        "Failed to move message in local mirror.",
+                        severity="error",
+                    )
+                    continue
+                new_row = dataclasses.replace(
+                    msg,
+                    message_ref=MessageRef(
+                        account_name=account.name,
+                        folder_name=target,
+                        rfc5322_id=msg.message_ref.rfc5322_id,
+                    ),
+                    storage_key=new_storage_key,
+                    uid=None,
+                    server_flags=frozenset(),
+                    extra_imap_flags=frozenset(),
+                    synced_at=None,
+                )
+                self._index.delete_message(message_ref=msg.message_ref)
+                self._index.upsert_message(message=new_row)
+                archived += 1
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_current_folder(sample)
+        if archived:
+            suffix = "" if archived == 1 else f" ({archived} messages)"
+            self.app.notify(f"Archived to {target}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
 
     def action_mark_read(self) -> None:
-        self.toggle_flag(MessageFlag.SEEN)
+        self.set_flag(MessageFlag.SEEN, present=True)
 
     def action_mark_unread(self) -> None:
-        msg = self.get_current_message()
-        if msg and MessageFlag.SEEN in msg.local_flags:
-            self.toggle_flag(MessageFlag.SEEN)
+        self.set_flag(MessageFlag.SEEN, present=False)
 
     def action_toggle_flagged(self) -> None:
         self.toggle_flag(MessageFlag.FLAGGED)
@@ -564,7 +593,8 @@ class MainScreen(Screen[None]):
         account = self._account_for_new_folder()
         if account is None:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Select a folder or account first.", severity="warning",
+                "Select a folder or account first.",
+                severity="warning",
             )
             return
         from .new_folder_screen import NewFolderScreen
@@ -588,9 +618,7 @@ class MainScreen(Screen[None]):
             for a in self._config.accounts:
                 if a.name == name and isinstance(a, AccountConfig):
                     return a
-        imap = [
-            a for a in self._config.accounts if isinstance(a, AccountConfig)
-        ]
+        imap = [a for a in self._config.accounts if isinstance(a, AccountConfig)]
         if len(imap) == 1:
             return imap[0]
         return None
@@ -600,12 +628,14 @@ class MainScreen(Screen[None]):
         mirror = self._mirrors.get(account_name)
         if mirror is None:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Unknown account {account_name!r}.", severity="error",
+                f"Unknown account {account_name!r}.",
+                severity="error",
             )
             return
         try:
             mirror.create_folder(
-                account_name=account_name, folder_name=folder_name,
+                account_name=account_name,
+                folder_name=folder_name,
             )
         except Exception:  # noqa: BLE001
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -634,12 +664,11 @@ class MainScreen(Screen[None]):
     def compose_new(self) -> None:
         """Open a blank compose screen."""
         from .compose_screen import ComposeInitial, ComposeScreen
+
         accounts = list(self._config.accounts)
         msg = self.get_current_message()
         account_name = (
-            msg.message_ref.account_name
-            if msg is not None
-            else accounts[0].name
+            msg.message_ref.account_name if msg is not None else accounts[0].name
         )
         account = next((a for a in accounts if a.name == account_name), accounts[0])
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
@@ -662,6 +691,7 @@ class MainScreen(Screen[None]):
     def compose_reply(self) -> None:
         """Open compose pre-filled as a reply to the current message."""
         from .compose_screen import ComposeInitial, ComposeScreen
+
         msg = self.get_current_message()
         if msg is None:
             return
@@ -705,6 +735,7 @@ class MainScreen(Screen[None]):
     def compose_forward(self) -> None:
         """Open compose pre-filled as a forward of the current message."""
         from .compose_screen import ComposeInitial, ComposeScreen
+
         msg = self.get_current_message()
         if msg is None:
             return
