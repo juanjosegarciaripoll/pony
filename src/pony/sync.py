@@ -1347,15 +1347,46 @@ class ImapSyncService:
             "linked_local": 0,
         }
 
-        # Pipelined execution: a background thread pre-fetches message
-        # bytes for FetchNewOps while the main thread processes all ops.
+        # Two-phase execution per folder:
+        #
+        # Phase 1 (overlap): a background producer thread batches
+        # FetchNewOps and calls ``fetch_messages_batch`` on the IMAP
+        # session; the main thread consumes the queue and executes ops
+        # that only touch the local index/mirror (FetchNewOp plus the
+        # other session-free ops below).  During Phase 1, the producer
+        # is the *only* thread that touches ``session`` — the consumer
+        # never does.  That is the invariant that makes the overlap
+        # safe; violating it (as earlier versions did) races two
+        # threads on one ``imaplib`` socket and deadlocks.
+        #
+        # Phase 2 (serial): ops that issue IMAP commands themselves
+        # (PushFlagsOp, PushDeleteOp, PushMoveOp, PushAppendOp,
+        # ReUploadOp) run on the main thread in plan order after the
+        # producer has finished.  No concurrency, no races.
+        phase1_ops: list[SyncOp] = []
+        phase2_ops: list[SyncOp] = []
+        for op in plan.ops:
+            if isinstance(
+                op,
+                (
+                    PushFlagsOp,
+                    PushDeleteOp,
+                    PushMoveOp,
+                    PushAppendOp,
+                    ReUploadOp,
+                ),
+            ):
+                phase2_ops.append(op)
+            else:
+                phase1_ops.append(op)
+
         q: SimpleQueue[tuple[SyncOp, bytes | None] | None] = SimpleQueue()
         fetch_ns: list[int] = []   # accumulated by producer thread
         ingest_ns: list[int] = []  # accumulated by main thread
 
         def _producer() -> None:
             batch: list[FetchNewOp] = []
-            for op in plan.ops:
+            for op in phase1_ops:
                 if isinstance(op, FetchNewOp):
                     batch.append(op)
                     if len(batch) >= 25:
@@ -1382,26 +1413,56 @@ class ImapSyncService:
                 q.put((op, raw_map.get(op.uid)))
             batch.clear()
 
-        threading.Thread(target=_producer, daemon=True).start()
+        producer: threading.Thread | None = None
+        if phase1_ops:
+            producer = threading.Thread(target=_producer, daemon=True)
+            producer.start()
 
         # All index writes for one folder share a single transaction.
         total_ops = len(plan.ops)
         completed = 0
         with self._index.connection():
-            while (item := q.get()) is not None:
-                op, raw = item
+            # Phase 1: drain the queue; the producer owns `session`.
+            if phase1_ops:
+                while (item := q.get()) is not None:
+                    op, raw = item
+                    try:
+                        _t = time.perf_counter()
+                        self._execute_one(
+                            op, raw, account=account,
+                            folder_name=folder_name, folder_ref=folder_ref,
+                            session=session, mirror=mirror,
+                            counters=counters,
+                        )
+                        if isinstance(op, FetchNewOp) and raw:
+                            ingest_ns.append(
+                                int((time.perf_counter() - _t) * 1_000_000_000)
+                            )
+                    except Exception:
+                        logger.exception(
+                            "%s failed for %s/%s — skipping",
+                            type(op).__name__, account.name, folder_name,
+                        )
+                    completed += 1
+                    if progress is not None:
+                        progress(ProgressInfo(
+                            f"{account.name}/{folder_name}: "
+                            f"{completed}/{total_ops}",
+                            current=completed,
+                            total=total_ops,
+                        ))
+            if producer is not None:
+                producer.join()
+
+            # Phase 2: IMAP-command ops, serial on the main thread.
+            for op in phase2_ops:
                 try:
-                    _t = time.perf_counter()
                     self._execute_one(
-                        op, raw, account=account,
+                        op, None, account=account,
                         folder_name=folder_name, folder_ref=folder_ref,
                         session=session, mirror=mirror,
                         counters=counters,
                     )
-                    if isinstance(op, FetchNewOp) and raw:
-                        ingest_ns.append(
-                            int((time.perf_counter() - _t) * 1_000_000_000)
-                        )
                 except Exception:
                     logger.exception(
                         "%s failed for %s/%s — skipping",
