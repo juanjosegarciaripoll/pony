@@ -6,8 +6,7 @@ import contextlib
 from collections.abc import Callable
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Label, ProgressBar, Static
 
 from ...sync import (
@@ -23,6 +22,7 @@ from ...sync import (
     ServerMoveOp,
     SyncPlan,
 )
+from .dialog_screen import DialogScreen
 
 
 def _plan_summary(plan: SyncPlan) -> str:
@@ -98,28 +98,16 @@ def _plan_detail(plan: SyncPlan) -> str:
     return "\n".join(lines) if lines else "  (nothing to do)"
 
 
-class SyncConfirmScreen(Screen[bool]):
+class SyncConfirmScreen(DialogScreen):
     """Presents the sync plan and returns True (proceed) or False (cancel).
 
     Dismisses with True when the user confirms, False when cancelled.
     """
 
     CSS = """
-    SyncConfirmScreen {
-        align: center middle;
-    }
-
     #dialog {
         width: 90%;
-        height: auto;
         max-height: 80%;
-        border: solid $primary;
-        padding: 1 2;
-    }
-
-    #title {
-        text-style: bold;
-        margin-bottom: 1;
     }
 
     #summary {
@@ -144,16 +132,6 @@ class SyncConfirmScreen(Screen[bool]):
         height: auto;
         margin-bottom: 1;
         display: none;
-    }
-
-    #buttons {
-        layout: horizontal;
-        height: auto;
-        align: center middle;
-    }
-
-    Button {
-        margin: 0 2;
     }
     """
 
@@ -194,7 +172,7 @@ class SyncConfirmScreen(Screen[bool]):
                 skipped = self._skipped_text()
                 if skipped:
                     yield Static(skipped, id="skipped")
-                with Vertical(id="buttons"):
+                with Horizontal(id="buttons"):
                     yield Button(
                         "Proceed [Y]", id="proceed", variant="success",
                     )
@@ -209,6 +187,8 @@ class SyncConfirmScreen(Screen[bool]):
         self._planning = False
         self.query_one("#title", Label).update("Sync Plan")
         self.query_one("#detail", Static).update(_plan_detail(plan))
+        with contextlib.suppress(Exception):
+            self.query_one("#progress-bar", ProgressBar).remove()
         # Add buttons dynamically.
         dialog = self.query_one("#dialog", Vertical)
         summary = _plan_summary(plan)
@@ -217,12 +197,12 @@ class SyncConfirmScreen(Screen[bool]):
                 Static(summary, id="summary"),
                 before=self.query_one("#detail"),
             )
-        dialog.mount(
+        buttons = Horizontal(
             Button("Proceed [Y]", id="proceed", variant="success"),
-        )
-        dialog.mount(
             Button("Cancel [N]", id="cancel", variant="error"),
+            id="buttons",
         )
+        dialog.mount(buttons)
 
     def _skipped_text(self) -> str:
         if self._plan is None:

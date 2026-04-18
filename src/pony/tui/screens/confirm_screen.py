@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Label, Static
 
+from .dialog_screen import DialogScreen
 
-class ConfirmScreen(Screen[bool]):
+
+class ConfirmScreen(DialogScreen):
     """Modal confirmation dialog.  Dismisses with True or False."""
 
     BINDINGS = [
@@ -20,34 +21,12 @@ class ConfirmScreen(Screen[bool]):
     ]
 
     CSS = """
-    ConfirmScreen {
-        align: center middle;
-    }
-
-    #confirm-dialog {
+    #dialog {
         width: 60;
-        height: auto;
-        border: solid $primary;
-        padding: 1 2;
     }
 
-    #confirm-title {
-        text-style: bold;
+    #body {
         margin-bottom: 1;
-    }
-
-    #confirm-body {
-        margin-bottom: 1;
-    }
-
-    #confirm-buttons {
-        layout: horizontal;
-        height: auto;
-        align: center middle;
-    }
-
-    #confirm-buttons Button {
-        margin: 0 2;
     }
     """
 
@@ -62,10 +41,10 @@ class ConfirmScreen(Screen[bool]):
         self._body = body
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-dialog"):
-            yield Label(self._title, id="confirm-title")
-            yield Static(self._body, id="confirm-body")
-            with Vertical(id="confirm-buttons"):
+        with Vertical(id="dialog"):
+            yield Label(self._title, id="title")
+            yield Static(self._body, id="body")
+            with Horizontal(id="buttons"):
                 yield Button("Yes [Y]", id="yes", variant="error")
                 yield Button("No [N]", id="no", variant="primary")
 

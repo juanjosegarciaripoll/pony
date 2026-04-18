@@ -5,18 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from rich.text import Text
 from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import DataTable
+from textual.widgets._data_table import ColumnKey
 
 from ...domain import FolderRef, IndexedMessage, MessageFlag, MessageStatus
 from ...protocols import IndexRepository
 
 
-class MessageListPanel(DataTable[str]):
+class MessageListPanel(DataTable[Text]):
     """Tabular list of messages for the currently selected folder.
 
-    Columns: flags indicator, date, from, subject.
+    Columns: status marker, date, from, subject. Read messages are dimmed,
+    trashed messages are struck through. The marker column shows ``!`` for
+    flagged, ``+`` for messages with attachments, or blank.
     Posts ``MessageListPanel.MessageSelected`` when a row is activated.
     """
 
@@ -45,13 +49,54 @@ class MessageListPanel(DataTable[str]):
         self._index = index
         self._messages: list[IndexedMessage] = []
         self._in_search: bool = False
+        self._icons_col_key: ColumnKey | None = None
+        self._date_col_key: ColumnKey | None = None
+        self._from_col_key: ColumnKey | None = None
+        self._subject_col_key: ColumnKey | None = None
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self.add_column(" ", width=3, key="icons")  # [read][att][flag]
-        self.add_column("Date")
-        self.add_column("From")
-        self.add_column("Subject")
+        self._icons_col_key = self.add_column(" ", width=1, key="icons")
+        self._date_col_key = self.add_column("Date")
+        self._from_col_key = self.add_column("From")
+        self._subject_col_key = self.add_column("Subject")
+
+    def _from_max(self) -> int:
+        """Max characters for the From column — capped at 25% of table width."""
+        table_width = max(20, self.size.width)
+        return max(10, min(40, table_width // 4))
+
+    def _cells_for(
+        self, msg: IndexedMessage,
+    ) -> tuple[Text, Text, Text, Text]:
+        style = _row_style(msg)
+        return (
+            Text(_icon_column(msg), style=style),
+            Text(_format_date(msg.received_at), style=style),
+            Text(_truncate(msg.sender, self._from_max()), style=style),
+            Text(msg.subject or "(no subject)", style=style),
+        )
+
+    def _update_row(self, msg: IndexedMessage) -> None:
+        assert self._icons_col_key is not None
+        assert self._date_col_key is not None
+        assert self._from_col_key is not None
+        assert self._subject_col_key is not None
+        mid = msg.message_ref.message_id
+        icons, date, sender, subject = self._cells_for(msg)
+        self.update_cell(
+            row_key=mid, column_key=self._icons_col_key, value=icons,
+        )
+        self.update_cell(
+            row_key=mid, column_key=self._date_col_key, value=date,
+        )
+        self.update_cell(
+            row_key=mid, column_key=self._from_col_key, value=sender,
+            update_width=True,
+        )
+        self.update_cell(
+            row_key=mid, column_key=self._subject_col_key, value=subject,
+        )
 
     def load_folder(self, folder_ref: FolderRef) -> None:
         """Replace the table contents with messages from *folder_ref*."""
@@ -67,10 +112,7 @@ class MessageListPanel(DataTable[str]):
         self._messages = msgs
         for msg in msgs:
             self.add_row(
-                _icon_column(msg),
-                _format_date(msg.received_at),
-                _truncate(msg.sender, 30),
-                msg.subject or "(no subject)",
+                *self._cells_for(msg),
                 key=msg.message_ref.message_id,
             )
 
@@ -86,10 +128,7 @@ class MessageListPanel(DataTable[str]):
         self._messages = msgs
         for msg in msgs:
             self.add_row(
-                _icon_column(msg),
-                _format_date(msg.received_at),
-                _truncate(msg.sender, 30),
-                msg.subject or "(no subject)",
+                *self._cells_for(msg),
                 key=msg.message_ref.message_id,
             )
         if not msgs:
@@ -134,16 +173,12 @@ class MessageListPanel(DataTable[str]):
         return None
 
     def update_message(self, updated: IndexedMessage) -> None:
-        """Replace one message in the internal list and refresh its icon cell."""
+        """Replace one message in the internal list and restyle its row."""
         mid = updated.message_ref.message_id
         for i, msg in enumerate(self._messages):
             if msg.message_ref.message_id == mid:
                 self._messages[i] = updated
-                self.update_cell(
-                    row_key=mid,
-                    column_key="icons",
-                    value=_icon_column(updated),
-                )
+                self._update_row(updated)
                 break
 
     def on_key(self, event: object) -> None:
@@ -164,6 +199,13 @@ class MessageListPanel(DataTable[str]):
         self.border_title = "Messages"
         self.post_message(self.SearchExited())
 
+    def on_resize(self) -> None:
+        """Refresh all rows so the From column stays capped at 25% of width."""
+        if self._from_col_key is None or not self._messages:
+            return
+        for msg in self._messages:
+            self._update_row(msg)
+
     def move_cursor_by(self, delta: int) -> IndexedMessage | None:
         """Move the row cursor by *delta* (±1) and return the new message.
 
@@ -182,21 +224,25 @@ class MessageListPanel(DataTable[str]):
 
 
 def _icon_column(msg: IndexedMessage) -> str:
-    """Three-character icon column: [read/unread][attachment][flag].
+    """Single-character status marker: ``!`` flagged, ``+`` has-attachments."""
+    if MessageFlag.FLAGGED in msg.local_flags:
+        return "!"
+    if msg.has_attachments:
+        return "+"
+    return " "
 
-    Position 0: · (unread) or space (read).
-    Position 1: + (has attachments) or space.
-    Position 2: F (flagged), T (trashed), or space.
+
+def _row_style(msg: IndexedMessage) -> str:
+    """Rich style string applied to every cell in the row.
+
+    Read messages are dimmed; trashed messages are struck through.
     """
-    read = " " if MessageFlag.SEEN in msg.local_flags else "\u00b7"  # ·
-    att = "+" if msg.has_attachments else " "
+    parts: list[str] = []
+    if MessageFlag.SEEN in msg.local_flags:
+        parts.append("dim")
     if msg.local_status == MessageStatus.TRASHED:
-        flag = "T"
-    elif MessageFlag.FLAGGED in msg.local_flags:
-        flag = "F"
-    else:
-        flag = " "
-    return read + att + flag
+        parts.append("strike")
+    return " ".join(parts)
 
 
 def _format_date(dt: datetime) -> str:
