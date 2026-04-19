@@ -5,6 +5,67 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0]
+### Added
+
+- **Accent- and case-insensitive full-text search via FTS5**: message
+  and contact search was broken for any locale with non-ASCII letters
+  because SQLite's built-in case folding only covers ASCII — so `maria`
+  never matched `María`. The LIKE-based query paths are gone; search
+  now runs against FTS5 virtual tables tokenised with
+  `unicode61 remove_diacritics 2`, which folds both case and diacritics
+  by construction. Applies to `pony search`, the TUI search dialog, the
+  contacts browser, and the MCP `search_messages` / `search_contacts`
+  tools.
+- **Guided recovery flow on index-schema mismatch**: opening an older
+  index (schema v1) with a newer binary used to abort with a bare
+  error. `pony` now explains the three recovery steps (export contacts,
+  delete index + mirrors, resync) and offers to perform the first two
+  automatically, defaulting to **No**. Contacts are snapshotted to
+  `<data_dir>/contacts-backup-<UTC-timestamp>.bbdb` via a new
+  `load_contacts_for_backup()` entry point that reads directly from the
+  mismatched DB.
+- **Automatic mirror rescan for local accounts on TUI startup**: local
+  accounts (`account_type = "local"`) have no sync step, so files added
+  or removed in the mirror by external tools (offlineimap, getmail,
+  procmail, Emacs/Gnus) never reached the SQLite index. `pony tui` now
+  reconciles the delta before the reader opens — new files are
+  projected and indexed, rows whose files vanished are pruned, and
+  pending-append rows with empty `storage_key` are preserved so the
+  sync engine can still push them upstream. A per-folder liveness
+  line, an announcement of the planned work, and a per-item progress
+  bar are rendered on stderr so startup is never silent, even on
+  large mbox archives.
+
+### Changed
+
+- **Index schema bumped to version 2. Existing v1 databases refuse to
+  open.** Detected via `PRAGMA user_version` with a legacy-table
+  sentinel so DBs that predate schema stamping are still flagged. The
+  in-place migration is intentionally deferred; the guided reset above
+  is the recovery path. Users upgrading from 0.4.x will be prompted on
+  first run.
+- **`body_preview` removed from CLI and MCP responses.** `pony message
+  get` no longer prints a `Preview:` block, and MCP `search_messages` /
+  `get_message` no longer include `body_preview` in the returned dict.
+  The index is now pure metadata; callers that need body text fetch it
+  from the mirror via `pony message body` or MCP `get_message_body`.
+  This keeps the FTS5 index lean and removes a redundant, lossy copy
+  of the body. The 4000-byte per-MIME-part cap on projected previews
+  is also gone; a 256 KB byte-safe cap is applied once on the final
+  collapsed text.
+
+### Fixed
+
+- **RFC 2047 encoded-words with unknown charset labels** (e.g.
+  `=?x-unknown?Q?…?=`) no longer abort mbox import. Python's
+  `bytes.decode` raises `LookupError` on unregistered codec names —
+  `errors="replace"` only handles bad bytes inside a *known* codec —
+  so one malformed header could tank the whole ingest.
+  `_decode_header` now falls back to latin-1 (a total mapping that
+  never fails) when the declared charset is unknown, yielding a
+  lossless best-effort string instead of crashing.
+
 ## [0.4.0] - 2026-04-18
 ### Fixed
 
