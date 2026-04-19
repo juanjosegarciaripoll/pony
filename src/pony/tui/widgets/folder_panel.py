@@ -219,9 +219,13 @@ class FolderPanel(Tree[FolderRef | None]):
         account).  Discovering folders from ``folder_sync_state`` alone
         used to hide local accounts entirely from the tree, since sync
         never writes a state row for them.
-        """
-        from ...domain import MessageFlag, MessageStatus
 
+        Unread counts come from a single ``GROUP BY`` against the
+        ``messages`` table — previously we materialised every
+        ``IndexedMessage`` for every folder just to count, which for a
+        big account (tens of thousands of rows across dozens of
+        folders) dominated tree-rebuild time.
+        """
         counts: dict[str, int] = {}
         mirror = self._mirrors.get(account_name)
         if mirror is not None:
@@ -232,15 +236,11 @@ class FolderPanel(Tree[FolderRef | None]):
         # the mirror hasn't materialised on this host).
         for state in self._index.list_folder_sync_states(account_name=account_name):
             counts.setdefault(state.folder_name, 0)
-        for folder_name in list(counts.keys()):
-            folder_ref = FolderRef(account_name=account_name, folder_name=folder_name)
-            msgs = self._index.list_folder_messages(folder=folder_ref)
-            counts[folder_name] = sum(
-                1
-                for m in msgs
-                if MessageFlag.SEEN not in m.local_flags
-                and m.local_status == MessageStatus.ACTIVE
-            )
+        unread = self._index.unread_counts_by_folder(account_name=account_name)
+        for folder_name, n in unread.items():
+            # Folders from the index that aren't on disk still belong
+            # in the tree — they might be hidden remote folders.
+            counts[folder_name] = n
         return counts
 
     def action_next_inbox(self) -> None:

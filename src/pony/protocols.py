@@ -163,6 +163,17 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def unread_counts_by_folder(
+        self, *, account_name: str
+    ) -> dict[str, int]:
+        """Return ``{folder_name: unread_count}`` for one account.
+
+        Folders with zero unread are omitted from the mapping; callers
+        treat a missing entry as ``0``.  One GROUP BY query, no Python
+        row materialisation.
+        """
+        ...
+
     def get_message(self, *, message_ref: MessageRef) -> IndexedMessage | None:
         """Return one indexed message by its primary key, or None."""
         ...

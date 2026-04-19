@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.6.0]
 ### Fixed
 
+- **Folder-panel unread counts computed in SQL**: the tree was
+  calling ``list_folder_messages`` once per folder and materialising
+  every ``IndexedMessage`` row (datetime parsing, flag-set
+  construction) just to count unread.  For a 113k-row account this
+  took ~6 s per refresh.  Replaced with a single ``GROUP BY`` query
+  (``IndexRepository.unread_counts_by_folder``) — same information,
+  ~900 ms for that same account, no Python row construction.
 - **Garbled sync progress output**: the CLI progress callback used
   ``\r<msg>`` to overwrite the running per-message counter but never
   cleared the line before printing the per-folder completion message,

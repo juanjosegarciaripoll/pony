@@ -510,6 +510,33 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def unread_counts_by_folder(
+        self, *, account_name: str
+    ) -> dict[str, int]:
+        """Return ``{folder_name: unread_count}`` for one account.
+
+        Done in one GROUP BY so the folder panel doesn't have to
+        materialise every ``IndexedMessage`` row just to count.
+        ``local_flags`` is stored as a CSV of flag values — the pattern
+        wraps the column in commas so ``,seen,`` is the boundary match
+        and ``unseen`` / ``foreseen`` can't false-positive.
+        """
+        if not self._database_path.exists():
+            return {}
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT folder_name, COUNT(*)
+                FROM messages
+                WHERE account_name = ?
+                  AND local_status = 'active'
+                  AND (',' || local_flags || ',') NOT LIKE '%,seen,%'
+                GROUP BY folder_name
+                """,
+                (account_name,),
+            ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
+
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
         """Return indexed messages for a folder ordered by received date."""
         with self._use() as conn:
