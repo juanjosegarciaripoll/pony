@@ -10,7 +10,8 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: write        # push commits, tags, and the GitHub release
+  actions: write         # dispatch release-build.yml via workflow_dispatch
 
 jobs:
   release:
