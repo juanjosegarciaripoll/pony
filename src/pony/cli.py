@@ -136,6 +136,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the index database and all local mirrors for a clean re-sync.",
     )
     reset_parser.add_argument(
+        "--account",
+        dest="account",
+        help=(
+            "Reset only this account: drop its index rows and mirror "
+            "directory. Credentials and other accounts are left untouched. "
+            "Without this flag the whole index and every mirror are removed."
+        ),
+    )
+    reset_parser.add_argument(
         "--yes",
         action="store_true",
         help="Skip confirmation prompt.",
@@ -382,7 +391,12 @@ def _dispatch(
             paths=paths, config_path=args.config, account=args.account
         )
     if args.command == "reset":
-        return run_reset(paths=paths, config_path=args.config, yes=args.yes)
+        return run_reset(
+            paths=paths,
+            config_path=args.config,
+            account=args.account,
+            yes=args.yes,
+        )
     if args.command == "config":
         if args.config_command == "show":
             return run_config_show(paths=paths, config_path=args.config)
@@ -642,10 +656,15 @@ def run_sync(
         raise SystemExit(f"No account named {account!r} in config.")
 
     def _cli_progress(info: ProgressInfo) -> None:
+        # \r returns to column 0; \033[K clears from cursor to end of
+        # line — without it, a shorter message leaves the tail of the
+        # previous (longer) progress line visible, and the per-folder
+        # completion line concatenates onto the running counter.
+        erase = "\r\033[K"
         if info.total > 0:
-            print(f"\r{info.message}", end="", flush=True)
+            print(f"{erase}{info.message}", end="", flush=True)
         else:
-            print(info.message)
+            print(f"{erase}{info.message}")
 
     try:
         plan = service.plan(account_name=account, progress=_cli_progress)
@@ -1840,14 +1859,29 @@ def _query_pending(db_path: Path, account_name: str) -> dict[str, int]:
     return result
 
 
-def run_reset(*, paths: AppPaths, config_path: Path | None, yes: bool) -> int:
-    """Delete the index database and all local mirror directories."""
+def run_reset(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,
+    yes: bool,
+) -> int:
+    """Delete the index database and all local mirror directories.
+
+    With ``account`` set, only that account's index rows and mirror
+    directory are removed; credentials and other accounts stay intact.
+    """
+    if account is not None:
+        return _run_reset_account(
+            paths=paths, config_path=config_path, account=account, yes=yes
+        )
+
     config = try_load_config(config_path)
 
     targets: list[Path] = [paths.index_db_file]
     if config is not None:
-        for account in config.accounts:
-            targets.append(account.mirror.path)
+        for acc in config.accounts:
+            targets.append(acc.mirror.path)
 
     print("The following will be permanently deleted:")
     for t in targets:
@@ -1863,13 +1897,88 @@ def run_reset(*, paths: AppPaths, config_path: Path | None, yes: bool) -> int:
     for t in targets:
         if not t.exists():
             continue
+        kind = "directory" if t.is_dir() else "file"
+        print(f"Deleting {kind} {t} ...", end="", flush=True)
         if t.is_dir():
             shutil.rmtree(t)
         else:
             t.unlink()
-        print(f"Deleted: {t}")
+        print(" done.")
 
     print("Reset complete. Run 'pony sync' for a clean synchronization.")
+    return 0
+
+
+def _run_reset_account(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    yes: bool,
+) -> int:
+    """Scoped reset: one account's index rows + mirror directory only."""
+    config = require_config(config_path)
+    matches = [acc for acc in config.accounts if acc.name == account]
+    if not matches:
+        known = ", ".join(acc.name for acc in config.accounts) or "(none)"
+        print(
+            f"Unknown account: {account!r}. Configured accounts: {known}",
+            file=sys.stderr,
+        )
+        return 2
+    acc = matches[0]
+    mirror_path = acc.mirror.path
+    scan_state_path = paths.data_dir / "local_scan_state.json"
+
+    print(f"The following will be permanently deleted for account {acc.name!r}:")
+    mirror_label = "(exists)" if mirror_path.exists() else "(not found)"
+    print(f"  Mirror directory: {mirror_path}  {mirror_label}")
+    db_label = "(exists)" if paths.index_db_file.exists() else "(not found)"
+    print(f"  Index rows in:    {paths.index_db_file}  {db_label}")
+    print("Credentials and other accounts are kept.")
+
+    if not yes:
+        answer = input("Proceed? [y/N] ").strip().lower()
+        if answer != "y":
+            print("Reset cancelled.")
+            return 0
+
+    if mirror_path.exists():
+        print(f"Deleting mirror directory {mirror_path} ...", end="", flush=True)
+        shutil.rmtree(mirror_path)
+        print(" done.")
+    else:
+        print(f"Mirror directory {mirror_path} not present; skipping.")
+
+    if paths.index_db_file.exists():
+        print(
+            f"Purging index rows for {acc.name!r} ...",
+            end="",
+            flush=True,
+        )
+        index = SqliteIndexRepository(database_path=paths.index_db_file)
+        index.initialize()
+        index.purge_account(account_name=acc.name)
+        print(" done.")
+    else:
+        print("Index database not present; skipping row purge.")
+
+    if scan_state_path.exists():
+        state = _load_scan_state(scan_state_path)
+        if acc.name in state:
+            print(
+                f"Clearing scan cache entry for {acc.name!r} ...",
+                end="",
+                flush=True,
+            )
+            del state[acc.name]
+            _save_scan_state(scan_state_path, state)
+            print(" done.")
+
+    print(
+        f"Reset complete for {acc.name!r}. "
+        f"Run 'pony sync' (or re-open the TUI) to rebuild."
+    )
     return 0
 
 

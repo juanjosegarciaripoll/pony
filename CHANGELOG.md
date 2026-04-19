@@ -6,8 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.6.0]
+### Fixed
+
+- **Garbled sync progress output**: the CLI progress callback used
+  ``\r<msg>`` to overwrite the running per-message counter but never
+  cleared the line before printing the per-folder completion message,
+  so output like ``Listas.quinfog: 2559/2559`` and
+  ``Listas.quinfog: 2559 fetched, 0 flag updates`` would concatenate
+  into one line.  Both branches now prepend ``\r\033[K``
+  (carriage-return + ANSI erase-to-end-of-line) so each message starts
+  from a clean slate.
+
 ### Added
 
+- **Scoped `pony reset --account NAME`**: reset can now target a single
+  account instead of wiping the whole index and every mirror.  The
+  scoped path drops only that account's index rows (via
+  ``IndexRepository.purge_account``; FTS rows follow through the delete
+  triggers), removes its mirror directory, and clears its entry from
+  ``local_scan_state.json`` so the next startup re-scans from scratch.
+  Credentials and other accounts are left intact.  Useful when one
+  account's sync state has gone out of sync with its mirror (e.g. an
+  interrupted sync that updated ``folder_sync_state`` before writing
+  mail) and you want to rebuild it without re-entering passwords or
+  losing data for your other accounts.
 - **Centered keyboard-shortcut help panel (F1)**: Textual's built-in
   command palette (the side panel at `ctrl+p`) is disabled; `F1` now
   opens a compact, centered modal listing every TUI keybinding
