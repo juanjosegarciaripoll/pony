@@ -399,10 +399,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     if args.command == "message":
+        # `account` is a required positional for every `message` subcommand,
+        # so argparse guarantees it is set here — narrow from `Any | None`.
+        account = args.account
+        assert account is not None
         if args.message_command == "get":
             return run_message_get(
                 paths=paths,
-                account=args.account,
+                account=account,
                 folder=args.folder,
                 message_id=args.message_id,
             )
@@ -410,7 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_message_body(
                 paths=paths,
                 config_path=args.config,
-                account=args.account,
+                account=account,
                 folder=args.folder,
                 message_id=args.message_id,
             )

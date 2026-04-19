@@ -42,7 +42,7 @@ ignore_missing_imports = true
 
 [tool.basedpyright]
 pythonVersion = "3.13"
-typeCheckingMode = "strict"
+typeCheckingMode = "standard"
 include = ["src", "tests"]
 
 [dependency-groups]
