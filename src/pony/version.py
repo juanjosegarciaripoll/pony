@@ -7,4 +7,4 @@ updates both files in the same commit.  This avoids any dependency on
 bundles.
 """
 
-__version__: str = "0.4.0"
+__version__: str = "0.5.0"
