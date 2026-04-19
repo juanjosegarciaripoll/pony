@@ -226,9 +226,8 @@ Custom server flags (`$Important`, `$Junk`, etc.) are preserved in
 
 ## Known limitations
 
-Behaviours that are understood, surfaced by audit, and intentionally
-deferred. New work in the sync engine should not regress these further
-without a plan to fix them.
+Behaviours that are understood and intentionally deferred. New work in
+the sync engine should not regress these without a plan to fix them.
 
 - **ReUploadOp is not idempotent under a crash between APPEND and
   commit.** `_execute_reupload` calls `session.append_message(...)`
@@ -238,16 +237,38 @@ without a plan to fix them.
   the same C-1 state (server-deleted, locally-modified) and re-emits
   ReUploadOp, producing a duplicate on the server. A proper fix needs
   UIDPLUS-based dedup on retry or an explicit two-phase marker on the
-  row; both are out of scope for v1.
+  row.
 
 - **Messages in excluded server folders are invisible to dedup.**
   `remote_mid_map` is built only from folders that pass
-  `folder_policy.should_sync`.  If a message with Message-ID `M` lives
+  `folder_policy.should_sync`. If a message with Message-ID `M` lives
   on the server in an excluded folder (typically `[Gmail]/All Mail`)
   and a pending `uid=NULL` row for `M` exists locally in a synced
   folder, Step 5 sees `M` as "not on the server" and emits
-  `PushAppendOp`, producing a second copy on the server. Users who
-  include an aggregate folder in their account already hit a related
-  warning (see SYNC_AUDIT 7b). Clean fixes would require scanning
-  excluded folders for dedup only, which conflicts with the intended
-  meaning of the exclude policy.
+  `PushAppendOp`, producing a second copy on the server. Aggregate
+  folders included in the sync already trigger a related warning.
+
+- **Per-folder sync is not a single transaction.** Reconciliation is
+  idempotent, so a mid-folder crash is recovered by re-running sync.
+  Batched writes via `connection()` shrink the failure window but do
+  not eliminate partial-folder state.
+
+- **Move detection and `FetchNewOp` can double-ingest under specific
+  interleavings.** The index stays correct; the old mirror file is
+  orphaned and picked up by the mirror integrity scan.
+
+- **Same message in multiple folders (Gmail labels).** Full multi-folder
+  support is deferred; aggregate folders should be excluded. A warning
+  is emitted when one is detected.
+
+- **No exclusive write lock during sync.** The TUI blocks on the `G`
+  sync action today; the constraint needs to be revisited when
+  background sync is added.
+
+- **Stale plan applied after a confirmation delay.** State-based
+  reconciliation self-corrects on the next pass; per-op try/except
+  keeps stale operations from cascading.
+
+- **SQLite write contention** (single-process v1, 5-second lock
+  timeout, per-op try/except) is covered by the existing retry layer.
+  Revisit when a second writer is introduced.

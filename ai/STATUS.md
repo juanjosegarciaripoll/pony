@@ -2,85 +2,55 @@
 
 ## Current version
 
-0.3.0 (adds standalone executable with bundled documentation and platform installers)
+See `src/pony/version.py` and `pyproject.toml`. Release history with
+per-version details lives in `CHANGELOG.md` — this file is not a
+changelog.
 
-## What's done
+## Shape of the project
 
-All v1 features are implemented and tested (250 tests, 2 skipped):
+All v1 capabilities from `SPECIFICATIONS.md` are implemented and
+covered by tests:
 
-- **Phases 1-5**: Repository foundation, domain models, config, Maildir/mbox
-  storage, SQLite index with search, IMAP sync engine
-- **Phase 6**: Three-pane TUI (Textual): folder panel, message list, message
-  view, sync from TUI, flag operations, attachments
-- **Phase 7**: Compose/reply/forward, SMTP send, drafts, search UI with query
-  parser
-- **Phase 8**: Markdown composition (ctrl+x m toggle, multipart/alternative)
-- **Phase 9**: `pony doctor` with mirror integrity scan, fixture corpora,
-  user-facing docs, cross-platform verification, LICENSE
-- **Phases 10-12**: Person-centric contacts with BBDB import/export, contacts
-  browser/editor TUI (search, mark, delete, merge, edit)
-- **Phase 13**: Unified message table (merged `messages` + `message_server_state`)
-- **Phase 14**: Batched SQLite transactions (`connection()` context manager)
-- **Phase 15**: Sync progress reporting (ProgressInfo, TUI progress bar, CLI
-  counter)
-- **Phase 16**: TUI binding isolation (bindings moved from PonyApp to
-  MainScreen, three App classes formalized, SyncConfirmScreen uses callback)
-- **Phase 17**: Archive action (`A` key) + generalised local-move sync.
-  `uid IS NULL` is now the canonical signal for "push this row to the
-  server." New plan ops: `PushMoveOp`, `PushAppendOp`, `LinkLocalOp`.
-  Per-account `archive_folder` config. Maildir and mbox both support
-  cross-folder move of mirror files. Uses RFC 6851 `UID MOVE` when
-  supported, falls back to `COPY` + `\Deleted` + `EXPUNGE` otherwise.
-- **Phase 18**: Local folder creation. `N` key opens a one-line dialog;
-  the folder is created in the mirror immediately. Sync compares mirror
-  folders against server folders at the top of the execution pass and
-  issues `IMAP CREATE` for any that are local-only — subsuming the
-  archive-folder auto-create path. `MirrorRepository.create_folder` and
-  `ImapClientSession.create_folder` added; both are idempotent.
-- **Phase 19**: Standalone executable with bundled documentation and
-  platform installers. `pony.spec` controls PyInstaller `--onedir` builds
-  and bundles the MkDocs `site/` tree and `config-sample.toml`.
-  `paths.bundled_docs_path()` detects frozen context. `pony docs` opens
-  bundled docs in a browser, falling back to the GitHub Pages URL.
-  `scripts/build.py` provides a cross-platform local build pipeline (tests,
-  docs, binary, packaging). Platform installers: Inno Setup `.exe`
-  (Windows), `.dmg` via `hdiutil` (macOS), AppImage via `appimagetool`
-  (Linux). Portable archives (ZIP / tar.gz) for Homebrew, Scoop, and
-  other package managers. `release-build.yml` updated to use `uv`, build
-  docs before PyInstaller, and drop the deprecated
-  `upload-release-asset@v1` action.
-- **Phase 20**: MCP server (`pony mcp-server`). `src/pony/mcp_server.py`
-  wraps the existing index and mirror read operations as 7 FastMCP tools:
-  `search_messages`, `list_folders`, `list_messages`, `get_message`,
-  `get_message_body`, `search_contacts`, `get_sync_status`. Runs over
-  stdio (default, for Claude Desktop / Claude Code) or Streamable HTTP
-  (`--host` / `--port`, for Docker and remote deployments). HTTP mode is
-  compatible with running `pony tui` in a separate process — both share
-  the SQLite index read-only. New runtime dependency: `mcp>=1.0`.
-  **Embedded mode**: adding `[mcp]` to `config.toml` starts the MCP HTTP
-  server in a background daemon thread on `pony tui` launch; a TUI
-  notification shows the URL. `McpConfig` dataclass added to `domain.py`;
-  `[mcp]` section parsed in `config.py`; `start_mcp_thread()` in
-  `mcp_server.py` uses `uvicorn` + daemon thread; `PonyApp` wired in
-  `tui/app.py`.
+- IMAP sync (two-pass plan/execute) and SMTP send.
+- Maildir + mbox mirror backends with a shared conformance suite.
+- SQLite index (FTS5-backed, diacritic- and case-insensitive search).
+- Three-pane Textual TUI for reading, composing, searching, contacts.
+- Person-centric contacts with BBDB import/export.
+- MCP server (stdio + Streamable HTTP) exposing read-only mail tools.
+- PyInstaller-based standalone builds with platform installers.
+
+## Followups on the queue
+
+Not commitments, just the known-next items worth keeping in mind.
+
+- **Rebuild-from-mirrors command.** The new schema gate refuses legacy
+  DBs and the CLI offers an export-contacts-then-wipe flow; rebuilding
+  the index from mirror bytes (no re-download) is the missing third
+  option. Needs synthetic Message-ID rework first (see below).
+- **Synthetic Message-ID rework.** The current formula bakes UID into
+  the hash (`sync.py`), so synthetic IDs cannot survive a rebuild.
+  Revisit before implementing rebuild-from-mirror.
+- **`body_preview` → `body_text` rename.** The column no longer holds a
+  short preview; the name is inherited. Worth doing on the next schema
+  bump, not on its own.
+- **Background / periodic sync** (requires an exclusive write lock).
+- **OAuth authentication flows.**
+- **Browser-based reader/composer UI.**
+- **POP support.**
+- **Multi-machine conflict handling** (beyond the current state-based
+  reconciliation).
+- **Full multi-folder support for Gmail labels** (today aggregate
+  folders are warned about and recommended for exclusion).
+- **Per-folder single-transaction sync** (currently idempotent re-sync
+  covers partial failures).
 
 ## Infrastructure
 
-- MkDocs Material documentation site with GitHub Pages deployment
-- PyInstaller multi-platform release builds (Linux, macOS, Windows)
-- Versioning: pyproject.toml + version.py, release GitHub Action with
-  changelog stamping
-- Quality: ruff + mypy + basedpyright + pytest
-
-## Future directions (not yet planned)
-
-These are potential next steps, not commitments:
-
-- Background / periodic sync
-- OAuth authentication
-- Browser-based reader/composer UI
-- POP support
-- Multi-machine conflict handling
-- Full multi-folder support for Gmail labels
-- Exclusive write lock during sync (for background sync)
-- Per-folder transaction scope (currently idempotent re-sync)
+- MkDocs Material docs, published to GitHub Pages.
+- PyInstaller release builds for Linux, macOS, Windows.
+- Quality gates: `ruff`, `mypy` (strict), `basedpyright` (strict),
+  `pytest`.
+- Release workflow: manually dispatched, reads the version from a new
+  `## [X.Y.Z]` heading in `CHANGELOG.md`, stamps the date, updates
+  `pyproject.toml` + `version.py`, tags, and publishes the GitHub
+  release.

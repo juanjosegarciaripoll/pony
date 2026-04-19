@@ -18,22 +18,11 @@ Four major capabilities, sharing core services:
 
 ## V1 scope (delivered)
 
-Terminal-first, cross-platform. Includes:
-
-- IMAP synchronization with two-pass plan/execute
-- SMTP sending with SSL and STARTTLS
-- Password and app-password authentication (four credential backends)
-- Local mirrors per account in Maildir or mbox format
-- SQLite-backed index for search and control-plane state
-- Three-pane TUI (Textual) for reading, searching, replying, forwarding,
-  deleting, and composing
-- Markdown composition (multipart/alternative)
-- Person-centric contacts with BBDB import/export
-- Sync progress reporting
-- Mirror integrity diagnostics
-- Cross-platform path handling
-- Per-account archive folder (`A` key) — local move reconciled via UID MOVE
-  on next sync
+Terminal-first, cross-platform. The delivered feature set — IMAP sync,
+SMTP send, Maildir/mbox mirrors, SQLite+FTS5 index, Textual TUI,
+Markdown composition, BBDB-compatible contacts, MCP server, and
+PyInstaller-based standalone builds — is summarised in
+`ai/STATUS.md` and detailed release-by-release in `CHANGELOG.md`.
 
 ## Deferred scope
 
@@ -65,11 +54,5 @@ Keyboard-centric pane-oriented workflow:
 
 ## Engineering rules
 
-- Python 3.13, strict typing (`mypy` strict + `basedpyright` strict)
-- Runtime dependencies minimal and explicitly approved
-- `uv`-managed project with TOML configuration
-- Tests as first-class (`unittest` framework, run via `pytest`)
-- `ruff` for linting and formatting
-- Keep `config-sample.toml` synchronized with the config model
-- Version in `pyproject.toml` and `src/pony/version.py` (release workflow
-  updates both)
+See `ai/CONVENTIONS.md` for language, tooling, typing, style, testing,
+dependency, and release rules.
