@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.6.0]
 ### Added
 
+- **Centered keyboard-shortcut help panel (F1)**: Textual's built-in
+  command palette (the side panel at `ctrl+p`) is disabled; `F1` now
+  opens a compact, centered modal listing every TUI keybinding
+  grouped by category (Navigation / Compose / Folders / Contacts /
+  Messages / Attachments).  Dismiss with `F1`, `Esc` or `q`.
 - **Local accounts appear in the TUI folder tree**: `FolderPanel`
   was discovering folders from `folder_sync_state` rows, which the
   sync engine never writes for local accounts — so local-account

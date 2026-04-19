@@ -23,9 +23,24 @@ class PonyApp(App[None]):
     TITLE = "Pony Express"
     SUB_TITLE = "Mail"
 
+    # The Textual built-in command palette (``ctrl+p``) shows a
+    # system-style side panel with actions like Quit and Show Keys.
+    # Disable it: our own centered help dialog on ``F1`` is the
+    # intended keyboard-shortcut discovery path.
+    ENABLE_COMMAND_PALETTE = False
+
     BINDINGS = [
         Binding("Q", "quit", "Quit", priority=True),
+        Binding("f1", "show_help", "Help"),
     ]
+
+    def action_show_help(self) -> None:
+        """Push the centered help dialog (keybinding reference)."""
+        from .screens.help_screen import HelpScreen
+
+        # If the help screen is already on top, F1 from the screen
+        # itself dismisses it — this path is only for app-level F1.
+        self.push_screen(HelpScreen())
 
     def __init__(
         self,
