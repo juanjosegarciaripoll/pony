@@ -22,6 +22,9 @@ mirrors/
 log*.txt
 log*.html
 
+# Release build outputs
+artifacts/
+
 # MkDocs build output
 site/
 
