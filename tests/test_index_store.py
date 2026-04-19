@@ -397,6 +397,8 @@ class SchemaVersionGateTestCase(unittest.TestCase):
     def test_initialize_refuses_legacy_db(self) -> None:
         import sqlite3
 
+        from pony.index_store import SchemaMismatchError
+
         path = TMP_ROOT / "legacy" / f"{uuid4().hex}.sqlite3"
         path.parent.mkdir(parents=True, exist_ok=True)
         # Create a fake "legacy" DB: the messages table exists but
@@ -412,9 +414,11 @@ class SchemaVersionGateTestCase(unittest.TestCase):
             conn.close()
 
         repo = SqliteIndexRepository(database_path=path)
-        with self.assertRaises(SystemExit) as ctx:
+        with self.assertRaises(SchemaMismatchError) as ctx:
             repo.initialize()
-        self.assertIn(str(path), str(ctx.exception))
+        self.assertEqual(ctx.exception.database_path, path)
+        self.assertEqual(ctx.exception.found, 0)
+        self.assertGreaterEqual(ctx.exception.expected, 2)
 
     def test_initialize_creates_fresh_db_at_current_version(self) -> None:
         import sqlite3
@@ -426,6 +430,67 @@ class SchemaVersionGateTestCase(unittest.TestCase):
         finally:
             conn.close()
         self.assertGreaterEqual(version, 2)
+
+    def test_load_contacts_for_backup_reads_legacy_db(self) -> None:
+        """The emergency loader must work on a DB initialize() refuses."""
+        import sqlite3
+
+        from pony.index_store import load_contacts_for_backup
+
+        path = TMP_ROOT / "legacy-contacts" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE contacts (
+                    id INTEGER PRIMARY KEY,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    last_name TEXT NOT NULL DEFAULT '',
+                    affix TEXT NOT NULL DEFAULT '[]',
+                    organization TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    last_seen TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE contact_emails (
+                    contact_id INTEGER NOT NULL,
+                    email_address TEXT NOT NULL,
+                    PRIMARY KEY (email_address)
+                );
+                CREATE TABLE contact_aliases (
+                    contact_id INTEGER NOT NULL,
+                    alias TEXT NOT NULL,
+                    PRIMARY KEY (contact_id, alias)
+                );
+                CREATE TABLE messages (account_name TEXT);
+                INSERT INTO contacts VALUES
+                    (1, 'María', 'López', '[]', '', '', 3,
+                     '2026-04-10T12:00:00+00:00',
+                     '2026-04-10T12:00:00+00:00',
+                     '2026-04-10T12:00:00+00:00');
+                INSERT INTO contact_emails VALUES (1, 'maria@example.com');
+                INSERT INTO contact_aliases VALUES (1, 'Mari');
+                PRAGMA user_version = 0;
+                """,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        contacts = load_contacts_for_backup(database_path=path)
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0].first_name, "María")
+        self.assertEqual(contacts[0].emails, ("maria@example.com",))
+        self.assertEqual(contacts[0].aliases, ("Mari",))
+
+    def test_load_contacts_for_backup_tolerates_missing_file(self) -> None:
+        from pony.index_store import load_contacts_for_backup
+
+        path = TMP_ROOT / "missing" / f"{uuid4().hex}.sqlite3"
+        self.assertEqual(load_contacts_for_backup(database_path=path), [])
 
 
 class BatchedTransactionTestCase(unittest.TestCase):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -297,6 +298,116 @@ class CliTestCase(unittest.TestCase):
             )
 
 
+class SchemaMismatchRecoveryTests(unittest.TestCase):
+    """The CLI must explain, prompt (default N), and only reset on y/yes."""
+
+    def _seed_legacy_db_and_mirror(
+        self, config_path: Path,
+    ) -> tuple[Path, Path]:
+        """Create an out-of-date index DB and a mirror directory to delete."""
+        import sqlite3
+
+        from pony.config import load_config
+        from pony.paths import AppPaths
+
+        config = load_config(config_path)
+        account = next(iter(config.accounts))
+        app_paths = AppPaths.default()
+        app_paths.ensure_runtime_dirs()
+        account.mirror.path.mkdir(parents=True, exist_ok=True)
+        (account.mirror.path / "INBOX").mkdir(exist_ok=True)
+
+        db = app_paths.index_db_file
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE messages (account_name TEXT);
+                CREATE TABLE contacts (
+                    id INTEGER PRIMARY KEY,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    last_name TEXT NOT NULL DEFAULT '',
+                    affix TEXT NOT NULL DEFAULT '[]',
+                    organization TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    last_seen TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE contact_emails (
+                    contact_id INTEGER NOT NULL,
+                    email_address TEXT NOT NULL,
+                    PRIMARY KEY (email_address)
+                );
+                CREATE TABLE contact_aliases (
+                    contact_id INTEGER NOT NULL,
+                    alias TEXT NOT NULL,
+                    PRIMARY KEY (contact_id, alias)
+                );
+                INSERT INTO contacts VALUES
+                    (1, 'María', 'López', '[]', '', '', 1,
+                     '2026-04-10T12:00:00+00:00',
+                     '2026-04-10T12:00:00+00:00',
+                     '2026-04-10T12:00:00+00:00');
+                INSERT INTO contact_emails VALUES (1, 'maria@example.com');
+                PRAGMA user_version = 0;
+                """,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db, account.mirror.path
+
+    def test_prompt_defaults_to_no_and_preserves_state(self) -> None:
+        """Pressing Enter (empty input) must abort without deleting anything."""
+        with isolated_app_env(), temporary_config() as config_path:
+            db, mirror = self._seed_legacy_db_and_mirror(config_path)
+
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("\n")  # empty line → default N
+            try:
+                rc = run_cli_ret(
+                    "--config", str(config_path), "search", "anything",
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+            self.assertEqual(rc, 1)
+            self.assertTrue(db.exists(), "DB must survive a declined prompt")
+            self.assertTrue(mirror.exists(), "mirror must survive too")
+
+    def test_prompt_yes_exports_contacts_and_deletes(self) -> None:
+        """Answering y must export contacts and delete DB + mirrors."""
+        from pony.bbdb import read_bbdb
+
+        with isolated_app_env() as env_root, temporary_config() as config_path:
+            db, mirror = self._seed_legacy_db_and_mirror(config_path)
+
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("y\n")
+            try:
+                captured, rc = run_cli_capture(
+                    "--config", str(config_path), "search", "anything",
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(db.exists(), "DB must be deleted after yes")
+            self.assertFalse(mirror.exists(), "mirror must be deleted after yes")
+
+            # The backup BBDB file must contain the one legacy contact.
+            backups = list((env_root / "data" / "pony").glob("contacts-backup-*.bbdb"))
+            self.assertEqual(len(backups), 1, captured)
+            loaded = read_bbdb(backups[0])
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].first_name, "María")
+            self.assertIn("pony sync", captured)
+            self.assertIn("contacts import", captured)
+
+
 def _seed_one_message(
     config_path: Path, *, subject: str, body: str,
 ):
@@ -358,6 +469,21 @@ def run_cli(*argv: str) -> str:
     with contextlib.redirect_stdout(buffer):
         main(argv)
     return buffer.getvalue()
+
+
+def run_cli_ret(*argv: str) -> int:
+    """Run the CLI and return its exit code (no stdout capture)."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        return main(argv)
+
+
+def run_cli_capture(*argv: str) -> tuple[str, int]:
+    """Run the CLI, returning (stdout, exit_code)."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = main(argv)
+    return buffer.getvalue(), rc
 
 
 @contextlib.contextmanager

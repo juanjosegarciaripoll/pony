@@ -26,7 +26,11 @@ from .domain import (
 )
 from .fixture_flow import run_fixture_ingest
 from .imap_client import ImapAuthError, ImapSession
-from .index_store import SqliteIndexRepository
+from .index_store import (
+    SchemaMismatchError,
+    SqliteIndexRepository,
+    load_contacts_for_backup,
+)
 from .message_projection import project_rfc822_message
 from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
@@ -302,6 +306,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
 
+    try:
+        return _dispatch(args=args, paths=paths, parser=parser)
+    except SchemaMismatchError as err:
+        return run_schema_reset_prompt(
+            paths=paths, config_path=args.config, error=err,
+        )
+
+
+def _dispatch(
+    *,
+    args: argparse.Namespace,
+    paths: AppPaths,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Route *args* to the matching subcommand handler."""
+
     if args.command is None:
         args.command = "tui"
         args.account = None
@@ -431,6 +451,80 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error("Unhandled command.")
     return 2
+
+
+def run_schema_reset_prompt(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    error: SchemaMismatchError,
+) -> int:
+    """Warn the user about a schema break and offer automatic recovery.
+
+    The underlying cause is that :meth:`SqliteIndexRepository.initialize`
+    refuses to open an out-of-date database.  This handler explains the
+    three manual steps required (export contacts, delete index + mirrors,
+    resync) and offers to perform the first two automatically.  The
+    default answer is ``No`` — nothing is deleted unless the user types
+    ``y`` / ``yes``.
+    """
+    from datetime import UTC, datetime
+
+    from .bbdb import write_bbdb
+
+    config = try_load_config(config_path)
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = paths.data_dir / f"contacts-backup-{timestamp}.bbdb"
+
+    targets: list[Path] = [error.database_path]
+    if config is not None:
+        targets.extend(account.mirror.path for account in config.accounts)
+
+    print("=" * 66)
+    print("Pony's index database schema has changed "
+          f"(found v{error.found}, needs v{error.expected}).")
+    print()
+    print("To move to the new schema, the following three steps are needed:")
+    print(f"  1. Export your contacts to {backup_path}")
+    print("  2. Delete the index database and all local mirror directories:")
+    for t in targets:
+        exists = "(exists)" if t.exists() else "(not found)"
+        print(f"       {t}  {exists}")
+    print("  3. Run `pony sync` to redownload mail from IMAP.")
+    print()
+    print("Steps 1 and 2 can be performed automatically now; step 3 is yours.")
+    print("The backup file lets you re-import contacts afterwards with:")
+    print(f"  pony contacts import {backup_path}")
+    print("=" * 66)
+
+    answer = input("Proceed with automatic reset? [y/N] ").strip().lower()
+    if answer not in ("y", "yes"):
+        print("Aborted. No changes made.")
+        return 1
+
+    contacts = load_contacts_for_backup(database_path=error.database_path)
+    if contacts:
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        write_bbdb(contacts, backup_path)
+        print(f"Exported {len(contacts)} contact(s) to {backup_path}")
+    else:
+        print("No contacts to export.")
+
+    for t in targets:
+        if not t.exists():
+            continue
+        if t.is_dir():
+            shutil.rmtree(t)
+        else:
+            t.unlink()
+        print(f"Deleted: {t}")
+
+    print()
+    print("Reset complete. Next steps:")
+    print("  1. Run `pony sync` to redownload mail.")
+    if contacts:
+        print(f"  2. Run `pony contacts import {backup_path}` to restore contacts.")
+    return 0
 
 
 def run_docs() -> int:

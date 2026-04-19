@@ -31,6 +31,23 @@ from .protocols import ContactRepository, IndexRepository
 _SCHEMA_VERSION = 2
 
 
+class SchemaMismatchError(RuntimeError):
+    """Raised by :meth:`SqliteIndexRepository.initialize` on a legacy DB.
+
+    Carries the path of the offending database so the CLI's recovery
+    flow can show it to the user and offer to reset.
+    """
+
+    def __init__(self, *, database_path: Path, found: int, expected: int) -> None:
+        super().__init__(
+            f"Index schema version {found} is below the required {expected} "
+            f"at {database_path}",
+        )
+        self.database_path = database_path
+        self.found = found
+        self.expected = expected
+
+
 class SqliteIndexRepository(IndexRepository, ContactRepository):
     """Persist indexed metadata and sync state in SQLite.
 
@@ -168,12 +185,10 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchone() is not None
 
             if version < _SCHEMA_VERSION and has_legacy_tables:
-                raise SystemExit(
-                    "Pony's index schema has changed. The safest path right "
-                    "now is to delete "
-                    f"{self._database_path} and the mirror directory, then "
-                    "run `pony sync` to redownload. A rebuild-from-mirror "
-                    "command is planned but not yet available."
+                raise SchemaMismatchError(
+                    database_path=self._database_path,
+                    found=version,
+                    expected=_SCHEMA_VERSION,
                 )
 
             conn.execute(
@@ -1063,6 +1078,62 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def load_contacts_for_backup(*, database_path: Path) -> list[Contact]:
+    """Read contacts from *database_path* without going through ``initialize``.
+
+    The schema-mismatch recovery path needs to back up contacts out of a
+    database that :meth:`SqliteIndexRepository.initialize` now refuses to
+    open.  The ``contacts`` / ``contact_emails`` / ``contact_aliases``
+    tables have the same shape across every released schema version, so
+    a direct read is safe.  Returns ``[]`` if the file or tables are
+    missing — the caller can still reset.
+    """
+    if not database_path.exists():
+        return []
+    conn = sqlite3.connect(database_path, timeout=10)
+    try:
+        has_contacts = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='contacts'",
+        ).fetchone() is not None
+        if not has_contacts:
+            return []
+        rows = conn.execute(
+            """
+            SELECT id, first_name, last_name, affix, organization,
+                   notes, message_count, last_seen, created_at, updated_at
+            FROM contacts
+            """,
+        ).fetchall()
+        emails = conn.execute(
+            "SELECT contact_id, email_address FROM contact_emails",
+        ).fetchall()
+        aliases = conn.execute(
+            "SELECT contact_id, alias FROM contact_aliases",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    emails_by_id: dict[int, list[str]] = {}
+    for cid, addr in emails:
+        emails_by_id.setdefault(int(str(cid)), []).append(str(addr))
+    aliases_by_id: dict[int, list[str]] = {}
+    for cid, alias in aliases:
+        aliases_by_id.setdefault(int(str(cid)), []).append(str(alias))
+
+    contacts: list[Contact] = []
+    for row in rows:
+        cid = int(str(row[0]))
+        contacts.append(
+            _build_contact(
+                row,
+                [(e,) for e in emails_by_id.get(cid, [])],
+                [(a,) for a in aliases_by_id.get(cid, [])],
+            )
+        )
+    return contacts
 
 
 def _flags_to_csv(flags: frozenset[MessageFlag]) -> str:
