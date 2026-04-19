@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import AccountConfig, AppConfig, MirrorConfig
+from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
 from pony.fixture_flow import count_fixture_hits, run_fixture_ingest
 from pony.paths import AppPaths
 
@@ -32,7 +32,7 @@ class FixtureFlowTestCase(unittest.TestCase):
                     name="personal",
                     email_address="user@example.com",
                     imap_host="imap.example.com",
-                    smtp_host="smtp.example.com",
+                    smtp=SmtpConfig(host="smtp.example.com"),
                     username="user",
                     credentials_source="plaintext",
                     mirror=MirrorConfig(

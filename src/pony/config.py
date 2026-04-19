@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 
 from .domain import (
+    CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
     CredentialsSource,
@@ -28,6 +29,7 @@ from .domain import (
     McpConfig,
     MirrorConfig,
     MirrorFormat,
+    SmtpConfig,
 )
 from .domain import (
     AppConfig as AppConfig,  # explicit re-export
@@ -92,6 +94,8 @@ def _parse_app_config(raw: object) -> AppConfig:
         raise ConfigError("top-level config must be an object")
     data = cast("dict[str, object]", raw)
 
+    _require_config_version(data)
+
     accounts_raw = data.get("accounts", [])
     if not isinstance(accounts_raw, list):
         raise ConfigError("'accounts' must be a list of tables")
@@ -140,6 +144,22 @@ def _parse_any_account(raw: object) -> AnyAccount:
 
 
 def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
+    smtp_raw = data.get("smtp")
+    if smtp_raw is None:
+        smtp: SmtpConfig | None = None
+        username: str | None = None
+        creds: CredentialsSource | None = None
+        password: str | None = None
+        password_command: tuple[str, ...] | None = None
+    else:
+        # SMTP block present — credentials become mandatory for this
+        # account (local accounts don't have IMAP creds to fall back on).
+        smtp = _parse_smtp(_require_mapping(data, "smtp"))
+        username = _require_string(data, "username")
+        creds = _require_credentials_source(data)
+        password = _optional_password(data)
+        password_command = _optional_password_command(data)
+
     return LocalAccountConfig(
         name=_require_string(data, "name"),
         email_address=_require_string(data, "email_address"),
@@ -148,6 +168,11 @@ def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
         drafts_folder=_optional_string(data, "drafts_folder"),
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
+        smtp=smtp,
+        username=username,
+        credentials_source=creds,
+        password=password,
+        password_command=password_command,
     )
 
 
@@ -163,39 +188,20 @@ def _parse_imap_account(raw: object) -> AccountConfig:
         else FolderConfig()
     )
 
-    password_raw = data.get("password")
-    password = password_raw if isinstance(password_raw, str) else None
-
-    password_command_raw = data.get("password_command")
-    if password_command_raw is not None:
-        cmd_items = cast("list[object]", password_command_raw) if isinstance(
-            password_command_raw, list
-        ) else None
-        if cmd_items is None or not all(isinstance(s, str) for s in cmd_items):
-            raise ConfigError("'password_command' must be a list of strings")
-        password_command: tuple[str, ...] | None = tuple(
-            cast("list[str]", password_command_raw)
-        )
-    else:
-        password_command = None
-
     imap_ssl = _require_bool(data, "imap_ssl", default=True)
-    smtp_ssl = _require_bool(data, "smtp_ssl", default=True)
 
     return AccountConfig(
         name=_require_string(data, "name"),
         email_address=_require_string(data, "email_address"),
         imap_host=_require_string(data, "imap_host"),
-        smtp_host=_require_string(data, "smtp_host"),
+        smtp=_parse_smtp(_require_mapping(data, "smtp")),
         username=_require_string(data, "username"),
         credentials_source=_require_credentials_source(data),
         mirror=_parse_mirror(_require_mapping(data, "mirror")),
         imap_port=_require_int(data, "imap_port", default=993 if imap_ssl else 143),
         imap_ssl=imap_ssl,
-        smtp_port=_require_int(data, "smtp_port", default=465 if smtp_ssl else 587),
-        smtp_ssl=smtp_ssl,
-        password=password,
-        password_command=password_command,
+        password=_optional_password(data),
+        password_command=_optional_password_command(data),
         folders=folders,
         sent_folder=_optional_string(data, "sent_folder"),
         drafts_folder=_optional_string(data, "drafts_folder"),
@@ -203,6 +209,56 @@ def _parse_imap_account(raw: object) -> AccountConfig:
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
     )
+
+
+def _parse_smtp(data: dict[str, object]) -> SmtpConfig:
+    ssl = _require_bool(data, "ssl", default=True)
+    return SmtpConfig(
+        host=_require_string(data, "host"),
+        port=_require_int(data, "port", default=465 if ssl else 587),
+        ssl=ssl,
+    )
+
+
+def _optional_password(data: dict[str, object]) -> str | None:
+    raw = data.get("password")
+    return raw if isinstance(raw, str) else None
+
+
+def _optional_password_command(data: dict[str, object]) -> tuple[str, ...] | None:
+    raw = data.get("password_command")
+    if raw is None:
+        return None
+    items = cast("list[object]", raw) if isinstance(raw, list) else None
+    if items is None or not all(isinstance(s, str) for s in items):
+        raise ConfigError("'password_command' must be a list of strings")
+    return tuple(cast("list[str]", raw))
+
+
+def _require_config_version(data: dict[str, object]) -> None:
+    """Require the top-level ``config_version`` to match ``CONFIG_VERSION``.
+
+    Missing or mismatched values are rejected loudly rather than
+    silently migrated — the user is expected to update the file to
+    the current schema when Pony's format changes.
+    """
+    raw = data.get("config_version")
+    if raw is None:
+        raise ConfigError(
+            "missing 'config_version' at the top of config.toml.\n"
+            f"Add a line:\n  config_version = {CONFIG_VERSION}\n"
+            "and update the schema to match this version of Pony Express. "
+            "See the sample config for the current format."
+        )
+    if not isinstance(raw, int):
+        raise ConfigError("'config_version' must be an integer")
+    if raw != CONFIG_VERSION:
+        raise ConfigError(
+            f"unsupported config_version {raw}; this build of Pony "
+            f"Express requires config_version = {CONFIG_VERSION}.  "
+            "Update your config.toml to the current schema (see the "
+            "sample config and CHANGELOG for migration notes)."
+        )
 
 
 def _parse_folder_config(data: dict[str, object]) -> FolderConfig:

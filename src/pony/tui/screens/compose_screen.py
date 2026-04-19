@@ -29,7 +29,6 @@ from ...domain import (
     AppConfig,
     Contact,
     FolderRef,
-    LocalAccountConfig,
     MessageRef,
 )
 from ...folder_utils import find_folder
@@ -227,6 +226,10 @@ class ComposeScreen(Screen[bool]):
         contacts: ContactRepository | None = None,
         **kwargs: object,
     ) -> None:
+        # ``accounts`` must all satisfy ``account.can_send``; MainScreen
+        # filters the list before constructing this screen.  We therefore
+        # know that every listed account has ``smtp`` and ``username``
+        # set, and ``action_send`` asserts that contract at use time.
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._config = config
         self._accounts = accounts
@@ -332,11 +335,6 @@ class ComposeScreen(Screen[bool]):
         if account is None:
             self.notify("Could not determine sending account.", severity="error")
             return
-        if isinstance(account, LocalAccountConfig):
-            self.notify(
-                "This account has no SMTP configured — cannot send.", severity="error"
-            )
-            return
 
         cc = self._collect_field("cc-container")
         bcc = self._collect_field("bcc-container")
@@ -351,8 +349,24 @@ class ComposeScreen(Screen[bool]):
             markdown_mode=self._markdown_mode,
         )
 
+        # The dropdown only shows ``can_send`` accounts (see
+        # MainScreen._sendable_accounts), so ``smtp`` / ``username`` /
+        # ``password`` are always set here.  Assert for the type checker.
+        assert account.smtp is not None
+        assert account.username is not None
+        if not account.password:
+            self.notify(
+                "Send requires a 'password' configured on this account.",
+                severity="error",
+            )
+            return
         try:
-            smtp_send(account, msg)
+            smtp_send(
+                smtp=account.smtp,
+                username=account.username,
+                password=account.password,
+                msg=msg,
+            )
         except (SMTPError, ValueError) as exc:
             self.notify(f"Send failed: {exc}", severity="error")
             _log.error("SMTP send failed: %s", exc)

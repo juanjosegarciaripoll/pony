@@ -75,20 +75,33 @@ class FolderConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SmtpConfig:
+    """SMTP connection settings for outgoing mail.
+
+    Credentials (``username`` / password source) stay at the account level
+    because they are shared with IMAP auth for ``AccountConfig`` and are
+    set independently for ``LocalAccountConfig``; this dataclass captures
+    only the wire-level SMTP bits.
+    """
+
+    host: str
+    port: int = 465
+    ssl: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class AccountConfig:
     """Account configuration used by sync and send services."""
 
     name: str
     email_address: str
     imap_host: str
-    smtp_host: str
+    smtp: SmtpConfig
     username: str
     credentials_source: CredentialsSource
     mirror: MirrorConfig
     imap_port: int = 993
     imap_ssl: bool = True
-    smtp_port: int = 465
-    smtp_ssl: bool = True
     password: str | None = None
     password_command: tuple[str, ...] | None = None
     folders: FolderConfig = field(default_factory=FolderConfig)
@@ -104,15 +117,28 @@ class AccountConfig:
     # Composer: signature text appended after quoted content (None = no signature)
     signature: str | None = None
 
+    @property
+    def can_send(self) -> bool:
+        """True when the account has enough config to send via SMTP.
+
+        Always True for ``AccountConfig`` — the ``smtp`` block is
+        required.  Defined symmetrically with ``LocalAccountConfig`` so
+        callers can filter with ``a.can_send`` regardless of type.
+        """
+        return True
+
 
 @dataclass(frozen=True, slots=True)
 class LocalAccountConfig:
-    """Local-only account backed by a mirror directory (no IMAP/SMTP).
+    """Local account backed by a mirror directory, no IMAP sync.
 
     Use this when you want Pony to read from a local Maildir or mbox tree
-    that is managed by another tool (e.g. offlineimap, getmail, procmail).
-    The sync command skips local accounts; composing is still available but
-    sending requires an SMTP-capable account.
+    managed by another tool (offlineimap, getmail, procmail, Emacs/Gnus).
+    The sync command skips local accounts.
+
+    SMTP fields are optional.  When ``smtp`` is configured (together with
+    ``username`` and a credential source), the account can send outgoing
+    mail without an IMAP configuration.
     """
 
     name: str
@@ -123,6 +149,22 @@ class LocalAccountConfig:
     drafts_folder: str | None = None
     markdown_compose: bool = False
     signature: str | None = None
+    # Optional SMTP block + credentials for sending.  ``smtp`` is the
+    # wire-level connection; ``username`` / ``credentials_source`` /
+    # ``password`` / ``password_command`` provide authentication (same
+    # shape as AccountConfig).  The parser enforces "all or nothing":
+    # if ``smtp`` is set, ``username`` and ``credentials_source`` are
+    # also required.
+    smtp: SmtpConfig | None = None
+    username: str | None = None
+    credentials_source: CredentialsSource | None = None
+    password: str | None = None
+    password_command: tuple[str, ...] | None = None
+
+    @property
+    def can_send(self) -> bool:
+        """True when SMTP and credentials are configured."""
+        return self.smtp is not None and self.username is not None
 
 
 type AnyAccount = AccountConfig | LocalAccountConfig
@@ -134,6 +176,13 @@ class McpConfig:
 
     host: str = "127.0.0.1"
     port: int = 8765
+
+
+# The TOML format version Pony Express expects on disk.  Bumped when
+# the schema changes in a way that requires user intervention.  The
+# parser rejects configs that do not declare exactly this value — a
+# missing or mismatched version is a loud error, not a silent migration.
+CONFIG_VERSION: int = 2
 
 
 @dataclass(frozen=True, slots=True)

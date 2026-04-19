@@ -29,12 +29,13 @@ class ConfigParsingTestCase(unittest.TestCase):
         # have type dict[Unknown, Unknown] in strict mode, which prevents
         # further typed access.
         data: dict[str, object] = {
+            "config_version": 2,
             "accounts": [
                 {
                     "name": "personal",
                     "email_address": "user@example.com",
                     "imap_host": "imap.example.com",
-                    "smtp_host": "smtp.example.com",
+                    "smtp": {"host": "smtp.example.com"},
                     "username": "user",
                     "credentials_source": "plaintext",
                     "mirror": {
@@ -98,6 +99,7 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_parse_local_account(self) -> None:
         data: dict[str, object] = {
+            "config_version": 2,
             "accounts": [
                 {
                     "account_type": "local",
@@ -122,8 +124,9 @@ class ConfigParsingTestCase(unittest.TestCase):
         self.assertEqual(acc.mirror.format, "maildir")
 
     def test_parse_local_account_no_imap_fields_required(self) -> None:
-        """A local account must not require imap_host, smtp_host, or credentials."""
+        """A local account must not require imap_host, smtp block, or credentials."""
         data: dict[str, object] = {
+            "config_version": 2,
             "accounts": [
                 {
                     "account_type": "local",
@@ -142,8 +145,105 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(data, base_dir=base_dir)
         self.assertIsInstance(config.accounts[0], LocalAccountConfig)
 
+    def test_missing_config_version_is_rejected(self) -> None:
+        """No silent migration: the parser requires the version declaration."""
+        data = sample_config()
+        del data["config_version"]
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(data, base_dir=base_dir)
+        self.assertIn("config_version", str(ctx.exception))
+
+    def test_wrong_config_version_is_rejected(self) -> None:
+        data = sample_config()
+        data["config_version"] = 1
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(data, base_dir=base_dir)
+        self.assertIn("config_version", str(ctx.exception))
+
+    def test_local_account_with_smtp_can_send(self) -> None:
+        """A local account that carries an [smtp] block plus credentials
+        reports ``can_send`` as True and ends up in the composer."""
+        from pony.domain import LocalAccountConfig
+
+        data: dict[str, object] = {
+            "config_version": 2,
+            "accounts": [
+                {
+                    "account_type": "local",
+                    "name": "outbound-only",
+                    "email_address": "me@example.com",
+                    "username": "me@example.com",
+                    "credentials_source": "plaintext",
+                    "password": "x",
+                    "smtp": {"host": "smtp.example.com"},
+                    "mirror": {"path": "mirrors/out", "format": "maildir"},
+                },
+            ],
+        }
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        acc = config.accounts[0]
+        self.assertIsInstance(acc, LocalAccountConfig)
+        self.assertTrue(acc.can_send)
+
+    def test_local_account_without_smtp_cannot_send(self) -> None:
+        from pony.domain import LocalAccountConfig
+
+        data: dict[str, object] = {
+            "config_version": 2,
+            "accounts": [
+                {
+                    "account_type": "local",
+                    "name": "archive-only",
+                    "email_address": "me@example.com",
+                    "mirror": {"path": "m", "format": "maildir"},
+                },
+            ],
+        }
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        acc = config.accounts[0]
+        self.assertIsInstance(acc, LocalAccountConfig)
+        self.assertFalse(acc.can_send)
+
+    def test_local_account_with_smtp_but_no_credentials_is_rejected(self) -> None:
+        """If ``smtp`` is set on a local account, credentials become
+        mandatory — otherwise sending would fail at runtime."""
+        data: dict[str, object] = {
+            "config_version": 2,
+            "accounts": [
+                {
+                    "account_type": "local",
+                    "name": "bad",
+                    "email_address": "me@example.com",
+                    "smtp": {"host": "smtp.example.com"},
+                    "mirror": {"path": "m", "format": "maildir"},
+                },
+            ],
+        }
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ConfigError):
+            parse_config(data, base_dir=base_dir)
+
+    def test_imap_account_can_send(self) -> None:
+        from pony.domain import AccountConfig
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        acc = config.accounts[0]
+        assert isinstance(acc, AccountConfig)
+        self.assertTrue(acc.can_send)
+
     def test_parse_unknown_account_type_raises(self) -> None:
         data: dict[str, object] = {
+            "config_version": 2,
             "accounts": [
                 {
                     "account_type": "ftp",
@@ -289,12 +389,13 @@ class FolderPolicyTestCase(unittest.TestCase):
 def sample_config() -> dict[str, object]:
     """Return a minimal valid application config."""
     return {
+        "config_version": 2,
         "accounts": [
             {
                 "name": "personal",
                 "email_address": "user@example.com",
                 "imap_host": "imap.example.com",
-                "smtp_host": "smtp.example.com",
+                "smtp": {"host": "smtp.example.com"},
                 "username": "user",
                 "credentials_source": "plaintext",
                 "mirror": {
@@ -310,13 +411,17 @@ def sample_config() -> dict[str, object]:
 def sample_toml_config() -> str:
     """Return a minimal valid TOML app configuration."""
     return """
+config_version = 2
+
 [[accounts]]
 name = "personal"
 email_address = "user@example.com"
 imap_host = "imap.example.com"
-smtp_host = "smtp.example.com"
 username = "user"
 credentials_source = "plaintext"
+
+[accounts.smtp]
+host = "smtp.example.com"
 
 [accounts.mirror]
 path = "mirrors/personal"

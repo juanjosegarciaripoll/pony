@@ -18,6 +18,7 @@ from textual.worker import Worker
 
 from ...domain import (
     AccountConfig,
+    AnyAccount,
     AppConfig,
     FolderRef,
     IndexedMessage,
@@ -966,21 +967,22 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(NewFolderScreen(), _on_name)  # pyright: ignore[reportUnknownMemberType]
 
-    def _account_for_new_folder(self) -> AccountConfig | None:
+    def _account_for_new_folder(self) -> AnyAccount | None:
         """Pick the account to create a folder in.
 
         Uses the currently-open folder's account; falls back to the sole
-        IMAP account when exactly one is configured.  Folders can only be
-        created on IMAP accounts — local accounts have no server side.
+        configured account when exactly one exists.  Works for both IMAP
+        and local accounts — the mirror backends implement ``create_folder``
+        either way; on IMAP accounts the folder is pushed to the server on
+        the next sync, on local accounts it is terminal state.
         """
         if self._current_folder_ref is not None:
             name = self._current_folder_ref.account_name
             for a in self._config.accounts:
-                if a.name == name and isinstance(a, AccountConfig):
+                if a.name == name:
                     return a
-        imap = [a for a in self._config.accounts if isinstance(a, AccountConfig)]
-        if len(imap) == 1:
-            return imap[0]
+        if len(self._config.accounts) == 1:
+            return self._config.accounts[0]
         return None
 
     def _create_folder(self, account_name: str, folder_name: str) -> None:
@@ -1004,8 +1006,17 @@ class MainScreen(Screen[None]):
             )
             return
         self.query_one(FolderPanel).refresh_folders()
+        # Local accounts have no server side: the creation is terminal.
+        # IMAP accounts get the folder pushed upstream on the next sync.
+        account = next(
+            (a for a in self._config.accounts if a.name == account_name), None,
+        )
+        suffix = (
+            "; run sync to propagate."
+            if isinstance(account, AccountConfig) else "."
+        )
         self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Folder {folder_name!r} created locally; run sync to propagate."
+            f"Folder {folder_name!r} created locally{suffix}"
         )
 
     # ------------------------------------------------------------------
@@ -1021,16 +1032,31 @@ class MainScreen(Screen[None]):
     def action_compose_forward(self) -> None:
         self.compose_forward()
 
+    def _sendable_accounts(self) -> list[AnyAccount]:
+        """Accounts that can send via SMTP (IMAP or local-with-SMTP)."""
+        return [a for a in self._config.accounts if a.can_send]
+
     def compose_new(self) -> None:
         """Open a blank compose screen."""
         from .compose_screen import ComposeInitial, ComposeScreen
 
-        accounts = list(self._config.accounts)
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Composing requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return
+        # Prefer the current message's account when it's sendable; otherwise
+        # default to the first IMAP account.
         msg = self.get_current_message()
-        account_name = (
-            msg.message_ref.account_name if msg is not None else accounts[0].name
+        account = next(
+            (
+                a for a in accounts
+                if msg is not None and a.name == msg.message_ref.account_name
+            ),
+            accounts[0],
         )
-        account = next((a for a in accounts if a.name == account_name), accounts[0])
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1038,7 +1064,7 @@ class MainScreen(Screen[None]):
                 self._index,
                 self._mirrors,
                 ComposeInitial(
-                    account_name=account_name,
+                    account_name=account.name,
                     body=new_compose_body(account.signature),
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
@@ -1055,6 +1081,13 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Replying requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return
         mirror = self._mirrors[msg.message_ref.account_name]
         try:
             raw = mirror.get_message_bytes(
@@ -1068,7 +1101,8 @@ class MainScreen(Screen[None]):
             self.app.notify("Could not load message for reply.", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return
         rendered = render_message(raw)
-        accounts = list(self._config.accounts)
+        # Source may be a local account; fall back to the first IMAP account
+        # when that's the case so the dropdown has a valid default.
         account = next(
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
@@ -1080,7 +1114,7 @@ class MainScreen(Screen[None]):
                 self._index,
                 self._mirrors,
                 ComposeInitial(
-                    account_name=msg.message_ref.account_name,
+                    account_name=account.name,
                     to=rendered.from_,
                     subject=reply_subject(rendered.subject),
                     body=build_reply_body(rendered, signature=account.signature),
@@ -1099,6 +1133,13 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Forwarding requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return
         mirror = self._mirrors[msg.message_ref.account_name]
         try:
             raw = mirror.get_message_bytes(
@@ -1112,7 +1153,6 @@ class MainScreen(Screen[None]):
             self.app.notify("Could not load message for forward.", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return
         rendered = render_message(raw)
-        accounts = list(self._config.accounts)
         account = next(
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
@@ -1124,7 +1164,7 @@ class MainScreen(Screen[None]):
                 self._index,
                 self._mirrors,
                 ComposeInitial(
-                    account_name=msg.message_ref.account_name,
+                    account_name=account.name,
                     subject=forward_subject(rendered.subject),
                     body=build_forward_body(rendered, signature=account.signature),
                     markdown_mode=(

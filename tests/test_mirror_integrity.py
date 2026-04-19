@@ -16,6 +16,7 @@ from pony.domain import (
     MessageRef,
     MessageStatus,
     MirrorConfig,
+    SmtpConfig,
 )
 from pony.index_store import SqliteIndexRepository
 from pony.services import CheckStatus, check_mirror_integrity
@@ -35,7 +36,7 @@ def _make_env(
         name="test",
         email_address="u@example.com",
         imap_host="imap.example.com",
-        smtp_host="smtp.example.com",
+        smtp=SmtpConfig(host="smtp.example.com"),
         username="u",
         credentials_source="plaintext",
         mirror=MirrorConfig(path=mirror_path, format=fmt),  # type: ignore[arg-type]
@@ -184,7 +185,7 @@ class MaildirIntegrityTests(unittest.TestCase):
             name="test",
             email_address="u@example.com",
             imap_host="imap.example.com",
-            smtp_host="smtp.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
             username="u",
             credentials_source="plaintext",
             mirror=MirrorConfig(

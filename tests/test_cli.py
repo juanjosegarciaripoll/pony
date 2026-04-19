@@ -655,14 +655,18 @@ def isolated_app_env() -> Iterator[Path]:
 def sample_config_toml() -> str:
     """Return a minimal valid TOML app configuration."""
     return """
+config_version = 2
+
 [[accounts]]
 name = "personal"
 email_address = "user@example.com"
 imap_host = "imap.example.com"
-smtp_host = "smtp.example.com"
 username = "user"
 credentials_source = "plaintext"
 password = "test-password"
+
+[accounts.smtp]
+host = "smtp.example.com"
 
 [accounts.mirror]
 path = "mirrors/personal"

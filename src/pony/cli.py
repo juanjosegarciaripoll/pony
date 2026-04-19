@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from .config import ConfigError, load_config
 from .credentials import build_credentials_provider, encrypt_password
 from .domain import (
+    CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
     AppConfig,
@@ -1915,13 +1916,28 @@ def run_compose(
     if not config.accounts:
         raise SystemExit("No accounts configured.")
 
+    # Composing requires SMTP config.  Both IMAP accounts (which always
+    # carry it) and local accounts with an [smtp] block qualify.
+    sendable = [a for a in config.accounts if a.can_send]
+    if not sendable:
+        raise SystemExit(
+            "Composing requires an account with SMTP configured. "
+            "Add an [smtp] block to the account you want to send from."
+        )
+
     if account:
-        matched = [a for a in config.accounts if a.name == account]
+        matched = [a for a in sendable if a.name == account]
         if not matched:
+            all_matched = [a for a in config.accounts if a.name == account]
+            if all_matched:
+                raise SystemExit(
+                    f"Account {account!r} has no SMTP configured "
+                    "— add an [smtp] block to use it for sending."
+                )
             raise SystemExit(f"No account named {account!r} in config.")
         selected = matched[0]
     else:
-        selected = config.accounts[0]
+        selected = sendable[0]
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
@@ -2049,14 +2065,17 @@ def run_account_add(
         name = account_name or "my-account"
         print(
             f"# Add this block to {config_file}\n"
+            f"# (The file itself must start with `config_version = 2`.)\n"
             f"[[accounts]]\n"
             f'name             = "{name}"\n'
             f'email_address    = "you@example.com"\n'
             f'imap_host        = "imap.example.com"\n'
-            f'smtp_host        = "smtp.example.com"\n'
             f'username         = "you@example.com"\n'
             f'credentials_source = "plaintext"\n'
             f'password         = "your-password"\n'
+            f"\n"
+            f"[accounts.smtp]\n"
+            f'host = "smtp.example.com"\n'
             f"\n"
             f"[accounts.mirror]\n"
             f'path   = "mirrors/{name}"\n'
@@ -2189,12 +2208,14 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
         f'imap_host        = "{imap_host}"\n'
         f"imap_port        = {imap_port}\n"
         f"imap_ssl         = {imap_ssl_str}\n"
-        f'smtp_host        = "{smtp_host}"\n'
-        f"smtp_port        = {smtp_port}\n"
-        f"smtp_ssl         = {smtp_ssl_str}\n"
         f'username         = "{username}"\n'
         f'credentials_source = "{cred_source}"\n'
         f"{password_line}"
+        f"\n"
+        f"[accounts.smtp]\n"
+        f'host = "{smtp_host}"\n'
+        f"port = {smtp_port}\n"
+        f"ssl  = {smtp_ssl_str}\n"
         f"\n"
         f"[accounts.mirror]\n"
         f"# Relative paths resolve under {paths.data_dir}\n"
@@ -2202,12 +2223,11 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
         f'format = "{mirror_format}"\n'
     )
 
+    # Bootstrap or append.  Every file must start with config_version = 2.
+    header = f"# Pony Express configuration\nconfig_version = {CONFIG_VERSION}\n"
     if not config_file.exists():
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(
-            "# Pony Express configuration\n" + block,
-            encoding="utf-8",
-        )
+        config_file.write_text(header + block, encoding="utf-8")
         print(f"\nCreated {config_file}")
     else:
         with config_file.open("a", encoding="utf-8") as f:

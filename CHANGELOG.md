@@ -5,6 +5,58 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0]
+### Added
+
+- **Send-capable local accounts**: local accounts can now carry an
+  optional `[smtp]` block (plus their own `username` /
+  `credentials_source` / `password` / `password_command`) to send
+  outgoing mail without needing a paired IMAP account.  The composer's
+  "From:" dropdown now shows any account whose `can_send` predicate
+  returns True — IMAP accounts (always), or local accounts with SMTP
+  configured.  Filters that previously keyed off `isinstance(a,
+  AccountConfig)` now use the semantic `account.can_send` instead.
+- **Folder creation on local accounts**: the TUI `N` action no longer
+  refuses on local accounts — the mirror backends implement
+  `create_folder` regardless of account type.  The post-create
+  notification is "Folder … created locally; run sync to propagate."
+  for IMAP accounts and just "Folder … created locally." for local
+  accounts (there is nothing to push).
+
+### Changed
+
+- **Breaking: TOML schema version 2.** The config file must now
+  declare `config_version = 2` at the top level — `load_config`
+  rejects files that omit it or carry a different value, rather than
+  silently migrating.  SMTP settings move from the flat
+  `smtp_host` / `smtp_port` / `smtp_ssl` keys into a nested
+  `[accounts.<name>.smtp]` table with `host` / `port` / `ssl` keys.
+  Updating existing configs is mechanical:
+
+  ```toml
+  # before
+  smtp_host = "smtp.example.com"
+  smtp_port = 465
+  smtp_ssl  = true
+
+  # after
+  config_version = 2
+
+  [accounts.personal.smtp]
+  host = "smtp.example.com"
+  port = 465           # optional; defaults to 465 when ssl=true, 587 otherwise
+  ssl  = true          # optional; defaults to true
+  ```
+
+  See `config-sample.toml` for the full shape.  The same nested form is
+  used for optional SMTP blocks on local accounts.
+- **`pony.smtp_sender.send_message` signature**: now takes explicit
+  keyword arguments `smtp: SmtpConfig`, `username: str`, `password: str`,
+  `msg: EmailMessage` instead of an opaque `AccountConfig`.  The
+  composer resolves these from whatever account is selected in the
+  "From:" dropdown, so both IMAP and local-with-SMTP accounts share
+  one send path.
+
 ## [0.5.0] - 2026-04-19
 ### Added
 

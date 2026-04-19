@@ -27,6 +27,7 @@ from pony.domain import (
     MessageRef,
     MessageStatus,
     MirrorConfig,
+    SmtpConfig,
 )
 from pony.index_store import SqliteIndexRepository
 from pony.message_copy import copy_message_bytes
@@ -140,7 +141,7 @@ class SameAccountMoveTest(unittest.TestCase):
             name="personal",
             email_address="alice@example.com",
             imap_host="imap.example.com",
-            smtp_host="smtp.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
             username="alice",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
@@ -241,7 +242,7 @@ class CrossAccountMoveTest(unittest.TestCase):
             name="work",
             email_address="alice@work.example.com",
             imap_host="imap.work.example.com",
-            smtp_host="smtp.work.example.com",
+            smtp=SmtpConfig(host="smtp.work.example.com"),
             username="alice",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror-a", format="maildir"),
@@ -250,7 +251,7 @@ class CrossAccountMoveTest(unittest.TestCase):
             name="personal",
             email_address="alice@personal.example.com",
             imap_host="imap.personal.example.com",
-            smtp_host="smtp.personal.example.com",
+            smtp=SmtpConfig(host="smtp.personal.example.com"),
             username="alice",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror-b", format="maildir"),

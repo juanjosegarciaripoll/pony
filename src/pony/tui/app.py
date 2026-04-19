@@ -123,10 +123,14 @@ class ComposeApp(App[None]):
             else:
                 self.exit()
 
+        # ComposeScreen only accepts accounts that can send; ``pony
+        # compose`` at the CLI refuses to launch without at least one
+        # sendable account, so this filter is primarily defensive.
+        accounts = [a for a in self._config.accounts if a.can_send]
         self.push_screen(
             ComposeScreen(
                 self._config,
-                list(self._config.accounts),
+                accounts,
                 self._index,
                 self._mirrors,
                 ComposeInitial(

@@ -10,7 +10,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from pony.domain import AccountConfig, MirrorConfig
+from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
 from pony.smtp_sender import SMTPError, send_message
 from pony.tui.compose_utils import (
     build_email_message,
@@ -164,14 +164,16 @@ class BuildEmailMessageTest(unittest.TestCase):
                 p.unlink(missing_ok=True)
 
 
-def _make_account(**kwargs: object) -> AccountConfig:
+def _make_account(
+    *, smtp: SmtpConfig | None = None, **kwargs: object,
+) -> AccountConfig:
     base = AccountConfig(
         name="test",
         email_address="alice@example.com",
         username="alice",
         credentials_source="plaintext",
         imap_host="imap.example.com",
-        smtp_host="smtp.example.com",
+        smtp=smtp or SmtpConfig(host="smtp.example.com"),
         mirror=MirrorConfig(path=Path("/tmp/mirror"), format="maildir"),
         password="secret",
     )
@@ -189,37 +191,46 @@ class SmtpSenderTest(unittest.TestCase):
     """Unit tests for smtp_sender.send_message using a mock SMTP connection."""
 
     def test_raises_value_error_with_no_password(self) -> None:
-        account = _make_account(password=None)
+        smtp = SmtpConfig(host="smtp.example.com")
         with self.assertRaises(ValueError):
-            send_message(account, EmailMessage())
+            send_message(smtp=smtp, username="alice", password="", msg=EmailMessage())
 
     def test_ssl_path_uses_smtp_ssl(self) -> None:
-        account = _make_account(smtp_ssl=True)
+        smtp = SmtpConfig(host="smtp.example.com", ssl=True)
         mock = _mock_smtp()
         with patch("smtplib.SMTP_SSL", return_value=mock) as smtp_ssl_cls:
-            send_message(account, EmailMessage())
+            send_message(
+                smtp=smtp, username="alice", password="secret",
+                msg=EmailMessage(),
+            )
             smtp_ssl_cls.assert_called_once_with("smtp.example.com", 465)
             mock.login.assert_called_once_with("alice", "secret")
             mock.send_message.assert_called_once()
 
     def test_starttls_path(self) -> None:
-        account = _make_account(smtp_ssl=False, smtp_port=587)
+        smtp = SmtpConfig(host="smtp.example.com", ssl=False, port=587)
         mock = _mock_smtp()
         with patch("smtplib.SMTP", return_value=mock):
-            send_message(account, EmailMessage())
+            send_message(
+                smtp=smtp, username="alice", password="secret",
+                msg=EmailMessage(),
+            )
             mock.ehlo.assert_called()
             mock.starttls.assert_called_once()
             mock.login.assert_called_once_with("alice", "secret")
 
     def test_smtp_exception_wrapped_as_smtp_error(self) -> None:
-        account = _make_account(smtp_ssl=True)
+        smtp = SmtpConfig(host="smtp.example.com", ssl=True)
         mock = _mock_smtp()
         mock.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Bad creds")
         with (
             patch("smtplib.SMTP_SSL", return_value=mock),
             self.assertRaises(SMTPError),
         ):
-            send_message(account, EmailMessage())
+            send_message(
+                smtp=smtp, username="alice", password="secret",
+                msg=EmailMessage(),
+            )
 
 
 if __name__ == "__main__":

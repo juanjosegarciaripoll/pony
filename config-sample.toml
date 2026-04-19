@@ -3,6 +3,11 @@
 # This file demonstrates the TOML configuration structure for Pony Express.
 # Copy this file to config.toml and customize the values for your accounts.
 #
+# config_version (REQUIRED):
+# Pony Express refuses to open a config that omits or mismatches this
+# value.  Bumped when the schema changes in a way that requires user
+# intervention.  The current supported version is 2.
+#
 # Top-level options:
 # - use_utf8:          Enable Unicode characters in the TUI (e.g. 📎 for attachments).
 #                      Set to false for terminals that don't support Unicode (default: false).
@@ -48,21 +53,28 @@
 # - imap_host: IMAP server hostname
 # - imap_port: IMAP port (default: 993 when imap_ssl=true, 143 otherwise)
 # - imap_ssl: Use TLS for IMAP (default: true)
-# - smtp_host: SMTP server hostname
-# - smtp_port: SMTP port (default: 465 when smtp_ssl=true, 587 otherwise)
-# - smtp_ssl: Use TLS for SMTP (default: true)
-# - username: Login username (often the email address)
-# - credentials_source: Either "password" or "app-password"
-# - mirror: Local storage configuration
+# - username: Login username (used for both IMAP and SMTP by default)
+# - credentials_source: "plaintext", "env", "command", or "encrypted"
+# - mirror: Local storage configuration (subtable)
+# - smtp:   SMTP connection (subtable — see below)
+#
+# SMTP subtable (required for IMAP accounts, optional for local accounts):
+# - host: SMTP server hostname
+# - port: SMTP port (default: 465 when ssl=true, 587 otherwise)
+# - ssl:  Use TLS (implicit TLS when true, STARTTLS when false — default: true)
 #
 # Local accounts (account_type = "local"):
 # Point Pony at a Maildir or mbox tree managed by another tool
 # (e.g. offlineimap, getmail, procmail).  The sync command skips local
-# accounts entirely; browsing and composing work normally, but sending
-# requires selecting an IMAP account in the From: field.
+# accounts entirely.  SMTP is optional: omit to make the account
+# read-only, or add an [smtp] subtable together with username / password
+# / credentials_source to let the account send outgoing mail.
 # - name: A unique identifier for the account
 # - email_address: The address shown in From: when composing
 # - mirror: Local storage configuration (same structure as IMAP accounts)
+# - smtp:   Optional SMTP subtable (same shape as above)
+# - username / credentials_source / password / password_command:
+#     Required when smtp is set; otherwise ignored.
 #
 # Mirror configuration:
 # - path: Directory path for local mail storage.
@@ -84,17 +96,21 @@
 # match exactly, while patterns like "Archive/.*" match subfolders and ".*" matches
 # everything.
 
+config_version = 2
 use_utf8 = true
 
 [[accounts]]
 name = "Personal"
 email_address = "user@example.com"
 imap_host = "imap.example.com"
-smtp_host = "smtp.example.com"
 username = "user@example.com"
-credentials_source = "password"
+credentials_source = "plaintext"
 # Archive the selected message with the "A" key to this folder.
 archive_folder = "Archive"
+
+[accounts.smtp]
+host = "smtp.example.com"
+# port and ssl default to 465 / true — specify to override.
 
 [accounts.mirror]
 path = "mirrors/personal"
@@ -106,14 +122,18 @@ trash_retention_days = 30
 exclude   = ["Spam", "Trash"]
 read_only = ["Sent"]
 
-# Example of a second account (Gmail)
+# Example of a second account (Gmail-style) using STARTTLS on port 587.
 [[accounts]]
 name = "Work"
 email_address = "employee@company.com"
 imap_host = "imap.company.com"
-smtp_host = "smtp.company.com"
 username = "employee@company.com"
-credentials_source = "app-password"
+credentials_source = "encrypted"
+
+[accounts.smtp]
+host = "smtp.company.com"
+port = 587
+ssl  = false
 
 [accounts.mirror]
 path = "mirrors/work"
@@ -130,10 +150,11 @@ read_only = ["Sent Mail"]
 # ── Local accounts ───────────────────────────────────────────────────────────
 #
 # These accounts are backed by local mail directories managed by an external
-# tool.  Pony never connects to any server for them; they are read-only from
-# a sync perspective but fully browsable and composable in the TUI.
+# tool.  Pony never connects to any IMAP server for them; they are read-only
+# from a sync perspective.
 
 # Local account backed by a Maildir tree (e.g. delivered by offlineimap).
+# No SMTP — browse-only.
 [[accounts]]
 account_type  = "local"
 name          = "Archive"
@@ -144,11 +165,19 @@ path   = "mirrors/archive"   # directory containing the Maildir subfolders
 format = "maildir"
 trash_retention_days = 90
 
-# Local account backed by an mbox file (e.g. a procmail or getmail spool).
+# Local account backed by an mbox file PLUS an SMTP block — reads from
+# disk, sends via an external relay.  `can_send` is true for this
+# account so it appears in the composer's From: dropdown.
 [[accounts]]
-account_type  = "local"
-name          = "Spool"
-email_address = "user@example.com"
+account_type       = "local"
+name               = "Spool"
+email_address      = "user@example.com"
+username           = "user@example.com"
+credentials_source = "plaintext"
+password           = "change-me"
+
+[accounts.smtp]
+host = "smtp.example.com"
 
 [accounts.mirror]
 path   = "mirrors/spool"     # directory containing the mbox file(s)

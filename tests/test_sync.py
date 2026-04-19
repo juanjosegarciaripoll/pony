@@ -23,6 +23,7 @@ from pony.domain import (
     MessageFlag,
     MessageStatus,
     MirrorConfig,
+    SmtpConfig,
 )
 from pony.index_store import SqliteIndexRepository
 from pony.protocols import ImapClientSession, MirrorRepository
@@ -224,7 +225,7 @@ def _setup(
         name="personal",
         email_address="bob@example.com",
         imap_host="imap.example.com",
-        smtp_host="smtp.example.com",
+        smtp=SmtpConfig(host="smtp.example.com"),
         username="bob",
         credentials_source="plaintext",
         mirror=MirrorConfig(
@@ -780,7 +781,7 @@ class ReadOnlyFolderTestCase(unittest.TestCase):
             name="personal",
             email_address="bob@example.com",
             imap_host="imap.example.com",
-            smtp_host="smtp.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
@@ -1048,7 +1049,7 @@ class FetchFailureTestCase(unittest.TestCase):
             name="personal",
             email_address="bob@example.com",
             imap_host="imap.example.com",
-            smtp_host="smtp.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
@@ -1830,7 +1831,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             name="personal",
             email_address="bob@example.com",
             imap_host="imap.example.com",
-            smtp_host="smtp.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
