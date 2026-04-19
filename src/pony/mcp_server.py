@@ -45,7 +45,12 @@ def _make_mirror(acc: AnyAccount) -> MirrorRepository:
 
 
 def _msg_to_dict(msg: Any) -> dict[str, Any]:
-    """Serialise an IndexedMessage to a JSON-safe dict."""
+    """Serialise an IndexedMessage to a JSON-safe dict.
+
+    Body text is not included — the index is metadata-only at the
+    caller-visible layer.  Call ``get_message_body`` to read the full
+    text from the local mirror.
+    """
     ref = msg.message_ref
     return {
         "account": ref.account_name,
@@ -55,7 +60,6 @@ def _msg_to_dict(msg: Any) -> dict[str, Any]:
         "recipients": msg.recipients,
         "cc": msg.cc,
         "subject": msg.subject,
-        "body_preview": msg.body_preview,
         "has_attachments": msg.has_attachments,
         "flags": sorted(f.value for f in msg.local_flags),
         "status": msg.local_status.value,
@@ -126,13 +130,13 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         subject: str = "",
         body: str = "",
         account: str | None = None,
-        case_sensitive: bool = False,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Search the local mail index.
 
-        Returns message metadata (no body text).  Use *get_message_body* to
-        read the full content of a specific message.
+        Returns message metadata only (no body text).  Call
+        *get_message_body* to read the full content of a specific
+        message.  Matching is always case- and diacritic-insensitive.
 
         At least one of query / from_address / to_address / subject / body
         must be non-empty, otherwise all messages are returned (up to limit).
@@ -143,7 +147,6 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
             to_address=to_address,
             subject=subject,
             body=body,
-            case_sensitive=case_sensitive,
         )
         msgs = index.search(query=sq, account_name=account)
         return [_msg_to_dict(m) for m in msgs[:limit]]

@@ -255,7 +255,10 @@ class CliTestCase(unittest.TestCase):
             )
         self.assertIn("Metadata probe", output)
         self.assertIn("sender@example.com", output)
-        self.assertIn("body-text", output)  # preview shown
+        # `message get` is metadata-only — body text lives in the mirror
+        # and must be fetched via `message body`.
+        self.assertNotIn("body-text", output)
+        self.assertNotIn("Preview:", output)
 
     def test_message_get_unknown_errors(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:

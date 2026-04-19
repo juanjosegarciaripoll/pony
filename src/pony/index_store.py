@@ -25,6 +25,11 @@ from .domain import (
 )
 from .protocols import ContactRepository, IndexRepository
 
+# Bumped when the schema, FTS tables, or triggers change in a way that
+# existing databases cannot satisfy without a rebuild.  initialize()
+# refuses to open any DB whose user_version is lower than this.
+_SCHEMA_VERSION = 2
+
 
 class SqliteIndexRepository(IndexRepository, ContactRepository):
     """Persist indexed metadata and sync state in SQLite.
@@ -152,9 +157,25 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return self._open_connection()
 
     def initialize(self) -> None:
-        """Create required tables."""
+        """Create required tables, or refuse to open an out-of-date DB."""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._use() as conn:
+            version_row = conn.execute("PRAGMA user_version").fetchone()
+            version = int(version_row[0]) if version_row is not None else 0
+            has_legacy_tables = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='messages'"
+            ).fetchone() is not None
+
+            if version < _SCHEMA_VERSION and has_legacy_tables:
+                raise SystemExit(
+                    "Pony's index schema has changed. The safest path right "
+                    "now is to delete "
+                    f"{self._database_path} and the mirror directory, then "
+                    "run `pony sync` to redownload. A rebuild-from-mirror "
+                    "command is planned but not yet available."
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -256,6 +277,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 )
                 """
             )
+            _create_fts_tables(conn)
+            _create_fts_triggers(conn)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     # ------------------------------------------------------------------
     # Messages
@@ -494,52 +518,42 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def search(
         self, *, query: SearchQuery, account_name: str | None
     ) -> Sequence[IndexedMessage]:
-        """Run a LIKE-based metadata search."""
-        where_clauses: list[str] = []
-        params: list[str] = []
+        """Run an FTS5-backed metadata search.
 
+        Folding is always on: ``case_sensitive`` on *query* is accepted
+        for backwards-compatibility but ignored — the FTS5 ``unicode61``
+        tokenizer is case- and diacritic-insensitive by construction.
+        """
+        match_expr = _build_fts_match(query)
+        clauses: list[str] = []
+        params: list[object] = []
+
+        if match_expr:
+            clauses.append("messages_fts MATCH ?")
+            params.append(match_expr)
         if account_name is not None:
-            where_clauses.append("account_name = ?")
+            clauses.append("m.account_name = ?")
             params.append(account_name)
-
-        if query.text:
-            where_clauses.append("(subject LIKE ? OR body_preview LIKE ?)")
-            like_value = _pattern(query.text)
-            params.extend((like_value, like_value))
-        if query.from_address:
-            where_clauses.append("sender LIKE ?")
-            params.append(_pattern(query.from_address))
-        if query.to_address:
-            where_clauses.append("recipients LIKE ?")
-            params.append(_pattern(query.to_address))
-        if query.cc_address:
-            where_clauses.append("cc LIKE ?")
-            params.append(_pattern(query.cc_address))
-        if query.subject:
-            where_clauses.append("subject LIKE ?")
-            params.append(_pattern(query.subject))
-        if query.body:
-            where_clauses.append("body_preview LIKE ?")
-            params.append(_pattern(query.body))
-
-        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        where_sql = " AND ".join(clauses) if clauses else "1=1"
+        join_sql = (
+            "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
+        )
 
         with self._use() as conn:
-            pragma = "ON" if query.case_sensitive else "OFF"
-            conn.execute(f"PRAGMA case_sensitive_like = {pragma}")
             rows = conn.execute(
                 f"""
                 SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
+                    m.account_name, m.folder_name, m.message_id,
+                    m.sender, m.recipients, m.cc, m.subject, m.body_preview,
+                    m.storage_key, m.has_attachments,
+                    m.local_flags, m.base_flags, m.local_status, m.received_at,
+                    m.uid, m.server_flags, m.extra_imap_flags,
+                    m.trashed_at, m.synced_at
+                FROM messages m
+                {join_sql}
                 WHERE {where_sql}
-                ORDER BY received_at DESC
-                """,
+                ORDER BY m.received_at DESC
+                """,  # noqa: S608
                 params,
             ).fetchall()
 
@@ -868,23 +882,25 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return self._load_contact(int(row[0]))
 
     def search_contacts(self, *, prefix: str, limit: int = 10) -> list[Contact]:
-        """Search contacts by name, alias, or email address."""
-        pattern = "%" + prefix.lower() + "%"
+        """Search contacts by name, alias, or email address (prefix match).
+
+        Folding is always on (case + diacritics) via the FTS5
+        ``unicode61`` tokenizer; a trailing ``*`` makes the last token a
+        prefix so autocomplete-style typing works as the user types.
+        """
+        if not prefix.strip():
+            return []
+        match_expr = _fts5_query(prefix, prefix=True)
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT c.id
-                FROM contacts c
-                LEFT JOIN contact_emails ce ON c.id = ce.contact_id
-                LEFT JOIN contact_aliases ca ON c.id = ca.contact_id
-                WHERE LOWER(c.first_name) LIKE ?
-                   OR LOWER(c.last_name) LIKE ?
-                   OR LOWER(ce.email_address) LIKE ?
-                   OR LOWER(ca.alias) LIKE ?
+                SELECT c.id FROM contacts c
+                JOIN contacts_fts f ON f.rowid = c.id
+                WHERE contacts_fts MATCH ?
                 ORDER BY c.message_count DESC, c.last_seen DESC
                 LIMIT ?
                 """,
-                (pattern, pattern, pattern, pattern, limit),
+                (match_expr, limit),
             ).fetchall()
         return self._load_contacts_by_ids([int(r[0]) for r in rows])
 
@@ -1059,8 +1075,223 @@ def _flags_from_csv(value: str) -> frozenset[MessageFlag]:
     return frozenset(MessageFlag(item) for item in value.split(","))
 
 
-def _pattern(value: str) -> str:
-    return f"%{value}%"
+def _fts5_query(text: str, *, prefix: bool = False) -> str:
+    """Translate a user-supplied term into a safe FTS5 MATCH expression.
+
+    The result is wrapped as a phrase — double quotes in the input are
+    doubled as required by FTS5 — so reserved tokens (AND / OR / NOT /
+    NEAR / parentheses / ``-`` / ``:`` / ``*``) cannot escape into
+    operator position.  When *prefix* is True the phrase is suffixed with
+    ``*`` so the final token matches as a prefix.
+    """
+    escaped = text.replace('"', '""')
+    phrase = f'"{escaped}"'
+    return phrase + "*" if prefix else phrase
+
+
+def _build_fts_match(query: SearchQuery) -> str:
+    """Build an FTS5 MATCH expression from a :class:`SearchQuery`.
+
+    Returns ``""`` when every field is empty — callers should then fall
+    back to a plain ``SELECT`` without a MATCH clause.
+    """
+    parts: list[str] = []
+    if query.from_address:
+        parts.append(f"sender:{_fts5_query(query.from_address)}")
+    if query.to_address:
+        parts.append(f"recipients:{_fts5_query(query.to_address)}")
+    if query.cc_address:
+        parts.append(f"cc:{_fts5_query(query.cc_address)}")
+    if query.subject:
+        parts.append(f"subject:{_fts5_query(query.subject)}")
+    if query.body:
+        parts.append(f"body_preview:{_fts5_query(query.body)}")
+    if query.text:
+        phrase = _fts5_query(query.text)
+        parts.append(f"(subject:{phrase} OR body_preview:{phrase})")
+    return " AND ".join(parts)
+
+
+def _create_fts_tables(conn: sqlite3.Connection) -> None:
+    """Create FTS5 virtual tables backing message and contact search."""
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            sender, recipients, cc, subject, body_preview,
+            content='messages',
+            content_rowid='rowid',
+            tokenize='unicode61 remove_diacritics 2'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS contacts_fts USING fts5(
+            first_name, last_name, email_addresses, aliases,
+            content='',
+            contentless_delete=1,
+            tokenize='unicode61 remove_diacritics 2'
+        )
+        """
+    )
+
+
+def _create_fts_triggers(conn: sqlite3.Connection) -> None:
+    """Create triggers that keep the FTS tables in sync with base tables."""
+    # messages <-> messages_fts (external-content mode, standard pattern).
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(
+                rowid, sender, recipients, cc, subject, body_preview
+            ) VALUES (
+                new.rowid, new.sender, new.recipients, new.cc,
+                new.subject, new.body_preview
+            );
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(
+                messages_fts, rowid, sender, recipients, cc, subject, body_preview
+            ) VALUES (
+                'delete', old.rowid, old.sender, old.recipients, old.cc,
+                old.subject, old.body_preview
+            );
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(
+                messages_fts, rowid, sender, recipients, cc, subject, body_preview
+            ) VALUES (
+                'delete', old.rowid, old.sender, old.recipients, old.cc,
+                old.subject, old.body_preview
+            );
+            INSERT INTO messages_fts(
+                rowid, sender, recipients, cc, subject, body_preview
+            ) VALUES (
+                new.rowid, new.sender, new.recipients, new.cc,
+                new.subject, new.body_preview
+            );
+        END
+        """
+    )
+    # contacts <-> contacts_fts (contentless mode — aggregated by hand).
+    #
+    # On any change to contacts, contact_emails, or contact_aliases we
+    # delete any existing FTS row for the affected contact_id and
+    # re-insert an aggregated row from the current state of all three
+    # source tables.  For INSERT/DELETE we refresh exactly one row; for
+    # UPDATE we refresh old and new in case the key changed.
+    contact_refresh = (
+        """
+        DELETE FROM contacts_fts WHERE rowid = {cid};
+        INSERT INTO contacts_fts(
+            rowid, first_name, last_name, email_addresses, aliases
+        )
+        SELECT
+            c.id,
+            c.first_name,
+            c.last_name,
+            COALESCE(
+                (SELECT GROUP_CONCAT(email_address, ' ')
+                 FROM contact_emails WHERE contact_id = c.id),
+                ''
+            ),
+            COALESCE(
+                (SELECT GROUP_CONCAT(alias, ' ')
+                 FROM contact_aliases WHERE contact_id = c.id),
+                ''
+            )
+        FROM contacts c WHERE c.id = {cid};
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contacts_ai AFTER INSERT ON contacts
+        BEGIN
+        {contact_refresh.format(cid="new.id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS contacts_ad AFTER DELETE ON contacts
+        BEGIN
+            DELETE FROM contacts_fts WHERE rowid = old.id;
+        END
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contacts_au AFTER UPDATE ON contacts
+        BEGIN
+            DELETE FROM contacts_fts WHERE rowid = old.id;
+            {contact_refresh.format(cid="new.id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_emails_ai
+        AFTER INSERT ON contact_emails
+        BEGIN
+        {contact_refresh.format(cid="new.contact_id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_emails_ad
+        AFTER DELETE ON contact_emails
+        BEGIN
+        {contact_refresh.format(cid="old.contact_id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_emails_au
+        AFTER UPDATE ON contact_emails
+        BEGIN
+        {contact_refresh.format(cid="old.contact_id")}
+        {contact_refresh.format(cid="new.contact_id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_aliases_ai
+        AFTER INSERT ON contact_aliases
+        BEGIN
+        {contact_refresh.format(cid="new.contact_id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_aliases_ad
+        AFTER DELETE ON contact_aliases
+        BEGIN
+        {contact_refresh.format(cid="old.contact_id")}
+        END
+        """  # noqa: S608
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS contact_aliases_au
+        AFTER UPDATE ON contact_aliases
+        BEGIN
+        {contact_refresh.format(cid="old.contact_id")}
+        {contact_refresh.format(cid="new.contact_id")}
+        END
+        """  # noqa: S608
+    )
 
 
 def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:

@@ -144,6 +144,11 @@ _CTE_RE = re.compile(
     rb"Content-Transfer-Encoding:\s*(\S+)", re.IGNORECASE,
 )
 
+# Safety cap applied to the final collapsed body text.  Protects against
+# pathological emails (e.g. multi-megabyte log dumps pasted into a message)
+# without silently truncating ordinary mail.
+_MAX_BODY_TEXT_BYTES = 256 * 1024
+
 
 def _decode_part_body(part_headers: bytes, raw_body: bytes) -> str:
     """Decode a MIME part body based on its Content-Transfer-Encoding."""
@@ -160,7 +165,7 @@ def _decode_part_body(part_headers: bytes, raw_body: bytes) -> str:
     else:
         decoded = raw_body
 
-    return decoded[:4000].decode("utf-8", errors="replace")
+    return decoded.decode("utf-8", errors="replace")
 
 
 def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
@@ -183,7 +188,7 @@ def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
         # Strip HTML tags if it's an HTML-only message.
         if b"text/html" in header_block.lower():
             text = html_to_preview_text(text)
-        return _collapse_whitespace(text)
+        return _cap_body_text(_collapse_whitespace(text))
 
     # Multipart: split on boundaries and find text/plain.
     parts = _BOUNDARY_RE.split(raw_message)
@@ -203,8 +208,15 @@ def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
             html_preview = html_to_preview_text(raw_html)
 
     result = text_preview or html_preview
-    return _collapse_whitespace(result)
+    return _cap_body_text(_collapse_whitespace(result))
 
 
 def _collapse_whitespace(value: str) -> str:
     return " ".join(value.split())
+
+
+def _cap_body_text(value: str) -> str:
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= _MAX_BODY_TEXT_BYTES:
+        return value
+    return encoded[:_MAX_BODY_TEXT_BYTES].decode("utf-8", errors="ignore")

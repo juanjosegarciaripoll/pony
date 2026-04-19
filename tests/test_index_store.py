@@ -185,28 +185,21 @@ class SearchTestCase(unittest.TestCase):
         )
         self.assertEqual(len(hits), 2)
 
-    def test_case_sensitive_no_match(self) -> None:
-        hits = self.repo.search(
+    def test_case_sensitive_flag_is_ignored(self) -> None:
+        # The legacy ``case_sensitive`` flag on SearchQuery is accepted
+        # for backwards compatibility but has no effect — FTS5's
+        # ``unicode61`` tokenizer folds case (and diacritics)
+        # unconditionally.  Both values must return the same results.
+        hits_on = self.repo.search(
             query=SearchQuery(subject="quarterly report", case_sensitive=True),
             account_name="personal",
         )
-        self.assertEqual(hits, ())
-
-    def test_case_sensitive_exact_match(self) -> None:
-        # "Please" appears only in m-1's body preview; "please" (wrong case)
-        # must return nothing in case-sensitive mode.
-        hits_wrong_case = self.repo.search(
-            query=SearchQuery(body="please review", case_sensitive=True),
+        hits_off = self.repo.search(
+            query=SearchQuery(subject="quarterly report", case_sensitive=False),
             account_name="personal",
         )
-        self.assertEqual(hits_wrong_case, ())
-
-        hits_right_case = self.repo.search(
-            query=SearchQuery(body="Please review", case_sensitive=True),
-            account_name="personal",
-        )
-        ids = {h.message_ref.rfc5322_id for h in hits_right_case}
-        self.assertEqual(ids, {"m-1"})
+        self.assertEqual(len(hits_on), 2)
+        self.assertEqual(len(hits_off), 2)
 
     def test_cross_account_search_none_returns_all(self) -> None:
         # add a message in a different account
@@ -238,6 +231,59 @@ class SearchTestCase(unittest.TestCase):
         )
         ids = {h.message_ref.rfc5322_id for h in hits}
         self.assertNotIn("m-3", ids)
+
+
+class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
+    """FTS5 ``unicode61`` tokenizer folds case + diacritics everywhere."""
+
+    def test_ascii_query_matches_accented_subject(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(
+            message=_make_message(
+                "m-1", subject="Carta de María",
+                body_preview="contenido cualquiera",
+            ),
+        )
+        hits = repo.search(
+            query=SearchQuery(subject="maria"), account_name="personal",
+        )
+        self.assertEqual(
+            {h.message_ref.rfc5322_id for h in hits}, {"m-1"},
+        )
+
+    def test_ascii_query_matches_accented_sender(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(
+            message=_make_message(
+                "m-1",
+                sender="Juan.Garcia@example.com",
+                subject="hello",
+            ),
+        )
+        hits = repo.search(
+            query=SearchQuery(from_address="garcia"),
+            account_name="personal",
+        )
+        self.assertEqual(
+            {h.message_ref.rfc5322_id for h in hits}, {"m-1"},
+        )
+
+    def test_field_scoping_is_enforced(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(
+            message=_make_message(
+                "m-1",
+                sender="foo@example.com",
+                subject="an unrelated subject",
+                body_preview="some body",
+            ),
+        )
+        # "foo" appears only in the sender column — a subject-scoped
+        # query must not find it.
+        hits = repo.search(
+            query=SearchQuery(subject="foo"), account_name="personal",
+        )
+        self.assertEqual(hits, ())
 
 
 class FolderSyncStateTestCase(unittest.TestCase):
@@ -343,6 +389,43 @@ class PendingOperationsTestCase(unittest.TestCase):
         pending = repo.list_pending_operations(account_name="personal")
         types = {p.operation_type for p in pending}
         self.assertEqual(types, set(OperationType))
+
+
+class SchemaVersionGateTestCase(unittest.TestCase):
+    """initialize() refuses to open a DB older than the current schema."""
+
+    def test_initialize_refuses_legacy_db(self) -> None:
+        import sqlite3
+
+        path = TMP_ROOT / "legacy" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Create a fake "legacy" DB: the messages table exists but
+        # user_version has not been bumped to the current schema.
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "CREATE TABLE messages (account_name TEXT, folder_name TEXT)",
+            )
+            conn.execute("PRAGMA user_version = 0")
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo = SqliteIndexRepository(database_path=path)
+        with self.assertRaises(SystemExit) as ctx:
+            repo.initialize()
+        self.assertIn(str(path), str(ctx.exception))
+
+    def test_initialize_creates_fresh_db_at_current_version(self) -> None:
+        import sqlite3
+
+        repo = _fresh_repo()
+        conn = sqlite3.connect(repo._database_path)  # noqa: SLF001
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+        self.assertGreaterEqual(version, 2)
 
 
 class BatchedTransactionTestCase(unittest.TestCase):

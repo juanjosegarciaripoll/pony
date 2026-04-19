@@ -154,6 +154,50 @@ class SearchContactsTests(unittest.TestCase):
         results = repo.search_contacts(prefix="zzz")
         self.assertEqual(len(results), 0)
 
+    def test_search_folds_diacritics(self) -> None:
+        repo = _make_repo()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="María", last_name="López",
+                emails=("maria@example.com",),
+            )
+        )
+        ascii_hits = repo.search_contacts(prefix="maria")
+        self.assertEqual(len(ascii_hits), 1)
+        self.assertEqual(ascii_hits[0].first_name, "María")
+
+    def test_search_prefix_returns_multiple(self) -> None:
+        repo = _make_repo()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="María", last_name="L",
+                emails=("maria@example.com",),
+            )
+        )
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Mariano", last_name="R",
+                emails=("mariano@example.com",),
+            )
+        )
+        # Prefix match ("mar" is not a whole word).
+        names = {c.first_name for c in repo.search_contacts(prefix="mar")}
+        self.assertEqual(names, {"María", "Mariano"})
+
+    def test_search_by_email_local_part(self) -> None:
+        repo = _make_repo()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Juan", last_name="Garcia",
+                emails=("juan.garcia@example.com",),
+            )
+        )
+        # The email address splits on punctuation in unicode61, so
+        # "garcia" matches the local-part even without a prefix.
+        hits = repo.search_contacts(prefix="garcia")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].first_name, "Juan")
+
 
 # ---------------------------------------------------------------------------
 # Harvesting

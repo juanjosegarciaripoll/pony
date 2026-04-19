@@ -1028,7 +1028,11 @@ def run_folder_list(
 def run_message_get(
     *, paths: AppPaths, account: str, folder: str, message_id: str,
 ) -> int:
-    """Print metadata for a single indexed message."""
+    """Print metadata for a single indexed message.
+
+    Metadata-only: call ``pony message body`` to read the text body from
+    the mirror.
+    """
     paths.ensure_runtime_dirs()
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
@@ -1056,10 +1060,6 @@ def run_message_get(
     print(f"UID:        {msg.uid if msg.uid is not None else '(unset)'}")
     print(f"Storage:    {msg.storage_key}")
     print(f"Attach.:    {'yes' if msg.has_attachments else 'no'}")
-    if msg.body_preview:
-        print()
-        print("Preview:")
-        print(f"  {msg.body_preview}")
     return 0
 
 
