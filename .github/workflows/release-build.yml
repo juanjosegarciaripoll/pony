@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: write        # required by 'gh release upload' for release assets
+
 env:
   APP_NAME: pony
   PYTHON_VERSION: '3.13'
