@@ -172,6 +172,26 @@ class EncodedHeadersProjectionTest(unittest.TestCase):
         self.assertIn("Corps", self.msg.body_preview)
 
 
+class UnknownCharsetHeaderProjectionTest(unittest.TestCase):
+    """Headers tagged with an unregistered charset (e.g. "x-unknown")
+    must not abort projection — real-world mbox archives carry them."""
+
+    def test_unknown_charset_does_not_raise(self) -> None:
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Cc: =?x-unknown?Q?Caf=E9?= <carol@example.com>\r\n"
+            b"Subject: hello\r\n"
+            b"Date: Fri, 10 Apr 2026 12:34:56 +0000\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        msg = _project(raw)
+        # latin-1 fallback decodes =E9 to 'é'.
+        self.assertIn("Caf\xe9", msg.cc)
+        self.assertIn("carol@example.com", msg.cc)
+
+
 class MissingDateProjectionTest(unittest.TestCase):
     """No Date header: projection must fall back to now() without raising."""
 

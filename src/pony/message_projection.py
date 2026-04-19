@@ -120,7 +120,14 @@ def _decode_header(raw: bytes) -> str:
     for fragment, charset in decode_header(text):
         if isinstance(fragment, bytes):
             enc = charset or "utf-8"
-            parts.append(fragment.decode(enc, errors="replace"))
+            try:
+                parts.append(fragment.decode(enc, errors="replace"))
+            except LookupError:
+                # Unknown/bogus charset label (e.g. "x-unknown" from a
+                # malformed RFC 2047 encoded-word).  latin-1 is total —
+                # every byte maps to a code point — so we get a lossless
+                # best-effort string instead of aborting the whole import.
+                parts.append(fragment.decode("latin-1"))
         else:
             parts.append(fragment)
     return _collapse_whitespace(" ".join(parts))
