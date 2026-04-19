@@ -42,7 +42,7 @@ from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .services import CheckStatus, ServiceStatus, build_service_status
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
-from .storage_indexing import RescanResult, rescan_local_account
+from .storage_indexing import RescanResult, ScanState, rescan_local_account
 from .sync import (
     FetchNewOp,
     ImapSyncService,
@@ -736,6 +736,7 @@ def _rescan_local_with_cli_progress(
     mirror: MirrorRepository,
     index: SqliteIndexRepository,
     account_name: str,
+    scan_state: ScanState | None,
 ) -> None:
     """Rescan a local account with live feedback on stderr.
 
@@ -746,6 +747,10 @@ def _rescan_local_with_cli_progress(
     2. per-folder liveness during the plan phase (``\\r``-overwriting)
     3. if changes were found: an announcement + per-item progress bar
     4. if no changes: ``[acc] Local mirror up to date.``
+
+    When ``scan_state`` is provided, folders whose mtime has not advanced
+    since the last scan are skipped — this is the fast path that makes
+    startup near-instant on a cold, unchanged archive.
     """
     # 1. preamble — flushed so it shows before the first folder listing.
     print(
@@ -757,8 +762,11 @@ def _rescan_local_with_cli_progress(
     # a shorter follow-up message doesn't leave tail characters behind.
     erase = "\r\033[K"
 
+    walked: list[str] = []
+
     def _on_folder_scan(folder: str) -> None:
         # 2. liveness while walking each folder's disk listing.
+        walked.append(folder)
         print(
             f"{erase}[{account_name}] scanning {folder}…",
             end="", flush=True, file=sys.stderr,
@@ -789,6 +797,7 @@ def _rescan_local_with_cli_progress(
         mirror_repository=mirror,
         index_repository=index,
         account_name=account_name,
+        scan_state=scan_state,
         on_folder_scan=_on_folder_scan,
         on_plan=_on_plan,
         progress=_progress,
@@ -796,10 +805,61 @@ def _rescan_local_with_cli_progress(
 
     if result.added == 0 and result.removed == 0:
         # 4. clear the \r-overwritten scan line and confirm we finished.
-        print(
-            f"{erase}[{account_name}] Local mirror up to date.",
-            file=sys.stderr,
-        )
+        if walked:
+            print(
+                f"{erase}[{account_name}] Local mirror up to date.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"{erase}[{account_name}] Local mirror unchanged "
+                "(all folders cached).",
+                file=sys.stderr,
+            )
+
+
+def _load_scan_state(path: Path) -> dict[str, ScanState]:
+    """Read the per-account folder-mtime cache from disk.
+
+    Returns ``{account_name: {folder_name: mtime_ns}}``.  A missing or
+    corrupt file produces an empty dict — the rescan falls back to a
+    full pass, which self-heals the cache on its next write.
+    """
+    import json
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, ScanState] = {}
+    for account_name, folders in parsed.items():  # pyright: ignore[reportUnknownVariableType]
+        if not isinstance(account_name, str) or not isinstance(folders, dict):
+            continue
+        state: ScanState = {}
+        for folder_name, mtime in folders.items():  # pyright: ignore[reportUnknownVariableType]
+            if isinstance(folder_name, str) and isinstance(mtime, int):
+                state[folder_name] = mtime
+        out[account_name] = state
+    return out
+
+
+def _save_scan_state(path: Path, state: dict[str, ScanState]) -> None:
+    """Persist the per-account folder-mtime cache atomically."""
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(state, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
 
 
 def _bbdb_auto_sync(
@@ -1855,11 +1915,18 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
     # source of truth.  Reconcile the index against the mirror before
     # the TUI opens — picks up externally-added files (offlineimap,
     # getmail, procmail) and prunes rows for files removed out-of-band.
+    # The folder-mtime cache lets us skip folders that haven't changed
+    # since last run, keeping startup fast on big cold archives.
+    scan_state_path = paths.data_dir / "local_scan_state.json"
+    scan_state_by_account = _load_scan_state(scan_state_path)
     for acc in config.accounts:
         if isinstance(acc, LocalAccountConfig):
+            state = scan_state_by_account.setdefault(acc.name, {})
             _rescan_local_with_cli_progress(
                 mirror=mirrors[acc.name], index=index, account_name=acc.name,
+                scan_state=state,
             )
+    _save_scan_state(scan_state_path, scan_state_by_account)
 
     # Auto-import BBDB contacts if configured.
     if config.bbdb_path:

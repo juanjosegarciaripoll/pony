@@ -222,6 +222,22 @@ class MaildirMirrorRepository(MirrorRepository):
         self._require_account(account_name)
         self._ensure_folder_dirs(folder_name)
 
+    def folder_mtime_ns(self, *, folder: FolderRef) -> int:
+        """Max mtime across ``cur/`` and ``new/`` — the directories that
+        receive file renames when mail is delivered or classified."""
+        self._require_folder(folder)
+        folder_path = self._maildir_folder_path(folder.folder_name)
+        latest = 0
+        for subdir in ("cur", "new"):
+            path = folder_path / subdir
+            try:
+                mtime = path.stat().st_mtime_ns
+            except (FileNotFoundError, OSError):
+                continue
+            if mtime > latest:
+                latest = mtime
+        return latest
+
     def _open_maildir(self, *, folder_name: str) -> mailbox.Maildir:
         if folder_name == "INBOX":
             maildir = mailbox.Maildir(self._root_dir, create=True)
@@ -393,6 +409,15 @@ class MboxMirrorRepository(MirrorRepository):
         # an empty file on disk even with no messages added.
         mbox = self._open_mbox(folder_name=folder_name)
         mbox.flush()
+
+    def folder_mtime_ns(self, *, folder: FolderRef) -> int:
+        """mbox files are a single flat file per folder — stat it."""
+        self._require_folder(folder)
+        path = self._folder_file(folder.folder_name)
+        try:
+            return path.stat().st_mtime_ns
+        except (FileNotFoundError, OSError):
+            return 0
 
     def _open_mbox(self, *, folder_name: str) -> mailbox.mbox:
         # mailbox.mbox uses int keys at runtime; typeshed stubs incorrectly

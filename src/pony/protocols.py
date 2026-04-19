@@ -95,6 +95,17 @@ class MirrorRepository(Protocol):
         """
         ...
 
+    def folder_mtime_ns(self, *, folder: FolderRef) -> int:
+        """Return the folder's most recent modification time, in ns.
+
+        The value only needs to be monotonic with real filesystem
+        changes inside that folder — callers compare it against a
+        previous value to decide whether to re-scan.  Returns ``0``
+        when the folder is missing or unreadable; ``-1`` is reserved
+        for "unsupported" so callers fall back to a full scan.
+        """
+        ...
+
 
 class IndexRepository(Protocol):
     """Interface for metadata index implementations."""

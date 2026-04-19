@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.6.0]
 ### Added
 
+- **mtime-cached local-mirror rescan**: startup was scanning every
+  folder of every local account even when nothing had changed — a big
+  cost for mbox archives, where ``list_messages`` walks the whole
+  file.  The rescan now stats each folder's mtime and skips folders
+  whose mtime hasn't advanced since the last scan.  Maildir uses
+  ``max(cur.mtime, new.mtime)``; mbox uses the ``.mbox`` file's mtime.
+  The per-account, per-folder mtime cache lives in
+  ``<data_dir>/local_scan_state.json``; a missing or corrupt file
+  self-heals by falling back to a full scan on the next run.  When all
+  folders are cache-hits the startup line becomes ``[acc] Local mirror
+  unchanged (all folders cached).``  A new
+  ``MirrorRepository.folder_mtime_ns`` method backs the check.
 - **Send-capable local accounts**: local accounts can now carry an
   optional `[smtp]` block (plus their own `username` /
   `credentials_source` / `password` / `password_command`) to send

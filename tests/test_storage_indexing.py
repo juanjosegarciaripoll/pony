@@ -174,6 +174,98 @@ class RescanLocalAccountTestCase(unittest.TestCase):
         self.assertEqual(survivors[0].storage_key, "")
 
 
+class ScanStateFastPathTestCase(unittest.TestCase):
+    """Folders whose mtime hasn't advanced since the last scan must be
+    skipped entirely — that's what makes big cold archives usable."""
+
+    def _setup(self) -> tuple[MaildirMirrorRepository, SqliteIndexRepository]:
+        root = TMP_ROOT / "scan-state" / uuid4().hex
+        mirror_root = root / "mirror"
+        data_root = root / "data"
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        data_root.mkdir(parents=True, exist_ok=True)
+        mirror = MaildirMirrorRepository(account_name="local", root_dir=mirror_root)
+        index = SqliteIndexRepository(database_path=data_root / "index.sqlite3")
+        index.initialize()
+        return mirror, index
+
+    def test_unchanged_folder_is_skipped_on_second_pass(self) -> None:
+        mirror, index = self._setup()
+        folder = FolderRef(account_name="local", folder_name="INBOX")
+        mirror.store_message(folder=folder, raw_message=sample_message_bytes())
+
+        state: dict[str, int] = {}
+        # First pass indexes the file and stamps the folder's mtime.
+        result = rescan_local_account(
+            mirror_repository=mirror,
+            index_repository=index,
+            account_name="local",
+            scan_state=state,
+        )
+        self.assertEqual(result, RescanResult(added=1, removed=0))
+        self.assertIn("INBOX", state)
+        stamped_mtime = state["INBOX"]
+
+        # Second pass: folder untouched, mtime matches, so the on-disk
+        # listing must be skipped — prove it by making list_messages
+        # throw, and rely on the fast path to never call it.
+        import pony.storage as storage_mod
+        orig_list = storage_mod.MaildirMirrorRepository.list_messages
+
+        def _boom(self, *, folder):  # noqa: ANN001, ARG001
+            raise AssertionError(
+                f"list_messages called on unchanged folder {folder.folder_name!r}",
+            )
+        try:
+            storage_mod.MaildirMirrorRepository.list_messages = _boom  # type: ignore[assignment,method-assign]
+            result = rescan_local_account(
+                mirror_repository=mirror,
+                index_repository=index,
+                account_name="local",
+                scan_state=state,
+            )
+        finally:
+            storage_mod.MaildirMirrorRepository.list_messages = orig_list  # type: ignore[method-assign]
+        self.assertEqual(result, RescanResult(added=0, removed=0))
+        # Entry preserved unchanged.
+        self.assertEqual(state["INBOX"], stamped_mtime)
+
+    def test_mtime_advance_invalidates_cached_entry(self) -> None:
+        mirror, index = self._setup()
+        folder = FolderRef(account_name="local", folder_name="INBOX")
+        mirror.store_message(folder=folder, raw_message=sample_message_bytes())
+
+        state: dict[str, int] = {}
+        rescan_local_account(
+            mirror_repository=mirror,
+            index_repository=index,
+            account_name="local",
+            scan_state=state,
+        )
+        first_mtime = state["INBOX"]
+
+        # Simulate an out-of-band arrival by (a) adding a new file and
+        # (b) bumping the folder's mtime explicitly — the latter is
+        # needed because filesystem clocks can coalesce back-to-back
+        # writes onto the same tick on Windows.
+        import os
+        import time
+        mirror.store_message(folder=folder, raw_message=sample_message_bytes())
+        future = time.time_ns() + 1_000_000_000  # 1 s in the future
+        future_sec = future / 1_000_000_000
+        folder_path = mirror._maildir_folder_path("INBOX")  # noqa: SLF001
+        os.utime(folder_path / "new", (future_sec, future_sec))
+
+        result = rescan_local_account(
+            mirror_repository=mirror,
+            index_repository=index,
+            account_name="local",
+            scan_state=state,
+        )
+        self.assertEqual(result, RescanResult(added=1, removed=0))
+        self.assertGreater(state["INBOX"], first_mtime)
+
+
 def sample_message_bytes() -> bytes:
     """Create deterministic RFC 5322 fixture bytes."""
     message = EmailMessage()

@@ -105,6 +105,13 @@ class _FolderPlan:
     folder: FolderRef
     new_keys: tuple[str, ...]
     gone: tuple[tuple[str, MessageRef], ...]
+    current_mtime_ns: int
+
+
+# Map of ``folder_name -> mtime_ns`` recorded the last time a folder
+# was fully scanned.  Opaque to the rescan engine beyond the equality
+# check — callers persist and load it between runs.
+ScanState = dict[str, int]
 
 
 def rescan_local_account(
@@ -112,6 +119,7 @@ def rescan_local_account(
     mirror_repository: MirrorRepository,
     index_repository: IndexRepository,
     account_name: str,
+    scan_state: ScanState | None = None,
     on_folder_scan: Callable[[str], None] | None = None,
     on_plan: Callable[[RescanResult], None] | None = None,
     progress: RescanProgress | None = None,
@@ -128,11 +136,20 @@ def rescan_local_account(
     those are pending-append rows produced by local compose / archive and
     must be preserved for the sync engine to push upstream.
 
+    When ``scan_state`` is provided, folders whose mtime has not advanced
+    since the last successful scan are skipped entirely — avoiding the
+    expensive per-folder listing for cold archives.  The dict is mutated
+    in place: entries for skipped folders stay untouched; entries for
+    scanned folders are updated to the current mtime.  Callers pass an
+    empty dict on first run and persist it between runs for the fast
+    path to kick in.
+
     Callbacks:
 
     - ``on_folder_scan(name)`` fires once per folder during the plan phase
       *before* its disk listing starts — use it to show liveness while
-      big mbox files are being walked.
+      big mbox files are being walked.  Not fired for folders skipped by
+      the mtime check.
     - ``on_plan(result)`` fires once after the plan is built, but only if
       the delta is non-empty, so callers can announce the planned work.
     - ``progress(folder, current, total)`` fires per item during the
@@ -140,6 +157,16 @@ def rescan_local_account(
     """
     plans: list[_FolderPlan] = []
     for folder in mirror_repository.list_folders(account_name=account_name):
+        current_mtime = mirror_repository.folder_mtime_ns(folder=folder)
+        if (
+            scan_state is not None
+            and current_mtime > 0
+            and scan_state.get(folder.folder_name) == current_mtime
+        ):
+            # Folder untouched since last full scan — no re-listing
+            # needed.  Empty plan so the folder is simply not touched
+            # this pass; its scan-state entry stays as-is.
+            continue
         if on_folder_scan is not None:
             on_folder_scan(folder.folder_name)
         disk_keys = set(mirror_repository.list_messages(folder=folder))
@@ -153,13 +180,23 @@ def rescan_local_account(
             (key, indexed[key].message_ref)
             for key in sorted(set(indexed) - disk_keys)
         )
-        if new_keys or gone:
-            plans.append(_FolderPlan(folder=folder, new_keys=new_keys, gone=gone))
+        plans.append(_FolderPlan(
+            folder=folder, new_keys=new_keys, gone=gone,
+            current_mtime_ns=current_mtime,
+        ))
 
     planned = RescanResult(
         added=sum(len(p.new_keys) for p in plans),
         removed=sum(len(p.gone) for p in plans),
     )
+
+    # Even when no changes were found, folders we *did* walk need their
+    # mtime stamped so the next run can skip them via the fast path.
+    if scan_state is not None:
+        for plan in plans:
+            if plan.current_mtime_ns > 0:
+                scan_state[plan.folder.folder_name] = plan.current_mtime_ns
+
     if planned.added == 0 and planned.removed == 0:
         return planned
 
