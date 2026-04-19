@@ -696,35 +696,69 @@ def _rescan_local_with_cli_progress(
     index: SqliteIndexRepository,
     account_name: str,
 ) -> None:
-    """Rescan a local account, announcing the plan before running it."""
-    def _announce(planned: RescanResult) -> None:
-        # Delta is non-empty — tell the user what is about to happen so
-        # the subsequent progress line is not surprising.
+    """Rescan a local account with live feedback on stderr.
+
+    Emits four kinds of lines so the TUI startup is never silent, even
+    when the scan is slow (big mbox archives) or finds no changes:
+
+    1. preamble: ``[acc] Scanning local mirror…``
+    2. per-folder liveness during the plan phase (``\\r``-overwriting)
+    3. if changes were found: an announcement + per-item progress bar
+    4. if no changes: ``[acc] Local mirror up to date.``
+    """
+    # 1. preamble — flushed so it shows before the first folder listing.
+    print(
+        f"[{account_name}] Scanning local mirror…",
+        flush=True, file=sys.stderr,
+    )
+
+    # \r returns to column 0; \033[K clears from cursor to end of line so
+    # a shorter follow-up message doesn't leave tail characters behind.
+    erase = "\r\033[K"
+
+    def _on_folder_scan(folder: str) -> None:
+        # 2. liveness while walking each folder's disk listing.
+        print(
+            f"{erase}[{account_name}] scanning {folder}…",
+            end="", flush=True, file=sys.stderr,
+        )
+
+    def _on_plan(planned: RescanResult) -> None:
+        # 3a. announce once, right before the expensive projection loop.
         parts: list[str] = []
         if planned.added:
             parts.append(f"{planned.added} new")
         if planned.removed:
             parts.append(f"{planned.removed} removed")
         print(
-            f"[{account_name}] Local mirror changed — indexing "
+            f"{erase}[{account_name}] Local mirror changed — indexing "
             f"{', '.join(parts)} message(s)…",
             file=sys.stderr,
         )
 
     def _progress(folder: str, current: int, total: int) -> None:
+        # 3b. account-wide progress bar.
         end = "\n" if current == total else ""
         print(
-            f"\r[{account_name}] {folder}: {current}/{total}",
+            f"{erase}[{account_name}] {folder}: {current}/{total}",
             end=end, flush=True, file=sys.stderr,
         )
 
-    rescan_local_account(
+    result = rescan_local_account(
         mirror_repository=mirror,
         index_repository=index,
         account_name=account_name,
-        on_plan=_announce,
+        on_folder_scan=_on_folder_scan,
+        on_plan=_on_plan,
         progress=_progress,
     )
+
+    if result.added == 0 and result.removed == 0:
+        # 4. clear the \r-overwritten scan line and confirm we finished.
+        print(
+            f"{erase}[{account_name}] Local mirror up to date.",
+            file=sys.stderr,
+        )
 
 
 def _bbdb_auto_sync(

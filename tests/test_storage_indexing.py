@@ -75,14 +75,20 @@ class RescanLocalAccountTestCase(unittest.TestCase):
         key_a = mirror.store_message(folder=folder, raw_message=sample_message_bytes())
 
         announce_calls: list[RescanResult] = []
+        scan_calls: list[str] = []
         result = rescan_local_account(
             mirror_repository=mirror,
             index_repository=index,
             account_name="local",
+            on_folder_scan=scan_calls.append,
             on_plan=announce_calls.append,
         )
         self.assertEqual(result, RescanResult(added=1, removed=0))
         self.assertEqual(announce_calls, [RescanResult(added=1, removed=0)])
+        # on_folder_scan must fire during the plan phase even when nothing
+        # has been indexed yet — that's how the user gets liveness during
+        # a slow first-time walk over big mbox files.
+        self.assertIn("INBOX", scan_calls)
 
         # Second pass sees the same file — no work, no announcement.
         announce_calls.clear()

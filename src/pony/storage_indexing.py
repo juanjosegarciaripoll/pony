@@ -112,6 +112,7 @@ def rescan_local_account(
     mirror_repository: MirrorRepository,
     index_repository: IndexRepository,
     account_name: str,
+    on_folder_scan: Callable[[str], None] | None = None,
     on_plan: Callable[[RescanResult], None] | None = None,
     progress: RescanProgress | None = None,
 ) -> RescanResult:
@@ -127,14 +128,20 @@ def rescan_local_account(
     those are pending-append rows produced by local compose / archive and
     must be preserved for the sync engine to push upstream.
 
-    The plan is computed upfront (cheap — metadata only).  When the delta
-    is non-empty, ``on_plan`` is fired once with the totals so callers can
-    tell the user what is about to happen before the expensive work starts.
-    ``progress`` is fired per item during execution with account-wide
-    ``(current, total)`` counts.
+    Callbacks:
+
+    - ``on_folder_scan(name)`` fires once per folder during the plan phase
+      *before* its disk listing starts — use it to show liveness while
+      big mbox files are being walked.
+    - ``on_plan(result)`` fires once after the plan is built, but only if
+      the delta is non-empty, so callers can announce the planned work.
+    - ``progress(folder, current, total)`` fires per item during the
+      execute phase with account-wide totals.
     """
     plans: list[_FolderPlan] = []
     for folder in mirror_repository.list_folders(account_name=account_name):
+        if on_folder_scan is not None:
+            on_folder_scan(folder.folder_name)
         disk_keys = set(mirror_repository.list_messages(folder=folder))
         indexed = {
             m.storage_key: m
