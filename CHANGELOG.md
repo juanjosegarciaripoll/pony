@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `<data_dir>/contacts-backup-<UTC-timestamp>.bbdb` via a new
   `load_contacts_for_backup()` entry point that reads directly from the
   mismatched DB.
+- **Folder browser: unread indicator + hierarchical display**:
+    - Folders whose messages are all read are rendered dim; folders
+      with unread messages are rendered bright.  A synthetic parent
+      (see below) follows the same rule based on whether any
+      *descendant* has unread, so you can tell an account has
+      something new without expanding its subtree.
+    - Dotted / slashed folder names like ``Archives.2026`` or
+      ``Lists/Unions`` are displayed as nested subtrees
+      (``Archives`` → ``2026``).  The delimiter (``.`` or ``/``) is
+      detected per-folder-name, which handles both Dovecot and Cyrus
+      server conventions without configuration.  The stored name on
+      the server, in the mirror, and in the index is unchanged — this
+      is purely a display-side transformation.  When both a parent
+      folder (e.g. ``Archives``) and its nested child
+      (``Archives.2026``) exist on the server, the parent is
+      selectable and shows its own unread count with the child nested
+      beneath it.
 - **Per-attachment retrieval on CLI and MCP**: both surfaces now let
   you pull a single attachment's bytes, not just see that attachments
   exist.
