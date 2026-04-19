@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `<data_dir>/contacts-backup-<UTC-timestamp>.bbdb` via a new
   `load_contacts_for_backup()` entry point that reads directly from the
   mismatched DB.
+- **Move a message to another folder (`M`)**: new TUI action.  For
+  same-account moves the mirror file is renamed in place and the index
+  row switches folders with `uid=NULL` — Message-ID is preserved and
+  the next sync emits `UID MOVE` server-side.  For cross-account moves
+  there's no atomic IMAP primitive, so the operation decomposes into
+  cross-account copy (MID preserved) + retire source: IMAP sources are
+  marked `TRASHED` so the next sync `EXPUNGE`s them, local sources are
+  deleted outright.  Target-first ordering means an interruption
+  leaves a duplicate, not a loss.  Guards refuse moves out of or into
+  read-only folders, and into folders excluded from sync.
 - **Copy a message to another folder (`C`)**: new TUI action, modelled
   on archive. Opens a folder picker spanning every account in the
   config (including local accounts, which the main folder panel hides),

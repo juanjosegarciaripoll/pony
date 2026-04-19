@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import subprocess
@@ -68,6 +69,7 @@ class MainScreen(Screen[None]):
         Binding("d", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
         Binding("C", "copy", "Copy"),
+        Binding("M", "move", "Move"),
         Binding("N", "new_folder", "New folder"),
         Binding("ctrl+1", "save_attachment('1')", "Save att. 1", show=False),
         Binding("ctrl+2", "save_attachment('2')", "Save att. 2", show=False),
@@ -693,6 +695,254 @@ class MainScreen(Screen[None]):
                 else f"{target.account_name}/{target.folder_name}"
             )
             self.app.notify(f"Copied to {where}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
+
+    def action_move(self) -> None:
+        """Prompt for a target folder and move every target message there.
+
+        Two execution paths, chosen by comparing source and target
+        accounts:
+
+        - **Same account** — mirrors the archive flow with a
+          user-chosen target.  The mirror file is renamed in-place via
+          ``move_message_to_folder``; the index row is removed from the
+          source folder and re-inserted in the target with ``uid=NULL``.
+          Message-ID is preserved — on next sync, the source folder's
+          Step 2 emits ``PushMoveOp`` (``UID MOVE`` server-side).
+
+        - **Different accounts** — no atomic cross-server IMAP move
+          exists, so this decomposes into cross-account copy + trash
+          source.  Bytes are written to the target mirror with the
+          original Message-ID preserved (distinct accounts are
+          independent identity namespaces), a ``uid=NULL`` row is
+          inserted on the target side, and the source is marked
+          ``TRASHED`` for IMAP sources (so the next sync EXPUNGEs it)
+          or deleted outright for local sources (which have no sync to
+          relay the deletion).  Target-first ordering means an
+          interruption leaves a duplicate, not a loss.
+        """
+        targets = self._targets()
+        if not targets:
+            return
+        sample = targets[0]
+        source_ref = self._folder_ref_from_message(sample)
+
+        from .pick_folder_screen import PickFolderScreen
+
+        screen = PickFolderScreen(
+            config=self._config,
+            mirrors=self._mirrors,
+            title=f"Move to folder (source: {source_ref.folder_name})",
+            exclude=source_ref,
+        )
+
+        def _on_dismiss(target: FolderRef | None) -> None:
+            if target is None:
+                return
+            self._move_to_folder(targets, source_ref, target)
+
+        self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
+
+    def _find_account(self, account_name: str) -> AccountConfig | None:
+        """Return the IMAP AccountConfig for *account_name*, or None.
+
+        Local accounts (``LocalAccountConfig``) return ``None`` — they
+        don't carry the folder-policy fields the move guards consult.
+        """
+        for acc in self._config.accounts:
+            if acc.name == account_name and isinstance(acc, AccountConfig):
+                return acc
+        return None
+
+    def _move_to_folder(
+        self,
+        targets: list[IndexedMessage],
+        source: FolderRef,
+        target: FolderRef,
+    ) -> None:
+        """Move every *targets* row from *source* into *target*.
+
+        See :meth:`action_move` for the branch rationale.
+        """
+        if source == target:
+            return
+
+        source_mirror = self._mirrors.get(source.account_name)
+        target_mirror = self._mirrors.get(target.account_name)
+        if source_mirror is None or target_mirror is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Missing mirror for source or target account.",
+                severity="error",
+            )
+            return
+
+        source_account = self._find_account(source.account_name)
+        target_account = self._find_account(target.account_name)
+
+        # IMAP-policy guards.  Move is destructive on the source side, so
+        # we refuse when either end can't reconcile server-side.
+        if source_account is not None and source_account.folders.is_read_only(
+            source.folder_name,
+        ):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Cannot move from read-only folder {source.folder_name!r}.",
+                severity="warning",
+            )
+            return
+        if target_account is not None:
+            if not target_account.folders.should_sync(target.folder_name):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Target folder {target.folder_name!r} is excluded from sync.",
+                    severity="warning",
+                )
+                return
+            if target_account.folders.is_read_only(target.folder_name):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Target folder {target.folder_name!r} is read-only.",
+                    severity="warning",
+                )
+                return
+
+        same_account = source.account_name == target.account_name
+        moved = 0
+        with self._index.connection():
+            for msg in targets:
+                if same_account:
+                    ok = self._move_same_account(
+                        msg=msg,
+                        mirror=source_mirror,
+                        source=source,
+                        target=target,
+                    )
+                else:
+                    ok = self._move_cross_account(
+                        msg=msg,
+                        source_mirror=source_mirror,
+                        target_mirror=target_mirror,
+                        source=source,
+                        target=target,
+                        source_is_imap=source_account is not None,
+                    )
+                if ok:
+                    moved += 1
+
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_current_folder(targets[0])
+        if moved:
+            suffix = "" if moved == 1 else f" ({moved} messages)"
+            where = (
+                target.folder_name
+                if same_account
+                else f"{target.account_name}/{target.folder_name}"
+            )
+            self.app.notify(f"Moved to {where}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
+
+    def _move_same_account(
+        self,
+        *,
+        msg: IndexedMessage,
+        mirror: MirrorRepository,
+        source: FolderRef,
+        target: FolderRef,
+    ) -> bool:
+        """Rename the mirror file in place, swap the index row.  See
+        :meth:`action_move` for why Message-ID is preserved here."""
+        try:
+            new_key = mirror.move_message_to_folder(
+                folder=source,
+                storage_key=msg.storage_key,
+                target_folder=target.folder_name,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Failed to move message in local mirror.",
+                severity="error",
+            )
+            return False
+        new_row = dataclasses.replace(
+            msg,
+            message_ref=MessageRef(
+                account_name=target.account_name,
+                folder_name=target.folder_name,
+                rfc5322_id=msg.message_ref.rfc5322_id,
+            ),
+            storage_key=new_key,
+            uid=None,
+            server_flags=frozenset(),
+            extra_imap_flags=frozenset(),
+            synced_at=None,
+        )
+        self._index.delete_message(message_ref=msg.message_ref)
+        self._index.upsert_message(message=new_row)
+        return True
+
+    def _move_cross_account(
+        self,
+        *,
+        msg: IndexedMessage,
+        source_mirror: MirrorRepository,
+        target_mirror: MirrorRepository,
+        source: FolderRef,
+        target: FolderRef,
+        source_is_imap: bool,
+    ) -> bool:
+        """Copy bytes to target, then retire the source side."""
+        try:
+            raw = source_mirror.get_message_bytes(
+                folder=source, storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Could not read source message {msg.subject!r}.",
+                severity="error",
+            )
+            return False
+        # Cross-account: preserve Message-ID.  Distinct accounts are
+        # independent identity namespaces, so a true copy keeps IMAP
+        # thread integrity intact.
+        new_raw, new_mid = copy_message_bytes(raw, rewrite_message_id=False)
+        try:
+            new_key = target_mirror.store_message(
+                folder=target, raw_message=new_raw,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Failed to write copy to {target.folder_name}.",
+                severity="error",
+            )
+            return False
+        new_row = dataclasses.replace(
+            msg,
+            message_ref=MessageRef(
+                account_name=target.account_name,
+                folder_name=target.folder_name,
+                rfc5322_id=new_mid,
+            ),
+            storage_key=new_key,
+            uid=None,
+            base_flags=frozenset(),
+            server_flags=frozenset(),
+            extra_imap_flags=frozenset(),
+            local_status=MessageStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        self._index.upsert_message(message=new_row)
+
+        # Retire the source: IMAP sources get TRASHED so the next sync
+        # expunges them; local sources have no sync to relay the
+        # deletion, so we remove them outright (row + mirror file).
+        if source_is_imap:
+            trashed = dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
+            self._index.upsert_message(message=trashed)
+        else:
+            # Best-effort delete: the index row is authoritative; a stray
+            # file will be picked up by the mirror integrity scan.
+            with contextlib.suppress(Exception):
+                source_mirror.delete_message(
+                    folder=source, storage_key=msg.storage_key,
+                )
+            self._index.delete_message(message_ref=msg.message_ref)
+        return True
 
     # ------------------------------------------------------------------
     # Folder management
