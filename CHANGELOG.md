@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.6.0]
 ### Added
 
+- **Local accounts appear in the TUI folder tree**: `FolderPanel`
+  was discovering folders from `folder_sync_state` rows, which the
+  sync engine never writes for local accounts — so local-account
+  subtrees were invisible even though the mirror was fully populated.
+  The panel now discovers folders from `mirror.list_folders` first
+  (the single source of truth for both IMAP and local accounts) and
+  still honours sync-state entries as a secondary source so empty
+  remote folders show up before any mail has arrived.
 - **mtime-cached local-mirror rescan**: startup was scanning every
   folder of every local account even when nothing had changed — a big
   cost for mbox archives, where ``list_messages`` walks the whole

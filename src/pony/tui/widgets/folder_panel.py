@@ -12,7 +12,7 @@ from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
 from ...domain import AppConfig, FolderRef
-from ...protocols import IndexRepository
+from ...protocols import IndexRepository, MirrorRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,11 +143,13 @@ class FolderPanel(Tree[FolderRef | None]):
         self,
         config: AppConfig,
         index: IndexRepository,
+        mirrors: dict[str, MirrorRepository],
         **kwargs: object,
     ) -> None:
         super().__init__("Accounts", **kwargs)  # type: ignore[arg-type]
         self._config = config
         self._index = index
+        self._mirrors = mirrors
         self._inbox_nodes: list[TreeNode[FolderRef | None]] = []
 
     def on_mount(self) -> None:
@@ -209,12 +211,26 @@ class FolderPanel(Tree[FolderRef | None]):
         return node
 
     def _get_unread_counts(self, account_name: str) -> dict[str, int]:
-        """Return {folder_name: unread_count} from the index."""
+        """Return ``{folder_name: unread_count}`` for one account.
+
+        Folders come from the account's mirror — the single source of
+        truth that covers both IMAP accounts (where the mirror tracks
+        the server) and local accounts (where the mirror *is* the
+        account).  Discovering folders from ``folder_sync_state`` alone
+        used to hide local accounts entirely from the tree, since sync
+        never writes a state row for them.
+        """
         from ...domain import MessageFlag, MessageStatus
 
         counts: dict[str, int] = {}
-        sync_states = self._index.list_folder_sync_states(account_name=account_name)
-        for state in sync_states:
+        mirror = self._mirrors.get(account_name)
+        if mirror is not None:
+            for ref in mirror.list_folders(account_name=account_name):
+                counts.setdefault(ref.folder_name, 0)
+        # Also honour any sync-state folder entry that isn't on disk yet
+        # (e.g. empty remote folders the sync engine has recorded but
+        # the mirror hasn't materialised on this host).
+        for state in self._index.list_folder_sync_states(account_name=account_name):
             counts.setdefault(state.folder_name, 0)
         for folder_name in list(counts.keys()):
             folder_ref = FolderRef(account_name=account_name, folder_name=folder_name)

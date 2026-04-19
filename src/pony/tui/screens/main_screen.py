@@ -134,7 +134,9 @@ class MainScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield FolderPanel(self._config, self._index, id="folder-panel")
+        yield FolderPanel(
+            self._config, self._index, self._mirrors, id="folder-panel",
+        )
         with Vertical(id="right-pane"):
             yield MessageListPanel(self._index, id="message-list")
             yield MessageViewPanel(id="message-view")
