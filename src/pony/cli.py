@@ -22,6 +22,7 @@ from .domain import (
     Contact,
     FolderRef,
     IndexedMessage,
+    LocalAccountConfig,
     SearchQuery,
 )
 from .fixture_flow import run_fixture_ingest
@@ -36,6 +37,7 @@ from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .services import CheckStatus, ServiceStatus, build_service_status
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
+from .storage_indexing import RescanResult, rescan_local_account
 from .sync import (
     FetchNewOp,
     ImapSyncService,
@@ -686,6 +688,43 @@ def _fmt_ms(ms: int) -> str:
     if ms < 1000:
         return f"{ms}ms"
     return f"{ms / 1000:.1f}s"
+
+
+def _rescan_local_with_cli_progress(
+    *,
+    mirror: MirrorRepository,
+    index: SqliteIndexRepository,
+    account_name: str,
+) -> None:
+    """Rescan a local account, announcing the plan before running it."""
+    def _announce(planned: RescanResult) -> None:
+        # Delta is non-empty — tell the user what is about to happen so
+        # the subsequent progress line is not surprising.
+        parts: list[str] = []
+        if planned.added:
+            parts.append(f"{planned.added} new")
+        if planned.removed:
+            parts.append(f"{planned.removed} removed")
+        print(
+            f"[{account_name}] Local mirror changed — indexing "
+            f"{', '.join(parts)} message(s)…",
+            file=sys.stderr,
+        )
+
+    def _progress(folder: str, current: int, total: int) -> None:
+        end = "\n" if current == total else ""
+        print(
+            f"\r[{account_name}] {folder}: {current}/{total}",
+            end=end, flush=True, file=sys.stderr,
+        )
+
+    rescan_local_account(
+        mirror_repository=mirror,
+        index_repository=index,
+        account_name=account_name,
+        on_plan=_announce,
+        progress=_progress,
+    )
 
 
 def _bbdb_auto_sync(
@@ -1592,6 +1631,16 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
         return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
 
     mirrors = {acc.name: _make_mirror(acc) for acc in config.accounts}
+
+    # Local accounts have no sync step, so their mirrors are the sole
+    # source of truth.  Reconcile the index against the mirror before
+    # the TUI opens — picks up externally-added files (offlineimap,
+    # getmail, procmail) and prunes rows for files removed out-of-band.
+    for acc in config.accounts:
+        if isinstance(acc, LocalAccountConfig):
+            _rescan_local_with_cli_progress(
+                mirror=mirrors[acc.name], index=index, account_name=acc.name,
+            )
 
     # Auto-import BBDB contacts if configured.
     if config.bbdb_path:
