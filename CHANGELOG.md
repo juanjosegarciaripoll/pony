@@ -25,6 +25,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `<data_dir>/contacts-backup-<UTC-timestamp>.bbdb` via a new
   `load_contacts_for_backup()` entry point that reads directly from the
   mismatched DB.
+- **Per-attachment retrieval on CLI and MCP**: both surfaces now let
+  you pull a single attachment's bytes, not just see that attachments
+  exist.
+    - `pony message get` now lists every attachment (index, filename,
+      content-type, size) after the metadata block when the message
+      body is locally available — previously only an `Attach.: yes/no`
+      line.
+    - New `pony message attachment <account> <folder> <message-id>
+      <index>` writes the bytes to the attachment's own filename in
+      cwd, or to `-o PATH`, or to stdout via `--stdout`.  Refuses to
+      clobber an existing file unless `-f/--force` is passed.
+    - MCP `get_message` now carries the same `attachments` array as
+      `get_message_body` (when the mirror holds the bytes) so AI
+      agents can discover what's available without pulling the full
+      body.
+    - New MCP `get_attachment(account, folder, message_id, index)`
+      tool returns `{filename, content_type, size_bytes, data_base64,
+      text?}`.  `data_base64` is always present (transport-safe for
+      any attachment type); `text` is added for `text/*` attachments
+      so agents can read them without base64-decoding on the client
+      side.  Tool docstrings steer callers to `get_attachment` from
+      `get_message` / `get_message_body`.
+    - Internals: the MIME-walking logic that used to live in the TUI
+      (`MessageViewPanel.save_attachment`) is extracted into a shared
+      `extract_attachment(raw, index)` helper in `message_renderer`;
+      CLI, MCP and TUI now share one indexing contract.
 - **Move a message to another folder (`M`)**: new TUI action.  For
   same-account moves the mirror file is renamed in place and the index
   row switches folders with `uid=NULL` — Message-ID is preserved and

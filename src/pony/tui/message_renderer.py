@@ -36,6 +36,16 @@ class AttachmentInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentPayload:
+    """Extracted attachment: metadata plus raw decoded bytes."""
+
+    filename: str
+    content_type: str
+    size_bytes: int
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RenderedMessage:
     """Everything the message view needs to display one message."""
 
@@ -412,6 +422,60 @@ hr.header-sep{{border:none;border-top:1px solid #ccc;margin:0}}
 </div>
 </body>
 </html>"""
+
+
+def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None:
+    """Return the bytes of the 1-based *index*-th attachment in *raw_bytes*.
+
+    The indexing contract must match :func:`_extract_body_and_attachments`:
+    ``message/rfc822`` parts count as attachments (their bytes are the
+    inner message serialised via ``EmailMessage.as_bytes``), followed by
+    every part whose disposition is ``attachment`` or which carries a
+    filename.  Returns ``None`` when *index* is out of range.
+    """
+    if index < 1:
+        return None
+    msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+    assert isinstance(msg, EmailMessage)
+
+    found = 0
+    for part in msg.walk():
+        content_type = part.get_content_type()
+        disposition = part.get_content_disposition() or ""
+
+        if content_type == "message/rfc822":
+            inner = part.get_payload()
+            if isinstance(inner, list) and inner:
+                inner = inner[0]
+            if isinstance(inner, EmailMessage):
+                found += 1
+                if found == index:
+                    data = inner.as_bytes()
+                    subj = _header(inner, "Subject") or "(no subject)"
+                    return AttachmentPayload(
+                        filename=f"{subj}.eml",
+                        content_type="message/rfc822",
+                        size_bytes=len(data),
+                        data=data,
+                    )
+            continue
+
+        if part.get_content_maintype() == "multipart":
+            continue
+
+        if disposition == "attachment" or part.get_filename():
+            found += 1
+            if found == index:
+                payload = part.get_payload(decode=True)
+                if not isinstance(payload, bytes):
+                    return None
+                return AttachmentPayload(
+                    filename=part.get_filename() or "(unnamed)",
+                    content_type=content_type,
+                    size_bytes=len(payload),
+                    data=payload,
+                )
+    return None
 
 
 def fmt_size(n: int) -> str:

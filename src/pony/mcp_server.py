@@ -21,6 +21,8 @@ conflicts.  stdio mode cannot run alongside the TUI (both own stdin/stdout).
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import threading
 from pathlib import Path
 from typing import Any
@@ -31,7 +33,7 @@ from .index_store import SqliteIndexRepository
 from .paths import AppPaths
 from .protocols import MirrorRepository
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
-from .tui.message_renderer import render_message
+from .tui.message_renderer import AttachmentPayload, extract_attachment, render_message
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -81,6 +83,32 @@ def _contact_to_dict(c: Any) -> dict[str, Any]:
         "message_count": c.message_count,
         "last_seen": c.last_seen.isoformat() if c.last_seen else None,
     }
+
+
+def _attachment_to_dict(payload: AttachmentPayload) -> dict[str, Any]:
+    """Serialise an :class:`AttachmentPayload` for MCP transport.
+
+    ``data_base64`` is always present (transport-safe for any byte
+    sequence).  ``text`` is added when the content type starts with
+    ``text/`` and the bytes decode cleanly — letting AI agents read
+    textual attachments without base64-decoding on the client side.
+    Decode is best-effort: utf-8 first, then latin-1 (a total mapping);
+    if both fail the field is omitted and callers fall back to
+    ``data_base64``.
+    """
+    result: dict[str, Any] = {
+        "filename": payload.filename,
+        "content_type": payload.content_type,
+        "size_bytes": payload.size_bytes,
+        "data_base64": base64.b64encode(payload.data).decode("ascii"),
+    }
+    if payload.content_type.startswith("text/"):
+        try:
+            result["text"] = payload.data.decode("utf-8")
+        except UnicodeDecodeError:
+            with contextlib.suppress(UnicodeDecodeError):
+                result["text"] = payload.data.decode("latin-1")
+    return result
 
 
 def _sync_state_to_dict(s: Any) -> dict[str, Any]:
@@ -223,48 +251,19 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: get_message
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
-    def get_message(  # pyright: ignore[reportUnusedFunction]
-        account: str,
-        folder: str,
-        message_id: str,
-    ) -> dict[str, Any] | None:
-        """Retrieve metadata for a single message.
+    def _fetch_raw_bytes(
+        account: str, folder: str, message_id: str,
+    ) -> bytes | None:
+        """Resolve RFC 5322 Message-ID → mirror storage_key → raw bytes.
 
-        Returns None if the message is not in the local index.
-        Use *get_message_body* to read the full text.
-        """
-        from .domain import MessageRef
-
-        ref = MessageRef(
-            account_name=account,
-            folder_name=folder,
-            rfc5322_id=message_id,
-        )
-        msg = index.get_message(message_ref=ref)
-        return _msg_to_dict(msg) if msg is not None else None
-
-    # ------------------------------------------------------------------
-    # Tool: get_message_body
-    # ------------------------------------------------------------------
-
-    @mcp.tool()  # type: ignore[untyped-decorator]
-    def get_message_body(  # pyright: ignore[reportUnusedFunction]
-        account: str,
-        folder: str,
-        message_id: str,
-    ) -> dict[str, Any] | None:
-        """Retrieve the full text of a message.
-
-        Returns a dict with keys: subject, from, to, cc, date, body, attachments.
-        Returns None if the message is not in the local mirror.
+        Returns ``None`` if the account has no mirror, the index doesn't
+        know the message, or the mirror can't produce the bytes.
         """
         from .domain import FolderRef, MessageRef
 
         mirror = mirrors.get(account)
         if mirror is None:
             return None
-        # Resolve RFC 5322 Message-ID → backend storage_key via the index.
         indexed = index.get_message(
             message_ref=MessageRef(
                 account_name=account,
@@ -281,7 +280,70 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
             )
         except (KeyError, FileNotFoundError, OSError):
             return None
-        if not raw:
+        return raw or None
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def get_message(  # pyright: ignore[reportUnusedFunction]
+        account: str,
+        folder: str,
+        message_id: str,
+    ) -> dict[str, Any] | None:
+        """Retrieve metadata for a single message.
+
+        Returns None if the message is not in the local index.  The
+        ``attachments`` field lists every attachment with its 1-based
+        ``index``, filename, content type, and size — use
+        *get_attachment* to fetch any one of them by index.  Use
+        *get_message_body* to read the full text of the message.
+        """
+        from .domain import MessageRef
+
+        ref = MessageRef(
+            account_name=account,
+            folder_name=folder,
+            rfc5322_id=message_id,
+        )
+        msg = index.get_message(message_ref=ref)
+        if msg is None:
+            return None
+        result = _msg_to_dict(msg)
+        # Add the per-attachment list when the body is locally
+        # available.  For messages we only know by metadata (e.g. not
+        # yet fetched to the mirror) the has_attachments bool above is
+        # still the best we can offer.
+        raw = _fetch_raw_bytes(account, folder, message_id)
+        if raw is not None:
+            rendered = render_message(raw)
+            result["attachments"] = [
+                {
+                    "index": a.index,
+                    "filename": a.filename,
+                    "content_type": a.content_type,
+                    "size_bytes": a.size_bytes,
+                }
+                for a in rendered.attachments
+            ]
+        return result
+
+    # ------------------------------------------------------------------
+    # Tool: get_message_body
+    # ------------------------------------------------------------------
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def get_message_body(  # pyright: ignore[reportUnusedFunction]
+        account: str,
+        folder: str,
+        message_id: str,
+    ) -> dict[str, Any] | None:
+        """Retrieve the full text of a message.
+
+        Returns a dict with keys: subject, from, to, cc, date, body,
+        attachments.  Returns None if the message is not in the local
+        mirror.  Use *get_attachment* to fetch any attachment's bytes
+        by its 1-based ``index``.
+        """
+        raw = _fetch_raw_bytes(account, folder, message_id)
+        if raw is None:
             return None
         rendered = render_message(raw)
         return {
@@ -301,6 +363,41 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
                 for a in rendered.attachments
             ],
         }
+
+    # ------------------------------------------------------------------
+    # Tool: get_attachment
+    # ------------------------------------------------------------------
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def get_attachment(  # pyright: ignore[reportUnusedFunction]
+        account: str,
+        folder: str,
+        message_id: str,
+        index: int,
+    ) -> dict[str, Any] | None:
+        """Retrieve one attachment's bytes by its 1-based ``index``.
+
+        ``index`` matches the ``attachments[*].index`` values returned
+        by *get_message* and *get_message_body*.  Returns a dict with:
+
+        - ``filename``, ``content_type``, ``size_bytes``: metadata
+        - ``data_base64``: always present — base64-encoded raw bytes,
+          transport-safe for any attachment type
+        - ``text``: present only when the attachment is ``text/*`` and
+          can be decoded; the already-decoded string, so AI agents
+          don't have to base64-decode it themselves
+
+        Prefer ``text`` when it is present; fall back to
+        ``data_base64`` for binary formats.  Returns None when the
+        message isn't in the local mirror or the index is out of range.
+        """
+        raw = _fetch_raw_bytes(account, folder, message_id)
+        if raw is None:
+            return None
+        payload = extract_attachment(raw, index)
+        if payload is None:
+            return None
+        return _attachment_to_dict(payload)
 
     # ------------------------------------------------------------------
     # Tool: search_contacts

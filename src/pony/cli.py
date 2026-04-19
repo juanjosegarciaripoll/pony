@@ -12,6 +12,10 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .tui.message_renderer import AttachmentInfo
 
 from .config import ConfigError, load_config
 from .credentials import build_credentials_provider, encrypt_password
@@ -276,6 +280,29 @@ def build_parser() -> argparse.ArgumentParser:
     message_body.add_argument("folder")
     message_body.add_argument("message_id")
 
+    message_attachment = message_subparsers.add_parser(
+        "attachment",
+        help="Extract one attachment from a message by its 1-based index.",
+    )
+    message_attachment.add_argument("account")
+    message_attachment.add_argument("folder")
+    message_attachment.add_argument("message_id")
+    message_attachment.add_argument(
+        "index", type=int, help="1-based attachment index (see 'message get').",
+    )
+    message_attachment.add_argument(
+        "-o", "--output", metavar="PATH",
+        help="Write bytes to PATH.  Default: attachment's own filename in cwd.",
+    )
+    message_attachment.add_argument(
+        "--stdout", action="store_true",
+        help="Write raw bytes to stdout; no file is created.",
+    )
+    message_attachment.add_argument(
+        "-f", "--force", action="store_true",
+        help="Overwrite the output file if it already exists.",
+    )
+
     subparsers.add_parser(
         "docs",
         help="Open the Pony Express documentation in a browser.",
@@ -428,6 +455,7 @@ def _dispatch(
         if args.message_command == "get":
             return run_message_get(
                 paths=paths,
+                config_path=args.config,
                 account=account,
                 folder=args.folder,
                 message_id=args.message_id,
@@ -439,6 +467,18 @@ def _dispatch(
                 account=account,
                 folder=args.folder,
                 message_id=args.message_id,
+            )
+        if args.message_command == "attachment":
+            return run_message_attachment(
+                paths=paths,
+                config_path=args.config,
+                account=account,
+                folder=args.folder,
+                message_id=args.message_id,
+                index=args.index,
+                output=args.output,
+                to_stdout=args.stdout,
+                force=args.force,
             )
 
     if args.command == "docs":
@@ -1193,12 +1233,20 @@ def run_folder_list(
 
 
 def run_message_get(
-    *, paths: AppPaths, account: str, folder: str, message_id: str,
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    message_id: str,
 ) -> int:
     """Print metadata for a single indexed message.
 
-    Metadata-only: call ``pony message body`` to read the text body from
-    the mirror.
+    Attachments are listed individually (name, content-type, size) when
+    the message body is available in the local mirror; otherwise a
+    ``Attach.: yes/no`` summary line is printed.  Call
+    ``pony message body`` to read the full text; call
+    ``pony message attachment`` to extract one attachment to disk.
     """
     paths.ensure_runtime_dirs()
     index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -1226,8 +1274,70 @@ def run_message_get(
     print(f"Status:     {msg.local_status.value}")
     print(f"UID:        {msg.uid if msg.uid is not None else '(unset)'}")
     print(f"Storage:    {msg.storage_key}")
-    print(f"Attach.:    {'yes' if msg.has_attachments else 'no'}")
+
+    # Try to list individual attachments by reading the mirror bytes.
+    # Fall back to the yes/no summary when the body isn't available
+    # locally (e.g. a headers-only row, or an account whose mirror is
+    # unreachable).
+    from .tui.message_renderer import fmt_size
+
+    rendered_attachments = _try_render_attachments(
+        config_path=config_path, account=account, folder=folder,
+        storage_key=msg.storage_key,
+    )
+    if rendered_attachments is not None:
+        if rendered_attachments:
+            print(f"Attach.:    yes ({len(rendered_attachments)})")
+            for att in rendered_attachments:
+                print(
+                    f"  {att.index}. {att.filename} "
+                    f"({att.content_type}, {fmt_size(att.size_bytes)})"
+                )
+        else:
+            print("Attach.:    no")
+    else:
+        print(f"Attach.:    {'yes' if msg.has_attachments else 'no'}")
     return 0
+
+
+def _try_render_attachments(
+    *,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    storage_key: str,
+) -> tuple[AttachmentInfo, ...] | None:
+    """Load the raw bytes from the mirror and return the attachment list.
+
+    Returns ``None`` when config/mirror/bytes are unavailable — callers
+    use that as a signal to fall back to the index's yes/no flag.
+    Returns an empty tuple when the message has no attachments.
+    """
+    from .tui.message_renderer import render_message
+
+    config = try_load_config(config_path)
+    if config is None:
+        return None
+    acc = next(
+        (
+            a for a in config.accounts
+            if isinstance(a, AccountConfig) and a.name == account
+        ),
+        None,
+    )
+    if acc is None:
+        return None
+    mirror = _build_mirror(acc)
+    try:
+        raw = mirror.get_message_bytes(
+            folder=FolderRef(account_name=account, folder_name=folder),
+            storage_key=storage_key,
+        )
+    except (KeyError, FileNotFoundError, OSError):
+        return None
+    if not raw:
+        return None
+    return render_message(raw).attachments
 
 
 def run_message_body(
@@ -1297,6 +1407,80 @@ def run_message_body(
                 f"  {a.index}. {a.filename} "
                 f"({a.content_type}, {fmt_size(a.size_bytes)})"
             )
+    return 0
+
+
+def run_message_attachment(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    message_id: str,
+    index: int,
+    output: str | None,
+    to_stdout: bool,
+    force: bool,
+) -> int:
+    """Write one attachment's bytes to a file or to stdout."""
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    from .domain import MessageRef
+    from .tui.message_renderer import extract_attachment
+
+    acc = next(
+        (
+            a for a in config.accounts
+            if isinstance(a, AccountConfig) and a.name == account
+        ),
+        None,
+    )
+    if acc is None:
+        raise SystemExit(f"No account named {account!r} in config.")
+
+    idx = SqliteIndexRepository(database_path=paths.index_db_file)
+    idx.initialize()
+    indexed = idx.get_message(
+        message_ref=MessageRef(
+            account_name=account, folder_name=folder, rfc5322_id=message_id,
+        ),
+    )
+    if indexed is None:
+        raise SystemExit(
+            f"Message not found in index: {account}/{folder}/{message_id}"
+        )
+    mirror = _build_mirror(acc)
+    try:
+        raw = mirror.get_message_bytes(
+            folder=FolderRef(account_name=account, folder_name=folder),
+            storage_key=indexed.storage_key,
+        )
+    except (KeyError, FileNotFoundError, OSError) as exc:
+        raise SystemExit(
+            f"Message body not found in mirror: {account}/{folder}/{message_id}"
+        ) from exc
+
+    payload = extract_attachment(raw, index)
+    if payload is None:
+        raise SystemExit(
+            f"Attachment {index} not found (run 'pony message get' to list "
+            "available attachments)."
+        )
+
+    if to_stdout:
+        # Write raw bytes through the binary buffer — bypasses text mode
+        # encoding that would mangle anything non-ASCII.
+        sys.stdout.buffer.write(payload.data)
+        return 0
+
+    dest = Path(output) if output else Path.cwd() / payload.filename
+    if dest.exists() and not force:
+        raise SystemExit(
+            f"Refusing to overwrite existing file: {dest}\n"
+            "Pass --force to overwrite, or -o PATH to write elsewhere."
+        )
+    dest.write_bytes(payload.data)
+    print(f"Wrote {len(payload.data)} bytes to {dest}")
     return 0
 
 

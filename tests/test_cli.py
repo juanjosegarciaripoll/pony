@@ -297,6 +297,80 @@ class CliTestCase(unittest.TestCase):
                 "not found", str(ctx.exception).lower(),
             )
 
+    def test_message_get_lists_attachments_individually(self) -> None:
+        """Previously showed only 'Attach.: yes/no'; now each attachment
+        is listed by index, name, content-type, and size — matching
+        what 'pony message body' and the MCP tools already return."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            output = run_cli(
+                "--config", str(config_path), "message", "get",
+                ref.account_name, ref.folder_name, ref.rfc5322_id,
+            )
+        self.assertIn("Attach.:    yes (1)", output)
+        self.assertIn("1. q1-report.pdf", output)
+        self.assertIn("application/octet-stream", output)
+
+    def test_message_attachment_writes_file_to_cwd(self) -> None:
+        import tempfile
+        with isolated_app_env(), temporary_config() as config_path, \
+                tempfile.TemporaryDirectory() as tmpdir:
+            ref = _seed_message_with_attachments(config_path)
+            prev_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                output = run_cli(
+                    "--config", str(config_path), "message", "attachment",
+                    ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
+                )
+            finally:
+                os.chdir(prev_cwd)
+            written = Path(tmpdir) / "q1-report.pdf"
+            self.assertTrue(written.exists())
+            self.assertTrue(written.read_bytes().startswith(b"%PDF"))
+            self.assertIn("Wrote", output)
+
+    def test_message_attachment_refuses_overwrite_without_force(self) -> None:
+        import tempfile
+        with isolated_app_env(), temporary_config() as config_path, \
+                tempfile.TemporaryDirectory() as tmpdir:
+            ref = _seed_message_with_attachments(config_path)
+            out_path = Path(tmpdir) / "out.bin"
+            out_path.write_bytes(b"untouched")
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config", str(config_path), "message", "attachment",
+                    ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
+                    "-o", str(out_path),
+                )
+            self.assertIn("Refusing to overwrite", str(ctx.exception))
+            # File was not clobbered.
+            self.assertEqual(out_path.read_bytes(), b"untouched")
+
+    def test_message_attachment_force_overwrites(self) -> None:
+        import tempfile
+        with isolated_app_env(), temporary_config() as config_path, \
+                tempfile.TemporaryDirectory() as tmpdir:
+            ref = _seed_message_with_attachments(config_path)
+            out_path = Path(tmpdir) / "out.bin"
+            out_path.write_bytes(b"untouched")
+            run_cli(
+                "--config", str(config_path), "message", "attachment",
+                ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
+                "-o", str(out_path), "--force",
+            )
+            self.assertTrue(out_path.read_bytes().startswith(b"%PDF"))
+
+    def test_message_attachment_out_of_range_errors(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config", str(config_path), "message", "attachment",
+                    ref.account_name, ref.folder_name, ref.rfc5322_id, "99",
+                )
+            self.assertIn("not found", str(ctx.exception).lower())
+
 
 class SchemaMismatchRecoveryTests(unittest.TestCase):
     """The CLI must explain, prompt (default N), and only reset on y/yes."""
@@ -452,6 +526,51 @@ def _seed_one_message(
         account_name=account.name,
         folder_name="INBOX",
         rfc5322_id=rfc5322_id,
+    )
+    projected = project_rfc822_message(
+        message_ref=message_ref, raw_message=raw, storage_key=storage_key,
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    index.upsert_message(message=stored)
+    return message_ref
+
+
+def _seed_message_with_attachments(config_path: Path):
+    """Seed a real maildir message using the multipart+attachment fixture.
+
+    Returns the ``MessageRef`` whose ``rfc5322_id`` is the Message-ID
+    header the fixture carries (``<att1-fixture@example.com>``).  The
+    mirror holds the raw bytes; the index has a matching metadata row.
+    """
+    import dataclasses
+
+    import corpus
+
+    from pony.config import load_config
+    from pony.domain import FolderRef, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    raw = corpus.multipart_mixed_attachment()
+    mirror = MaildirMirrorRepository(
+        account_name=account.name, root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    storage_key = mirror.store_message(folder=folder, raw_message=raw)
+
+    message_ref = MessageRef(
+        account_name=account.name,
+        folder_name="INBOX",
+        rfc5322_id="<att1-fixture@example.com>",
     )
     projected = project_rfc822_message(
         message_ref=message_ref, raw_message=raw, storage_key=storage_key,

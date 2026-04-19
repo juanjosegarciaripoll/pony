@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import email as _email
-import email.message as _email_message
-import email.policy as _policy
 import logging
 import tempfile
 import webbrowser
@@ -23,6 +20,7 @@ from ...protocols import MirrorRepository
 from ..message_renderer import (
     RenderedMessage,
     build_browser_html,
+    extract_attachment,
     fmt_size,
     render_message,
 )
@@ -137,38 +135,12 @@ class MessageViewPanel(VerticalScroll):
         """Save attachment *index* (1-based) to *dest_dir*."""
         if self._rendered is None:
             return None
-        attachments = self._rendered.attachments
-        if index < 1 or index > len(attachments):
+        payload = extract_attachment(self._rendered.raw_bytes, index)
+        if payload is None:
             return None
-        att = attachments[index - 1]
-        msg = _email.message_from_bytes(
-            self._rendered.raw_bytes, policy=_policy.default
-        )
-        found_index = 0
-        for part in msg.walk():
-            ct = part.get_content_type()
-            disposition = part.get_content_disposition() or ""
-            # Count message/rfc822 parts as attachments (attached emails).
-            if ct == "message/rfc822":
-                found_index += 1
-                if found_index == index:
-                    inner = part.get_payload()
-                    if isinstance(inner, list) and inner:
-                        inner = inner[0]
-                    if isinstance(inner, _email_message.EmailMessage):
-                        dest = dest_dir / att.filename
-                        dest.write_bytes(inner.as_bytes())
-                        return att.filename
-                continue
-            if disposition == "attachment" or part.get_filename():
-                found_index += 1
-                if found_index == index:
-                    payload = part.get_payload(decode=True)
-                    if isinstance(payload, bytes):
-                        dest = dest_dir / att.filename
-                        dest.write_bytes(payload)
-                        return att.filename
-        return None
+        dest = dest_dir / payload.filename
+        dest.write_bytes(payload.data)
+        return payload.filename
 
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
         """Save all attachments to *dest_dir*."""
