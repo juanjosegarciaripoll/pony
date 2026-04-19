@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `<data_dir>/contacts-backup-<UTC-timestamp>.bbdb` via a new
   `load_contacts_for_backup()` entry point that reads directly from the
   mismatched DB.
+- **Copy a message to another folder (`C`)**: new TUI action, modelled
+  on archive. Opens a folder picker spanning every account in the
+  config (including local accounts, which the main folder panel hides),
+  copies the raw bytes into the chosen target's mirror, and inserts a
+  `uid=NULL` index row so the next sync pushes the copy server-side
+  via `APPEND`. Multi-select works: every marked row is copied.
+  Same-account copies rewrite `Message-ID` to a synthetic
+  `<pony-copy-*@pony.local>` id so the sync planner doesn't mistake
+  the duplicate for a move (cross-folder identity is keyed on MID and
+  multi-folder identity is a deferred feature). Cross-account copies
+  preserve the original `Message-ID` — accounts are independent
+  identity namespaces, so a true copy keeps IMAP thread integrity
+  intact.
 - **Automatic mirror rescan for local accounts on TUI startup**: local
   accounts (`account_type = "local"`) have no sync step, so files added
   or removed in the mirror by external tools (offlineimap, getmail,

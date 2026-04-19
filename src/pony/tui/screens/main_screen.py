@@ -24,6 +24,7 @@ from ...domain import (
     MessageRef,
     MessageStatus,
 )
+from ...message_copy import copy_message_bytes
 from ...protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -66,6 +67,7 @@ class MainScreen(Screen[None]):
         Binding("!", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
+        Binding("C", "copy", "Copy"),
         Binding("N", "new_folder", "New folder"),
         Binding("ctrl+1", "save_attachment('1')", "Save att. 1", show=False),
         Binding("ctrl+2", "save_attachment('2')", "Save att. 2", show=False),
@@ -583,6 +585,114 @@ class MainScreen(Screen[None]):
 
     def action_archive(self) -> None:
         self.archive_current_message()
+
+    def action_copy(self) -> None:
+        """Prompt for a target folder and copy every target message there.
+
+        Copies are applied locally (index + mirror) immediately; the next
+        sync pushes them to the server via ``APPEND``.  Within a single
+        account the copy is given a synthetic Message-ID so the sync
+        planner doesn't mistake the duplicate for a move (the planner
+        keys cross-folder identity on Message-ID, and multi-folder
+        identity is a deferred feature).  Across accounts the original
+        Message-ID is preserved — accounts are independent identity
+        namespaces and a true copy keeps IMAP thread integrity intact.
+        """
+        targets = self._targets()
+        if not targets:
+            return
+        sample = targets[0]
+        source_ref = self._folder_ref_from_message(sample)
+
+        from .pick_folder_screen import PickFolderScreen
+
+        screen = PickFolderScreen(
+            config=self._config,
+            mirrors=self._mirrors,
+            title=f"Copy to folder (source: {source_ref.folder_name})",
+            exclude=source_ref,
+        )
+
+        def _on_dismiss(target: FolderRef | None) -> None:
+            if target is None:
+                return
+            self._copy_to_folder(targets, source_ref, target)
+
+        self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
+
+    def _copy_to_folder(
+        self,
+        targets: list[IndexedMessage],
+        source: FolderRef,
+        target: FolderRef,
+    ) -> None:
+        """Copy every *targets* row from *source* into *target*.
+
+        See :meth:`action_copy` for the MID-rewrite rationale.
+        """
+        source_mirror = self._mirrors.get(source.account_name)
+        target_mirror = self._mirrors.get(target.account_name)
+        if source_mirror is None or target_mirror is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Missing mirror for source or target account.",
+                severity="error",
+            )
+            return
+
+        rewrite_mid = target.account_name == source.account_name
+        copied = 0
+        with self._index.connection():
+            for msg in targets:
+                try:
+                    raw_source = source_mirror.get_message_bytes(
+                        folder=source, storage_key=msg.storage_key,
+                    )
+                except Exception:  # noqa: BLE001
+                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                        f"Could not read source message {msg.subject!r}.",
+                        severity="error",
+                    )
+                    continue
+                new_raw, new_mid = copy_message_bytes(
+                    raw_source, rewrite_message_id=rewrite_mid,
+                )
+                try:
+                    new_key = target_mirror.store_message(
+                        folder=target, raw_message=new_raw,
+                    )
+                except Exception:  # noqa: BLE001
+                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                        f"Failed to write copy to {target.folder_name}.",
+                        severity="error",
+                    )
+                    continue
+                new_row = dataclasses.replace(
+                    msg,
+                    message_ref=MessageRef(
+                        account_name=target.account_name,
+                        folder_name=target.folder_name,
+                        rfc5322_id=new_mid,
+                    ),
+                    storage_key=new_key,
+                    uid=None,
+                    base_flags=frozenset(),
+                    server_flags=frozenset(),
+                    extra_imap_flags=frozenset(),
+                    local_status=MessageStatus.ACTIVE,
+                    trashed_at=None,
+                    synced_at=None,
+                )
+                self._index.upsert_message(message=new_row)
+                copied += 1
+        self.query_one(MessageListPanel).clear_marks()
+        if copied:
+            suffix = "" if copied == 1 else f" ({copied} messages)"
+            where = (
+                target.folder_name
+                if target.account_name == source.account_name
+                else f"{target.account_name}/{target.folder_name}"
+            )
+            self.app.notify(f"Copied to {where}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
 
     # ------------------------------------------------------------------
     # Folder management
