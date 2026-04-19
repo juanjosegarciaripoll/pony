@@ -11,6 +11,7 @@ from .domain import (
     Contact,
     DraftMessage,
     FlagSet,
+    FolderMessageSummary,
     FolderRef,
     FolderSyncState,
     IndexedMessage,
@@ -180,6 +181,19 @@ class IndexRepository(Protocol):
 
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
         """Return indexed messages from one folder."""
+        ...
+
+    def list_folder_message_summaries(
+        self, *, folder: FolderRef, active_only: bool = True
+    ) -> Sequence[FolderMessageSummary]:
+        """Return a narrow projection of messages in one folder for list display.
+
+        Loads only the columns the folder list renders — no recipients,
+        cc, body_preview, base_flags, server_flags, extra_imap_flags,
+        trashed_at or synced_at — and skips their parsing cost.
+        ``active_only`` filters to ``local_status='active'`` in SQL.
+        Ordered by ``received_at`` descending.
+        """
         ...
 
     def search(

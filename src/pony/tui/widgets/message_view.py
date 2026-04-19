@@ -15,7 +15,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
-from ...domain import FolderRef, IndexedMessage
+from ...domain import FolderMessageSummary, FolderRef
 from ...protocols import MirrorRepository
 from ..message_renderer import (
     RenderedMessage,
@@ -90,22 +90,21 @@ class MessageViewPanel(VerticalScroll):
 
     def load_message(
         self,
-        message: IndexedMessage,
+        summary: FolderMessageSummary,
         mirror: MirrorRepository,
     ) -> None:
         """Fetch raw bytes from the mirror and render the message."""
         self._rendered: RenderedMessage | None = None
-        self._current_message: IndexedMessage | None = message
         try:
             raw = mirror.get_message_bytes(
                 folder=FolderRef(
-                    account_name=message.message_ref.account_name,
-                    folder_name=message.message_ref.folder_name,
+                    account_name=summary.message_ref.account_name,
+                    folder_name=summary.message_ref.folder_name,
                 ),
-                storage_key=message.storage_key,
+                storage_key=summary.storage_key,
             )
         except Exception as exc:  # noqa: BLE001
-            _log.exception("load_message failed for %s", message.message_ref)
+            _log.exception("load_message failed for %s", summary.message_ref)
             self._set_content(
                 f"(could not load message: {type(exc).__name__}: {exc})"
             )
@@ -116,7 +115,6 @@ class MessageViewPanel(VerticalScroll):
 
     def clear(self) -> None:
         self._rendered = None
-        self._current_message = None
         self._set_content("")
 
     def open_in_browser(self) -> None:

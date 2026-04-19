@@ -20,6 +20,7 @@ from ...domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
+    FolderMessageSummary,
     FolderRef,
     IndexedMessage,
     MessageFlag,
@@ -161,12 +162,13 @@ class MainScreen(Screen[None]):
         self, event: MessageListPanel.MessageSelected
     ) -> None:
         event.stop()
-        mirror = self._mirrors[event.message.message_ref.account_name]
+        summary = event.summary
+        mirror = self._mirrors[summary.message_ref.account_name]
         view = self.query_one(MessageViewPanel)
-        view.load_message(event.message, mirror)
+        view.load_message(summary, mirror)
         view.display = True
         view.focus()
-        self._mark_seen(event.message)
+        self._mark_seen(summary)
         # Recenter the list on the selected row now that the view panel
         # has taken 2/3 of the right pane, shrinking the visible list area.
         msg_list = self.query_one(MessageListPanel)
@@ -192,13 +194,13 @@ class MainScreen(Screen[None]):
     ) -> None:
         event.stop()
         msg_list = self.query_one(MessageListPanel)
-        msg = msg_list.move_cursor_to_next_unread()
-        if msg is None:
+        summary = msg_list.move_cursor_to_next_unread()
+        if summary is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
+        mirror = self._mirrors[summary.message_ref.account_name]
         view = self.query_one(MessageViewPanel)
-        view.load_message(msg, mirror)
-        self._mark_seen(msg)
+        view.load_message(summary, mirror)
+        self._mark_seen(summary)
 
     def on_message_view_panel_prev_requested(
         self, event: MessageViewPanel.PrevRequested
@@ -208,13 +210,13 @@ class MainScreen(Screen[None]):
 
     def _navigate_from_view(self, delta: int) -> None:
         msg_list = self.query_one(MessageListPanel)
-        msg = msg_list.move_cursor_by(delta)
-        if msg is None:
+        summary = msg_list.move_cursor_by(delta)
+        if summary is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
+        mirror = self._mirrors[summary.message_ref.account_name]
         view = self.query_one(MessageViewPanel)
-        view.load_message(msg, mirror)
-        self._mark_seen(msg)
+        view.load_message(summary, mirror)
+        self._mark_seen(summary)
 
     def on_message_list_panel_search_exited(
         self, event: MessageListPanel.SearchExited
@@ -406,38 +408,69 @@ class MainScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def get_current_message(self) -> IndexedMessage | None:
-        return self.query_one(MessageListPanel).get_selected_message()
+        """Return the full IndexedMessage for the highlighted row.
 
-    def _folder_ref_from_message(self, msg: IndexedMessage) -> FolderRef:
+        The panel holds only summaries; for reply/forward/etc. we
+        re-fetch the full row from the index on demand.
+        """
+        summary = self.query_one(MessageListPanel).get_selected_summary()
+        if summary is None:
+            return None
+        return self._index.get_message(message_ref=summary.message_ref)
+
+    def _folder_ref_from_summary(
+        self, summary: FolderMessageSummary
+    ) -> FolderRef:
         return FolderRef(
-            account_name=msg.message_ref.account_name,
-            folder_name=msg.message_ref.folder_name,
+            account_name=summary.message_ref.account_name,
+            folder_name=summary.message_ref.folder_name,
         )
 
-    def _reload_current_folder(self, msg: IndexedMessage) -> None:
-        self.query_one(MessageListPanel).load_folder(self._folder_ref_from_message(msg))
+    def _reload_folder(self, folder_ref: FolderRef) -> None:
+        self.query_one(MessageListPanel).load_folder(folder_ref)
 
-    def _mark_seen(self, message: IndexedMessage) -> None:
-        if MessageFlag.SEEN in message.local_flags:
+    def _mark_seen(self, summary: FolderMessageSummary) -> None:
+        if MessageFlag.SEEN in summary.local_flags:
+            return
+        message = self._index.get_message(message_ref=summary.message_ref)
+        if message is None:
             return
         updated = dataclasses.replace(
             message,
             local_flags=message.local_flags | {MessageFlag.SEEN},
         )
         self._index.upsert_message(message=updated)
-        self.query_one(MessageListPanel).update_message(updated)
+        self.query_one(MessageListPanel).update_from_indexed(updated)
 
-    def _targets(self) -> list[IndexedMessage]:
-        """Messages to act on: marked rows if any, else the cursor row."""
-        return self.query_one(MessageListPanel).messages_to_act_on()
+    def _targets(self) -> list[FolderMessageSummary]:
+        """Summaries to act on: marked rows if any, else the cursor row."""
+        return self.query_one(MessageListPanel).summaries_to_act_on()
+
+    def _resolve_targets(
+        self, summaries: list[FolderMessageSummary]
+    ) -> list[IndexedMessage]:
+        """Fetch full IndexedMessage rows for each summary in *summaries*.
+
+        Any rows that have vanished from the index (e.g. raced with a
+        sync delete) are silently dropped.
+        """
+        resolved: list[IndexedMessage] = []
+        for s in summaries:
+            msg = self._index.get_message(message_ref=s.message_ref)
+            if msg is not None:
+                resolved.append(msg)
+        return resolved
 
     def set_flag(self, flag: MessageFlag, *, present: bool) -> None:
         """Add or remove *flag* on every target message and refresh."""
         targets = self._targets()
         if not targets:
             return
+        messages = self._resolve_targets(targets)
+        if not messages:
+            return
         with self._index.connection():
-            for msg in targets:
+            for msg in messages:
                 new_flags = (
                     msg.local_flags | {flag} if present
                     else msg.local_flags - {flag}
@@ -447,15 +480,18 @@ class MainScreen(Screen[None]):
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_current_folder(targets[0])
+        self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
     def toggle_flag(self, flag: MessageFlag) -> None:
         """Toggle *flag* on every target message and refresh the list."""
         targets = self._targets()
         if not targets:
             return
+        messages = self._resolve_targets(targets)
+        if not messages:
+            return
         with self._index.connection():
-            for msg in targets:
+            for msg in messages:
                 if flag in msg.local_flags:
                     new_flags = msg.local_flags - {flag}
                 else:
@@ -463,21 +499,24 @@ class MainScreen(Screen[None]):
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_current_folder(targets[0])
+        self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
     def trash_current_message(self) -> None:
         """Mark every target message as trashed in the index."""
         targets = self._targets()
         if not targets:
             return
+        messages = self._resolve_targets(targets)
+        if not messages:
+            return
         with self._index.connection():
-            for msg in targets:
+            for msg in messages:
                 updated = dataclasses.replace(
                     msg, local_status=MessageStatus.TRASHED,
                 )
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_current_folder(targets[0])
+        self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
     def archive_current_message(self) -> None:
         """Move every target message into the account's archive folder.
@@ -539,9 +578,10 @@ class MainScreen(Screen[None]):
 
         mirror = self._mirrors[account.name]
         source_folder = FolderRef(account_name=account.name, folder_name=source)
+        messages = self._resolve_targets(targets)
         archived = 0
         with self._index.connection():
-            for msg in targets:
+            for msg in messages:
                 try:
                     new_storage_key = mirror.move_message_to_folder(
                         folder=source_folder,
@@ -571,7 +611,7 @@ class MainScreen(Screen[None]):
                 self._index.upsert_message(message=new_row)
                 archived += 1
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_current_folder(sample)
+        self._reload_folder(source_folder)
         if archived:
             suffix = "" if archived == 1 else f" ({archived} messages)"
             self.app.notify(f"Archived to {target}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
@@ -603,11 +643,13 @@ class MainScreen(Screen[None]):
         Message-ID is preserved — accounts are independent identity
         namespaces and a true copy keeps IMAP thread integrity intact.
         """
-        targets = self._targets()
-        if not targets:
+        summaries = self._targets()
+        if not summaries:
             return
-        sample = targets[0]
-        source_ref = self._folder_ref_from_message(sample)
+        messages = self._resolve_targets(summaries)
+        if not messages:
+            return
+        source_ref = self._folder_ref_from_summary(summaries[0])
 
         from .pick_folder_screen import PickFolderScreen
 
@@ -621,7 +663,7 @@ class MainScreen(Screen[None]):
         def _on_dismiss(target: FolderRef | None) -> None:
             if target is None:
                 return
-            self._copy_to_folder(targets, source_ref, target)
+            self._copy_to_folder(messages, source_ref, target)
 
         self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
 
@@ -723,11 +765,13 @@ class MainScreen(Screen[None]):
           relay the deletion).  Target-first ordering means an
           interruption leaves a duplicate, not a loss.
         """
-        targets = self._targets()
-        if not targets:
+        summaries = self._targets()
+        if not summaries:
             return
-        sample = targets[0]
-        source_ref = self._folder_ref_from_message(sample)
+        messages = self._resolve_targets(summaries)
+        if not messages:
+            return
+        source_ref = self._folder_ref_from_summary(summaries[0])
 
         from .pick_folder_screen import PickFolderScreen
 
@@ -741,7 +785,7 @@ class MainScreen(Screen[None]):
         def _on_dismiss(target: FolderRef | None) -> None:
             if target is None:
                 return
-            self._move_to_folder(targets, source_ref, target)
+            self._move_to_folder(messages, source_ref, target)
 
         self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
 
@@ -829,7 +873,7 @@ class MainScreen(Screen[None]):
                     moved += 1
 
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_current_folder(targets[0])
+        self._reload_folder(source)
         if moved:
             suffix = "" if moved == 1 else f" ({moved} messages)"
             where = (

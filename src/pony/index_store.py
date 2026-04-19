@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .domain import (
     Contact,
+    FolderMessageSummary,
     FolderRef,
     FolderSyncState,
     IndexedMessage,
@@ -556,6 +557,34 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (folder.account_name, folder.folder_name),
             ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
+
+    def list_folder_message_summaries(
+        self, *, folder: FolderRef, active_only: bool = True
+    ) -> Sequence[FolderMessageSummary]:
+        """Return a narrow per-row projection for the folder list view.
+
+        See ``FolderMessageSummary`` for the motivation: the full
+        ``list_folder_messages`` path materialises three datetime
+        parses and three flag-set constructions per row — wasted work
+        when the list only wants sender, subject, received_at and a
+        handful of booleans.  This path selects only those columns
+        and skips the unused parses, and pushes ``local_status`` and
+        ``received_at`` ordering into SQL so callers don't re-sort.
+        """
+        sql = (
+            "SELECT account_name, folder_name, message_id, "
+            "storage_key, sender, subject, received_at, "
+            "has_attachments, local_flags, local_status "
+            "FROM messages WHERE account_name = ? AND folder_name = ?"
+        )
+        params: list[object] = [folder.account_name, folder.folder_name]
+        if active_only:
+            sql += " AND local_status = ?"
+            params.append(MessageStatus.ACTIVE.value)
+        sql += " ORDER BY received_at DESC"
+        with self._use() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return tuple(_summary_from_row(row) for row in rows)
 
     def search(
         self, *, query: SearchQuery, account_name: str | None
@@ -1447,6 +1476,27 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
         extra_imap_flags=extra,
         trashed_at=trashed_at,
         synced_at=synced_at,
+    )
+
+
+def _summary_from_row(row: sqlite3.Row) -> FolderMessageSummary:
+    # Column order (matches list_folder_message_summaries SELECT):
+    #  0 account_name  1 folder_name  2 message_id  3 storage_key
+    #  4 sender        5 subject      6 received_at
+    #  7 has_attachments  8 local_flags  9 local_status
+    return FolderMessageSummary(
+        message_ref=MessageRef(
+            account_name=str(row[0]),
+            folder_name=str(row[1]),
+            rfc5322_id=str(row[2]),
+        ),
+        storage_key=str(row[3]),
+        sender=str(row[4]),
+        subject=str(row[5]),
+        received_at=datetime.fromisoformat(str(row[6])).astimezone(UTC),
+        has_attachments=bool(row[7]),
+        local_flags=_flags_from_csv(str(row[8])),
+        local_status=MessageStatus(str(row[9])),
     )
 
 

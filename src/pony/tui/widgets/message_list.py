@@ -10,7 +10,13 @@ from textual.message import Message
 from textual.widgets import DataTable
 from textual.widgets._data_table import ColumnKey
 
-from ...domain import FolderRef, IndexedMessage, MessageFlag, MessageStatus
+from ...domain import (
+    FolderMessageSummary,
+    FolderRef,
+    IndexedMessage,
+    MessageFlag,
+    MessageStatus,
+)
 from ...protocols import IndexRepository
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 
@@ -18,11 +24,18 @@ from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 class MessageListPanel(DataTable[Text]):
     """Tabular list of messages for the currently selected folder.
 
-    Columns: status marker, date, from, subject. Read messages are dimmed,
-    trashed messages are struck through. The marker column shows ``!`` for
-    flagged, ``+`` for messages with attachments, ``*`` for marked, or
-    blank.  Posts ``MessageListPanel.MessageSelected`` when a row is
-    activated.
+    Columns: status marker, date, from, subject.  Read messages are
+    dimmed, trashed messages are struck through.  The marker column
+    shows ``!`` for flagged, ``+`` for messages with attachments,
+    ``*`` for marked, or blank.  Posts
+    ``MessageListPanel.MessageSelected`` when a row is activated.
+
+    The panel holds ``FolderMessageSummary`` rows — a narrow
+    projection of ``IndexedMessage`` that skips the datetime and
+    flag-set parsing the full object requires.  Callers that need
+    the full ``IndexedMessage`` (e.g. to rewrite it via ``upsert_message``
+    in a flag/status action, or to render a reply body) re-fetch it
+    from the index using ``summary.message_ref``.
     """
 
     BORDER_TITLE = "Messages"
@@ -35,7 +48,7 @@ class MessageListPanel(DataTable[Text]):
     @dataclass
     class MessageSelected(Message):
         """Posted when the user activates a message row."""
-        message: IndexedMessage
+        summary: FolderMessageSummary
 
     @dataclass
     class SearchExited(Message):
@@ -46,7 +59,7 @@ class MessageListPanel(DataTable[Text]):
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._index = index
-        self._messages: list[IndexedMessage] = []
+        self._summaries: list[FolderMessageSummary] = []
         self._marked: set[str] = set()  # rfc5322_ids
         self._in_search: bool = False
         self._icons_col_key: ColumnKey | None = None
@@ -67,27 +80,27 @@ class MessageListPanel(DataTable[Text]):
         return max(10, min(40, table_width // 4))
 
     def _cells_for(
-        self, msg: IndexedMessage,
+        self, summary: FolderMessageSummary,
     ) -> tuple[Text, Text, Text, Text]:
-        style = _row_style(msg)
+        style = _row_style(summary)
         icon = (
-            "*" if msg.message_ref.rfc5322_id in self._marked
-            else _icon_column(msg)
+            "*" if summary.message_ref.rfc5322_id in self._marked
+            else _icon_column(summary)
         )
         return (
             Text(icon, style=style),
-            Text(_format_date(msg.received_at), style=style),
-            Text(_truncate(msg.sender, self._from_max()), style=style),
-            Text(msg.subject or "(no subject)", style=style),
+            Text(_format_date(summary.received_at), style=style),
+            Text(_truncate(summary.sender, self._from_max()), style=style),
+            Text(summary.subject or "(no subject)", style=style),
         )
 
-    def _update_row(self, msg: IndexedMessage) -> None:
+    def _update_row(self, summary: FolderMessageSummary) -> None:
         assert self._icons_col_key is not None
         assert self._date_col_key is not None
         assert self._from_col_key is not None
         assert self._subject_col_key is not None
-        mid = msg.message_ref.rfc5322_id
-        icons, date, sender, subject = self._cells_for(msg)
+        mid = summary.message_ref.rfc5322_id
+        icons, date, sender, subject = self._cells_for(summary)
         self.update_cell(
             row_key=mid, column_key=self._icons_col_key, value=icons,
         )
@@ -103,39 +116,44 @@ class MessageListPanel(DataTable[Text]):
         )
 
     def load_folder(self, folder_ref: FolderRef) -> None:
-        """Replace the table contents with messages from *folder_ref*."""
+        """Replace the table contents with messages from *folder_ref*.
+
+        The SQL path pre-filters to ``local_status='active'`` and
+        pre-sorts by ``received_at DESC`` so no Python-side filter or
+        sort is needed.
+        """
         self._in_search = False
         self._marked.clear()
         self.border_title = "Messages"
         self.clear()
-        msgs = list(self._index.list_folder_messages(folder=folder_ref))
-        # Active messages only; sort newest first.
-        msgs = [
-            m for m in msgs if m.local_status == MessageStatus.ACTIVE
-        ]
-        msgs.sort(key=lambda m: m.received_at, reverse=True)
-        self._messages = msgs
-        for msg in msgs:
+        summaries = list(self._index.list_folder_message_summaries(folder=folder_ref))
+        self._summaries = summaries
+        for summary in summaries:
             self.add_row(
-                *self._cells_for(msg),
-                key=msg.message_ref.rfc5322_id,
+                *self._cells_for(summary),
+                key=summary.message_ref.rfc5322_id,
             )
 
     def load_search_results(
         self, messages: list[IndexedMessage], query_raw: str
     ) -> None:
-        """Replace the table contents with search results."""
+        """Replace the table contents with search results.
+
+        Search still returns full ``IndexedMessage`` objects; project
+        them down to summaries here so the panel state is uniform.
+        """
         self._in_search = True
         self._marked.clear()
         self.border_title = f"Search: {query_raw}  [q=exit]"
         self.clear()
         msgs = list(messages)
         msgs.sort(key=lambda m: m.received_at, reverse=True)
-        self._messages = msgs
-        for msg in msgs:
+        summaries = [_summary_from_indexed(m) for m in msgs]
+        self._summaries = summaries
+        for summary in summaries:
             self.add_row(
-                *self._cells_for(msg),
-                key=msg.message_ref.rfc5322_id,
+                *self._cells_for(summary),
+                key=summary.message_ref.rfc5322_id,
             )
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
@@ -144,48 +162,54 @@ class MessageListPanel(DataTable[Text]):
         self, event: DataTable.RowSelected
     ) -> None:
         event.stop()
-        # Find the IndexedMessage by its message_id key.
         key = str(event.row_key.value) if event.row_key.value else ""
-        for msg in self._messages:
-            if msg.message_ref.rfc5322_id == key:
-                self.post_message(self.MessageSelected(message=msg))
-                return
+        summary = self._find_summary(key)
+        if summary is not None:
+            self.post_message(self.MessageSelected(summary=summary))
 
-    def get_selected_message(self) -> IndexedMessage | None:
-        """Return the currently highlighted message, if any."""
-        if self.cursor_row < 0 or self.cursor_row >= len(self._messages):
+    def get_selected_summary(self) -> FolderMessageSummary | None:
+        """Return the summary for the highlighted row, if any."""
+        if self.cursor_row < 0 or self.cursor_row >= len(self._summaries):
             return None
-        return self._messages[self.cursor_row]
+        return self._summaries[self.cursor_row]
 
     def action_cursor_first(self) -> None:
-        if self._messages:
+        if self._summaries:
             self.move_cursor(row=0)
 
     def action_cursor_last(self) -> None:
-        if self._messages:
-            self.move_cursor(row=len(self._messages) - 1)
+        if self._summaries:
+            self.move_cursor(row=len(self._summaries) - 1)
 
-    def move_cursor_to_next_unread(self) -> IndexedMessage | None:
+    def move_cursor_to_next_unread(self) -> FolderMessageSummary | None:
         """Move to the first unread message after the current row.
 
-        Returns the message or None if no unread message follows.
+        Returns the summary, or ``None`` if no unread message follows.
         """
         start = self.cursor_row + 1
-        for i in range(start, len(self._messages)):
-            msg = self._messages[i]
-            if MessageFlag.SEEN not in msg.local_flags:
+        for i in range(start, len(self._summaries)):
+            summary = self._summaries[i]
+            if MessageFlag.SEEN not in summary.local_flags:
                 self.move_cursor(row=i)
-                return msg
+                return summary
         return None
 
-    def update_message(self, updated: IndexedMessage) -> None:
-        """Replace one message in the internal list and restyle its row."""
+    def update_summary(self, updated: FolderMessageSummary) -> None:
+        """Replace one row's summary and re-render it.
+
+        Used by flag/status/seen actions after they've written the
+        change back to the index via ``upsert_message``.
+        """
         mid = updated.message_ref.rfc5322_id
-        for i, msg in enumerate(self._messages):
-            if msg.message_ref.rfc5322_id == mid:
-                self._messages[i] = updated
+        for i, summary in enumerate(self._summaries):
+            if summary.message_ref.rfc5322_id == mid:
+                self._summaries[i] = updated
                 self._update_row(updated)
                 break
+
+    def update_from_indexed(self, updated: IndexedMessage) -> None:
+        """Convenience — derive a summary from a full IndexedMessage."""
+        self.update_summary(_summary_from_indexed(updated))
 
     def on_key(self, event: object) -> None:
         """Exit search mode when q or escape is pressed."""
@@ -208,36 +232,33 @@ class MessageListPanel(DataTable[Text]):
 
     def on_resize(self) -> None:
         """Refresh all rows so the From column stays capped at 25% of width."""
-        if self._from_col_key is None or not self._messages:
+        if self._from_col_key is None or not self._summaries:
             return
-        for msg in self._messages:
-            self._update_row(msg)
+        for summary in self._summaries:
+            self._update_row(summary)
 
-    def move_cursor_by(self, delta: int) -> IndexedMessage | None:
-        """Move the row cursor by *delta* (±1) and return the new message.
-
-        Returns None if the move would go out of bounds (cursor stays put).
-        """
+    def move_cursor_by(self, delta: int) -> FolderMessageSummary | None:
+        """Move the row cursor by *delta* (±1) and return the new summary."""
         new_row = self.cursor_row + delta
-        if new_row < 0 or new_row >= len(self._messages):
+        if new_row < 0 or new_row >= len(self._summaries):
             return None
         self.move_cursor(row=new_row)
-        return self._messages[new_row]
+        return self._summaries[new_row]
 
     # ------------------------------------------------------------------
     # Mark / unmark
     # ------------------------------------------------------------------
 
     def _toggle_mark_current(self) -> None:
-        msg = self.get_selected_message()
-        if msg is None:
+        summary = self.get_selected_summary()
+        if summary is None:
             return
-        mid = msg.message_ref.rfc5322_id
+        mid = summary.message_ref.rfc5322_id
         if mid in self._marked:
             self._marked.discard(mid)
         else:
             self._marked.add(mid)
-        self._update_row(msg)
+        self._update_row(summary)
 
     def action_mark_down(self) -> None:
         self._toggle_mark_current()
@@ -247,23 +268,19 @@ class MessageListPanel(DataTable[Text]):
         self._toggle_mark_current()
         self.action_cursor_up()
 
-    def marked_messages(self) -> list[IndexedMessage]:
-        """Messages currently marked, ordered as they appear in the list."""
+    def marked_summaries(self) -> list[FolderMessageSummary]:
+        """Summaries currently marked, ordered as they appear in the list."""
         return [
-            m for m in self._messages
-            if m.message_ref.rfc5322_id in self._marked
+            s for s in self._summaries
+            if s.message_ref.rfc5322_id in self._marked
         ]
 
-    def messages_to_act_on(self) -> list[IndexedMessage]:
-        """Marked messages if any, otherwise the cursor row as a singleton.
-
-        Callers implementing bulk actions (trash, archive, flag, read)
-        should iterate this and then call :meth:`clear_marks`.
-        """
+    def summaries_to_act_on(self) -> list[FolderMessageSummary]:
+        """Marked summaries if any, otherwise the cursor row as a singleton."""
         if self._marked:
-            return self.marked_messages()
-        msg = self.get_selected_message()
-        return [msg] if msg is not None else []
+            return self.marked_summaries()
+        summary = self.get_selected_summary()
+        return [summary] if summary is not None else []
 
     def clear_marks(self) -> None:
         """Remove all marks and re-render the rows that were previously marked."""
@@ -271,9 +288,19 @@ class MessageListPanel(DataTable[Text]):
             return
         previously_marked = set(self._marked)
         self._marked.clear()
-        for msg in self._messages:
-            if msg.message_ref.rfc5322_id in previously_marked:
-                self._update_row(msg)
+        for summary in self._summaries:
+            if summary.message_ref.rfc5322_id in previously_marked:
+                self._update_row(summary)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _find_summary(self, rfc5322_id: str) -> FolderMessageSummary | None:
+        for s in self._summaries:
+            if s.message_ref.rfc5322_id == rfc5322_id:
+                return s
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -281,24 +308,38 @@ class MessageListPanel(DataTable[Text]):
 # ---------------------------------------------------------------------------
 
 
-def _icon_column(msg: IndexedMessage) -> str:
+def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
+    """Project an IndexedMessage down to the fields the list needs."""
+    return FolderMessageSummary(
+        message_ref=msg.message_ref,
+        storage_key=msg.storage_key,
+        sender=msg.sender,
+        subject=msg.subject,
+        received_at=msg.received_at,
+        has_attachments=msg.has_attachments,
+        local_flags=msg.local_flags,
+        local_status=msg.local_status,
+    )
+
+
+def _icon_column(summary: FolderMessageSummary) -> str:
     """Single-character status marker: ``!`` flagged, ``+`` has-attachments."""
-    if MessageFlag.FLAGGED in msg.local_flags:
+    if MessageFlag.FLAGGED in summary.local_flags:
         return "!"
-    if msg.has_attachments:
+    if summary.has_attachments:
         return "+"
     return " "
 
 
-def _row_style(msg: IndexedMessage) -> str:
+def _row_style(summary: FolderMessageSummary) -> str:
     """Rich style string applied to every cell in the row.
 
     Read messages are dimmed; trashed messages are struck through.
     """
     parts: list[str] = []
-    if MessageFlag.SEEN in msg.local_flags:
+    if MessageFlag.SEEN in summary.local_flags:
         parts.append("dim")
-    if msg.local_status == MessageStatus.TRASHED:
+    if summary.local_status == MessageStatus.TRASHED:
         parts.append("strike")
     return " ".join(parts)
 

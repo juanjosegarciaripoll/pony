@@ -23,6 +23,23 @@ covered by tests:
 
 Not commitments, just the known-next items worth keeping in mind.
 
+- **DataTable population cost on giant folders.** After the
+  ``FolderMessageSummary`` work the DB+parse portion of
+  ``MessageListPanel.load_folder`` is ~300 ms on a 17k-row folder
+  (down from ~1.3 s).  The remaining bottleneck is Textual's
+  ``DataTable.add_row`` loop — 17k ``add_row`` calls, each paying
+  layout cost, with no built-in row virtualization.  Options to
+  explore, in rough order of bang-for-buck:
+  1. ``@work(thread=True)`` + ``call_from_thread`` batched inserts
+     (~100 rows at a time) so the UI stays interactive while the
+     table fills.  Total time unchanged, perceived latency down.
+  2. Pagination / windowing — only add rows near the viewport,
+     extend on scroll.  The real fix for 50k+ row folders, but a
+     non-trivial UI refactor since ``DataTable`` isn't virtualized.
+  3. A compound index on
+     ``(account_name, folder_name, received_at DESC)`` to eliminate
+     the temp B-tree sort EXPLAIN currently shows.  Drops the lean
+     SELECT from ~200 ms to tens of ms, but requires a schema bump.
 - **Rebuild-from-mirrors command.** The new schema gate refuses legacy
   DBs and the CLI offers an export-contacts-then-wipe flow; rebuilding
   the index from mirror bytes (no re-download) is the missing third

@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.6.0]
 ### Fixed
 
+- **Folder-list open is 4× faster on big folders**: the message-list
+  panel was calling ``list_folder_messages`` — which materialises a
+  full ``IndexedMessage`` per row (three datetime parses, three
+  flag-set reconstructions, plus recipients / cc / body_preview /
+  base_flags / server_flags / extra_imap_flags / trashed_at /
+  synced_at that the list never displays).  The panel now stores a
+  new narrow ``FolderMessageSummary`` projection populated by
+  ``IndexRepository.list_folder_message_summaries``, which selects
+  only the ten columns the list renders and pushes the ACTIVE filter
+  and ORDER BY into SQL.  On a 17,504-row folder this took the
+  DB+parse portion of ``load_folder`` from ~1268 ms to ~300 ms.
+  Action paths (flag / trash / archive / copy / move / reply /
+  forward) re-fetch the full ``IndexedMessage`` on demand via
+  ``get_message``, so nothing round-trips a stripped row back into
+  ``upsert_message``.
 - **Folder-panel unread counts computed in SQL**: the tree was
   calling ``list_folder_messages`` once per folder and materialising
   every ``IndexedMessage`` row (datetime parsing, flag-set

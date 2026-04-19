@@ -395,3 +395,27 @@ class IndexedMessage:
     has_attachments: bool = False
     trashed_at: datetime | None = None
     synced_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FolderMessageSummary:
+    """Narrow projection of ``IndexedMessage`` for the folder list view.
+
+    The TUI message-list panel only reads a handful of fields per row
+    (sender, subject, received_at, has_attachments, local_flags,
+    local_status, plus identity fields).  Loading a full
+    ``IndexedMessage`` for 10k+ row folders was the bottleneck on open:
+    every row paid datetime parsing for three timestamp columns and
+    frozenset construction for three flag columns it never displayed.
+    This type carries only what the list renders.  Actions re-fetch
+    the full ``IndexedMessage`` by ``message_ref`` on demand.
+    """
+
+    message_ref: MessageRef
+    storage_key: str
+    sender: str
+    subject: str
+    received_at: datetime
+    has_attachments: bool
+    local_flags: frozenset[MessageFlag]
+    local_status: MessageStatus
