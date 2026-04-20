@@ -12,6 +12,7 @@ from .domain import (
     DraftMessage,
     FlagSet,
     FolderMessageSummary,
+    FolderQuickStatus,
     FolderRef,
     FolderSyncState,
     IndexedMessage,
@@ -238,6 +239,28 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def count_uids_for_folder(
+        self, *, account_name: str, folder_name: str
+    ) -> int:
+        """Return the number of rows with ``uid IS NOT NULL`` for one folder.
+
+        Used by the sync fast-path to compare against the server's
+        ``STATUS MESSAGES`` count.  Includes trashed rows whose delete has
+        not yet been pushed — those still occupy a slot server-side.
+        """
+        ...
+
+    def list_folder_uid_to_mid(
+        self, *, account_name: str, folder_name: str
+    ) -> dict[int, str]:
+        """Return ``{uid: message_id}`` for rows with non-NULL uid in one folder.
+
+        Used by the fast-path planner to synthesize the per-folder UID map
+        without issuing a server ``FETCH`` when STATUS says nothing
+        changed.
+        """
+        ...
+
     def list_all_uids(
         self, *, account_name: str
     ) -> Sequence[IndexedMessage]:
@@ -302,6 +325,17 @@ class ImapClientSession(Protocol):
         Always issues a SELECT so callers get a fresh value.  Subsequent
         fetch/store calls for the same folder reuse the selection without an
         extra round-trip; a different folder triggers a new SELECT.
+        """
+        ...
+
+    def folder_quick_status(self, folder_name: str) -> FolderQuickStatus:
+        """Return UIDVALIDITY / UIDNEXT / MESSAGES [/ HIGHESTMODSEQ] via STATUS.
+
+        One cheap roundtrip that does **not** require a SELECT.  The sync
+        planner uses this to short-circuit the full metadata scan on
+        folders whose watermark and message count still match the local
+        snapshot.  ``highest_modseq`` is ``None`` when the server does not
+        advertise ``CONDSTORE``.
         """
         ...
 

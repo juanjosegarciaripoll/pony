@@ -322,6 +322,23 @@ class FolderSyncState:
     synced_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
 
 
+@dataclass(frozen=True, slots=True)
+class FolderQuickStatus:
+    """Cheap IMAP ``STATUS`` snapshot used as the sync fast-path gate.
+
+    One ``STATUS folder (UIDVALIDITY UIDNEXT MESSAGES [HIGHESTMODSEQ])``
+    roundtrip per folder, compared against the stored ``FolderSyncState``
+    and local row count to decide whether the planner can skip the full
+    ``FETCH 1:*`` metadata scan.  ``highest_modseq`` is ``None`` when the
+    server does not advertise ``CONDSTORE``.
+    """
+
+    uid_validity: int
+    uidnext: int
+    messages: int
+    highest_modseq: int | None = None
+
+
 
 class OperationType(StrEnum):
     """Mutation operations queued for remote reconciliation."""

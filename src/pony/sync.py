@@ -34,6 +34,7 @@ from .domain import (
     AppConfig,
     FlagSet,
     FolderConfig,
+    FolderQuickStatus,
     FolderRef,
     FolderSyncState,
     IndexedMessage,
@@ -653,7 +654,29 @@ class ImapSyncService:
         folder_uid_maps: dict[str, dict[int, str]] = {}
         folder_flags_maps: dict[str, dict[int, FlagSet]] = {}
         folder_scan_ms: dict[str, int] = {}
+        fast_path_folders: set[str] = set()
+        fast_path_state: dict[str, FolderSyncState] = {}
         skipped: list[str] = []
+
+        def _merge_mid_map(
+            folder: str, uid_to_mid: dict[int, str],
+        ) -> None:
+            for uid, mid in uid_to_mid.items():
+                if not mid or mid in _ambiguous_mids:
+                    continue
+                if mid in remote_mid_map:
+                    existing_folder, _ = remote_mid_map[mid]
+                    if existing_folder != folder:
+                        logger.debug(
+                            "Message-ID %r in multiple folders (%s, %s)"
+                            " — disabling move detection for this ID",
+                            mid, existing_folder, folder,
+                        )
+                        _ambiguous_mids.add(mid)
+                        del remote_mid_map[mid]
+                else:
+                    remote_mid_map[mid] = (folder, uid)
+
         for i, folder_name in enumerate(server_folders, 1):
             if progress is not None:
                 progress(ProgressInfo(
@@ -663,6 +686,78 @@ class ImapSyncService:
                     total=len(server_folders),
                 )
                 )
+
+            # Fast-path gate: one cheap STATUS roundtrip.  When
+            # UIDVALIDITY / UIDNEXT / MESSAGES all match the local
+            # snapshot, skip the full FETCH entirely and synthesize
+            # uid_to_mid from the index.
+            stored = self._index.get_folder_sync_state(
+                account_name=account.name, folder_name=folder_name,
+            )
+            quick: FolderQuickStatus | None = None
+            if stored is not None:
+                try:
+                    _t0 = time.perf_counter()
+                    quick = session.folder_quick_status(folder_name)
+                    folder_scan_ms[folder_name] = int(
+                        (time.perf_counter() - _t0) * 1000
+                    )
+                except (OSError, EOFError) as exc:
+                    if reconnect is not None:
+                        logger.info(
+                            "Connection lost on STATUS %s/%s: %s"
+                            " — reconnecting",
+                            account.name, folder_name, exc,
+                        )
+                        try:
+                            session = reconnect()
+                            _t0 = time.perf_counter()
+                            quick = session.folder_quick_status(folder_name)
+                            folder_scan_ms[folder_name] = int(
+                                (time.perf_counter() - _t0) * 1000
+                            )
+                        except (OSError, EOFError):
+                            quick = None
+                    else:
+                        quick = None
+
+            # Fast path: when ``STATUS`` says the server's UID set is
+            # stable (same UIDVALIDITY, same UIDNEXT, same MESSAGES
+            # count as the local snapshot), skip the full FETCH
+            # entirely.  The planner pushes whatever changed locally
+            # (trashed rows, pending ``uid=NULL`` rows, flag drift)
+            # without consulting the server — those pushes need only
+            # local data.  The accepted trade-off is that a concurrent
+            # remote flag change on the same message will be
+            # overwritten by the local push (see "Known limitation"
+            # below).
+            if (
+                quick is not None
+                and stored is not None
+                and quick.uid_validity == stored.uid_validity
+                and quick.uidnext == stored.highest_uid + 1
+                and quick.messages
+                == self._index.count_uids_for_folder(
+                    account_name=account.name,
+                    folder_name=folder_name,
+                )
+            ):
+                uid_to_mid_local = self._index.list_folder_uid_to_mid(
+                    account_name=account.name,
+                    folder_name=folder_name,
+                )
+                folder_uid_maps[folder_name] = uid_to_mid_local
+                folder_flags_maps[folder_name] = {}
+                fast_path_folders.add(folder_name)
+                fast_path_state[folder_name] = stored
+                _merge_mid_map(folder_name, uid_to_mid_local)
+                logger.debug(
+                    "Fast-path %s/%s: %d msg(s), server state stable",
+                    account.name, folder_name, quick.messages,
+                )
+                continue
+
+            # Slow path: full FETCH of UIDs + Message-IDs + flags.
             try:
                 _t0 = time.perf_counter()
                 uid_metadata = session.fetch_uid_to_message_id(folder_name)
@@ -728,20 +823,7 @@ class ImapSyncService:
 
             folder_uid_maps[folder_name] = uid_to_mid
             folder_flags_maps[folder_name] = uid_to_flags
-            for uid, mid in uid_to_mid.items():
-                if mid and mid not in _ambiguous_mids:
-                    if mid in remote_mid_map:
-                        existing_folder, _ = remote_mid_map[mid]
-                        if existing_folder != folder_name:
-                            logger.debug(
-                                "Message-ID %r in multiple folders (%s, %s)"
-                                " — disabling move detection for this ID",
-                                mid, existing_folder, folder_name,
-                            )
-                            _ambiguous_mids.add(mid)
-                            del remote_mid_map[mid]
-                    else:
-                        remote_mid_map[mid] = (folder_name, uid)
+            _merge_mid_map(folder_name, uid_to_mid)
 
         # Build local mid→folders map from the unified messages table
         # (messages with a UID are those previously synced from the server).
@@ -809,17 +891,26 @@ class ImapSyncService:
         folder_plans: list[FolderSyncPlan] = []
         for folder_name in syncable:
             try:
-                folder_plan = self._plan_folder(
-                    account=account,
-                    folder_name=folder_name,
-                    session=session,
-                    uid_to_mid=folder_uid_maps[folder_name],
-                    uid_to_flags=folder_flags_maps[folder_name],
-                    remote_mid_map=remote_mid_map,
-                    local_mid_folders=local_mid_folders,
-                    local_pending_mid_folder=local_pending_mid_folder,
-                    read_only=folder_policy.is_read_only(folder_name),
-                )
+                if folder_name in fast_path_folders:
+                    folder_plan = self._plan_fast_path_folder(
+                        account=account,
+                        folder_name=folder_name,
+                        stored=fast_path_state[folder_name],
+                        remote_mid_map=remote_mid_map,
+                        read_only=folder_policy.is_read_only(folder_name),
+                    )
+                else:
+                    folder_plan = self._plan_folder(
+                        account=account,
+                        folder_name=folder_name,
+                        session=session,
+                        uid_to_mid=folder_uid_maps[folder_name],
+                        uid_to_flags=folder_flags_maps[folder_name],
+                        remote_mid_map=remote_mid_map,
+                        local_mid_folders=local_mid_folders,
+                        local_pending_mid_folder=local_pending_mid_folder,
+                        read_only=folder_policy.is_read_only(folder_name),
+                    )
                 folder_plan = dataclasses.replace(
                     folder_plan,
                     scan_ms=folder_scan_ms.get(folder_name, 0),
@@ -852,6 +943,80 @@ class ImapSyncService:
             folders=tuple(folder_plans),
             skipped_folders=tuple(skipped),
             creates=creates,
+        )
+
+    def _plan_fast_path_folder(
+        self,
+        *,
+        account: AccountConfig,
+        folder_name: str,
+        stored: FolderSyncState,
+        remote_mid_map: dict[str, tuple[str, int]],
+        read_only: bool = False,
+    ) -> FolderSyncPlan:
+        """Plan ops when STATUS confirmed the server UID set is stable.
+
+        ``STATUS`` already matched UIDVALIDITY, UIDNEXT, and MESSAGES
+        against the stored watermark — no server-side adds, deletions,
+        or (Phase-1 assumption) flag changes.  The planner only pushes
+        whatever changed locally; no ``FETCH`` is issued.
+
+        - Flag drift on active rows with a server uid ⇒ ``PushFlagsOp``.
+        - Trashed rows ⇒ ``PushDeleteOp`` (writable folders).
+        - Pending ``uid=NULL`` ACTIVE rows ⇒ ``PushAppendOp`` (unless
+          the Message-ID is on the server in another folder, in which
+          case that folder's plan emits ``PushMoveOp``).
+        """
+        folder_ref = FolderRef(
+            account_name=account.name, folder_name=folder_name,
+        )
+        index_rows = self._index.list_folder_messages(folder=folder_ref)
+        ops: list[SyncOp] = []
+        for row in index_rows:
+            if row.local_status != MessageStatus.TRASHED:
+                continue
+            if read_only:
+                # Can't push delete server-side; restore to ACTIVE so
+                # the mirror stays in step with the server.
+                ops.append(RestoreOp(message_ref=row.message_ref))
+            else:
+                ops.append(
+                    PushDeleteOp(
+                        server_uid=row.uid,
+                        message_ref=row.message_ref,
+                        storage_key=row.storage_key,
+                    )
+                )
+        if not read_only:
+            for row in index_rows:
+                if row.local_status != MessageStatus.ACTIVE:
+                    continue
+                if row.uid is None:
+                    continue
+                if row.local_flags == row.base_flags:
+                    continue
+                ops.append(
+                    PushFlagsOp(
+                        uid=row.uid,
+                        message_ref=row.message_ref,
+                        new_flags=row.local_flags,
+                        extra_imap_flags=row.extra_imap_flags,
+                    )
+                )
+            for row in index_rows:
+                if row.local_status != MessageStatus.ACTIVE:
+                    continue
+                if row.uid is not None:
+                    continue
+                mid = row.message_ref.rfc5322_id
+                if not mid or mid in remote_mid_map:
+                    continue
+                ops.append(PushAppendOp(message_ref=row.message_ref))
+        return FolderSyncPlan(
+            folder_name=folder_name,
+            uid_validity=stored.uid_validity,
+            highest_uid=stored.highest_uid,
+            ops=tuple(ops),
         )
 
     def _plan_new_folder(

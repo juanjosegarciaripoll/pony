@@ -19,6 +19,7 @@ from pony.domain import (
     AccountConfig,
     AppConfig,
     FolderConfig,
+    FolderQuickStatus,
     FolderRef,
     MessageFlag,
     MessageStatus,
@@ -62,6 +63,16 @@ class FakeImapSession:
         # Ordered log of side-effecting calls (create, move, append, ...)
         # so tests can assert on sequencing — e.g. CREATE before MOVE.
         self.call_log: list[str] = []
+        # UIDNEXT per folder — advances on APPEND/MOVE, not on delete.
+        # Initialize one past the highest seeded UID so fast-path STATUS
+        # compares correctly after an initial sync.
+        self._uidnext: dict[str, int] = {
+            name: max(f.keys(), default=0) + 1
+            for name, f in folders.items()
+        }
+        # Count of FETCH metadata scans — tests assert the fast-path
+        # keeps this at zero when STATUS matches.
+        self.scan_count: int = 0
 
     def list_folders(self) -> Sequence[str]:
         return list(self.folders.keys())
@@ -70,9 +81,18 @@ class FakeImapSession:
         self._selected = folder_name
         return self.uid_validity
 
+    def folder_quick_status(self, folder_name: str) -> FolderQuickStatus:
+        folder = self.folders.get(folder_name, {})
+        return FolderQuickStatus(
+            uid_validity=self.uid_validity,
+            uidnext=self._uidnext.get(folder_name, 1),
+            messages=len(folder),
+        )
+
     def fetch_uid_to_message_id(
         self, folder_name: str
     ) -> dict[int, tuple[str, tuple[frozenset[MessageFlag], frozenset[str]]]]:
+        self.scan_count += 1
         folder = self.folders.get(folder_name, {})
         return {
             uid: (mid, (flags, self.extra_flags.get((folder_name, uid), frozenset())))
@@ -142,6 +162,9 @@ class FakeImapSession:
         mid = msg.get("Message-ID", "")
         folder[new_uid] = (mid, flags, raw_message)
         self.extra_flags[(folder_name, new_uid)] = extra_imap_flags
+        self._uidnext[folder_name] = max(
+            self._uidnext.get(folder_name, 1), new_uid + 1,
+        )
 
     def mark_deleted(self, folder_name: str, uid: int) -> None:  # noqa: ARG002
         self.deleted_uids.append(uid)
@@ -170,6 +193,9 @@ class FakeImapSession:
         target = self.folders[target_folder]
         new_uid = max(target.keys(), default=0) + 2000
         target[new_uid] = entry
+        self._uidnext[target_folder] = max(
+            self._uidnext.get(target_folder, 1), new_uid + 1,
+        )
         # Carry over custom flags when present.
         extra = self.extra_flags.pop((source_folder, uid), frozenset())
         if extra:
@@ -179,6 +205,7 @@ class FakeImapSession:
         self.call_log.append(f"create:{folder_name}")
         self.created_folders.append(folder_name)
         self.folders.setdefault(folder_name, {})
+        self._uidnext.setdefault(folder_name, 1)
 
     def logout(self) -> None:
         pass
@@ -403,17 +430,26 @@ class FlagReconciliationTestCase(unittest.TestCase):
         )
         service.sync()  # base sync: no flags
 
-        # Server marks as SEEN between syncs.
+        # Server marks as SEEN between syncs.  Also deliver a second
+        # message so UIDNEXT / MESSAGES bump, forcing the planner off
+        # the STATUS fast-path and into the full flag-reconciliation
+        # slow path.
         session.folders["INBOX"][1] = (
             "<phone@example.com>",
             frozenset({MessageFlag.SEEN}),
             raw,
         )
+        raw2 = _make_raw_message("Second", "<second@example.com>")
+        session.folders["INBOX"][2] = ("<second@example.com>", frozenset(), raw2)
+        session._uidnext["INBOX"] = 3
         service.sync()
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        self.assertEqual(rows[0].local_flags, frozenset({MessageFlag.SEEN}))
+        phone = next(
+            r for r in rows if r.message_ref.rfc5322_id == "<phone@example.com>"
+        )
+        self.assertEqual(phone.local_flags, frozenset({MessageFlag.SEEN}))
 
     def test_local_flag_change_pushed_to_server(self) -> None:
         raw = _make_raw_message("Mark me", "<mark@example.com>")
@@ -448,12 +484,18 @@ class FlagReconciliationTestCase(unittest.TestCase):
         )
         service.sync()  # base: no flags
 
-        # Server marks SEEN; local marks FLAGGED independently.
+        # Server marks SEEN; local marks FLAGGED independently.  Deliver
+        # a fresh message too so UIDNEXT bumps and the planner runs the
+        # full slow-path flag reconciliation — the fast path assumes
+        # server flags have not changed when STATUS is stable.
         session.folders["INBOX"][1] = (
             "<both@example.com>",
             frozenset({MessageFlag.SEEN}),
             raw,
         )
+        raw2 = _make_raw_message("Other", "<other@example.com>")
+        session.folders["INBOX"][2] = ("<other@example.com>", frozenset(), raw2)
+        session._uidnext["INBOX"] = 3
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
 
@@ -465,8 +507,9 @@ class FlagReconciliationTestCase(unittest.TestCase):
         service.sync()
 
         rows = index.list_folder_messages(folder=folder)
-        self.assertIn(MessageFlag.SEEN, rows[0].local_flags)
-        self.assertIn(MessageFlag.FLAGGED, rows[0].local_flags)
+        both = next(r for r in rows if r.message_ref.rfc5322_id == "<both@example.com>")
+        self.assertIn(MessageFlag.SEEN, both.local_flags)
+        self.assertIn(MessageFlag.FLAGGED, both.local_flags)
 
 
 class ServerDeletionTestCase(unittest.TestCase):
@@ -1002,11 +1045,18 @@ class BaseFlagsComparisonTestCase(unittest.TestCase):
 
         # Server still has SEEN.  With the fix, base=empty so
         # server_changed=(SEEN != empty)=True, local_changed=(empty != empty)=False
-        # → PullFlagsOp.
+        # → PullFlagsOp.  Also deliver a new message so UIDNEXT bumps
+        # and the planner takes the full slow path (the STATUS fast-path
+        # cannot detect pure server-side flag drift).
+        raw2 = _make_raw_message("Second", "<second@example.com>")
+        session.folders["INBOX"][2] = ("<second@example.com>", frozenset(), raw2)
+        session._uidnext["INBOX"] = 3
+
         service.sync()
 
         rows = index.list_folder_messages(folder=folder)
-        self.assertIn(MessageFlag.SEEN, rows[0].local_flags)
+        div = next(r for r in rows if r.message_ref.rfc5322_id == "<div@example.com>")
+        self.assertIn(MessageFlag.SEEN, div.local_flags)
 
 
 class FetchFailureTestCase(unittest.TestCase):
@@ -1204,17 +1254,23 @@ class C2RestoreTestCase(unittest.TestCase):
             message=dataclasses.replace(rows[0], local_status=MessageStatus.TRASHED)
         )
 
-        # Server marks SEEN between syncs.
+        # Server marks SEEN between syncs.  Deliver a fresh message
+        # too so UIDNEXT bumps and the planner runs the full slow-path
+        # flag reconciliation (C-2 lives in Step 3; the STATUS
+        # fast-path cannot detect silent server-side flag changes).
         session.folders["INBOX"][1] = (
             "<c2@example.com>", frozenset({MessageFlag.SEEN}), raw,
         )
+        raw2 = _make_raw_message("Other", "<other@example.com>")
+        session.folders["INBOX"][2] = ("<other@example.com>", frozenset(), raw2)
+        session._uidnext["INBOX"] = 3
         service.sync()
 
         # Message should be restored to ACTIVE with new flags.
         rows = index.list_folder_messages(folder=folder)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].local_status, MessageStatus.ACTIVE)
-        self.assertIn(MessageFlag.SEEN, rows[0].local_flags)
+        c2 = next(r for r in rows if r.message_ref.rfc5322_id == "<c2@example.com>")
+        self.assertEqual(c2.local_status, MessageStatus.ACTIVE)
+        self.assertIn(MessageFlag.SEEN, c2.local_flags)
         # Server should NOT have received a delete.
         self.assertEqual(session.deleted_uids, [])
 
@@ -1393,12 +1449,19 @@ class MessageIdChangeTestCase(unittest.TestCase):
         service.sync()
 
         # Server re-imports the message under a new Message-ID but same UID.
+        # Also deliver a fresh message so UIDNEXT bumps and the planner
+        # takes the full slow path — the STATUS fast-path sees matching
+        # UIDVALIDITY / UIDNEXT / MESSAGES and cannot detect a pure
+        # header-level rewrite.
         raw2 = _make_raw_message("Reimported", "<new-id@example.com>")
         session.folders["INBOX"][1] = (
             "<new-id@example.com>",
             frozenset({MessageFlag.SEEN}),
             raw2,
         )
+        raw3 = _make_raw_message("Third", "<third@example.com>")
+        session.folders["INBOX"][2] = ("<third@example.com>", frozenset(), raw3)
+        session._uidnext["INBOX"] = 3
         service.sync()
 
         # The flag change should still have been pulled despite the ID change.
@@ -1877,3 +1940,208 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         # INBOX is read-only → no PushMoveOp; server-side INBOX intact.
         self.assertFalse(session.moves)
         self.assertIn(1, session.folders["INBOX"])
+
+
+class FastPathTestCase(unittest.TestCase):
+    """STATUS-based fast-path gates the full FETCH metadata scan.
+
+    When ``UIDVALIDITY / UIDNEXT / MESSAGES`` all match the stored
+    sync watermark and local row count, the planner skips
+    ``fetch_uid_to_message_id`` entirely.  These tests verify the gate
+    fires when it should and falls through to the slow path when the
+    server state has actually diverged.
+    """
+
+    def test_unchanged_folder_skips_full_scan(self) -> None:
+        raw = _make_raw_message("Hello", "<msg@example.com>")
+        service, _, _, session = _setup(
+            server_folders={"INBOX": {1: ("<msg@example.com>", frozenset(), raw)}}
+        )
+
+        service.sync()
+        self.assertEqual(session.scan_count, 1)  # initial ingest
+
+        service.sync()
+        # Second sync: STATUS matches → FETCH not reissued.
+        self.assertEqual(session.scan_count, 1)
+
+    def test_new_server_message_falls_through(self) -> None:
+        raw1 = _make_raw_message("First", "<m1@example.com>")
+        service, index, _, session = _setup(
+            server_folders={"INBOX": {1: ("<m1@example.com>", frozenset(), raw1)}}
+        )
+        service.sync()
+        self.assertEqual(session.scan_count, 1)
+
+        # New server-side message bumps UIDNEXT and MESSAGES.
+        raw2 = _make_raw_message("Second", "<m2@example.com>")
+        session.folders["INBOX"][2] = ("<m2@example.com>", frozenset(), raw2)
+        session._uidnext["INBOX"] = 3
+
+        service.sync()
+        # Fast-path misses → slow path runs → new message ingested.
+        self.assertEqual(session.scan_count, 2)
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=folder)
+        mids = {r.message_ref.rfc5322_id for r in rows}
+        self.assertIn("<m2@example.com>", mids)
+
+    def test_server_deletion_falls_through(self) -> None:
+        raw1 = _make_raw_message("Keep", "<keep@example.com>")
+        raw2 = _make_raw_message("Gone", "<gone@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("<keep@example.com>", frozenset(), raw1),
+                    2: ("<gone@example.com>", frozenset(), raw2),
+                }
+            }
+        )
+        service.sync()
+        self.assertEqual(session.scan_count, 1)
+
+        # Server deletes one — MESSAGES count drops; UIDNEXT stays put.
+        del session.folders["INBOX"][2]
+
+        service.sync()
+        self.assertEqual(session.scan_count, 2)
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=folder)
+        gone = [r for r in rows if r.message_ref.rfc5322_id == "<gone@example.com>"]
+        self.assertEqual(len(gone), 1)
+        self.assertEqual(gone[0].local_status, MessageStatus.TRASHED)
+
+    def test_fast_path_pushes_pending_append(self) -> None:
+        """A pending uid=NULL row is APPENDed on the fast path — no FETCH."""
+        from datetime import UTC, datetime
+
+        from pony.domain import (
+            IndexedMessage as _IndexedMessage,
+        )
+        from pony.domain import (
+            MessageRef as _MessageRef,
+        )
+
+        service, index, mirror, session = _setup(
+            server_folders={"INBOX": {}}
+        )
+        service.sync()  # baseline: empty INBOX
+        self.assertEqual(session.scan_count, 1)
+
+        # Stage a purely local message under INBOX (uid=NULL, no server copy).
+        raw = _make_raw_message("Local only", "<local@example.com>")
+        inbox_ref = FolderRef(account_name="personal", folder_name="INBOX")
+        storage_key = mirror.store_message(folder=inbox_ref, raw_message=raw)
+        index.upsert_message(
+            message=_IndexedMessage(
+                message_ref=_MessageRef(
+                    account_name="personal",
+                    folder_name="INBOX",
+                    rfc5322_id="<local@example.com>",
+                ),
+                sender="alice@example.com",
+                recipients="bob@example.com",
+                cc="",
+                subject="Local only",
+                body_preview="",
+                storage_key=storage_key,
+                local_flags=frozenset(),
+                base_flags=frozenset(),
+                local_status=MessageStatus.ACTIVE,
+                received_at=datetime.now(tz=UTC),
+                uid=None,
+            )
+        )
+
+        service.sync()
+        # Fast path: no metadata scan, APPEND still fires.
+        self.assertEqual(session.scan_count, 1)
+        self.assertTrue(
+            any(call == "append:INBOX" for call in session.call_log),
+            f"expected append to INBOX, got {session.call_log!r}",
+        )
+        self.assertEqual(len(session.folders["INBOX"]), 1)
+
+    def test_fast_path_pushes_flag_drift(self) -> None:
+        """Local flag drift pushes via fast path — no FETCH."""
+        raw = _make_raw_message("Flag", "<f@example.com>")
+        service, index, _, session = _setup(
+            server_folders={"INBOX": {1: ("<f@example.com>", frozenset(), raw)}}
+        )
+        service.sync()  # baseline
+        self.assertEqual(session.scan_count, 1)
+
+        # User flips FLAGGED locally (local_flags != base_flags).
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        index.upsert_message(
+            message=dataclasses.replace(
+                row, local_flags=frozenset({MessageFlag.FLAGGED}),
+            )
+        )
+
+        service.sync()
+        # Fast path: no metadata scan; PushFlagsOp executed.
+        self.assertEqual(session.scan_count, 1)
+        self.assertTrue(
+            any(
+                MessageFlag.FLAGGED in flags
+                for _uid, flags in session.stored_flags
+            ),
+            f"expected FLAGGED push, got {session.stored_flags!r}",
+        )
+
+    def test_fast_path_pushes_trashed_delete(self) -> None:
+        """A locally-trashed row is EXPUNGEd on the fast path — no FETCH."""
+        raw = _make_raw_message("Toss", "<t@example.com>")
+        service, index, _, session = _setup(
+            server_folders={"INBOX": {1: ("<t@example.com>", frozenset(), raw)}}
+        )
+        service.sync()  # baseline
+        self.assertEqual(session.scan_count, 1)
+
+        # User trashes the message locally.
+        from datetime import UTC, datetime
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        index.upsert_message(
+            message=dataclasses.replace(
+                row,
+                local_status=MessageStatus.TRASHED,
+                trashed_at=datetime.now(tz=UTC),
+            )
+        )
+
+        service.sync()
+        # Fast path: no metadata scan; STORE \\Deleted + EXPUNGE ran.
+        self.assertEqual(session.scan_count, 1)
+        self.assertIn(1, session.deleted_uids)
+        self.assertEqual(len(session.folders["INBOX"]), 0)
+
+    def test_pure_server_flag_change_deferred(self) -> None:
+        """Phase 1 limitation: server-only flag changes are missed by fast-path.
+
+        When the server silently mutates flags on a quiescent folder
+        (another client marked a message read) neither UIDNEXT nor
+        MESSAGES changes, so the STATUS fast-path fires and the new
+        server flags are not pulled until a later sync sees a real
+        state change.  Closing this requires CONDSTORE (Phase 2).
+        """
+        raw = _make_raw_message("Phone", "<p@example.com>")
+        service, index, _, session = _setup(
+            server_folders={"INBOX": {1: ("<p@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+
+        # Server mutates flags silently — no UIDNEXT / MESSAGES change.
+        session.folders["INBOX"][1] = (
+            "<p@example.com>", frozenset({MessageFlag.SEEN}), raw,
+        )
+        service.sync()
+
+        # Phase 1: fast-path fires, server flags stay unobserved.
+        self.assertEqual(session.scan_count, 1)
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        self.assertNotIn(MessageFlag.SEEN, row.local_flags)

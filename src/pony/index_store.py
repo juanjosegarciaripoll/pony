@@ -732,6 +732,34 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
 
+    def count_uids_for_folder(
+        self, *, account_name: str, folder_name: str
+    ) -> int:
+        """Return ``COUNT(*)`` of rows with ``uid IS NOT NULL`` for one folder."""
+        with self._use() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM messages
+                WHERE account_name = ? AND folder_name = ? AND uid IS NOT NULL
+                """,
+                (account_name, folder_name),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def list_folder_uid_to_mid(
+        self, *, account_name: str, folder_name: str
+    ) -> dict[int, str]:
+        """Return ``{uid: message_id}`` for rows with non-NULL uid in one folder."""
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT uid, message_id FROM messages
+                WHERE account_name = ? AND folder_name = ? AND uid IS NOT NULL
+                """,
+                (account_name, folder_name),
+            ).fetchall()
+        return {int(str(r[0])): str(r[1]) for r in rows}
+
     def list_all_uids(
         self, *, account_name: str
     ) -> Sequence[IndexedMessage]:

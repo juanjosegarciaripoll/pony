@@ -107,6 +107,52 @@ exists server-side). ``CREATE`` runs before any ``PushMoveOp``, so a
 move that targets a freshly-created folder always has a live
 destination.
 
+## STATUS-gated path selection
+
+The planner asks one question at the start of each folder: "has the
+server's UID set changed since our last sync?"  It answers this with a
+single ``STATUS folder (UIDVALIDITY UIDNEXT MESSAGES)`` roundtrip, and
+picks one of two paths.
+
+**Fast path** — all three hold:
+
+- ``UIDVALIDITY`` matches the stored ``folder_sync_state``,
+- ``UIDNEXT`` equals ``stored.highest_uid + 1`` (no new server UIDs), and
+- ``MESSAGES`` equals the count of local rows with ``uid IS NOT NULL``
+  (no server-side deletions).
+
+When STATUS says the server UID set is stable, the planner skips the
+full ``FETCH ... BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]`` scan entirely
+— no server data is fetched.  The per-folder UID map is synthesized
+from the local index (``list_folder_uid_to_mid``) so cross-folder
+move detection still works.  ``_plan_fast_path_folder`` then pushes
+whatever the user changed locally using only local state:
+
+- ``PushFlagsOp`` for rows with ``local_flags != base_flags``,
+- ``PushDeleteOp`` for trashed rows,
+- ``PushAppendOp`` for pending ``uid=NULL`` ACTIVE rows (unless the
+  Message-ID is on the server in another folder, in which case that
+  folder's plan emits ``PushMoveOp`` instead).
+
+For a 17k-message quiescent folder this is one roundtrip instead of
+~17k headers, and even a folder with a handful of local user actions
+costs the same one roundtrip.
+
+**Slow path** — one of the three conditions fails (new UIDs, a UID
+gone, or UIDVALIDITY reset).  Full
+``FETCH 1:* (FLAGS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`` scan as
+described below.  The planner runs all six steps, including the
+three-way flag merge in Step 3.
+
+**Known limitation:** because the fast path never fetches server
+flags, a concurrent remote flag change on the same message is
+overwritten by a local ``PushFlagsOp`` (or silently missed when the
+folder is otherwise quiescent).  Closing this requires CONDSTORE
+(HIGHESTMODSEQ) tracking — a separate follow-up.  Tests that
+exercise three-way flag merge force the slow path by bumping
+``UIDNEXT`` server-side (adding a fresh message alongside the flag
+change).
+
 ## Per-folder reconciliation algorithm
 
 ```

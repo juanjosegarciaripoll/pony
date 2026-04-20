@@ -22,7 +22,7 @@ from typing import TypeVar, cast
 from imapclient import IMAPClient
 from imapclient.exceptions import IMAPClientError, LoginError
 
-from .domain import FlagSet, MessageFlag
+from .domain import FlagSet, FolderQuickStatus, MessageFlag
 
 _T = TypeVar("_T")
 
@@ -219,6 +219,26 @@ class ImapSession:
                 )
             return int(info.get(b"UIDVALIDITY", 0))
         return self._retry(_do, f"UIDVALIDITY {folder_name}")
+
+    def folder_quick_status(self, folder_name: str) -> FolderQuickStatus:
+        """Return UIDVALIDITY / UIDNEXT / MESSAGES [/ HIGHESTMODSEQ] via STATUS."""
+        def _do() -> FolderQuickStatus:
+            attrs = ["UIDVALIDITY", "UIDNEXT", "MESSAGES"]
+            if b"CONDSTORE" in self._conn.capabilities():
+                attrs.append("HIGHESTMODSEQ")
+            logger.debug("STATUS %s %s", folder_name, attrs)
+            with _imap_errors(f"STATUS {folder_name!r}"):
+                info = self._conn.folder_status(folder_name, attrs)
+            modseq_raw = info.get(b"HIGHESTMODSEQ")
+            return FolderQuickStatus(
+                uid_validity=int(info.get(b"UIDVALIDITY", 0)),
+                uidnext=int(info.get(b"UIDNEXT", 0)),
+                messages=int(info.get(b"MESSAGES", 0)),
+                highest_modseq=(
+                    int(modseq_raw) if modseq_raw is not None else None
+                ),
+            )
+        return self._retry(_do, f"STATUS {folder_name}")
 
     def _do_select(self, folder_name: str) -> None:
         logger.debug("SELECT %s", folder_name)
