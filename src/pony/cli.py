@@ -677,6 +677,14 @@ def run_sync(
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
+    # Close off the last \r-overwritten progress line and flush so
+    # render_sync_plan doesn't land in the middle of the scan counter,
+    # and so the terminal state is clean before input() reads from
+    # stdin.  On some Windows terminals (MinTTY / git-bash) leaving the
+    # cursor mid-line interacts badly with input() echo.
+    print()
+    sys.stdout.flush()
+
     if plan.is_empty():
         print("Nothing to sync — already up to date.")
         return 0
@@ -684,11 +692,28 @@ def run_sync(
     print(render_sync_plan(plan))
 
     if not yes:
+        if not sys.stdin.isatty():
+            # Some Windows shells (notably MinTTY / git-bash) present
+            # Python with a pipe instead of a real console.  input()
+            # won't echo keystrokes and Ctrl-C may not propagate, so
+            # the prompt would hang indefinitely — refuse up front
+            # with an actionable message.
+            print(
+                "\nCan't prompt for confirmation: stdin is not a TTY.\n"
+                "Rerun with --yes to skip the confirmation, or invoke\n"
+                "pony from a real console (cmd.exe, PowerShell, Windows\n"
+                "Terminal, or MinTTY via `winpty`).",
+            )
+            return 1
         while True:
+            sys.stdout.flush()
             try:
                 answer = input("Proceed? [y/N/l] ").strip().lower()
             except EOFError:
                 answer = ""
+            except KeyboardInterrupt:
+                print("\nAborted.")
+                return 0
             if answer in ("y", "yes"):
                 break
             if answer in ("l", "list"):
