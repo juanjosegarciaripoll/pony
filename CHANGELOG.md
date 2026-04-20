@@ -5,7 +5,7 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0]
+## [0.6.0] - 2026-04-20
 ### Fixed
 
 - **Folder-list open is 4× faster on big folders**: the message-list
@@ -504,3 +504,4 @@ First feature-complete release of Pony Express.
 [0.3.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.3.0
 [0.4.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.4.0
 [0.5.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.5.0
+[0.6.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.6.0
