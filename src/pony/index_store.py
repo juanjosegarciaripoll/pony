@@ -22,6 +22,7 @@ from .domain import (
     MessageStatus,
     OperationType,
     PendingOperation,
+    PendingPush,
     SearchQuery,
 )
 from .protocols import ContactRepository, IndexRepository
@@ -232,15 +233,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     folder_name    TEXT    NOT NULL,
                     uid_validity   INTEGER NOT NULL,
                     highest_uid    INTEGER NOT NULL,
+                    uidnext        INTEGER NOT NULL DEFAULT 0,
                     highest_modseq INTEGER NOT NULL DEFAULT 0,
                     synced_at      TEXT    NOT NULL,
                     PRIMARY KEY (account_name, folder_name)
                 )
                 """
             )
-            # Phase 2 additive migration for databases created before the
-            # highest_modseq column existed.  Zero means "no CONDSTORE
-            # watermark yet", which matches the CREATE TABLE default.
+            # Additive migrations for databases created before newer
+            # columns existed.  Each migration checks the current
+            # column set and either creates the column or backfills it.
             _columns = {
                 str(r[1])
                 for r in conn.execute("PRAGMA table_info(folder_sync_state)")
@@ -249,6 +251,23 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 conn.execute(
                     "ALTER TABLE folder_sync_state "
                     "ADD COLUMN highest_modseq INTEGER NOT NULL DEFAULT 0"
+                )
+            if "uidnext" not in _columns:
+                conn.execute(
+                    "ALTER TABLE folder_sync_state "
+                    "ADD COLUMN uidnext INTEGER NOT NULL DEFAULT 0"
+                )
+                # Backfill: the old fast-path gate used highest_uid + 1
+                # as a proxy for server UIDNEXT.  That value is correct
+                # for folders where no UIDs were burned (delivered then
+                # deleted / moved).  Use it as the starting watermark so
+                # those folders continue to hit the fast path without
+                # requiring a slow-path "reset" sync.  Folders with
+                # burned UIDs will slow-path once, record the actual
+                # server UIDNEXT, and fast-path thereafter.
+                conn.execute(
+                    "UPDATE folder_sync_state "
+                    "SET uidnext = highest_uid + 1"
                 )
             conn.execute(
                 """
@@ -654,13 +673,14 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 """
                 INSERT INTO folder_sync_state (
                     account_name, folder_name, uid_validity, highest_uid,
-                    highest_modseq, synced_at
+                    uidnext, highest_modseq, synced_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_name, folder_name)
                 DO UPDATE SET
                     uid_validity   = excluded.uid_validity,
                     highest_uid    = excluded.highest_uid,
+                    uidnext        = excluded.uidnext,
                     highest_modseq = excluded.highest_modseq,
                     synced_at      = excluded.synced_at
                 """,
@@ -669,6 +689,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     state.folder_name,
                     state.uid_validity,
                     state.highest_uid,
+                    state.uidnext,
                     state.highest_modseq,
                     state.synced_at.isoformat(),
                 ),
@@ -682,7 +703,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             row = conn.execute(
                 """
                 SELECT account_name, folder_name, uid_validity, highest_uid,
-                       highest_modseq, synced_at
+                       uidnext, highest_modseq, synced_at
                 FROM folder_sync_state
                 WHERE account_name = ? AND folder_name = ?
                 """,
@@ -695,8 +716,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             folder_name=str(row[1]),
             uid_validity=int(row[2]),
             highest_uid=int(row[3]),
-            highest_modseq=int(row[4]),
-            synced_at=datetime.fromisoformat(str(row[5])),
+            uidnext=int(row[4]),
+            highest_modseq=int(row[5]),
+            synced_at=datetime.fromisoformat(str(row[6])),
         )
 
     def list_folder_sync_states(
@@ -709,7 +731,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             rows = conn.execute(
                 """
                 SELECT account_name, folder_name, uid_validity, highest_uid,
-                       highest_modseq, synced_at
+                       uidnext, highest_modseq, synced_at
                 FROM folder_sync_state
                 WHERE account_name = ?
                 """,
@@ -721,8 +743,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 folder_name=str(r[1]),
                 uid_validity=int(r[2]),
                 highest_uid=int(r[3]),
-                highest_modseq=int(r[4]),
-                synced_at=datetime.fromisoformat(str(r[5])),
+                uidnext=int(r[4]),
+                highest_modseq=int(r[5]),
+                synced_at=datetime.fromisoformat(str(r[6])),
             )
             for r in rows
         ]
@@ -779,6 +802,53 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (account_name, folder_name),
             ).fetchall()
         return {int(str(r[0])): str(r[1]) for r in rows}
+
+    def list_folder_push_candidates(
+        self, *, account_name: str, folder_name: str
+    ) -> Sequence[PendingPush]:
+        """Return only rows needing a server-side push (SQL-filtered)."""
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, local_status, uid, storage_key,
+                       local_flags, extra_imap_flags
+                FROM messages
+                WHERE account_name = ? AND folder_name = ?
+                  AND (
+                    local_status = ?
+                    OR (local_status = ? AND uid IS NULL)
+                    OR (
+                        local_status = ?
+                        AND uid IS NOT NULL
+                        AND local_flags != base_flags
+                    )
+                  )
+                """,
+                (
+                    account_name, folder_name,
+                    MessageStatus.TRASHED.value,
+                    MessageStatus.ACTIVE.value,
+                    MessageStatus.ACTIVE.value,
+                ),
+            ).fetchall()
+        return tuple(
+            PendingPush(
+                message_ref=MessageRef(
+                    account_name=account_name,
+                    folder_name=folder_name,
+                    rfc5322_id=str(r[0]),
+                ),
+                local_status=MessageStatus(str(r[1])),
+                uid=int(str(r[2])) if r[2] is not None else None,
+                storage_key=str(r[3]),
+                local_flags=_flags_from_csv(str(r[4])),
+                extra_imap_flags=(
+                    frozenset(str(r[5]).split(",")) - {""}
+                    if r[5] else frozenset()
+                ),
+            )
+            for r in rows
+        )
 
     def list_all_uids(
         self, *, account_name: str

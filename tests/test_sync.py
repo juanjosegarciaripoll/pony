@@ -2234,6 +2234,37 @@ class FastPathTestCase(unittest.TestCase):
         self.assertIn(MessageFlag.SEEN, row2.local_flags)
         self.assertIn(MessageFlag.FLAGGED, row2.local_flags)
 
+    def test_burned_uids_converge_to_fast_path(self) -> None:
+        """Gate compares server UIDNEXT — not ``max_surviving_uid + 1``.
+
+        Some servers (Dovecot with sieve, Gmail, LMTP-heavy setups)
+        advance ``UIDNEXT`` for messages that never land as survivors:
+        delivered then immediately moved / expunged.  Before the fix,
+        the gate compared ``quick.uidnext == stored.highest_uid + 1``,
+        so the first slow-path sync recorded ``highest_uid = max
+        surviving`` and every subsequent sync saw
+        ``uidnext > max_surviving + 1`` → slow path forever.  The fix
+        is to record server ``UIDNEXT`` as the watermark and compare
+        exactly.
+        """
+        raw = _make_raw_message("Kept", "<kept@example.com>")
+        service, _, _, session = _setup(
+            server_folders={"INBOX": {1: ("<kept@example.com>", frozenset(), raw)}}
+        )
+        service.sync()  # sync 1: initial ingest; stored.uidnext = 2
+        self.assertEqual(session.scan_count, 1)
+
+        # Simulate a burned UID server-side: UIDNEXT bumps but MESSAGES /
+        # HIGHESTMODSEQ don't (message delivered then removed before we
+        # ever observed it).
+        session._uidnext["INBOX"] = 5
+
+        service.sync()  # sync 2: uidnext mismatch → slow path, records 5
+        self.assertEqual(session.scan_count, 2)
+
+        service.sync()  # sync 3: uidnext matches (5 == 5) → fast path
+        self.assertEqual(session.scan_count, 2)
+
     def test_no_condstore_keeps_phase1_behavior(self) -> None:
         """Servers without CONDSTORE still take Phase 1 fast path (limitation).
 

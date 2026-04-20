@@ -40,6 +40,7 @@ CREATE TABLE folder_sync_state (
     folder_name    TEXT    NOT NULL,
     uid_validity   INTEGER NOT NULL,
     highest_uid    INTEGER NOT NULL,
+    uidnext        INTEGER NOT NULL DEFAULT 0,
     highest_modseq INTEGER NOT NULL DEFAULT 0,
     synced_at      TEXT    NOT NULL,
     PRIMARY KEY (account_name, folder_name)
@@ -119,9 +120,20 @@ path:
 **Base stability** (UID set matches the local snapshot):
 
 - ``UIDVALIDITY`` matches the stored ``folder_sync_state``,
-- ``UIDNEXT`` equals ``stored.highest_uid + 1`` (no new server UIDs), and
+- ``UIDNEXT`` matches the stored ``uidnext`` exactly (no new UIDs
+  have been assigned server-side — not even "burned" ones that were
+  delivered and then expunged or moved away), and
 - ``MESSAGES`` equals the count of local rows with ``uid IS NOT NULL``
   (no server-side deletions).
+
+Comparing server ``UIDNEXT`` against the stored ``uidnext`` watermark
+— rather than against ``highest_uid + 1`` as in the original Phase 1
+draft — is essential: IMAP ``UIDNEXT`` is monotonic and MUST advance
+for every delivery, even if the message is subsequently expunged.
+Mailboxes with active sieve rules, LMTP fan-out, or server-side moves
+routinely accumulate a gap between ``UIDNEXT`` and ``max_surviving_uid
++ 1``, so the derived comparison never matches and the folder
+slow-paths forever.
 
 **CONDSTORE condition** (server flags have not changed either):
 
@@ -234,9 +246,11 @@ Step 5: Push local-pending rows (writable folders only)
      Step 2's LinkLocalOp branch.)
 
 Step 6: Commit
-  Update folder_sync_state: uid_validity, highest_uid, highest_modseq,
-                            synced_at (highest_modseq from the STATUS
-                            observed at the start of this folder's sync)
+  Update folder_sync_state: uid_validity, highest_uid, uidnext,
+                            highest_modseq, synced_at (uidnext and
+                            highest_modseq from the STATUS observed
+                            at the start of this folder's sync — not
+                            derived from max(remote_uids))
 ```
 
 ### Local moves (archive)

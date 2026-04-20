@@ -290,12 +290,16 @@ class FolderSyncPlan:
 
     folder_name: str
     uid_validity: int
-    highest_uid: int  # used to update the watermark after execution
+    highest_uid: int  # max surviving UID; used for progress reporting only
     ops: tuple[SyncOp, ...]
     needs_confirmation: bool = False  # C-6: mass-deletion threshold exceeded
     is_new: bool = False
     scan_ms: int = 0  # wall time for the IMAP metadata scan (fetch_uid_to_message_id)
     highest_modseq: int = 0
+    # Server-observed UIDNEXT at STATUS time; this is the *authoritative*
+    # gate watermark for the next sync (``highest_uid + 1`` is wrong
+    # whenever UIDs have been burned — delivered then expunged).
+    uidnext: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,6 +664,12 @@ class ImapSyncService:
         folder_uid_maps: dict[str, dict[int, str]] = {}
         folder_flags_maps: dict[str, dict[int, FlagSet]] = {}
         folder_scan_ms: dict[str, int] = {}
+        # STATUS-time UIDNEXT per folder; zero when STATUS failed.
+        # Recorded into folder_sync_state after successful execute so
+        # the next sync's fast-path gate can compare exactly.  Must be
+        # the server's UIDNEXT — not ``max_surviving_uid + 1`` — to
+        # handle folders where UIDs have been burned.
+        folder_observed_uidnext: dict[str, int] = {}
         # STATUS-time HIGHESTMODSEQ per folder; zero when the server
         # does not advertise CONDSTORE or STATUS failed.  Recorded into
         # folder_sync_state after successful execute so the next sync's
@@ -751,15 +761,18 @@ class ImapSyncService:
                 quick is not None
                 and stored is not None
                 and quick.uid_validity == stored.uid_validity
-                and quick.uidnext == stored.highest_uid + 1
+                and stored.uidnext > 0
+                and quick.uidnext == stored.uidnext
                 and quick.messages
                 == self._index.count_uids_for_folder(
                     account_name=account.name,
                     folder_name=folder_name,
                 )
             )
-            if quick is not None and quick.highest_modseq is not None:
-                folder_observed_modseq[folder_name] = quick.highest_modseq
+            if quick is not None:
+                folder_observed_uidnext[folder_name] = quick.uidnext
+                if quick.highest_modseq is not None:
+                    folder_observed_modseq[folder_name] = quick.highest_modseq
 
             if uid_set_stable and stored is not None and quick is not None:
                 stored_modseq = stored.highest_modseq
@@ -996,6 +1009,7 @@ class ImapSyncService:
                 folder_plan = dataclasses.replace(
                     folder_plan,
                     scan_ms=folder_scan_ms.get(folder_name, 0),
+                    uidnext=folder_observed_uidnext.get(folder_name, 0),
                     highest_modseq=folder_observed_modseq.get(
                         folder_name, 0,
                     ),
@@ -1052,34 +1066,38 @@ class ImapSyncService:
           the Message-ID is on the server in another folder, in which
           case that folder's plan emits ``PushMoveOp``).
         """
-        folder_ref = FolderRef(
+        candidates = self._index.list_folder_push_candidates(
             account_name=account.name, folder_name=folder_name,
         )
-        index_rows = self._index.list_folder_messages(folder=folder_ref)
         ops: list[SyncOp] = []
-        for row in index_rows:
-            if row.local_status != MessageStatus.TRASHED:
+        for row in candidates:
+            if row.local_status == MessageStatus.TRASHED:
+                if read_only:
+                    ops.append(RestoreOp(message_ref=row.message_ref))
+                else:
+                    ops.append(
+                        PushDeleteOp(
+                            server_uid=row.uid,
+                            message_ref=row.message_ref,
+                            storage_key=row.storage_key,
+                        )
+                    )
                 continue
             if read_only:
-                # Can't push delete server-side; restore to ACTIVE so
-                # the mirror stays in step with the server.
-                ops.append(RestoreOp(message_ref=row.message_ref))
+                # Flag drift / pending appends cannot be pushed to a
+                # read-only folder — the SQL returned them, but there
+                # is no op for them.  Drop silently.
+                continue
+            if row.uid is None:
+                # Pending uid=NULL ACTIVE row — PushAppendOp unless the
+                # Message-ID is already on the server in another folder
+                # (that folder's plan will emit PushMoveOp here).
+                mid = row.message_ref.rfc5322_id
+                if not mid or mid in remote_mid_map:
+                    continue
+                ops.append(PushAppendOp(message_ref=row.message_ref))
             else:
-                ops.append(
-                    PushDeleteOp(
-                        server_uid=row.uid,
-                        message_ref=row.message_ref,
-                        storage_key=row.storage_key,
-                    )
-                )
-        if not read_only:
-            for row in index_rows:
-                if row.local_status != MessageStatus.ACTIVE:
-                    continue
-                if row.uid is None:
-                    continue
-                if row.local_flags == row.base_flags:
-                    continue
+                # Flag drift on an ACTIVE row with a server UID.
                 ops.append(
                     PushFlagsOp(
                         uid=row.uid,
@@ -1088,15 +1106,6 @@ class ImapSyncService:
                         extra_imap_flags=row.extra_imap_flags,
                     )
                 )
-            for row in index_rows:
-                if row.local_status != MessageStatus.ACTIVE:
-                    continue
-                if row.uid is not None:
-                    continue
-                mid = row.message_ref.rfc5322_id
-                if not mid or mid in remote_mid_map:
-                    continue
-                ops.append(PushAppendOp(message_ref=row.message_ref))
         return FolderSyncPlan(
             folder_name=folder_name,
             uid_validity=stored.uid_validity,
@@ -1738,6 +1747,7 @@ class ImapSyncService:
                         folder_name=folder_name,
                         uid_validity=plan.uid_validity,
                         highest_uid=plan.highest_uid,
+                        uidnext=plan.uidnext,
                         highest_modseq=plan.highest_modseq,
                     )
                 )

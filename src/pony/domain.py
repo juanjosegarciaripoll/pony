@@ -312,8 +312,13 @@ class FolderSyncState:
     """Sync watermark for one IMAP folder.
 
     ``uid_validity`` must always be known — a value of zero indicates the
-    folder has never been successfully selected.  ``highest_modseq`` is
-    the CONDSTORE (RFC 7162) watermark; zero means either the server
+    folder has never been successfully selected.  ``uidnext`` is the
+    server's ``UIDNEXT`` at the last sync's STATUS call; it may be
+    greater than ``highest_uid + 1`` when UIDs have been *burned*
+    (delivered then expunged or moved away), so the fast-path gate must
+    compare server ``UIDNEXT`` directly against this stored value
+    rather than deriving it from ``highest_uid``.  ``highest_modseq``
+    is the CONDSTORE (RFC 7162) watermark; zero means either the server
     does not advertise ``CONDSTORE`` or no sync has populated it yet.
     """
 
@@ -321,6 +326,7 @@ class FolderSyncState:
     folder_name: str
     uid_validity: int
     highest_uid: int
+    uidnext: int = 0
     highest_modseq: int = 0
     synced_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
 
@@ -439,3 +445,25 @@ class FolderMessageSummary:
     has_attachments: bool
     local_flags: frozenset[MessageFlag]
     local_status: MessageStatus
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPush:
+    """Narrow projection of ``messages`` for the sync fast-path planner.
+
+    ``_plan_fast_path_folder`` only emits ``PushFlagsOp``,
+    ``PushDeleteOp``, ``PushAppendOp``, or ``RestoreOp``, which together
+    need seven columns out of nineteen.  A SQL ``WHERE`` that already
+    filters to rows requiring a push returns zero rows for a quiescent
+    folder, so the fast path's cost scales with the number of *local
+    changes*, not the folder size.  Loading a full ``IndexedMessage``
+    and its datetime / flag parsing would dominate the fast path on
+    large archives; this type skips them.
+    """
+
+    message_ref: MessageRef
+    local_status: MessageStatus
+    uid: int | None
+    storage_key: str
+    local_flags: frozenset[MessageFlag]
+    extra_imap_flags: frozenset[str]

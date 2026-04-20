@@ -19,6 +19,7 @@ from .domain import (
     MessageFlag,
     MessageRef,
     PendingOperation,
+    PendingPush,
     SearchQuery,
 )
 
@@ -258,6 +259,25 @@ class IndexRepository(Protocol):
         Used by the fast-path planner to synthesize the per-folder UID map
         without issuing a server ``FETCH`` when STATUS says nothing
         changed.
+        """
+        ...
+
+    def list_folder_push_candidates(
+        self, *, account_name: str, folder_name: str
+    ) -> Sequence[PendingPush]:
+        """Return rows needing a server-side push, SQL-filtered.
+
+        A row qualifies when any of:
+
+        - ``local_status='trashed'`` (pending delete / restore), or
+        - ``local_status='active' AND uid IS NULL`` (pending append or
+          move target), or
+        - ``local_status='active' AND uid IS NOT NULL AND
+          local_flags != base_flags`` (flag drift).
+
+        Quiescent folders return zero rows so the fast-path planner
+        avoids hydrating 17k-row ``IndexedMessage``s only to find no
+        work to do.
         """
         ...
 
