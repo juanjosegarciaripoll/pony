@@ -278,6 +278,47 @@ If the server loses the message between archive and sync (another client
 purged it), the archive folder's Step 5 emits ``PushAppendOp`` and uploads
 the mirror bytes.  The message is never destroyed locally.
 
+## Performance properties
+
+These are load-bearing properties of the sync planner, not just
+current numbers.  Code changes that regress them should be treated
+as bugs.
+
+- **Fast path is zero-I/O beyond the single STATUS roundtrip.**  When
+  the STATUS gate matches (see *STATUS-gated path selection*), the
+  planner issues no ``FETCH``, no ``SELECT`` on the server, no full
+  folder read of the local index.  A 17k-message quiescent folder
+  costs one roundtrip.  Any future fast-path code that calls
+  ``fetch_*`` on the session, or that iterates ``list_folder_messages``
+  on the index, is a regression.
+
+- **Narrow projections on the hot paths.**  The fast-path planner
+  reads rows via ``list_folder_push_candidates`` — a SQL-filtered
+  ``WHERE`` that returns only rows needing a push (``PendingPush`` is
+  the narrow domain type).  A quiescent folder returns zero rows from
+  this query; a folder with three flag changes returns three rows.
+  Using the broad ``list_folder_messages`` here reintroduces
+  ``_indexed_message_from_row`` cost — three datetime parses + three
+  flag-CSV splits per row — and has been measured at 4-5s on a 100k
+  mirror.
+
+- **Account-wide maps are lazy.**  The cross-folder
+  mid→folders map (``list_mid_folders_for_account``) is the only
+  account-scoped query on the plan path and is only needed by the
+  slow-path's Step 1 move-detection branch.  It is built by a cached
+  closure on first use; syncs where every folder takes fast or
+  medium path never touch it.  New account-wide maps added to the
+  planner should follow the same lazy pattern.
+
+- **Server state is read via STATUS, not FETCH, whenever possible.**
+  One ``STATUS folder (UIDVALIDITY UIDNEXT MESSAGES HIGHESTMODSEQ)``
+  replaces a ``FETCH 1:*`` on every quiescent folder.  The STATUS
+  watermarks persisted in ``folder_sync_state`` — ``uid_validity``,
+  ``uidnext``, ``highest_modseq`` — must be kept as the server's
+  observed values (not derived from ``max(remote_uids)``); a derived
+  ``uidnext`` breaks the gate on any mailbox where UIDs have been
+  burned.
+
 ## Flag merge policy
 
 Three-way merge with **union** policy: any flag set on either side is set on
