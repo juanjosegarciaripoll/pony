@@ -177,6 +177,18 @@ slow path by bumping UIDNEXT server-side.
 
 ## Per-folder reconciliation algorithm
 
+The six steps below describe the **slow path** in full.  The fast and
+medium paths (see *STATUS-gated path selection* above) reuse Steps 4-6
+unchanged, but take shortcuts at the top:
+
+- **Fast path** skips Steps 1-3 entirely — the STATUS gate already
+  proved the server is unchanged, so there are no deletions, no new
+  UIDs, and no flag updates to reconcile.
+- **Medium path** skips Steps 1-2 (UID set is stable) and enters
+  Step 3 with ``remote`` sourced from the ``CHANGEDSINCE`` response
+  for UIDs whose flags advanced, plus the cached ``base_flags`` for
+  UIDs whose ``MODSEQ`` has not moved.
+
 ```
 remote  <- IMAP: SELECT folder, FETCH UID ALL FLAGS
 local   <- index: messages WHERE folder = ? AND uid IS NOT NULL
@@ -195,10 +207,10 @@ Step 2: New UIDs on server in this folder
       -> LinkLocalOp: adopt the UID onto the existing uid=NULL row
     elif pending[mid] is another folder G and this folder is writable:
       -> PushMoveOp: UID MOVE on the server from this folder to G
-    elif mid already in index (in any other folder, with a valid UID):
-      -> copy/second folder: add an index row for this folder
     else:
       -> FetchNewOp: fetch body, ingest into mirror + index
+         (handles both genuinely new messages and cross-folder copies —
+          duplicate Message-IDs get a synthetic ID via C-7.)
 
 Step 3: Flag reconciliation for surviving messages
   for uid in remote AND local:
@@ -222,7 +234,9 @@ Step 5: Push local-pending rows (writable folders only)
      Step 2's LinkLocalOp branch.)
 
 Step 6: Commit
-  Update folder_sync_state: highest_uid, synced_at
+  Update folder_sync_state: uid_validity, highest_uid, highest_modseq,
+                            synced_at (highest_modseq from the STATUS
+                            observed at the start of this folder's sync)
 ```
 
 ### Local moves (archive)
@@ -340,3 +354,12 @@ the sync engine should not regress these without a plan to fix them.
 - **SQLite write contention** (single-process v1, 5-second lock
   timeout, per-op try/except) is covered by the existing retry layer.
   Revisit when a second writer is introduced.
+
+- **Silent server flag changes without CONDSTORE.** On servers that
+  do not advertise ``CONDSTORE`` (RFC 7162), the STATUS fast-path
+  cannot observe server flag changes, so a concurrent remote flag
+  change on a locally-modified message is overwritten by the local
+  ``PushFlagsOp`` (and pure server-side changes on quiescent folders
+  are missed until a UID-set change forces the slow path).  On
+  CONDSTORE-capable servers the medium path closes this gap.  See
+  *STATUS-gated path selection* above.
