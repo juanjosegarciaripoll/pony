@@ -24,6 +24,7 @@ from .domain import (
     PendingOperation,
     PendingPush,
     SearchQuery,
+    SlowPathRow,
 )
 from .protocols import ContactRepository, IndexRepository
 
@@ -849,6 +850,64 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             )
             for r in rows
         )
+
+    def list_folder_slow_path_rows(
+        self, *, account_name: str, folder_name: str
+    ) -> Sequence[SlowPathRow]:
+        """Return the narrow per-row projection the slow-path planner uses."""
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, local_status, uid, storage_key,
+                       local_flags, base_flags, extra_imap_flags
+                FROM messages
+                WHERE account_name = ? AND folder_name = ?
+                """,
+                (account_name, folder_name),
+            ).fetchall()
+        return tuple(
+            SlowPathRow(
+                message_ref=MessageRef(
+                    account_name=account_name,
+                    folder_name=folder_name,
+                    rfc5322_id=str(r[0]),
+                ),
+                local_status=MessageStatus(str(r[1])),
+                uid=int(str(r[2])) if r[2] is not None else None,
+                storage_key=str(r[3]),
+                local_flags=_flags_from_csv(str(r[4])),
+                base_flags=_flags_from_csv(str(r[5])),
+                extra_imap_flags=(
+                    frozenset(str(r[6]).split(",")) - {""}
+                    if r[6] else frozenset()
+                ),
+            )
+            for r in rows
+        )
+
+    def list_folder_base_flags(
+        self, *, account_name: str, folder_name: str
+    ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:
+        """Return ``{uid: (base_flags, extra_imap_flags)}`` for UID-bearing rows."""
+        with self._use() as conn:
+            rows = conn.execute(
+                """
+                SELECT uid, base_flags, extra_imap_flags
+                FROM messages
+                WHERE account_name = ? AND folder_name = ? AND uid IS NOT NULL
+                """,
+                (account_name, folder_name),
+            ).fetchall()
+        result: dict[int, tuple[frozenset[MessageFlag], frozenset[str]]] = {}
+        for uid, base_flags, extra_imap_flags in rows:
+            extras = (
+                frozenset(str(extra_imap_flags).split(",")) - {""}
+                if extra_imap_flags else frozenset()
+            )
+            result[int(str(uid))] = (
+                _flags_from_csv(str(base_flags)), extras,
+            )
+        return result
 
     def list_mid_folders_for_account(
         self, *, account_name: str

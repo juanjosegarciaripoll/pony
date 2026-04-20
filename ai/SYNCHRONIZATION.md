@@ -300,15 +300,31 @@ as bugs.
   Using the broad ``list_folder_messages`` here reintroduces
   ``_indexed_message_from_row`` cost — three datetime parses + three
   flag-CSV splits per row — and has been measured at 4-5s on a 100k
-  mirror.
+  mirror.  The slow-path planner (``_plan_folder``) follows the same
+  rule: it reads ``list_folder_slow_path_rows`` (``SlowPathRow``)
+  rather than ``list_folder_messages`` so the per-row cost scales
+  with the seven columns Steps 1/3/4/5 actually consult, not all
+  nineteen.  The medium path's baseline-flag seed goes through
+  ``list_folder_base_flags`` for the same reason.  Any future sync
+  planner call that iterates ``list_folder_messages`` or
+  ``list_folder_messages_with_uid`` is a regression.
 
-- **Account-wide maps are lazy.**  The cross-folder
+- **Account-wide maps are lazy and gated.**  The cross-folder
   mid→folders map (``list_mid_folders_for_account``) is the only
   account-scoped query on the plan path and is only needed by the
-  slow-path's Step 1 move-detection branch.  It is built by a cached
-  closure on first use; syncs where every folder takes fast or
-  medium path never touch it.  New account-wide maps added to the
-  planner should follow the same lazy pattern.
+  slow-path's Step 1 move-detection branch *when an aggregate folder
+  (Gmail-style ``[Gmail]/All Mail``) is synced*.  Without a synced
+  aggregate, the same message cannot legitimately appear in two
+  folders' previous-sync snapshots, so the planner skips the call
+  entirely and treats ``prev_folders`` as empty.  When the call is
+  required, it is built by a cached closure on first use.  The
+  cross-folder ``remote_mid_map`` is also gated: fast- and
+  medium-path folders skip their ``_merge_mid_map`` contribution on
+  quiescent accounts (no pending ``uid=NULL`` rows), since those
+  folders' UIDs cannot be reached by any slow-path folder's Step 1
+  (a server-side move bumps both folders' ``MESSAGES`` count onto
+  the slow path).  New account-wide maps added to the planner should
+  follow the same lazy + gated pattern.
 
 - **Server state is read via STATUS, not FETCH, whenever possible.**
   One ``STATUS folder (UIDVALIDITY UIDNEXT MESSAGES HIGHESTMODSEQ)``

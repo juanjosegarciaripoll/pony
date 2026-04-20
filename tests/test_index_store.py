@@ -546,6 +546,87 @@ class BatchedTransactionTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 1)
 
 
+class NarrowSyncProjectionTestCase(unittest.TestCase):
+    """Validate the narrow per-row projections used by the sync planner."""
+
+    def test_slow_path_rows_include_all_folder_rows(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(message=_make_message(
+            "m-1", uid=10, local_flags=frozenset({MessageFlag.SEEN}),
+            base_flags=frozenset({MessageFlag.SEEN}),
+            extra_imap_flags=frozenset({"$Important"}),
+        ))
+        repo.upsert_message(message=_make_message(
+            "m-2", uid=None,
+            local_status=MessageStatus.ACTIVE,
+        ))
+        repo.upsert_message(message=_make_message(
+            "m-3", uid=12, local_status=MessageStatus.TRASHED,
+        ))
+        repo.upsert_message(message=_make_message(
+            "m-other", folder_name="Sent", uid=99,
+        ))
+
+        rows = repo.list_folder_slow_path_rows(
+            account_name="personal", folder_name="INBOX",
+        )
+        self.assertEqual(len(rows), 3)
+        by_mid = {r.message_ref.rfc5322_id: r for r in rows}
+
+        self.assertEqual(by_mid["m-1"].uid, 10)
+        self.assertEqual(
+            by_mid["m-1"].local_flags, frozenset({MessageFlag.SEEN}),
+        )
+        self.assertEqual(
+            by_mid["m-1"].base_flags, frozenset({MessageFlag.SEEN}),
+        )
+        self.assertEqual(
+            by_mid["m-1"].extra_imap_flags, frozenset({"$Important"}),
+        )
+
+        self.assertIsNone(by_mid["m-2"].uid)
+        self.assertEqual(by_mid["m-2"].local_status, MessageStatus.ACTIVE)
+
+        self.assertEqual(by_mid["m-3"].local_status, MessageStatus.TRASHED)
+
+    def test_slow_path_rows_empty_folder(self) -> None:
+        repo = _fresh_repo()
+        rows = repo.list_folder_slow_path_rows(
+            account_name="personal", folder_name="INBOX",
+        )
+        self.assertEqual(rows, ())
+
+    def test_base_flags_returns_uid_bearing_rows_only(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(message=_make_message(
+            "m-1", uid=10, base_flags=frozenset({MessageFlag.SEEN}),
+            extra_imap_flags=frozenset({"$Junk", "$Important"}),
+        ))
+        repo.upsert_message(message=_make_message(
+            "m-2", uid=11, base_flags=frozenset(),
+        ))
+        repo.upsert_message(message=_make_message("m-3", uid=None))
+
+        result = repo.list_folder_base_flags(
+            account_name="personal", folder_name="INBOX",
+        )
+        self.assertEqual(set(result.keys()), {10, 11})
+        self.assertEqual(result[10][0], frozenset({MessageFlag.SEEN}))
+        self.assertEqual(result[10][1], frozenset({"$Junk", "$Important"}))
+        self.assertEqual(result[11], (frozenset(), frozenset()))
+
+    def test_base_flags_isolates_folder(self) -> None:
+        repo = _fresh_repo()
+        repo.upsert_message(message=_make_message("m-1", uid=10))
+        repo.upsert_message(message=_make_message(
+            "m-other", folder_name="Sent", uid=99,
+        ))
+        result = repo.list_folder_base_flags(
+            account_name="personal", folder_name="INBOX",
+        )
+        self.assertEqual(set(result.keys()), {10})
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -572,6 +653,9 @@ def _make_message(
     local_flags: frozenset[MessageFlag] = frozenset(),
     base_flags: frozenset[MessageFlag] = frozenset(),
     local_status: MessageStatus = MessageStatus.ACTIVE,
+    uid: int | None = None,
+    extra_imap_flags: frozenset[str] = frozenset(),
+    storage_key: str | None = None,
 ) -> IndexedMessage:
     return IndexedMessage(
         message_ref=MessageRef(
@@ -584,11 +668,13 @@ def _make_message(
         cc=cc,
         subject=subject,
         body_preview=body_preview,
-        storage_key=message_id,
+        storage_key=message_id if storage_key is None else storage_key,
         local_flags=local_flags,
         base_flags=base_flags,
         local_status=local_status,
         received_at=datetime(2026, 4, 10, 10, 0, 0, tzinfo=UTC),
+        uid=uid,
+        extra_imap_flags=extra_imap_flags,
     )
 
 

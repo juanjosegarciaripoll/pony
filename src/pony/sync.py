@@ -37,10 +37,10 @@ from .domain import (
     FolderQuickStatus,
     FolderRef,
     FolderSyncState,
-    IndexedMessage,
     MessageFlag,
     MessageRef,
     MessageStatus,
+    SlowPathRow,
 )
 from .message_projection import project_rfc822_message
 from .protocols import (
@@ -656,6 +656,54 @@ class ImapSyncService:
                 len(stale), account.name, ", ".join(stale),
             )
 
+        # Build local-pending map up-front: Message-ID → folder name for
+        # index rows that have no UID yet and are still ACTIVE.  These
+        # rows represent local moves or appends that sync will reconcile
+        # on this pass.  Built before the folder scan loop so the merge
+        # logic can short-circuit the cross-folder mid map on fully
+        # quiescent accounts (no pending rows, stable server state).
+        #
+        # Two invariants:
+        #
+        #   (a) The target folder must be syncable and writable — a pending
+        #       row pointing at a read-only or excluded folder cannot be
+        #       pushed to the server, so skip it rather than emitting a
+        #       doomed PushMoveOp.
+        #   (b) A Message-ID must not map to more than one folder.  If two
+        #       pending rows share the same mid (pathological), we can't
+        #       pick one deterministically — keep the first, warn on the
+        #       rest.  The losers stay uid=NULL until the winner completes
+        #       and the user resolves the duplicate.
+        local_pending_mid_folder: dict[str, str] = {}
+        for row in self._index.list_pending_rows(account_name=account.name):
+            mid = row.message_ref.rfc5322_id
+            if not mid:
+                continue
+            folder = row.message_ref.folder_name
+            if folder_policy.is_read_only(folder):
+                logger.warning(
+                    "Pending row %r in read-only folder %s/%s — cannot "
+                    "push to server; skipping",
+                    mid, account.name, folder,
+                )
+                continue
+            if not folder_policy.should_sync(folder):
+                logger.warning(
+                    "Pending row %r in excluded folder %s/%s — cannot "
+                    "push to server; skipping",
+                    mid, account.name, folder,
+                )
+                continue
+            if mid in local_pending_mid_folder:
+                logger.warning(
+                    "Duplicate pending Message-ID %r in %s/%s "
+                    "(already mapped to %s); keeping the first mapping",
+                    mid, account.name, folder,
+                    local_pending_mid_folder[mid],
+                )
+                continue
+            local_pending_mid_folder[mid] = folder
+
         # Build a global Message-ID → (folder, uid) map across all synced
         # folders for cross-folder move detection (SYNCHRONIZATION.md step 1).
         # Folders that fail here (e.g. protected, SELECT denied) are skipped.
@@ -680,8 +728,17 @@ class ImapSyncService:
         skipped: list[str] = []
 
         def _merge_mid_map(
-            folder: str, uid_to_mid: dict[int, str],
+            folder: str, uid_to_mid: dict[int, str], *, always: bool,
         ) -> None:
+            # Fast/medium folders skip the merge when no pending rows
+            # exist account-wide: ``remote_mid_map`` is consulted only
+            # by pending-row suppression and by slow-path Step 1, and
+            # a fast/medium folder's UIDs cannot participate in a
+            # server-side move detectable by any other folder's Step 1
+            # (a move would have changed this folder's MESSAGES count,
+            # forcing it onto the slow path too).
+            if not always and not local_pending_mid_folder:
+                return
             for uid, mid in uid_to_mid.items():
                 if not mid or mid in _ambiguous_mids:
                     continue
@@ -793,7 +850,9 @@ class ImapSyncService:
                     folder_flags_maps[folder_name] = {}
                     fast_path_folders.add(folder_name)
                     fast_path_state[folder_name] = stored
-                    _merge_mid_map(folder_name, uid_to_mid_local)
+                    _merge_mid_map(
+                        folder_name, uid_to_mid_local, always=False,
+                    )
                     logger.debug(
                         "Fast-path %s/%s: %d msg(s), stable server state",
                         account.name, folder_name, quick.messages,
@@ -824,16 +883,12 @@ class ImapSyncService:
                     # planner's Step 3 comparison — ``base_flags`` is
                     # the right value because "no modseq advance" means
                     # the server still has that baseline).
-                    base_by_uid: dict[int, FlagSet] = {}
-                    for row in self._index.list_folder_messages_with_uid(
-                        account_name=account.name,
-                        folder_name=folder_name,
-                    ):
-                        if row.uid is None:
-                            continue
-                        base_by_uid[row.uid] = (
-                            row.base_flags, row.extra_imap_flags,
+                    base_by_uid: dict[int, FlagSet] = (
+                        self._index.list_folder_base_flags(
+                            account_name=account.name,
+                            folder_name=folder_name,
                         )
+                    )
                     uid_to_flags_medium: dict[int, FlagSet] = {}
                     for uid in uid_to_mid_local:
                         if uid in changed_flags:
@@ -844,7 +899,9 @@ class ImapSyncService:
                             )
                     folder_uid_maps[folder_name] = uid_to_mid_local
                     folder_flags_maps[folder_name] = uid_to_flags_medium
-                    _merge_mid_map(folder_name, uid_to_mid_local)
+                    _merge_mid_map(
+                        folder_name, uid_to_mid_local, always=False,
+                    )
                     logger.debug(
                         "Medium-path %s/%s: CHANGEDSINCE %d returned %d row(s)",
                         account.name, folder_name, stored_modseq,
@@ -906,9 +963,9 @@ class ImapSyncService:
                 if not mid:
                     continue
                 if mid in seen_in_folder:
-                    logger.debug(
+                    logger.warning(
                         "Duplicate Message-ID %r in %s/%s (UIDs %d, %d)"
-                        " — UID %d will receive a synthetic ID",
+                        " — move detection disabled for UID %d",
                         mid, account.name, folder_name,
                         seen_in_folder[mid], uid, uid,
                     )
@@ -918,7 +975,7 @@ class ImapSyncService:
 
             folder_uid_maps[folder_name] = uid_to_mid
             folder_flags_maps[folder_name] = uid_to_flags
-            _merge_mid_map(folder_name, uid_to_mid)
+            _merge_mid_map(folder_name, uid_to_mid, always=True)
 
         # Lazy mid→folders loader — the map is only consulted by the
         # slow-path planner's Step 1 (distinguishing a server-side move
@@ -937,51 +994,6 @@ class ImapSyncService:
                     )
                 )
             return _mid_folders_cache
-
-        # Build local-pending map: Message-ID → folder name for index rows
-        # that have no UID yet and are still ACTIVE.  These rows represent
-        # local moves or appends that sync will reconcile on this pass.
-        #
-        # Two invariants:
-        #
-        #   (a) The target folder must be syncable and writable — a pending
-        #       row pointing at a read-only or excluded folder cannot be
-        #       pushed to the server, so skip it rather than emitting a
-        #       doomed PushMoveOp.
-        #   (b) A Message-ID must not map to more than one folder.  If two
-        #       pending rows share the same mid (pathological), we can't
-        #       pick one deterministically — keep the first, warn on the
-        #       rest.  The losers stay uid=NULL until the winner completes
-        #       and the user resolves the duplicate.
-        local_pending_mid_folder: dict[str, str] = {}
-        for row in self._index.list_pending_rows(account_name=account.name):
-            mid = row.message_ref.rfc5322_id
-            if not mid:
-                continue
-            folder = row.message_ref.folder_name
-            if folder_policy.is_read_only(folder):
-                logger.warning(
-                    "Pending row %r in read-only folder %s/%s — cannot "
-                    "push to server; skipping",
-                    mid, account.name, folder,
-                )
-                continue
-            if not folder_policy.should_sync(folder):
-                logger.warning(
-                    "Pending row %r in excluded folder %s/%s — cannot "
-                    "push to server; skipping",
-                    mid, account.name, folder,
-                )
-                continue
-            if mid in local_pending_mid_folder:
-                logger.warning(
-                    "Duplicate pending Message-ID %r in %s/%s "
-                    "(already mapped to %s); keeping the first mapping",
-                    mid, account.name, folder,
-                    local_pending_mid_folder[mid],
-                )
-                continue
-            local_pending_mid_folder[mid] = folder
 
         syncable = [f for f in server_folders if f in folder_uid_maps]
         logger.info(
@@ -1013,6 +1025,7 @@ class ImapSyncService:
                         local_mid_folders=_local_mid_folders,
                         local_pending_mid_folder=local_pending_mid_folder,
                         read_only=folder_policy.is_read_only(folder_name),
+                        has_aggregate=bool(synced_aggregate),
                     )
                 folder_plan = dataclasses.replace(
                     folder_plan,
@@ -1136,12 +1149,11 @@ class ImapSyncService:
         server in another folder — messages that *are* on the server get
         a :class:`PushMoveOp` in the source folder's plan instead.
         """
-        folder_ref = FolderRef(
+        candidates = self._index.list_folder_push_candidates(
             account_name=account.name, folder_name=folder_name,
         )
-        rows = self._index.list_folder_messages(folder=folder_ref)
         ops: list[SyncOp] = []
-        for row in rows:
+        for row in candidates:
             if row.local_status != MessageStatus.ACTIVE:
                 continue
             if row.uid is not None:
@@ -1172,6 +1184,7 @@ class ImapSyncService:
         ],
         local_pending_mid_folder: dict[str, str],
         read_only: bool = False,
+        has_aggregate: bool = False,
     ) -> FolderSyncPlan:
         # Always-fresh SELECT; see ImapClientSession.get_uid_validity.
         uid_validity = session.get_uid_validity(folder_name)
@@ -1210,15 +1223,20 @@ class ImapSyncService:
             uid: f[1] for uid, f in uid_to_flags.items()
         }
 
-        # Load all messages for this folder from the unified index.
-        folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
-        index_rows = self._index.list_folder_messages(folder=folder_ref)
-        index_by_mid: dict[str, IndexedMessage] = {
+        # Load the narrow slow-path projection of this folder's rows from
+        # the unified index.  ``SlowPathRow`` carries only the seven
+        # columns Steps 1/3/4/5 actually read; hydrating
+        # ``IndexedMessage`` here pays datetime parsing and flag-set
+        # construction on columns the planner never touches.
+        index_rows = self._index.list_folder_slow_path_rows(
+            account_name=account.name, folder_name=folder_name,
+        )
+        index_by_mid: dict[str, SlowPathRow] = {
             row.message_ref.rfc5322_id: row for row in index_rows
         }
 
         # Build known-by-uid from messages that have a UID (previously synced).
-        known_by_uid: dict[int, IndexedMessage] = {
+        known_by_uid: dict[int, SlowPathRow] = {
             row.uid: row for row in index_rows if row.uid is not None
         }
 
@@ -1236,7 +1254,16 @@ class ImapSyncService:
                 # Only treat as a move if the destination did NOT already
                 # have this message in the previous sync.  If it did, the
                 # message existed in both folders and this is a delete.
-                prev_folders = local_mid_folders().get(known_mid, set())
+                # The dup-guard is only meaningful when an aggregate
+                # folder (Gmail-style [Gmail]/All Mail) is synced — that
+                # is the only way a single message legitimately appears
+                # in two folders' previous-sync snapshots.  Without one,
+                # the account-wide ``local_mid_folders`` query is wasted
+                # I/O.
+                if has_aggregate:
+                    prev_folders = local_mid_folders().get(known_mid, set())
+                else:
+                    prev_folders = set()
                 is_move = (
                     new_folder != folder_name
                     and new_folder not in prev_folders

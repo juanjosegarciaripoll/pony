@@ -21,6 +21,7 @@ from .domain import (
     PendingOperation,
     PendingPush,
     SearchQuery,
+    SlowPathRow,
 )
 
 
@@ -278,6 +279,32 @@ class IndexRepository(Protocol):
         Quiescent folders return zero rows so the fast-path planner
         avoids hydrating 17k-row ``IndexedMessage``s only to find no
         work to do.
+        """
+        ...
+
+    def list_folder_slow_path_rows(
+        self, *, account_name: str, folder_name: str
+    ) -> Sequence[SlowPathRow]:
+        """Return the narrow per-row projection the slow-path planner uses.
+
+        ``_plan_folder`` only reads seven of nineteen columns, so
+        hydrating full ``IndexedMessage`` rows for every message in the
+        folder burns datetime parsing and flag-set construction on
+        columns the planner never looks at.  This projection keeps the
+        slow path linear in rows but drops the per-row constant.
+        """
+        ...
+
+    def list_folder_base_flags(
+        self, *, account_name: str, folder_name: str
+    ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:
+        """Return ``{uid: (base_flags, extra_imap_flags)}`` for UID-bearing rows.
+
+        Used by the medium path to seed baseline flags for UIDs whose
+        ``MODSEQ`` has not advanced — the server response only carries
+        the changed UIDs, so the planner needs the cached baseline for
+        the rest.  A two-column projection replaces a full-row hydration
+        that was measured at 4-5s on a 100k-row mirror.
         """
         ...
 

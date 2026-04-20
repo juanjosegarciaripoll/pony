@@ -467,3 +467,26 @@ class PendingPush:
     storage_key: str
     local_flags: frozenset[MessageFlag]
     extra_imap_flags: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class SlowPathRow:
+    """Narrow projection of ``messages`` for the sync slow-path planner.
+
+    ``_plan_folder`` only reads seven columns out of nineteen: the
+    message ref, uid, local/base flag sets, ``extra_imap_flags``,
+    ``storage_key`` and ``local_status``.  Hydrating a full
+    ``IndexedMessage`` for every row in the folder pays a datetime parse
+    per timestamp and frozenset construction per flag column for rows
+    the planner never touches (server-deleted UIDs it already matched,
+    surviving UIDs with stable flags, rows not considered by mid).
+    This projection skips that cost.
+    """
+
+    message_ref: MessageRef
+    local_status: MessageStatus
+    uid: int | None
+    storage_key: str
+    local_flags: frozenset[MessageFlag]
+    base_flags: frozenset[MessageFlag]
+    extra_imap_flags: frozenset[str]
