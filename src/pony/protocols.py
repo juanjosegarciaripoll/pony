@@ -281,12 +281,17 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def list_all_uids(
+    def list_mid_folders_for_account(
         self, *, account_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return all messages with a non-NULL uid for one account.
+    ) -> dict[str, set[str]]:
+        """Return ``{message_id: {folder_name, ...}}`` for UID-bearing rows.
 
-        Used for cross-folder move detection during sync planning.
+        Used by the slow-path planner's Step 1 to distinguish a
+        server-side move (message disappeared from this folder but is
+        in another local folder) from a real delete.  A narrow
+        ``SELECT`` — only ``folder_name`` and ``message_id`` columns,
+        no full ``IndexedMessage`` hydration — so rebuilding this map
+        across a 100k-row account is tens of milliseconds, not seconds.
         """
         ...
 

@@ -850,26 +850,24 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             for r in rows
         )
 
-    def list_all_uids(
+    def list_mid_folders_for_account(
         self, *, account_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return all messages with a non-NULL uid for one account."""
+    ) -> dict[str, set[str]]:
+        """Return ``{message_id: {folder_name, ...}}`` for UID-bearing rows."""
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
-                WHERE account_name = ? AND uid IS NOT NULL
+                SELECT folder_name, message_id FROM messages
+                WHERE account_name = ?
+                  AND uid IS NOT NULL
+                  AND message_id != ''
                 """,
                 (account_name,),
             ).fetchall()
-        return tuple(_indexed_message_from_row(row) for row in rows)
+        result: dict[str, set[str]] = {}
+        for folder_name, mid in rows:
+            result.setdefault(str(mid), set()).add(str(folder_name))
+        return result
 
     def list_pending_rows(
         self, *, account_name: str

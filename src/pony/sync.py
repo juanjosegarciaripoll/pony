@@ -920,15 +920,23 @@ class ImapSyncService:
             folder_flags_maps[folder_name] = uid_to_flags
             _merge_mid_map(folder_name, uid_to_mid)
 
-        # Build local mid→folders map from the unified messages table
-        # (messages with a UID are those previously synced from the server).
-        local_mid_folders: dict[str, set[str]] = {}
-        for row in self._index.list_all_uids(account_name=account.name):
-            mid = row.message_ref.rfc5322_id
-            if mid:
-                local_mid_folders.setdefault(mid, set()).add(
-                    row.message_ref.folder_name
+        # Lazy mid→folders loader — the map is only consulted by the
+        # slow-path planner's Step 1 (distinguishing a server-side move
+        # from a delete).  Fast and medium paths never touch it, so
+        # most syncs never pay the account-wide SELECT.  Cached after
+        # first call so multiple slow-path folders in one sync only
+        # rebuild once.
+        _mid_folders_cache: dict[str, set[str]] | None = None
+
+        def _local_mid_folders() -> dict[str, set[str]]:
+            nonlocal _mid_folders_cache
+            if _mid_folders_cache is None:
+                _mid_folders_cache = (
+                    self._index.list_mid_folders_for_account(
+                        account_name=account.name,
+                    )
                 )
+            return _mid_folders_cache
 
         # Build local-pending map: Message-ID → folder name for index rows
         # that have no UID yet and are still ACTIVE.  These rows represent
@@ -1002,7 +1010,7 @@ class ImapSyncService:
                         uid_to_mid=folder_uid_maps[folder_name],
                         uid_to_flags=folder_flags_maps[folder_name],
                         remote_mid_map=remote_mid_map,
-                        local_mid_folders=local_mid_folders,
+                        local_mid_folders=_local_mid_folders,
                         local_pending_mid_folder=local_pending_mid_folder,
                         read_only=folder_policy.is_read_only(folder_name),
                     )
@@ -1159,7 +1167,9 @@ class ImapSyncService:
         uid_to_mid: dict[int, str],
         uid_to_flags: dict[int, FlagSet],
         remote_mid_map: dict[str, tuple[str, int]],
-        local_mid_folders: dict[str, set[str]],
+        local_mid_folders: collections.abc.Callable[
+            [], dict[str, set[str]]
+        ],
         local_pending_mid_folder: dict[str, str],
         read_only: bool = False,
     ) -> FolderSyncPlan:
@@ -1226,7 +1236,7 @@ class ImapSyncService:
                 # Only treat as a move if the destination did NOT already
                 # have this message in the previous sync.  If it did, the
                 # message existed in both folders and this is a delete.
-                prev_folders = local_mid_folders.get(known_mid, set())
+                prev_folders = local_mid_folders().get(known_mid, set())
                 is_move = (
                     new_folder != folder_name
                     and new_folder not in prev_folders
