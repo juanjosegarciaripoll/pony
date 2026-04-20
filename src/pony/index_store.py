@@ -228,15 +228,28 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS folder_sync_state (
-                    account_name  TEXT    NOT NULL,
-                    folder_name   TEXT    NOT NULL,
-                    uid_validity  INTEGER NOT NULL,
-                    highest_uid   INTEGER NOT NULL,
-                    synced_at     TEXT    NOT NULL,
+                    account_name   TEXT    NOT NULL,
+                    folder_name    TEXT    NOT NULL,
+                    uid_validity   INTEGER NOT NULL,
+                    highest_uid    INTEGER NOT NULL,
+                    highest_modseq INTEGER NOT NULL DEFAULT 0,
+                    synced_at      TEXT    NOT NULL,
                     PRIMARY KEY (account_name, folder_name)
                 )
                 """
             )
+            # Phase 2 additive migration for databases created before the
+            # highest_modseq column existed.  Zero means "no CONDSTORE
+            # watermark yet", which matches the CREATE TABLE default.
+            _columns = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(folder_sync_state)")
+            }
+            if "highest_modseq" not in _columns:
+                conn.execute(
+                    "ALTER TABLE folder_sync_state "
+                    "ADD COLUMN highest_modseq INTEGER NOT NULL DEFAULT 0"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pending_operations (
@@ -640,20 +653,23 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn.execute(
                 """
                 INSERT INTO folder_sync_state (
-                    account_name, folder_name, uid_validity, highest_uid, synced_at
+                    account_name, folder_name, uid_validity, highest_uid,
+                    highest_modseq, synced_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_name, folder_name)
                 DO UPDATE SET
-                    uid_validity = excluded.uid_validity,
-                    highest_uid  = excluded.highest_uid,
-                    synced_at    = excluded.synced_at
+                    uid_validity   = excluded.uid_validity,
+                    highest_uid    = excluded.highest_uid,
+                    highest_modseq = excluded.highest_modseq,
+                    synced_at      = excluded.synced_at
                 """,
                 (
                     state.account_name,
                     state.folder_name,
                     state.uid_validity,
                     state.highest_uid,
+                    state.highest_modseq,
                     state.synced_at.isoformat(),
                 ),
             )
@@ -665,7 +681,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             row = conn.execute(
                 """
-                SELECT account_name, folder_name, uid_validity, highest_uid, synced_at
+                SELECT account_name, folder_name, uid_validity, highest_uid,
+                       highest_modseq, synced_at
                 FROM folder_sync_state
                 WHERE account_name = ? AND folder_name = ?
                 """,
@@ -678,7 +695,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             folder_name=str(row[1]),
             uid_validity=int(row[2]),
             highest_uid=int(row[3]),
-            synced_at=datetime.fromisoformat(str(row[4])),
+            highest_modseq=int(row[4]),
+            synced_at=datetime.fromisoformat(str(row[5])),
         )
 
     def list_folder_sync_states(
@@ -690,7 +708,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT account_name, folder_name, uid_validity, highest_uid, synced_at
+                SELECT account_name, folder_name, uid_validity, highest_uid,
+                       highest_modseq, synced_at
                 FROM folder_sync_state
                 WHERE account_name = ?
                 """,
@@ -702,7 +721,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 folder_name=str(r[1]),
                 uid_validity=int(r[2]),
                 highest_uid=int(r[3]),
-                synced_at=datetime.fromisoformat(str(r[4])),
+                highest_modseq=int(r[4]),
+                synced_at=datetime.fromisoformat(str(r[5])),
             )
             for r in rows
         ]

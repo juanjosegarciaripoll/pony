@@ -40,6 +40,7 @@ CREATE TABLE folder_sync_state (
     folder_name    TEXT    NOT NULL,
     uid_validity   INTEGER NOT NULL,
     highest_uid    INTEGER NOT NULL,
+    highest_modseq INTEGER NOT NULL DEFAULT 0,
     synced_at      TEXT    NOT NULL,
     PRIMARY KEY (account_name, folder_name)
 );
@@ -109,49 +110,70 @@ destination.
 
 ## STATUS-gated path selection
 
-The planner asks one question at the start of each folder: "has the
-server's UID set changed since our last sync?"  It answers this with a
-single ``STATUS folder (UIDVALIDITY UIDNEXT MESSAGES)`` roundtrip, and
-picks one of two paths.
+Every per-folder sync begins with one ``STATUS folder (UIDVALIDITY
+UIDNEXT MESSAGES HIGHESTMODSEQ)`` roundtrip — the HIGHESTMODSEQ field
+is requested only when the server advertises ``CONDSTORE`` (RFC 7162),
+otherwise it is ``None``.  Three conditions on the result select the
+path:
 
-**Fast path** — all three hold:
+**Base stability** (UID set matches the local snapshot):
 
 - ``UIDVALIDITY`` matches the stored ``folder_sync_state``,
 - ``UIDNEXT`` equals ``stored.highest_uid + 1`` (no new server UIDs), and
 - ``MESSAGES`` equals the count of local rows with ``uid IS NOT NULL``
   (no server-side deletions).
 
-When STATUS says the server UID set is stable, the planner skips the
-full ``FETCH ... BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]`` scan entirely
-— no server data is fetched.  The per-folder UID map is synthesized
-from the local index (``list_folder_uid_to_mid``) so cross-folder
-move detection still works.  ``_plan_fast_path_folder`` then pushes
-whatever the user changed locally using only local state:
+**CONDSTORE condition** (server flags have not changed either):
+
+- ``HIGHESTMODSEQ`` is ``None`` (server does not advertise CONDSTORE —
+  we can't tell, so assume match), or
+- stored ``highest_modseq`` is ``0`` (first sync after schema
+  migration — no watermark yet, same treatment), or
+- ``HIGHESTMODSEQ`` equals stored ``highest_modseq``.
+
+### The three paths
+
+**Fast path** — base stability + CONDSTORE condition both hold.
+Skip every server FETCH.  Synthesize ``uid_to_mid`` from
+``list_folder_uid_to_mid`` so cross-folder move detection still
+works.  ``_plan_fast_path_folder`` pushes whatever the user changed
+locally using only local state:
 
 - ``PushFlagsOp`` for rows with ``local_flags != base_flags``,
 - ``PushDeleteOp`` for trashed rows,
 - ``PushAppendOp`` for pending ``uid=NULL`` ACTIVE rows (unless the
   Message-ID is on the server in another folder, in which case that
-  folder's plan emits ``PushMoveOp`` instead).
+  folder's plan emits ``PushMoveOp``),
+- ``RestoreOp`` for trashed rows in read-only folders.
 
-For a 17k-message quiescent folder this is one roundtrip instead of
-~17k headers, and even a folder with a handful of local user actions
-costs the same one roundtrip.
+For a 17k-message quiescent folder this is one roundtrip total.
 
-**Slow path** — one of the three conditions fails (new UIDs, a UID
-gone, or UIDVALIDITY reset).  Full
+**Medium path** — base stability holds but CONDSTORE condition fails
+(UID set stable, flags changed server-side).  Issue
+``UID FETCH 1:* (FLAGS) CHANGEDSINCE stored_modseq`` — returns only
+messages whose ``MODSEQ`` has advanced past the stored watermark
+(typically a handful, even in a huge folder).  Synthesize
+``uid_to_mid`` from the local index; feed to the normal planner.
+Step 3 sees fresh server flags and emits ``PullFlagsOp`` /
+``MergeFlagsOp`` as needed.
+
+**Slow path** — base stability fails (new UIDs arrived, a UID gone,
+or UIDVALIDITY reset).  Full
 ``FETCH 1:* (FLAGS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`` scan as
-described below.  The planner runs all six steps, including the
-three-way flag merge in Step 3.
+described below.
 
-**Known limitation:** because the fast path never fetches server
-flags, a concurrent remote flag change on the same message is
-overwritten by a local ``PushFlagsOp`` (or silently missed when the
-folder is otherwise quiescent).  Closing this requires CONDSTORE
-(HIGHESTMODSEQ) tracking — a separate follow-up.  Tests that
-exercise three-way flag merge force the slow path by bumping
-``UIDNEXT`` server-side (adding a fresh message alongside the flag
-change).
+After executing any path, ``folder_sync_state.highest_modseq`` is
+updated to the STATUS-time value (from the pre-execute STATUS call)
+so the next sync has a watermark.
+
+### Known limitation
+
+Without CONDSTORE support the medium path cannot be taken: the
+planner falls back to the Phase 1 behavior, so silent server-side
+flag changes are overwritten by concurrent local pushes (or missed
+on quiescent folders) until a UID-set change triggers the slow
+path.  Tests covering three-way flag merge in this regime force the
+slow path by bumping UIDNEXT server-side.
 
 ## Per-folder reconciliation algorithm
 

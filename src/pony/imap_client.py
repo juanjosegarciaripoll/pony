@@ -305,6 +305,28 @@ class ImapSession:
             return result
         return self._retry(_do, f"FETCH FLAGS {folder_name}")
 
+    def fetch_flags_changed_since(
+        self, folder_name: str, modseq: int,
+    ) -> dict[int, FlagSet]:
+        """CONDSTORE: fetch flags for messages changed since *modseq*."""
+        def _do() -> dict[int, FlagSet]:
+            self._ensure_selected(folder_name)
+            logger.debug(
+                "FETCH all (FLAGS) CHANGEDSINCE %d on %s",
+                modseq, folder_name,
+            )
+            with _imap_errors(f"FETCH CHANGEDSINCE on {folder_name!r}"):
+                data = self._conn.fetch(
+                    "1:*", ["FLAGS"],
+                    modifiers=[f"CHANGEDSINCE {modseq}"],
+                )
+            result: dict[int, FlagSet] = {}
+            for uid, msg_data in data.items():
+                raw_flags = cast(tuple[bytes, ...], msg_data.get(b"FLAGS", ()))
+                result[uid] = _parse_imap_flags(raw_flags)
+            return result
+        return self._retry(_do, f"FETCH CHANGEDSINCE {folder_name}")
+
     def fetch_message_bytes(self, folder_name: str, uid: int) -> bytes:
         """Fetch the full RFC 5322 message for one UID."""
         result = self.fetch_messages_batch(folder_name, [uid])

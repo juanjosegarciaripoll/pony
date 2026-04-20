@@ -355,6 +355,20 @@ class ImapClientSession(Protocol):
         """Return a mapping of UID → (known_flags, extra_imap_flags)."""
         ...
 
+    def fetch_flags_changed_since(
+        self, folder_name: str, modseq: int,
+    ) -> dict[int, FlagSet]:
+        """Fetch flags for messages whose state changed since ``modseq``.
+
+        Issues ``UID FETCH 1:* (FLAGS) (CHANGEDSINCE modseq)`` (RFC 7162
+        CONDSTORE).  Returns only messages whose ``MODSEQ`` has advanced
+        past the given value — typically a tiny subset of the folder.
+        Callers must check for CONDSTORE support first (via
+        :meth:`folder_quick_status` returning a non-None
+        ``highest_modseq``) before using this method.
+        """
+        ...
+
     def fetch_message_bytes(self, folder_name: str, uid: int) -> bytes:
         """Fetch the full RFC 5322 message for one UID."""
         ...

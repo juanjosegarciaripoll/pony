@@ -312,13 +312,16 @@ class FolderSyncState:
     """Sync watermark for one IMAP folder.
 
     ``uid_validity`` must always be known — a value of zero indicates the
-    folder has never been successfully selected.
+    folder has never been successfully selected.  ``highest_modseq`` is
+    the CONDSTORE (RFC 7162) watermark; zero means either the server
+    does not advertise ``CONDSTORE`` or no sync has populated it yet.
     """
 
     account_name: str
     folder_name: str
     uid_validity: int
     highest_uid: int
+    highest_modseq: int = 0
     synced_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
 
 

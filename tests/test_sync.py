@@ -50,9 +50,12 @@ class FakeImapSession:
         self,
         folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]],
         uid_validity: int = 1,
+        *,
+        condstore: bool = True,
     ) -> None:
         self.folders = folders
         self.uid_validity = uid_validity
+        self.condstore = condstore
         self._selected: str = ""
         self.stored_flags: list[tuple[int, frozenset[MessageFlag]]] = []
         self.stored_extra: list[tuple[int, frozenset[str]]] = []
@@ -70,9 +73,25 @@ class FakeImapSession:
             name: max(f.keys(), default=0) + 1
             for name, f in folders.items()
         }
+        # HIGHESTMODSEQ per folder + per-(folder,uid) MODSEQ — advanced
+        # on every mutation observable through IMAP (APPEND, STORE,
+        # EXPUNGE, MOVE).  Starts at 1 so the initial sync sees a
+        # non-zero watermark it can store.
+        self._highest_modseq: dict[str, int] = dict.fromkeys(folders, 1)
+        self._uid_modseq: dict[tuple[str, int], int] = {
+            (name, uid): 1 for name, f in folders.items() for uid in f
+        }
         # Count of FETCH metadata scans — tests assert the fast-path
         # keeps this at zero when STATUS matches.
         self.scan_count: int = 0
+        # Count of cheap CHANGEDSINCE fetches — medium-path indicator.
+        self.changedsince_count: int = 0
+
+    def _bump_modseq(self, folder_name: str, uid: int) -> None:
+        """Advance the folder's HIGHESTMODSEQ and stamp it on *uid*."""
+        new = self._highest_modseq.get(folder_name, 0) + 1
+        self._highest_modseq[folder_name] = new
+        self._uid_modseq[(folder_name, uid)] = new
 
     def list_folders(self) -> Sequence[str]:
         return list(self.folders.keys())
@@ -87,6 +106,10 @@ class FakeImapSession:
             uid_validity=self.uid_validity,
             uidnext=self._uidnext.get(folder_name, 1),
             messages=len(folder),
+            highest_modseq=(
+                self._highest_modseq.get(folder_name, 0)
+                if self.condstore else None
+            ),
         )
 
     def fetch_uid_to_message_id(
@@ -106,6 +129,18 @@ class FakeImapSession:
         result: dict[int, tuple[frozenset[MessageFlag], frozenset[str]]] = {}
         for uid, (_, flags, _) in folder.items():
             if uid in uids:
+                extra = self.extra_flags.get((folder_name, uid), frozenset())
+                result[uid] = (flags, extra)
+        return result
+
+    def fetch_flags_changed_since(
+        self, folder_name: str, modseq: int,
+    ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:
+        self.changedsince_count += 1
+        folder = self.folders.get(folder_name, {})
+        result: dict[int, tuple[frozenset[MessageFlag], frozenset[str]]] = {}
+        for uid, (_, flags, _) in folder.items():
+            if self._uid_modseq.get((folder_name, uid), 0) > modseq:
                 extra = self.extra_flags.get((folder_name, uid), frozenset())
                 result[uid] = (flags, extra)
         return result
@@ -138,6 +173,7 @@ class FakeImapSession:
             mid, _, raw = folder[uid]
             folder[uid] = (mid, flags, raw)
         self.extra_flags[(folder_name, uid)] = extra_imap_flags
+        self._bump_modseq(folder_name, uid)
 
     def append_message(
         self,
@@ -165,14 +201,17 @@ class FakeImapSession:
         self._uidnext[folder_name] = max(
             self._uidnext.get(folder_name, 1), new_uid + 1,
         )
+        self._bump_modseq(folder_name, new_uid)
 
-    def mark_deleted(self, folder_name: str, uid: int) -> None:  # noqa: ARG002
+    def mark_deleted(self, folder_name: str, uid: int) -> None:
         self.deleted_uids.append(uid)
+        self._bump_modseq(folder_name, uid)
 
     def expunge(self, folder_name: str) -> None:
         folder = self.folders.get(folder_name, {})
         for uid in list(self.deleted_uids):
-            folder.pop(uid, None)
+            if folder.pop(uid, None) is not None:
+                self._bump_modseq(folder_name, uid)
 
     def move_message(
         self, source_folder: str, uid: int, target_folder: str,
@@ -196,6 +235,8 @@ class FakeImapSession:
         self._uidnext[target_folder] = max(
             self._uidnext.get(target_folder, 1), new_uid + 1,
         )
+        self._bump_modseq(source_folder, uid)
+        self._bump_modseq(target_folder, new_uid)
         # Carry over custom flags when present.
         extra = self.extra_flags.pop((source_folder, uid), frozenset())
         if extra:
@@ -206,6 +247,7 @@ class FakeImapSession:
         self.created_folders.append(folder_name)
         self.folders.setdefault(folder_name, {})
         self._uidnext.setdefault(folder_name, 1)
+        self._highest_modseq.setdefault(folder_name, 1)
 
     def logout(self) -> None:
         pass
@@ -2119,14 +2161,12 @@ class FastPathTestCase(unittest.TestCase):
         self.assertIn(1, session.deleted_uids)
         self.assertEqual(len(session.folders["INBOX"]), 0)
 
-    def test_pure_server_flag_change_deferred(self) -> None:
-        """Phase 1 limitation: server-only flag changes are missed by fast-path.
+    def test_condstore_medium_path_pulls_server_flag_change(self) -> None:
+        """Phase 2: CONDSTORE medium path pulls a silent server flag change.
 
-        When the server silently mutates flags on a quiescent folder
-        (another client marked a message read) neither UIDNEXT nor
-        MESSAGES changes, so the STATUS fast-path fires and the new
-        server flags are not pulled until a later sync sees a real
-        state change.  Closing this requires CONDSTORE (Phase 2).
+        Another client marks SEEN on the server.  UIDNEXT and MESSAGES
+        don't change, but HIGHESTMODSEQ does — gate flips to medium
+        path, issues CHANGEDSINCE, Step 3 pulls the new flag.
         """
         raw = _make_raw_message("Phone", "<p@example.com>")
         service, index, _, session = _setup(
@@ -2134,14 +2174,117 @@ class FastPathTestCase(unittest.TestCase):
         )
         service.sync()
 
-        # Server mutates flags silently — no UIDNEXT / MESSAGES change.
-        session.folders["INBOX"][1] = (
-            "<p@example.com>", frozenset({MessageFlag.SEEN}), raw,
+        # Server mutates flags silently — use store_flags so the fake
+        # bumps its HIGHESTMODSEQ the way a real server would.
+        session.store_flags("INBOX", 1, frozenset({MessageFlag.SEEN}))
+        service.sync()
+
+        # Medium path: no metadata scan, one CHANGEDSINCE fetch; SEEN pulled.
+        self.assertEqual(session.scan_count, 1)
+        self.assertEqual(session.changedsince_count, 1)
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        self.assertIn(MessageFlag.SEEN, row.local_flags)
+
+    def test_condstore_fast_path_when_nothing_changed(self) -> None:
+        """Modseq match + UID set stable → fast path, no FETCH at all."""
+        raw = _make_raw_message("Still", "<s@example.com>")
+        service, _, _, session = _setup(
+            server_folders={"INBOX": {1: ("<s@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+        self.assertEqual(session.scan_count, 1)
+
+        service.sync()
+        # Second sync: no changes anywhere → fast path, no FETCH.
+        self.assertEqual(session.scan_count, 1)
+        self.assertEqual(session.changedsince_count, 0)
+
+    def test_condstore_medium_path_merges_concurrent_flag_changes(self) -> None:
+        """Phase 2 closes Phase 1 limitation: concurrent flag changes merge.
+
+        User flips FLAGGED locally, server silently flips SEEN.  Medium
+        path's CHANGEDSINCE returns the server change; Step 3 sees both
+        changes and emits MergeFlagsOp with the union.
+        """
+        raw = _make_raw_message("Both", "<b@example.com>")
+        service, index, _, session = _setup(
+            server_folders={"INBOX": {1: ("<b@example.com>", frozenset(), raw)}}
         )
         service.sync()
 
-        # Phase 1: fast-path fires, server flags stay unobserved.
+        # Server: silent SEEN (bumps HIGHESTMODSEQ).
+        session.store_flags("INBOX", 1, frozenset({MessageFlag.SEEN}))
+
+        # Local: user flips FLAGGED.
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        index.upsert_message(
+            message=dataclasses.replace(
+                row, local_flags=frozenset({MessageFlag.FLAGGED}),
+            )
+        )
+
+        service.sync()
+
+        # Medium path: CHANGEDSINCE ran, full metadata fetch skipped.
         self.assertEqual(session.scan_count, 1)
+        self.assertEqual(session.changedsince_count, 1)
+        [row2] = index.list_folder_messages(folder=folder)
+        self.assertIn(MessageFlag.SEEN, row2.local_flags)
+        self.assertIn(MessageFlag.FLAGGED, row2.local_flags)
+
+    def test_no_condstore_keeps_phase1_behavior(self) -> None:
+        """Servers without CONDSTORE still take Phase 1 fast path (limitation).
+
+        ``folder_quick_status`` returns ``highest_modseq=None`` when
+        the server doesn't advertise CONDSTORE.  The gate then treats
+        the modseq condition as satisfied (can't improve on STATUS),
+        so silent server flag changes are deferred just like before.
+        """
+        raw = _make_raw_message("NoCS", "<nc@example.com>")
+        tmp = TMP_ROOT / "sync-no-condstore" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+        mirror = MaildirMirrorRepository(
+            account_name="personal", root_dir=tmp / "mirror",
+        )
+        index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
+        index.initialize()
+        account = AccountConfig(
+            name="personal",
+            email_address="bob@example.com",
+            imap_host="imap.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
+            username="bob",
+            credentials_source="plaintext",
+            mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
+        )
+        config = AppConfig(accounts=(account,))
+        session = FakeImapSession(
+            folders={"INBOX": {1: ("<nc@example.com>", frozenset(), raw)}},
+            condstore=False,
+        )
+
+        class _Creds:
+            def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
+                return "pw"
+
+        service = ImapSyncService(
+            config=config,
+            mirror_factory=lambda _acc: mirror,
+            index=index,
+            credentials=_Creds(),
+            session_factory=lambda _acc, _pw: session,
+        )
+        service.sync()
+
+        # Silent server flag change.
+        session.store_flags("INBOX", 1, frozenset({MessageFlag.SEEN}))
+        service.sync()
+
+        # No CONDSTORE → fast path fires → SEEN not pulled.
+        self.assertEqual(session.scan_count, 1)
+        self.assertEqual(session.changedsince_count, 0)
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         [row] = index.list_folder_messages(folder=folder)
         self.assertNotIn(MessageFlag.SEEN, row.local_flags)

@@ -281,6 +281,11 @@ class FolderSyncPlan:
     sync's pre-phase.  No IMAP scan happened, so ``uid_validity`` /
     ``highest_uid`` carry placeholder zeros and the post-execute
     watermark recording is skipped; the next sync does the real scan.
+
+    ``highest_modseq`` is the CONDSTORE (RFC 7162) watermark observed
+    at STATUS time.  Zero when CONDSTORE is unavailable or when the
+    folder is brand new.  Persisted post-execute to gate the next
+    sync's CONDSTORE-aware fast/medium-path decision.
     """
 
     folder_name: str
@@ -290,6 +295,7 @@ class FolderSyncPlan:
     needs_confirmation: bool = False  # C-6: mass-deletion threshold exceeded
     is_new: bool = False
     scan_ms: int = 0  # wall time for the IMAP metadata scan (fetch_uid_to_message_id)
+    highest_modseq: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,6 +660,11 @@ class ImapSyncService:
         folder_uid_maps: dict[str, dict[int, str]] = {}
         folder_flags_maps: dict[str, dict[int, FlagSet]] = {}
         folder_scan_ms: dict[str, int] = {}
+        # STATUS-time HIGHESTMODSEQ per folder; zero when the server
+        # does not advertise CONDSTORE or STATUS failed.  Recorded into
+        # folder_sync_state after successful execute so the next sync's
+        # CONDSTORE gate has a watermark to compare against.
+        folder_observed_modseq: dict[str, int] = {}
         fast_path_folders: set[str] = set()
         fast_path_state: dict[str, FolderSyncState] = {}
         skipped: list[str] = []
@@ -687,51 +698,56 @@ class ImapSyncService:
                 )
                 )
 
-            # Fast-path gate: one cheap STATUS roundtrip.  When
-            # UIDVALIDITY / UIDNEXT / MESSAGES all match the local
-            # snapshot, skip the full FETCH entirely and synthesize
-            # uid_to_mid from the index.
+            # One cheap STATUS roundtrip per folder, always.  The result
+            # drives fast/medium/slow path selection AND captures the
+            # server's current HIGHESTMODSEQ — we need the modseq on
+            # the very first sync too, so subsequent passes have a
+            # watermark to compare against.
             stored = self._index.get_folder_sync_state(
                 account_name=account.name, folder_name=folder_name,
             )
             quick: FolderQuickStatus | None = None
-            if stored is not None:
-                try:
-                    _t0 = time.perf_counter()
-                    quick = session.folder_quick_status(folder_name)
-                    folder_scan_ms[folder_name] = int(
-                        (time.perf_counter() - _t0) * 1000
+            try:
+                _t0 = time.perf_counter()
+                quick = session.folder_quick_status(folder_name)
+                folder_scan_ms[folder_name] = int(
+                    (time.perf_counter() - _t0) * 1000
+                )
+            except (OSError, EOFError) as exc:
+                if reconnect is not None:
+                    logger.info(
+                        "Connection lost on STATUS %s/%s: %s"
+                        " — reconnecting",
+                        account.name, folder_name, exc,
                     )
-                except (OSError, EOFError) as exc:
-                    if reconnect is not None:
-                        logger.info(
-                            "Connection lost on STATUS %s/%s: %s"
-                            " — reconnecting",
-                            account.name, folder_name, exc,
+                    try:
+                        session = reconnect()
+                        _t0 = time.perf_counter()
+                        quick = session.folder_quick_status(folder_name)
+                        folder_scan_ms[folder_name] = int(
+                            (time.perf_counter() - _t0) * 1000
                         )
-                        try:
-                            session = reconnect()
-                            _t0 = time.perf_counter()
-                            quick = session.folder_quick_status(folder_name)
-                            folder_scan_ms[folder_name] = int(
-                                (time.perf_counter() - _t0) * 1000
-                            )
-                        except (OSError, EOFError):
-                            quick = None
-                    else:
+                    except (OSError, EOFError):
                         quick = None
+                else:
+                    quick = None
 
-            # Fast path: when ``STATUS`` says the server's UID set is
-            # stable (same UIDVALIDITY, same UIDNEXT, same MESSAGES
-            # count as the local snapshot), skip the full FETCH
-            # entirely.  The planner pushes whatever changed locally
-            # (trashed rows, pending ``uid=NULL`` rows, flag drift)
-            # without consulting the server — those pushes need only
-            # local data.  The accepted trade-off is that a concurrent
-            # remote flag change on the same message will be
-            # overwritten by the local push (see "Known limitation"
-            # below).
-            if (
+            # STATUS-gated path selection (RFC 7162 CONDSTORE-aware).
+            #
+            # Base conditions: UIDVALIDITY, UIDNEXT, MESSAGES all match
+            # the local snapshot — the server's UID set is stable.
+            #
+            # CONDSTORE layer: when the server advertises HIGHESTMODSEQ,
+            # we additionally split by whether the modseq advanced:
+            #   - base conditions + modseq match  -> fast path
+            #     (no server I/O; correctness-preserving).
+            #   - base conditions + modseq differs -> medium path
+            #     (FETCH ... (FLAGS) CHANGEDSINCE stored_modseq —
+            #     returns only messages whose flags changed).
+            # Without CONDSTORE, ``stored_modseq == 0`` and
+            # ``quick.highest_modseq is None``; we take the fast path
+            # as before and accept the Phase 1 limitation.
+            uid_set_stable = (
                 quick is not None
                 and stored is not None
                 and quick.uid_validity == stored.uid_validity
@@ -741,21 +757,87 @@ class ImapSyncService:
                     account_name=account.name,
                     folder_name=folder_name,
                 )
-            ):
+            )
+            if quick is not None and quick.highest_modseq is not None:
+                folder_observed_modseq[folder_name] = quick.highest_modseq
+
+            if uid_set_stable and stored is not None and quick is not None:
+                stored_modseq = stored.highest_modseq
+                remote_modseq = quick.highest_modseq
+                modseq_matches = (
+                    remote_modseq is None
+                    or stored_modseq == 0
+                    or remote_modseq == stored_modseq
+                )
                 uid_to_mid_local = self._index.list_folder_uid_to_mid(
                     account_name=account.name,
                     folder_name=folder_name,
                 )
-                folder_uid_maps[folder_name] = uid_to_mid_local
-                folder_flags_maps[folder_name] = {}
-                fast_path_folders.add(folder_name)
-                fast_path_state[folder_name] = stored
-                _merge_mid_map(folder_name, uid_to_mid_local)
-                logger.debug(
-                    "Fast-path %s/%s: %d msg(s), server state stable",
-                    account.name, folder_name, quick.messages,
-                )
-                continue
+                if modseq_matches:
+                    # Fast path: nothing changed server-side.  Push
+                    # whatever the user changed locally with no FETCH.
+                    folder_uid_maps[folder_name] = uid_to_mid_local
+                    folder_flags_maps[folder_name] = {}
+                    fast_path_folders.add(folder_name)
+                    fast_path_state[folder_name] = stored
+                    _merge_mid_map(folder_name, uid_to_mid_local)
+                    logger.debug(
+                        "Fast-path %s/%s: %d msg(s), stable server state",
+                        account.name, folder_name, quick.messages,
+                    )
+                    continue
+
+                # Medium path: UID set stable, flags changed server-side.
+                try:
+                    _t0 = time.perf_counter()
+                    changed_flags = session.fetch_flags_changed_since(
+                        folder_name, stored_modseq,
+                    )
+                    folder_scan_ms[folder_name] = folder_scan_ms.get(
+                        folder_name, 0,
+                    ) + int((time.perf_counter() - _t0) * 1000)
+                except (OSError, EOFError) as exc:
+                    logger.info(
+                        "Medium-path CHANGEDSINCE failed on %s/%s: %s"
+                        " — falling through to slow path",
+                        account.name, folder_name, exc,
+                    )
+                else:
+                    # Synthesize the planner's inputs: start with the
+                    # local uid→mid map (UID set is stable, so it is
+                    # complete); fill in every UID's flags from either
+                    # the CHANGEDSINCE response or the local index
+                    # baseline (unchanged messages need a value for the
+                    # planner's Step 3 comparison — ``base_flags`` is
+                    # the right value because "no modseq advance" means
+                    # the server still has that baseline).
+                    base_by_uid: dict[int, FlagSet] = {}
+                    for row in self._index.list_folder_messages_with_uid(
+                        account_name=account.name,
+                        folder_name=folder_name,
+                    ):
+                        if row.uid is None:
+                            continue
+                        base_by_uid[row.uid] = (
+                            row.base_flags, row.extra_imap_flags,
+                        )
+                    uid_to_flags_medium: dict[int, FlagSet] = {}
+                    for uid in uid_to_mid_local:
+                        if uid in changed_flags:
+                            uid_to_flags_medium[uid] = changed_flags[uid]
+                        else:
+                            uid_to_flags_medium[uid] = base_by_uid.get(
+                                uid, (frozenset(), frozenset()),
+                            )
+                    folder_uid_maps[folder_name] = uid_to_mid_local
+                    folder_flags_maps[folder_name] = uid_to_flags_medium
+                    _merge_mid_map(folder_name, uid_to_mid_local)
+                    logger.debug(
+                        "Medium-path %s/%s: CHANGEDSINCE %d returned %d row(s)",
+                        account.name, folder_name, stored_modseq,
+                        len(changed_flags),
+                    )
+                    continue
 
             # Slow path: full FETCH of UIDs + Message-IDs + flags.
             try:
@@ -914,6 +996,9 @@ class ImapSyncService:
                 folder_plan = dataclasses.replace(
                     folder_plan,
                     scan_ms=folder_scan_ms.get(folder_name, 0),
+                    highest_modseq=folder_observed_modseq.get(
+                        folder_name, 0,
+                    ),
                 )
             except OSError as exc:
                 logger.warning(
@@ -1653,6 +1738,7 @@ class ImapSyncService:
                         folder_name=folder_name,
                         uid_validity=plan.uid_validity,
                         highest_uid=plan.highest_uid,
+                        highest_modseq=plan.highest_modseq,
                     )
                 )
 
