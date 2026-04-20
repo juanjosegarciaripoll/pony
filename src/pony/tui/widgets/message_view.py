@@ -129,6 +129,13 @@ class MessageViewPanel(VerticalScroll):
             path = f.name
         webbrowser.open(Path(path).as_uri())
 
+    @property
+    def attachment_count(self) -> int:
+        """Number of attachments on the currently-loaded message."""
+        if self._rendered is None:
+            return 0
+        return len(self._rendered.attachments)
+
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         """Save attachment *index* (1-based) to *dest_dir*."""
         if self._rendered is None:

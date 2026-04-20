@@ -199,6 +199,9 @@ class AppConfig:
     # Path to a BBDB v3 file.  When set, the contacts database is
     # exported to this file after every sync.
     bbdb_path: Path | None = None
+    # Target directory for attachments opened/saved from the TUI.  When
+    # None, resolves to ``~/Downloads`` at use time.
+    downloads_path: Path | None = None
     # When set, start the MCP HTTP server automatically with `pony tui`.
     mcp: McpConfig | None = None
 

@@ -292,6 +292,22 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(sample_config(), base_dir=base_dir)
         self.assertIsNone(config.bbdb_path)
 
+    def test_downloads_path_parsed(self) -> None:
+        from pathlib import Path
+
+        data = sample_config()
+        data["downloads_path"] = "/tmp/mail-attachments"
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        self.assertEqual(config.downloads_path, Path("/tmp/mail-attachments"))
+
+    def test_downloads_path_defaults_to_none(self) -> None:
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        self.assertIsNone(config.downloads_path)
+
     def test_archive_folder_parsed(self) -> None:
         from pony.domain import AccountConfig
 

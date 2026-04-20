@@ -23,6 +23,10 @@
 #                      every sync.  Use `pony contacts export` to export manually.
 #                      Tilde (~), environment variables ($HOME, %USERPROFILE%)
 #                      are expanded.  Example: bbdb_path = "~/.bbdb"
+# - downloads_path:    Directory where attachments opened / saved from the TUI
+#                      (O / S keys) land.  Created on demand.  Same path
+#                      expansion rules as bbdb_path.  Default: ~/Downloads.
+#                      Example: downloads_path = "~/mail-attachments"
 #
 # MCP server auto-start (optional):
 # Uncomment the [mcp] section to start the MCP HTTP server automatically

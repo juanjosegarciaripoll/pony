@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import dataclasses
 import os
@@ -73,14 +74,8 @@ class MainScreen(Screen[None]):
         Binding("C", "copy", "Copy"),
         Binding("M", "move", "Move"),
         Binding("N", "new_folder", "New folder"),
-        Binding("ctrl+1", "save_attachment('1')", "Save att. 1", show=False),
-        Binding("ctrl+2", "save_attachment('2')", "Save att. 2", show=False),
-        Binding("ctrl+3", "save_attachment('3')", "Save att. 3", show=False),
-        Binding("ctrl+0", "save_all_attachments", "Save all att.", show=False),
-        Binding("1", "open_attachment('1')", "Open att. 1", show=False),
-        Binding("2", "open_attachment('2')", "Open att. 2", show=False),
-        Binding("3", "open_attachment('3')", "Open att. 3", show=False),
-        Binding("0", "open_all_attachments", "Open all att.", show=False),
+        Binding("O", "attachments_open", "Open att.", show=False),
+        Binding("S", "attachments_save", "Save att.", show=False),
         Binding("/", "search", "Search", show=False),
         Binding("H", "harvest_contacts", "Harvest contacts", show=False),
         Binding("B", "browse_contacts", "Contacts"),
@@ -1231,56 +1226,85 @@ class MainScreen(Screen[None]):
     def open_current_in_browser(self) -> None:
         self.query_one(MessageViewPanel).open_in_browser()
 
-    def action_save_attachment(self, index_str: str) -> None:
-        try:
-            idx = int(index_str)
-        except ValueError:
+    def action_attachments_open(self) -> None:
+        self._prompt_attachments(action_label="Open", then=self._open_indices)
+
+    def action_attachments_save(self) -> None:
+        self._prompt_attachments(action_label="Save", then=self._save_indices)
+
+    def _prompt_attachments(
+        self,
+        *,
+        action_label: str,
+        then: collections.abc.Callable[[list[int]], None],
+    ) -> None:
+        count = self.query_one(MessageViewPanel).attachment_count
+        if count == 0:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "No attachments on this message.", severity="warning",
+            )
             return
-        dest = Path.home() / "Downloads"
-        dest.mkdir(parents=True, exist_ok=True)
-        name = self.save_attachment(idx, dest)
-        if name:
-            self.app.notify(f"Saved: {dest / name}")  # pyright: ignore[reportUnknownMemberType]
-        else:
-            self.app.notify(f"Attachment {idx} not found.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
+        from .attachment_picker_screen import AttachmentPickerScreen
 
-    def action_save_all_attachments(self) -> None:
-        dest = Path.home() / "Downloads"
-        dest.mkdir(parents=True, exist_ok=True)
-        names = self.save_all_attachments(dest)
-        if names:
-            self.app.notify(f"Saved {len(names)} attachment(s) to {dest}")  # pyright: ignore[reportUnknownMemberType]
-        else:
-            self.app.notify("No attachments to save.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
+        def _on_selection(indices: list[int] | None) -> None:
+            if indices is None:
+                return
+            then(indices)
 
-    def action_open_attachment(self, index_str: str) -> None:
-        try:
-            idx = int(index_str)
-        except ValueError:
-            return
-        dest = Path.home() / "Downloads"
-        dest.mkdir(parents=True, exist_ok=True)
-        name = self.save_attachment(idx, dest)
-        if name:
-            self._launch_file(dest / name)
-        else:
-            self.app.notify(f"Attachment {idx} not found.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            AttachmentPickerScreen(
+                action_label=action_label, attachment_count=count,
+            ),
+            _on_selection,
+        )
 
-    def action_open_all_attachments(self) -> None:
-        dest = Path.home() / "Downloads"
+    def _save_indices(self, indices: list[int]) -> None:
+        dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
-        names = self.save_all_attachments(dest)
-        if names:
-            for name in names:
+        saved: list[str] = []
+        missing: list[int] = []
+        for idx in indices:
+            name = self.save_attachment(idx, dest)
+            if name:
+                saved.append(name)
+            else:
+                missing.append(idx)
+        if saved:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Saved {len(saved)} attachment(s) to {dest}",
+            )
+        if missing:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Attachment(s) not found: "
+                f"{', '.join(str(i) for i in missing)}",
+                severity="warning",
+            )
+
+    def _open_indices(self, indices: list[int]) -> None:
+        dest = self._downloads_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        missing: list[int] = []
+        for idx in indices:
+            name = self.save_attachment(idx, dest)
+            if name:
                 self._launch_file(dest / name)
-        else:
-            self.app.notify("No attachments to save.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
+            else:
+                missing.append(idx)
+        if missing:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Attachment(s) not found: "
+                f"{', '.join(str(i) for i in missing)}",
+                severity="warning",
+            )
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         return self.query_one(MessageViewPanel).save_attachment(index, dest_dir)
 
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
         return self.query_one(MessageViewPanel).save_all_attachments(dest_dir)
+
+    def _downloads_dir(self) -> Path:
+        return self._config.downloads_path or Path.home() / "Downloads"
 
     @staticmethod
     def _launch_file(path: Path) -> None:
