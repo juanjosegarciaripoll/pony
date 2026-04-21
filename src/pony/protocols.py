@@ -199,6 +199,14 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def mark_folder_read(self, *, folder: FolderRef) -> int:
+        """Add the SEEN flag to every active message in *folder* that lacks it.
+
+        Returns the number of rows updated.  Implemented as a single SQL
+        UPDATE so the caller doesn't have to materialise every message.
+        """
+        ...
+
     def search(
         self, *, query: SearchQuery, account_name: str | None
     ) -> Sequence[IndexedMessage]:

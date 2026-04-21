@@ -619,6 +619,29 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             rows = conn.execute(sql, params).fetchall()
         return tuple(_summary_from_row(row) for row in rows)
 
+    def mark_folder_read(self, *, folder: FolderRef) -> int:
+        """Add SEEN to every active, unseen message in *folder*.
+
+        Uses a single UPDATE so no Python-level row materialisation is
+        needed even for large folders.  Returns the number of rows changed.
+        """
+        with self._use() as conn:
+            conn.execute(
+                """
+                UPDATE messages
+                SET local_flags = CASE
+                    WHEN local_flags = '' THEN 'seen'
+                    ELSE local_flags || ',seen'
+                END
+                WHERE account_name = ?
+                  AND folder_name = ?
+                  AND local_status = 'active'
+                  AND (',' || local_flags || ',') NOT LIKE '%,seen,%'
+                """,
+                (folder.account_name, folder.folder_name),
+            )
+            return conn.execute("SELECT changes()").fetchone()[0]
+
     def search(
         self, *, query: SearchQuery, account_name: str | None
     ) -> Sequence[IndexedMessage]:

@@ -71,7 +71,8 @@ class MainScreen(Screen[None]):
         Binding("!", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
-        Binding("C", "copy", "Copy"),
+        Binding("C", "mark_all_read", "Mark all read"),
+        Binding("Y", "copy", "Copy"),
         Binding("M", "move", "Move"),
         Binding("N", "new_folder", "New folder"),
         Binding("O", "attachments_open", "Open att.", show=False),
@@ -610,6 +611,17 @@ class MainScreen(Screen[None]):
         if archived:
             suffix = "" if archived == 1 else f" ({archived} messages)"
             self.app.notify(f"Archived to {target}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
+
+    def action_mark_all_read(self) -> None:
+        """Mark every message in the current folder as read."""
+        folder_ref = self._current_folder_ref
+        if folder_ref is None:
+            return
+        count = self._index.mark_folder_read(folder=folder_ref)
+        self.query_one(MessageListPanel).load_folder(folder_ref)
+        self.query_one(FolderPanel).refresh_folders()
+        if count:
+            self.app.notify(f"Marked {count} message{'s' if count != 1 else ''} as read.")  # pyright: ignore[reportUnknownMemberType]
 
     def action_mark_read(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=True)
