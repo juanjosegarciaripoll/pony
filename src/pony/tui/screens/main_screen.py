@@ -424,7 +424,34 @@ class MainScreen(Screen[None]):
         )
 
     def _reload_folder(self, folder_ref: FolderRef) -> None:
-        self.query_one(MessageListPanel).load_folder(folder_ref)
+        msg_list = self.query_one(MessageListPanel)
+        prev_row = msg_list.cursor_row
+        msg_list.load_folder(folder_ref)
+        # DataTable.clear() resets the cursor to row 0; restore (clamped)
+        # so archive/trash/move leave the cursor on the row that took the
+        # removed one's slot rather than jumping to the top.
+        if prev_row >= 0 and msg_list.row_count > 0:
+            msg_list.move_cursor(row=min(prev_row, msg_list.row_count - 1))
+        self._refresh_view_after_reload()
+
+    def _refresh_view_after_reload(self) -> None:
+        """Sync the message view to the current cursor row.
+
+        After ``_reload_folder`` the row that was open may have been
+        removed (archive/trash/move) or its content may have shifted.
+        Without this the view pane keeps showing the stale message.
+        """
+        view = self.query_one(MessageViewPanel)
+        if not view.display:
+            return
+        msg_list = self.query_one(MessageListPanel)
+        summary = msg_list.get_selected_summary()
+        if summary is None:
+            view.clear()
+            view.display = False
+            return
+        mirror = self._mirrors[summary.message_ref.account_name]
+        view.load_message(summary, mirror)
 
     def _mark_seen(self, summary: FolderMessageSummary) -> None:
         if MessageFlag.SEEN in summary.local_flags:

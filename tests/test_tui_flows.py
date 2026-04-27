@@ -338,6 +338,62 @@ async def test_archive_moves_to_configured_folder() -> None:
     assert len(files) == 1
 
 
+async def test_archive_advances_view_to_remaining_message() -> None:
+    """Archiving the open message reloads the view onto the cursor's new row.
+
+    Regression for the bug where the cursor advanced after archive/trash
+    but the view pane kept rendering the just-removed message.
+    """
+    from textual.widgets import Static
+
+    paths = make_tmp_paths("archive-view")
+    account = make_test_account(paths, archive_folder="Archive")
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    credentials = PlaintextCredentialsProvider(config)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=index, mirror=mirrors["acct"], folder=folder,
+        raw=_custom_plain("first-subject", body="first body"),
+        rfc5322_id="<arch1@example.com>",
+    )
+    seed_message(
+        index=index, mirror=mirrors["acct"], folder=folder,
+        raw=_custom_plain("second-subject", body="second body"),
+        rfc5322_id="<arch2@example.com>",
+    )
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        assert view.display is True
+        before = str(view.query_one("#content", Static).render())
+        opened_subject = (
+            "first-subject" if "first-subject" in before else "second-subject"
+        )
+        await pilot.press("A")
+        await pilot.pause()
+        assert view.display is True
+        after = str(view.query_one("#content", Static).render())
+        assert opened_subject not in after
+        # The surviving message should be on screen.
+        survivor = (
+            "second-subject"
+            if opened_subject == "first-subject"
+            else "first-subject"
+        )
+        assert survivor in after
+
+
 async def test_copy_to_folder() -> None:
     """Copy via ``C`` + PickFolderScreen duplicates the index row and mirror file."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
