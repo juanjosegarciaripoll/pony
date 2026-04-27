@@ -15,6 +15,7 @@ from pony.smtp_sender import SMTPError, send_message
 from pony.tui.compose_utils import (
     build_email_message,
     build_forward_body,
+    build_reply_all_recipients,
     build_reply_body,
     forward_subject,
     reply_subject,
@@ -77,6 +78,73 @@ class BuildReplyBodyTest(unittest.TestCase):
         body = build_reply_body(r)
         assert "> Line one" in body
         assert "> Line two" in body
+
+
+class BuildReplyAllRecipientsTest(unittest.TestCase):
+    def test_to_is_original_sender(self) -> None:
+        r = _rendered(from_="Alice <alice@example.com>", to="me@example.com")
+        to, _cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert to == "Alice <alice@example.com>"
+
+    def test_cc_includes_original_to_minus_self(self) -> None:
+        r = _rendered(
+            from_="Alice <alice@example.com>",
+            to="me@example.com, Carol <carol@example.com>",
+            cc="",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert "carol@example.com" in cc
+        assert "me@example.com" not in cc
+
+    def test_cc_merges_to_and_cc(self) -> None:
+        r = _rendered(
+            from_="alice@example.com",
+            to="bob@example.com",
+            cc="Dan <dan@example.com>, eve@example.com",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert "bob@example.com" in cc
+        assert "Dan <dan@example.com>" in cc
+        assert "eve@example.com" in cc
+
+    def test_cc_excludes_sender(self) -> None:
+        r = _rendered(
+            from_="Alice <alice@example.com>",
+            to="alice@example.com, bob@example.com",
+            cc="",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert "alice@example.com" not in cc
+        assert "bob@example.com" in cc
+
+    def test_self_address_match_is_case_insensitive(self) -> None:
+        r = _rendered(
+            from_="alice@example.com",
+            to="Me <ME@Example.COM>, bob@example.com",
+            cc="",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert "Example.COM" not in cc
+        assert "bob@example.com" in cc
+
+    def test_duplicates_are_removed(self) -> None:
+        r = _rendered(
+            from_="alice@example.com",
+            to="bob@example.com",
+            cc="bob@example.com, carol@example.com",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert cc.count("bob@example.com") == 1
+        assert "carol@example.com" in cc
+
+    def test_empty_cc_when_no_other_recipients(self) -> None:
+        r = _rendered(
+            from_="alice@example.com",
+            to="me@example.com",
+            cc="",
+        )
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert cc == ""
 
 
 class BuildForwardBodyTest(unittest.TestCase):

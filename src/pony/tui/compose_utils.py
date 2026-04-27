@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formataddr, formatdate, getaddresses, make_msgid
 from pathlib import Path
 
 from .message_renderer import RenderedMessage
@@ -59,6 +59,37 @@ def build_forward_body(
     if signature:
         body += _sig_block(signature)
     return body
+
+
+def build_reply_all_recipients(
+    rendered: RenderedMessage, *, self_address: str,
+) -> tuple[str, str]:
+    """Return ``(to, cc)`` for a reply-all to *rendered*.
+
+    *to* is the original sender (``From``).  *cc* contains every address
+    from the original ``To`` and ``Cc`` headers, minus the user's own
+    *self_address* and the addresses already in *to*.  Display names
+    from the source headers are preserved; comparisons are
+    case-insensitive on the address part only.
+    """
+    self_norm = self_address.strip().lower()
+    excluded: set[str] = {
+        addr.lower() for _, addr in getaddresses([rendered.from_]) if addr
+    }
+    excluded.add(self_norm)
+
+    cc_parts: list[str] = []
+    seen: set[str] = set(excluded)
+    for name, addr in getaddresses([rendered.to, rendered.cc]):
+        if not addr:
+            continue
+        norm = addr.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        cc_parts.append(formataddr((name, addr)))
+
+    return rendered.from_, ", ".join(cc_parts)
 
 
 def reply_subject(subject: str) -> str:

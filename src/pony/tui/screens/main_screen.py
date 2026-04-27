@@ -38,6 +38,7 @@ from ...protocols import (
 from ...sync import ImapSyncService, ProgressInfo, SyncPlan, SyncResult
 from ..compose_utils import (
     build_forward_body,
+    build_reply_all_recipients,
     build_reply_body,
     forward_subject,
     new_compose_body,
@@ -64,9 +65,9 @@ class MainScreen(Screen[None]):
         Binding("g", "sync", "Get mail"),
         Binding("c", "compose_new", "Compose"),
         Binding("r", "compose_reply", "Reply"),
+        Binding("R", "compose_reply_all", "Reply all"),
         Binding("f", "compose_forward", "Forward"),
         Binding("w", "open_browser", "Web view"),
-        Binding("R", "mark_read", "Mark read", show=False),
         Binding("u", "mark_unread", "Mark unread"),
         Binding("!", "toggle_flagged", "Flag"),
         Binding("d", "trash", "Trash"),
@@ -623,9 +624,6 @@ class MainScreen(Screen[None]):
         if count:
             self.app.notify(f"Marked {count} message{'s' if count != 1 else ''} as read.")  # pyright: ignore[reportUnknownMemberType]
 
-    def action_mark_read(self) -> None:
-        self.set_flag(MessageFlag.SEEN, present=True)
-
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)
 
@@ -1082,6 +1080,9 @@ class MainScreen(Screen[None]):
     def action_compose_reply(self) -> None:
         self.compose_reply()
 
+    def action_compose_reply_all(self) -> None:
+        self.compose_reply_all()
+
     def action_compose_forward(self) -> None:
         self.compose_forward()
 
@@ -1169,6 +1170,60 @@ class MainScreen(Screen[None]):
                 ComposeInitial(
                     account_name=account.name,
                     to=rendered.from_,
+                    subject=reply_subject(rendered.subject),
+                    body=build_reply_body(rendered, signature=account.signature),
+                    markdown_mode=(
+                        account.markdown_compose or self._config.markdown_compose
+                    ),
+                ),
+                contacts=self._contacts,
+            )
+        )
+
+    def compose_reply_all(self) -> None:
+        """Open compose pre-filled as a reply-all to the current message."""
+        from .compose_screen import ComposeInitial, ComposeScreen
+
+        msg = self.get_current_message()
+        if msg is None:
+            return
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Replying requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return
+        mirror = self._mirrors[msg.message_ref.account_name]
+        try:
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify("Could not load message for reply.", severity="error")  # pyright: ignore[reportUnknownMemberType]
+            return
+        rendered = render_message(raw)
+        account = next(
+            (a for a in accounts if a.name == msg.message_ref.account_name),
+            accounts[0],
+        )
+        to, cc = build_reply_all_recipients(
+            rendered, self_address=account.email_address,
+        )
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ComposeScreen(
+                self._config,
+                accounts,
+                self._index,
+                self._mirrors,
+                ComposeInitial(
+                    account_name=account.name,
+                    to=to,
+                    cc=cc,
                     subject=reply_subject(rendered.subject),
                     body=build_reply_body(rendered, signature=account.signature),
                     markdown_mode=(

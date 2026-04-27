@@ -294,30 +294,6 @@ async def test_toggle_flagged() -> None:
         assert MessageFlag.FLAGGED not in row.local_flags
 
 
-async def test_mark_read() -> None:
-    """Pressing ``R`` stamps SEEN on the cursor row."""
-    folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, index, mirrors = build_pony_app(label="seen")
-    ref = seed_message(
-        index=index,
-        mirror=mirrors["acct"],
-        folder=folder,
-        raw=plain_text(),
-        rfc5322_id="<seen@example.com>",
-    )
-
-    async with app.run_test() as pilot:
-        await _select_first_inbox(pilot)
-        # Do NOT press enter on the row — opening auto-marks SEEN and would
-        # mask the binding under test.
-        await pilot.press("R")
-        await pilot.pause()
-
-    row = index.get_message(message_ref=ref)
-    assert row is not None
-    assert MessageFlag.SEEN in row.local_flags
-
-
 async def test_archive_moves_to_configured_folder() -> None:
     """Archiving relocates the mirror file and re-keys the index row."""
     paths = make_tmp_paths("archive")
