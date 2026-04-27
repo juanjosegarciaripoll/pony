@@ -2007,14 +2007,18 @@ def _run_reset_account(
     return 0
 
 
-def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -> int:  # noqa: ARG001
-    """Launch the interactive terminal UI."""
+def _install_tui_log_handler(log_file: Path) -> None:
+    """Wire up the TUI's rotating log handler.
+
+    imapclient's ``imaplib`` logger emits the full RFC 822 byte stream of
+    every FETCH at DEBUG, which can produce single log records of many
+    megabytes — the rotating handler then preserves them whole and the
+    file becomes unreadable. Pin imapclient to INFO so connect/login/move
+    lines stay but per-message protocol traffic does not.
+    """
     import logging
     from logging.handlers import RotatingFileHandler
 
-    paths.ensure_runtime_dirs()
-
-    log_file = paths.log_dir / "pony-tui.log"
     handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3)
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -2028,6 +2032,17 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
             root_logger.removeHandler(h)  # pyright: ignore[reportUnknownArgumentType]
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.DEBUG)
+    logging.getLogger("imapclient").setLevel(logging.INFO)
+
+
+def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -> int:  # noqa: ARG001
+    """Launch the interactive terminal UI."""
+    import logging
+
+    paths.ensure_runtime_dirs()
+
+    log_file = paths.log_dir / "pony-tui.log"
+    _install_tui_log_handler(log_file)
     logging.getLogger("pony").info("TUI starting; log file: %s", log_file)
 
     config = require_config(config_path)
@@ -2093,24 +2108,10 @@ def run_compose(
     markdown_mode: bool | None = None,
 ) -> int:
     """Launch the composer directly for writing a new message."""
-    import logging
-    from logging.handlers import RotatingFileHandler
-
     paths.ensure_runtime_dirs()
 
     log_file = paths.log_dir / "pony-tui.log"
-    handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
-    root_logger = logging.getLogger()
-    for h in root_logger.handlers[:]:
-        if isinstance(h, logging.StreamHandler) and not isinstance(
-            h, logging.FileHandler
-        ):
-            root_logger.removeHandler(h)  # pyright: ignore[reportUnknownArgumentType]
-    root_logger.addHandler(handler)
-    root_logger.setLevel(logging.DEBUG)
+    _install_tui_log_handler(log_file)
 
     config = require_config(config_path)
 
