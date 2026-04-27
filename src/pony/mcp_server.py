@@ -55,9 +55,10 @@ def _msg_to_dict(msg: Any) -> dict[str, Any]:
     """
     ref = msg.message_ref
     return {
+        "id": ref.id,
         "account": ref.account_name,
         "folder": ref.folder_name,
-        "message_id": ref.rfc5322_id,
+        "message_id": msg.message_id,
         "sender": msg.sender,
         "recipients": msg.recipients,
         "cc": msg.cc,
@@ -251,26 +252,31 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: get_message
     # ------------------------------------------------------------------
 
+    def _resolve_message(
+        account: str, folder: str, message_id: str,
+    ) -> Any | None:
+        """Resolve display Message-ID → indexed row.
+
+        Returns ``None`` when no row matches.  When multiple rows
+        share the same Message-ID, the most recent is returned.
+        Callers that need to disambiguate should fall back to
+        ``find_messages_by_message_id``.
+        """
+        hits = index.find_messages_by_message_id(
+            account_name=account, folder_name=folder, message_id=message_id,
+        )
+        return hits[0] if hits else None
+
     def _fetch_raw_bytes(
         account: str, folder: str, message_id: str,
     ) -> bytes | None:
-        """Resolve RFC 5322 Message-ID → mirror storage_key → raw bytes.
-
-        Returns ``None`` if the account has no mirror, the index doesn't
-        know the message, or the mirror can't produce the bytes.
-        """
-        from .domain import FolderRef, MessageRef
+        """Resolve Message-ID → mirror bytes (or ``None`` on miss)."""
+        from .domain import FolderRef
 
         mirror = mirrors.get(account)
         if mirror is None:
             return None
-        indexed = index.get_message(
-            message_ref=MessageRef(
-                account_name=account,
-                folder_name=folder,
-                rfc5322_id=message_id,
-            ),
-        )
+        indexed = _resolve_message(account, folder, message_id)
         if indexed is None:
             return None
         try:
@@ -288,29 +294,16 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         folder: str,
         message_id: str,
     ) -> dict[str, Any] | None:
-        """Retrieve metadata for a single message.
+        """Retrieve metadata for one message by display Message-ID.
 
-        Returns None if the message is not in the local index.  The
-        ``attachments`` field lists every attachment with its 1-based
-        ``index``, filename, content type, and size — use
-        *get_attachment* to fetch any one of them by index.  Use
-        *get_message_body* to read the full text of the message.
+        Returns ``None`` when no row matches.  When multiple rows
+        share the Message-ID (legitimate: alias delivery, mailing-list
+        dup), the most recent is returned.
         """
-        from .domain import MessageRef
-
-        ref = MessageRef(
-            account_name=account,
-            folder_name=folder,
-            rfc5322_id=message_id,
-        )
-        msg = index.get_message(message_ref=ref)
+        msg = _resolve_message(account, folder, message_id)
         if msg is None:
             return None
         result = _msg_to_dict(msg)
-        # Add the per-attachment list when the body is locally
-        # available.  For messages we only know by metadata (e.g. not
-        # yet fetched to the mirror) the has_attachments bool above is
-        # still the best we can offer.
         raw = _fetch_raw_bytes(account, folder, message_id)
         if raw is not None:
             rendered = render_message(raw)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import sqlite3
 import threading
@@ -20,8 +21,6 @@ from .domain import (
     MessageFlag,
     MessageRef,
     MessageStatus,
-    OperationType,
-    PendingOperation,
     PendingPush,
     SearchQuery,
     SlowPathRow,
@@ -29,9 +28,15 @@ from .domain import (
 from .protocols import ContactRepository, IndexRepository
 
 # Bumped when the schema, FTS tables, or triggers change in a way that
-# existing databases cannot satisfy without a rebuild.  initialize()
-# refuses to open any DB whose user_version is lower than this.
-_SCHEMA_VERSION = 2
+# existing databases cannot be migrated to in-place.  Schema version 3
+# is the per-row identity rewrite (SYNC_REWRITE.md): the messages table
+# loses its (account, folder, message_id) primary key and gains an
+# autoincrement ``id`` plus ``source_folder`` / ``source_uid`` /
+# ``uid_validity`` columns.  ``initialize`` migrates a v2 DB in place
+# (dropping synthetic-mid orphans en route); anything older is refused
+# and pointed at the reset workflow.
+_SCHEMA_VERSION = 3
+_MIGRATABLE_FROM = 2
 
 
 class SchemaMismatchError(RuntimeError):
@@ -51,6 +56,152 @@ class SchemaMismatchError(RuntimeError):
         self.expected = expected
 
 
+# Column manifest used by every messages-table query.  Order matches
+# the CREATE TABLE in initialize().  ``id`` is the autoincrement
+# primary key — omitted from INSERT, never updated.
+_FULL_COLS: tuple[str, ...] = (
+    "id",
+    "account_name", "folder_name",
+    "uid", "uid_validity", "message_id",
+    "sender", "recipients", "cc", "subject", "body_preview",
+    "storage_key", "has_attachments",
+    "local_flags", "base_flags", "server_flags", "extra_imap_flags",
+    "local_status", "received_at", "trashed_at", "synced_at",
+    "source_folder", "source_uid",
+)
+_FULL_SELECT = ", ".join(_FULL_COLS)
+_INSERT_COLS = ", ".join(_FULL_COLS[1:])  # skip id
+_INSERT_QS = ", ".join(["?"] * (len(_FULL_COLS) - 1))
+_UPDATE_ASSIGNS = ", ".join(f"{c} = ?" for c in _FULL_COLS[1:])
+
+
+def _row_params(message: IndexedMessage) -> tuple[object, ...]:
+    """Convert an IndexedMessage to the parameter tuple used by INSERT/UPDATE."""
+    trashed_at = (
+        message.trashed_at.isoformat() if message.trashed_at else None
+    )
+    synced_at = (
+        message.synced_at.isoformat() if message.synced_at else None
+    )
+    return (
+        message.message_ref.account_name,
+        message.message_ref.folder_name,
+        message.uid,
+        message.uid_validity,
+        message.message_id,
+        message.sender,
+        message.recipients,
+        message.cc,
+        message.subject,
+        message.body_preview,
+        message.storage_key,
+        int(message.has_attachments),
+        _flags_to_csv(message.local_flags),
+        _flags_to_csv(message.base_flags),
+        _flags_to_csv(message.server_flags),
+        ",".join(sorted(message.extra_imap_flags)),
+        message.local_status.value,
+        message.received_at.isoformat(),
+        trashed_at,
+        synced_at,
+        message.source_folder,
+        message.source_uid,
+    )
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Migrate the v2 messages table to the v3 per-row schema.
+
+    Runs inside the calling transaction.  Drops synthetic-mid orphans
+    (the ``<synthetic-…@pony.local>`` rows from the cross-folder
+    Message-ID identity model — they never round-tripped to the server
+    and were the root of the duplicate-APPEND loop) and the dead
+    ``pending_operations`` write-ahead buffer.  The FTS triggers and
+    auxiliary tables are recreated from scratch by the caller after
+    this returns.
+    """
+    # Drop FTS triggers and the FTS table itself before touching the
+    # base table — the old triggers reference the old column layout
+    # and the rebuild path will re-create them once the new schema is
+    # in place.
+    for trigger in (
+        "messages_ai", "messages_ad", "messages_au",
+    ):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    conn.execute("DROP TABLE IF EXISTS messages_fts")
+
+    conn.execute(
+        """
+        CREATE TABLE messages_new (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_name     TEXT    NOT NULL,
+            folder_name      TEXT    NOT NULL,
+            uid              INTEGER,
+            uid_validity     INTEGER NOT NULL DEFAULT 0,
+            message_id       TEXT    NOT NULL DEFAULT '',
+            sender           TEXT    NOT NULL,
+            recipients       TEXT    NOT NULL,
+            cc               TEXT    NOT NULL,
+            subject          TEXT    NOT NULL,
+            body_preview     TEXT    NOT NULL,
+            storage_key      TEXT    NOT NULL DEFAULT '',
+            has_attachments  INTEGER NOT NULL DEFAULT 0,
+            local_flags      TEXT    NOT NULL,
+            base_flags       TEXT    NOT NULL,
+            server_flags     TEXT    NOT NULL DEFAULT '',
+            extra_imap_flags TEXT    NOT NULL DEFAULT '',
+            local_status     TEXT    NOT NULL,
+            received_at      TEXT    NOT NULL,
+            trashed_at       TEXT,
+            synced_at        TEXT,
+            source_folder    TEXT,
+            source_uid       INTEGER
+        )
+        """
+    )
+    # Carry over every non-synthetic row.  uid_validity is backfilled
+    # from folder_sync_state so the planner can detect stale UIDs in
+    # one query without a join.  Synthetic-mid orphans (uid IS NULL +
+    # `<synthetic-...@pony.local>` mid) are the rows that drove the
+    # APPEND loop — they never existed on the server and must not
+    # carry over.
+    conn.execute(
+        """
+        INSERT INTO messages_new (
+            account_name, folder_name, uid, uid_validity, message_id,
+            sender, recipients, cc, subject, body_preview,
+            storage_key, has_attachments,
+            local_flags, base_flags, server_flags, extra_imap_flags,
+            local_status, received_at, trashed_at, synced_at,
+            source_folder, source_uid
+        )
+        SELECT
+            m.account_name, m.folder_name, m.uid,
+            COALESCE(s.uid_validity, 0),
+            m.message_id,
+            m.sender, m.recipients, m.cc, m.subject, m.body_preview,
+            m.storage_key, m.has_attachments,
+            m.local_flags, m.base_flags,
+            m.server_flags, m.extra_imap_flags,
+            m.local_status, m.received_at, m.trashed_at, m.synced_at,
+            NULL, NULL
+        FROM messages m
+        LEFT JOIN folder_sync_state s
+            ON s.account_name = m.account_name
+           AND s.folder_name  = m.folder_name
+        WHERE NOT (
+            m.uid IS NULL
+            AND m.message_id LIKE '<synthetic-%@pony.local>'
+        )
+        """
+    )
+    conn.execute("DROP TABLE messages")
+    conn.execute("ALTER TABLE messages_new RENAME TO messages")
+    # The old pending_operations table was the never-implemented
+    # write-ahead buffer; the rewrite drops it.
+    conn.execute("DROP TABLE IF EXISTS pending_operations")
+
+
 class SqliteIndexRepository(IndexRepository, ContactRepository):
     """Persist indexed metadata and sync state in SQLite.
 
@@ -59,8 +210,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     whole folder) callers can wrap a block of calls in::
 
         with repo.connection():
-            repo.upsert_message(...)
-            repo.upsert_message(...)
+            repo.insert_message(...)
+            repo.update_message(...)
             ...
 
     All calls inside the block reuse a single connection and commit once
@@ -177,54 +328,76 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return self._open_connection()
 
     def initialize(self) -> None:
-        """Create required tables, or refuse to open an out-of-date DB."""
+        """Create or migrate the schema, refusing DBs we cannot upgrade."""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._use() as conn:
             version_row = conn.execute("PRAGMA user_version").fetchone()
             version = int(version_row[0]) if version_row is not None else 0
-            has_legacy_tables = conn.execute(
+            has_messages = conn.execute(
                 "SELECT 1 FROM sqlite_master "
                 "WHERE type='table' AND name='messages'"
             ).fetchone() is not None
 
-            if version < _SCHEMA_VERSION and has_legacy_tables:
+            if has_messages and version not in (0, _MIGRATABLE_FROM, _SCHEMA_VERSION):
+                # Anything older than v2 predates the supported
+                # migration path; the CLI offers an export-then-reset
+                # recovery workflow for these.
                 raise SchemaMismatchError(
                     database_path=self._database_path,
                     found=version,
                     expected=_SCHEMA_VERSION,
                 )
 
+            if has_messages and version == _MIGRATABLE_FROM:
+                _migrate_v2_to_v3(conn)
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
-                    account_name     TEXT NOT NULL,
-                    folder_name      TEXT NOT NULL,
-                    message_id       TEXT NOT NULL,
-                    sender           TEXT NOT NULL,
-                    recipients       TEXT NOT NULL,
-                    cc               TEXT NOT NULL,
-                    subject          TEXT NOT NULL,
-                    body_preview     TEXT NOT NULL,
-                    storage_key      TEXT NOT NULL DEFAULT '',
-                    has_attachments  INTEGER NOT NULL DEFAULT 0,
-                    local_flags      TEXT NOT NULL,
-                    base_flags       TEXT NOT NULL,
-                    local_status     TEXT NOT NULL,
-                    received_at      TEXT NOT NULL,
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_name     TEXT    NOT NULL,
+                    folder_name      TEXT    NOT NULL,
                     uid              INTEGER,
-                    server_flags     TEXT NOT NULL DEFAULT '',
-                    extra_imap_flags TEXT NOT NULL DEFAULT '',
+                    uid_validity     INTEGER NOT NULL DEFAULT 0,
+                    message_id       TEXT    NOT NULL DEFAULT '',
+                    sender           TEXT    NOT NULL,
+                    recipients       TEXT    NOT NULL,
+                    cc               TEXT    NOT NULL,
+                    subject          TEXT    NOT NULL,
+                    body_preview     TEXT    NOT NULL,
+                    storage_key      TEXT    NOT NULL DEFAULT '',
+                    has_attachments  INTEGER NOT NULL DEFAULT 0,
+                    local_flags      TEXT    NOT NULL,
+                    base_flags       TEXT    NOT NULL,
+                    server_flags     TEXT    NOT NULL DEFAULT '',
+                    extra_imap_flags TEXT    NOT NULL DEFAULT '',
+                    local_status     TEXT    NOT NULL,
+                    received_at      TEXT    NOT NULL,
                     trashed_at       TEXT,
                     synced_at        TEXT,
-                    PRIMARY KEY (account_name, folder_name, message_id)
+                    source_folder    TEXT,
+                    source_uid       INTEGER
                 )
                 """
             )
             conn.execute(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_uid
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_uid
                 ON messages (account_name, folder_name, uid)
                 WHERE uid IS NOT NULL
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_messages_account_folder
+                ON messages (account_name, folder_name)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_messages_message_id
+                ON messages (account_name, message_id)
+                WHERE message_id != ''
                 """
             )
             conn.execute(
@@ -238,47 +411,6 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     highest_modseq INTEGER NOT NULL DEFAULT 0,
                     synced_at      TEXT    NOT NULL,
                     PRIMARY KEY (account_name, folder_name)
-                )
-                """
-            )
-            # Additive migrations for databases created before newer
-            # columns existed.  Each migration checks the current
-            # column set and either creates the column or backfills it.
-            _columns = {
-                str(r[1])
-                for r in conn.execute("PRAGMA table_info(folder_sync_state)")
-            }
-            if "highest_modseq" not in _columns:
-                conn.execute(
-                    "ALTER TABLE folder_sync_state "
-                    "ADD COLUMN highest_modseq INTEGER NOT NULL DEFAULT 0"
-                )
-            if "uidnext" not in _columns:
-                conn.execute(
-                    "ALTER TABLE folder_sync_state "
-                    "ADD COLUMN uidnext INTEGER NOT NULL DEFAULT 0"
-                )
-                # Backfill: the old fast-path gate used highest_uid + 1
-                # as a proxy for server UIDNEXT.  That value is correct
-                # for folders where no UIDs were burned (delivered then
-                # deleted / moved).  Use it as the starting watermark so
-                # those folders continue to hit the fast path without
-                # requiring a slow-path "reset" sync.  Folders with
-                # burned UIDs will slow-path once, record the actual
-                # server UIDNEXT, and fast-path thereafter.
-                conn.execute(
-                    "UPDATE folder_sync_state "
-                    "SET uidnext = highest_uid + 1"
-                )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pending_operations (
-                    operation_id   TEXT PRIMARY KEY,
-                    account_name   TEXT NOT NULL,
-                    folder_name    TEXT NOT NULL,
-                    message_id     TEXT NOT NULL,
-                    operation_type TEXT NOT NULL,
-                    created_at     TEXT NOT NULL
                 )
                 """
             )
@@ -334,81 +466,52 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     # Messages
     # ------------------------------------------------------------------
 
-    def upsert_message(self, *, message: IndexedMessage) -> None:
-        """Store or replace one message metadata row and harvest its addresses."""
-        trashed_at_str = (
-            message.trashed_at.isoformat() if message.trashed_at else None
+    def insert_message(
+        self, *, message: IndexedMessage
+    ) -> IndexedMessage:
+        """Insert a fresh row, returning it with its assigned id."""
+        params = _row_params(message)
+        with self._use() as conn:
+            cur = conn.execute(
+                f"INSERT INTO messages ({_INSERT_COLS}) VALUES ({_INSERT_QS})",  # noqa: S608
+                params,
+            )
+            new_id = cur.lastrowid or 0
+        return dataclasses.replace(
+            message,
+            message_ref=MessageRef(
+                account_name=message.message_ref.account_name,
+                folder_name=message.message_ref.folder_name,
+                id=new_id,
+            ),
         )
-        synced_at_str = (
-            message.synced_at.isoformat() if message.synced_at else None
-        )
+
+    def update_message(self, *, message: IndexedMessage) -> None:
+        """Update an existing row keyed by ``message_ref.id``."""
+        if message.message_ref.id <= 0:
+            raise ValueError(
+                "update_message requires a row id; use insert_message for new rows"
+            )
+        params = _row_params(message) + (message.message_ref.id,)
         with self._use() as conn:
             conn.execute(
-                """
-                INSERT INTO messages (
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(account_name, folder_name, message_id)
-                DO UPDATE SET
-                    sender           = excluded.sender,
-                    recipients       = excluded.recipients,
-                    cc               = excluded.cc,
-                    subject          = excluded.subject,
-                    body_preview     = excluded.body_preview,
-                    storage_key      = excluded.storage_key,
-                    has_attachments  = excluded.has_attachments,
-                    local_flags      = excluded.local_flags,
-                    base_flags       = excluded.base_flags,
-                    local_status     = excluded.local_status,
-                    received_at      = excluded.received_at,
-                    uid              = excluded.uid,
-                    server_flags     = excluded.server_flags,
-                    extra_imap_flags = excluded.extra_imap_flags,
-                    trashed_at       = excluded.trashed_at,
-                    synced_at        = excluded.synced_at
-                """,
-                (
-                    message.message_ref.account_name,
-                    message.message_ref.folder_name,
-                    message.message_ref.rfc5322_id,
-                    message.sender,
-                    message.recipients,
-                    message.cc,
-                    message.subject,
-                    message.body_preview,
-                    message.storage_key,
-                    int(message.has_attachments),
-                    _flags_to_csv(message.local_flags),
-                    _flags_to_csv(message.base_flags),
-                    message.local_status.value,
-                    message.received_at.isoformat(),
-                    message.uid,
-                    _flags_to_csv(message.server_flags),
-                    ",".join(sorted(message.extra_imap_flags)),
-                    trashed_at_str,
-                    synced_at_str,
-                ),
+                f"UPDATE messages SET {_UPDATE_ASSIGNS} WHERE id = ?",  # noqa: S608
+                params,
             )
 
+    def upsert_message(self, *, message: IndexedMessage) -> IndexedMessage:
+        """Insert when ``message_ref.id <= 0``, update otherwise."""
+        if message.message_ref.id <= 0:
+            return self.insert_message(message=message)
+        self.update_message(message=message)
+        return message
+
     def delete_message(self, *, message_ref: MessageRef) -> None:
-        """Remove one message row from the index."""
+        """Remove one message row from the index by id."""
         with self._use() as conn:
             conn.execute(
-                """
-                DELETE FROM messages
-                WHERE account_name = ? AND folder_name = ? AND message_id = ?
-                """,
-                (
-                    message_ref.account_name,
-                    message_ref.folder_name,
-                    message_ref.rfc5322_id,
-                ),
+                "DELETE FROM messages WHERE id = ?",
+                (message_ref.id,),
             )
 
     def purge_expired_trash(
@@ -469,11 +572,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def purge_account(self, *, account_name: str) -> None:
         """Remove all data for one account from every table."""
         with self._use() as conn:
-            for table in (
-                "messages",
-                "folder_sync_state",
-                "pending_operations",
-            ):
+            for table in ("messages", "folder_sync_state"):
                 conn.execute(
                     f"DELETE FROM {table} WHERE account_name = ?",  # noqa: S608
                     (account_name,),
@@ -508,29 +607,42 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return stale
 
     def get_message(self, *, message_ref: MessageRef) -> IndexedMessage | None:
-        """Return one indexed message by primary key, or None."""
+        """Return one indexed message by row id, or None."""
         with self._use() as conn:
             row = conn.execute(
-                """
-                SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
-                WHERE account_name = ? AND folder_name = ? AND message_id = ?
-                """,
-                (
-                    message_ref.account_name,
-                    message_ref.folder_name,
-                    message_ref.rfc5322_id,
-                ),
+                f"SELECT {_FULL_SELECT} FROM messages WHERE id = ?",  # noqa: S608
+                (message_ref.id,),
             ).fetchone()
         if row is None:
             return None
         return _indexed_message_from_row(row)
+
+    def find_messages_by_message_id(
+        self,
+        *,
+        account_name: str,
+        message_id: str,
+        folder_name: str | None = None,
+    ) -> Sequence[IndexedMessage]:
+        """Return every row whose RFC 5322 ``Message-ID:`` matches.
+
+        Empty Message-IDs never match — they would otherwise pull up
+        every row that had no header at import time.
+        """
+        if not message_id:
+            return ()
+        sql = (
+            f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
+            "WHERE account_name = ? AND message_id = ?"
+        )
+        params: list[object] = [account_name, message_id]
+        if folder_name is not None:
+            sql += " AND folder_name = ?"
+            params.append(folder_name)
+        sql += " ORDER BY received_at DESC, id ASC"
+        with self._use() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return tuple(_indexed_message_from_row(row) for row in rows)
 
     def count_folder_messages(self, *, folder: FolderRef) -> int:
         """Return the number of indexed messages in a folder."""
@@ -575,18 +687,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         """Return indexed messages for a folder ordered by received date."""
         with self._use() as conn:
             rows = conn.execute(
-                """
-                SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
-                WHERE account_name = ? AND folder_name = ?
-                ORDER BY received_at DESC
-                """,
+                f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
+                "WHERE account_name = ? AND folder_name = ? "
+                "ORDER BY received_at DESC",
                 (folder.account_name, folder.folder_name),
             ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
@@ -605,7 +708,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         ``received_at`` ordering into SQL so callers don't re-sort.
         """
         sql = (
-            "SELECT account_name, folder_name, message_id, "
+            "SELECT id, account_name, folder_name, message_id, "
             "storage_key, sender, subject, received_at, "
             "has_attachments, local_flags, local_status "
             "FROM messages WHERE account_name = ? AND folder_name = ?"
@@ -640,7 +743,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 """,
                 (folder.account_name, folder.folder_name),
             )
-            return conn.execute("SELECT changes()").fetchone()[0]
+            return int(conn.execute("SELECT changes()").fetchone()[0])
 
     def search(
         self, *, query: SearchQuery, account_name: str | None
@@ -666,16 +769,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
         )
 
+        select_cols = ", ".join(f"m.{c}" for c in _FULL_COLS)
         with self._use() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                    m.account_name, m.folder_name, m.message_id,
-                    m.sender, m.recipients, m.cc, m.subject, m.body_preview,
-                    m.storage_key, m.has_attachments,
-                    m.local_flags, m.base_flags, m.local_status, m.received_at,
-                    m.uid, m.server_flags, m.extra_imap_flags,
-                    m.trashed_at, m.synced_at
+                SELECT {select_cols}
                 FROM messages m
                 {join_sql}
                 WHERE {where_sql}
@@ -775,29 +873,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         ]
 
     # ------------------------------------------------------------------
-    # UID / server-state queries (unified in the messages table)
+    # Planner-facing queries
     # ------------------------------------------------------------------
-
-    def list_folder_messages_with_uid(
-        self, *, account_name: str, folder_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return messages that have a non-NULL uid for one folder."""
-        with self._use() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
-                WHERE account_name = ? AND folder_name = ? AND uid IS NOT NULL
-                """,
-                (account_name, folder_name),
-            ).fetchall()
-        return tuple(_indexed_message_from_row(row) for row in rows)
 
     def count_uids_for_folder(
         self, *, account_name: str, folder_name: str
@@ -813,33 +890,35 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
-    def list_folder_uid_to_mid(
+    def list_folder_uids(
         self, *, account_name: str, folder_name: str
-    ) -> dict[int, str]:
-        """Return ``{uid: message_id}`` for rows with non-NULL uid in one folder."""
+    ) -> set[int]:
+        """Return the set of locally-known UIDs for one folder."""
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT uid, message_id FROM messages
+                SELECT uid FROM messages
                 WHERE account_name = ? AND folder_name = ? AND uid IS NOT NULL
                 """,
                 (account_name, folder_name),
             ).fetchall()
-        return {int(str(r[0])): str(r[1]) for r in rows}
+        return {int(str(r[0])) for r in rows}
 
     def list_folder_push_candidates(
         self, *, account_name: str, folder_name: str
     ) -> Sequence[PendingPush]:
-        """Return only rows needing a server-side push (SQL-filtered)."""
+        """Return rows needing a server-side push (SQL-filtered)."""
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT message_id, local_status, uid, storage_key,
-                       local_flags, extra_imap_flags
+                SELECT id, message_id, local_status, uid, storage_key,
+                       local_flags, extra_imap_flags,
+                       source_folder, source_uid
                 FROM messages
                 WHERE account_name = ? AND folder_name = ?
                   AND (
                     local_status = ?
+                    OR local_status = ?
                     OR (local_status = ? AND uid IS NULL)
                     OR (
                         local_status = ?
@@ -851,6 +930,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (
                     account_name, folder_name,
                     MessageStatus.TRASHED.value,
+                    MessageStatus.PENDING_MOVE.value,
                     MessageStatus.ACTIVE.value,
                     MessageStatus.ACTIVE.value,
                 ),
@@ -860,16 +940,19 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 message_ref=MessageRef(
                     account_name=account_name,
                     folder_name=folder_name,
-                    rfc5322_id=str(r[0]),
+                    id=int(str(r[0])),
                 ),
-                local_status=MessageStatus(str(r[1])),
-                uid=int(str(r[2])) if r[2] is not None else None,
-                storage_key=str(r[3]),
-                local_flags=_flags_from_csv(str(r[4])),
+                message_id=str(r[1]),
+                local_status=MessageStatus(str(r[2])),
+                uid=int(str(r[3])) if r[3] is not None else None,
+                storage_key=str(r[4]),
+                local_flags=_flags_from_csv(str(r[5])),
                 extra_imap_flags=(
-                    frozenset(str(r[5]).split(",")) - {""}
-                    if r[5] else frozenset()
+                    frozenset(str(r[6]).split(",")) - {""}
+                    if r[6] else frozenset()
                 ),
+                source_folder=str(r[7]) if r[7] is not None else None,
+                source_uid=int(str(r[8])) if r[8] is not None else None,
             )
             for r in rows
         )
@@ -881,8 +964,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             rows = conn.execute(
                 """
-                SELECT message_id, local_status, uid, storage_key,
-                       local_flags, base_flags, extra_imap_flags
+                SELECT id, message_id, local_status, uid, storage_key,
+                       local_flags, base_flags, extra_imap_flags,
+                       source_folder, source_uid
                 FROM messages
                 WHERE account_name = ? AND folder_name = ?
                 """,
@@ -893,17 +977,20 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 message_ref=MessageRef(
                     account_name=account_name,
                     folder_name=folder_name,
-                    rfc5322_id=str(r[0]),
+                    id=int(str(r[0])),
                 ),
-                local_status=MessageStatus(str(r[1])),
-                uid=int(str(r[2])) if r[2] is not None else None,
-                storage_key=str(r[3]),
-                local_flags=_flags_from_csv(str(r[4])),
-                base_flags=_flags_from_csv(str(r[5])),
+                message_id=str(r[1]),
+                local_status=MessageStatus(str(r[2])),
+                uid=int(str(r[3])) if r[3] is not None else None,
+                storage_key=str(r[4]),
+                local_flags=_flags_from_csv(str(r[5])),
+                base_flags=_flags_from_csv(str(r[6])),
                 extra_imap_flags=(
-                    frozenset(str(r[6]).split(",")) - {""}
-                    if r[6] else frozenset()
+                    frozenset(str(r[7]).split(",")) - {""}
+                    if r[7] else frozenset()
                 ),
+                source_folder=str(r[8]) if r[8] is not None else None,
+                source_uid=int(str(r[9])) if r[9] is not None else None,
             )
             for r in rows
         )
@@ -932,48 +1019,6 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             )
         return result
 
-    def list_mid_folders_for_account(
-        self, *, account_name: str
-    ) -> dict[str, set[str]]:
-        """Return ``{message_id: {folder_name, ...}}`` for UID-bearing rows."""
-        with self._use() as conn:
-            rows = conn.execute(
-                """
-                SELECT folder_name, message_id FROM messages
-                WHERE account_name = ?
-                  AND uid IS NOT NULL
-                  AND message_id != ''
-                """,
-                (account_name,),
-            ).fetchall()
-        result: dict[str, set[str]] = {}
-        for folder_name, mid in rows:
-            result.setdefault(str(mid), set()).add(str(folder_name))
-        return result
-
-    def list_pending_rows(
-        self, *, account_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return ACTIVE rows with ``uid IS NULL`` for one account."""
-        with self._use() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    account_name, folder_name, message_id,
-                    sender, recipients, cc, subject, body_preview,
-                    storage_key, has_attachments,
-                    local_flags, base_flags, local_status, received_at,
-                    uid, server_flags, extra_imap_flags,
-                    trashed_at, synced_at
-                FROM messages
-                WHERE account_name = ?
-                  AND uid IS NULL
-                  AND local_status = ?
-                """,
-                (account_name, MessageStatus.ACTIVE.value),
-            ).fetchall()
-        return tuple(_indexed_message_from_row(row) for row in rows)
-
     def clear_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> None:
@@ -982,83 +1027,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn.execute(
                 """
                 UPDATE messages
-                SET uid = NULL, server_flags = '', extra_imap_flags = '',
+                SET uid = NULL, uid_validity = 0,
+                    server_flags = '', extra_imap_flags = '',
                     synced_at = NULL
                 WHERE account_name = ? AND folder_name = ?
                 """,
                 (account_name, folder_name),
             )
-
-    # ------------------------------------------------------------------
-    # Pending operations
-    # ------------------------------------------------------------------
-
-    def enqueue_operation(self, *, operation: PendingOperation) -> None:
-        """Store one pending operation."""
-        with self._use() as conn:
-            conn.execute(
-                """
-                INSERT INTO pending_operations (
-                    operation_id, account_name, folder_name,
-                    message_id, operation_type, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(operation_id)
-                DO UPDATE SET
-                    account_name   = excluded.account_name,
-                    folder_name    = excluded.folder_name,
-                    message_id     = excluded.message_id,
-                    operation_type = excluded.operation_type,
-                    created_at     = excluded.created_at
-                """,
-                (
-                    operation.operation_id,
-                    operation.account_name,
-                    operation.message_ref.folder_name,
-                    operation.message_ref.rfc5322_id,
-                    operation.operation_type.value,
-                    operation.created_at.isoformat(),
-                ),
-            )
-
-    def complete_operation(self, *, operation_id: str) -> None:
-        """Delete one pending operation row by ID."""
-        with self._use() as conn:
-            conn.execute(
-                "DELETE FROM pending_operations WHERE operation_id = ?",
-                (operation_id,),
-            )
-
-    def list_pending_operations(
-        self, *, account_name: str
-    ) -> Sequence[PendingOperation]:
-        """List pending operations for one account."""
-        with self._use() as conn:
-            rows = conn.execute(
-                """
-                SELECT operation_id, account_name, folder_name,
-                       message_id, operation_type, created_at
-                FROM pending_operations
-                WHERE account_name = ?
-                ORDER BY created_at ASC
-                """,
-                (account_name,),
-            ).fetchall()
-
-        return tuple(
-            PendingOperation(
-                operation_id=str(row[0]),
-                account_name=str(row[1]),
-                message_ref=MessageRef(
-                    account_name=str(row[1]),
-                    folder_name=str(row[2]),
-                    rfc5322_id=str(row[3]),
-                ),
-                operation_type=OperationType(row[4]),
-                created_at=datetime.fromisoformat(str(row[5])),
-            )
-            for row in rows
-        )
 
 
     # ------------------------------------------------------------------
@@ -1620,81 +1595,77 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
 
 
 def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
-    # Column order:
-    #  0  account_name    1  folder_name    2  message_id
-    #  3  sender          4  recipients     5  cc
-    #  6  subject         7  body_preview   8  storage_key
-    #  9  has_attachments
-    # 10  local_flags    11  base_flags     12  local_status
-    # 13  received_at    14  uid            15  server_flags
-    # 16  extra_imap_flags  17  trashed_at  18  synced_at
-    uid_raw = row[14] if len(row) > 14 else None
-    uid = int(str(uid_raw)) if uid_raw is not None else None
-
-    server_flags_raw = str(row[15]) if len(row) > 15 else ""
-    extra_raw = str(row[16]) if len(row) > 16 else ""
-    extra: frozenset[str] = (
+    """Hydrate a row using the order in :data:`_FULL_COLS`."""
+    # 0 id  1 account_name  2 folder_name
+    # 3 uid  4 uid_validity  5 message_id
+    # 6 sender  7 recipients  8 cc  9 subject  10 body_preview
+    # 11 storage_key  12 has_attachments
+    # 13 local_flags  14 base_flags  15 server_flags  16 extra_imap_flags
+    # 17 local_status  18 received_at
+    # 19 trashed_at  20 synced_at  21 source_folder  22 source_uid
+    uid = int(str(row[3])) if row[3] is not None else None
+    extra_raw = str(row[16]) if row[16] is not None else ""
+    extras: frozenset[str] = (
         frozenset(extra_raw.split(",")) - {""}
         if extra_raw
         else frozenset()
     )
-
-    trashed_raw = row[17] if len(row) > 17 else None
     trashed_at = (
-        datetime.fromisoformat(str(trashed_raw)).astimezone(UTC)
-        if trashed_raw
-        else None
+        datetime.fromisoformat(str(row[19])).astimezone(UTC)
+        if row[19] else None
     )
-    synced_raw = row[18] if len(row) > 18 else None
     synced_at = (
-        datetime.fromisoformat(str(synced_raw)).astimezone(UTC)
-        if synced_raw
-        else None
+        datetime.fromisoformat(str(row[20])).astimezone(UTC)
+        if row[20] else None
     )
-
     return IndexedMessage(
         message_ref=MessageRef(
-            account_name=str(row[0]),
-            folder_name=str(row[1]),
-            rfc5322_id=str(row[2]),
+            account_name=str(row[1]),
+            folder_name=str(row[2]),
+            id=int(str(row[0])),
         ),
-        sender=str(row[3]),
-        recipients=str(row[4]),
-        cc=str(row[5]),
-        subject=str(row[6]),
-        body_preview=str(row[7]),
-        storage_key=str(row[8]),
-        has_attachments=bool(row[9]),
-        local_flags=_flags_from_csv(str(row[10])),
-        base_flags=_flags_from_csv(str(row[11])),
-        local_status=MessageStatus(str(row[12])),
-        received_at=datetime.fromisoformat(str(row[13])).astimezone(UTC),
+        message_id=str(row[5]),
+        sender=str(row[6]),
+        recipients=str(row[7]),
+        cc=str(row[8]),
+        subject=str(row[9]),
+        body_preview=str(row[10]),
+        storage_key=str(row[11]),
+        has_attachments=bool(row[12]),
+        local_flags=_flags_from_csv(str(row[13])),
+        base_flags=_flags_from_csv(str(row[14])),
+        server_flags=_flags_from_csv(str(row[15])),
+        extra_imap_flags=extras,
+        local_status=MessageStatus(str(row[17])),
+        received_at=datetime.fromisoformat(str(row[18])).astimezone(UTC),
         uid=uid,
-        server_flags=_flags_from_csv(server_flags_raw),
-        extra_imap_flags=extra,
+        uid_validity=int(str(row[4])) if row[4] is not None else 0,
         trashed_at=trashed_at,
         synced_at=synced_at,
+        source_folder=str(row[21]) if row[21] is not None else None,
+        source_uid=int(str(row[22])) if row[22] is not None else None,
     )
 
 
 def _summary_from_row(row: sqlite3.Row) -> FolderMessageSummary:
     # Column order (matches list_folder_message_summaries SELECT):
-    #  0 account_name  1 folder_name  2 message_id  3 storage_key
-    #  4 sender        5 subject      6 received_at
-    #  7 has_attachments  8 local_flags  9 local_status
+    #  0 id  1 account_name  2 folder_name  3 message_id
+    #  4 storage_key  5 sender  6 subject  7 received_at
+    #  8 has_attachments  9 local_flags  10 local_status
     return FolderMessageSummary(
         message_ref=MessageRef(
-            account_name=str(row[0]),
-            folder_name=str(row[1]),
-            rfc5322_id=str(row[2]),
+            account_name=str(row[1]),
+            folder_name=str(row[2]),
+            id=int(str(row[0])),
         ),
-        storage_key=str(row[3]),
-        sender=str(row[4]),
-        subject=str(row[5]),
-        received_at=datetime.fromisoformat(str(row[6])).astimezone(UTC),
-        has_attachments=bool(row[7]),
-        local_flags=_flags_from_csv(str(row[8])),
-        local_status=MessageStatus(str(row[9])),
+        message_id=str(row[3]),
+        storage_key=str(row[4]),
+        sender=str(row[5]),
+        subject=str(row[6]),
+        received_at=datetime.fromisoformat(str(row[7])).astimezone(UTC),
+        has_attachments=bool(row[8]),
+        local_flags=_flags_from_csv(str(row[9])),
+        local_status=MessageStatus(str(row[10])),
     )
 
 

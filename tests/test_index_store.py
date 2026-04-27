@@ -15,8 +15,6 @@ from pony.domain import (
     MessageFlag,
     MessageRef,
     MessageStatus,
-    OperationType,
-    PendingOperation,
     SearchQuery,
 )
 from pony.index_store import SqliteIndexRepository
@@ -339,58 +337,6 @@ class FolderSyncStateTestCase(unittest.TestCase):
         self.assertEqual(loaded.highest_uid, 20)
 
 
-class PendingOperationsTestCase(unittest.TestCase):
-    """Validate pending operation enqueue/list/complete lifecycle."""
-
-    def test_enqueue_and_list(self) -> None:
-        repo = _fresh_repo()
-        op = _make_operation("op-1", OperationType.DELETE)
-        repo.enqueue_operation(operation=op)
-
-        pending = repo.list_pending_operations(account_name="personal")
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0].operation_type, OperationType.DELETE)
-
-    def test_complete_removes_operation(self) -> None:
-        repo = _fresh_repo()
-        repo.enqueue_operation(operation=_make_operation("op-1", OperationType.DELETE))
-        repo.enqueue_operation(
-            operation=_make_operation("op-2", OperationType.MARK_READ)
-        )
-
-        repo.complete_operation(operation_id="op-1")
-        pending = repo.list_pending_operations(account_name="personal")
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0].operation_id, "op-2")
-
-    def test_complete_nonexistent_is_silent(self) -> None:
-        repo = _fresh_repo()
-        repo.complete_operation(operation_id="ghost")  # must not raise
-
-    def test_list_isolates_accounts(self) -> None:
-        repo = _fresh_repo()
-        repo.enqueue_operation(
-            operation=_make_operation(
-                "op-1", OperationType.DELETE, account_name="personal"
-            )
-        )
-        repo.enqueue_operation(
-            operation=_make_operation("op-2", OperationType.FLAG, account_name="work")
-        )
-        personal = repo.list_pending_operations(account_name="personal")
-        work = repo.list_pending_operations(account_name="work")
-        self.assertEqual(len(personal), 1)
-        self.assertEqual(len(work), 1)
-
-    def test_all_operation_types_roundtrip(self) -> None:
-        repo = _fresh_repo()
-        for i, op_type in enumerate(OperationType):
-            repo.enqueue_operation(operation=_make_operation(f"op-{i}", op_type))
-        pending = repo.list_pending_operations(account_name="personal")
-        types = {p.operation_type for p in pending}
-        self.assertEqual(types, set(OperationType))
-
-
 class SchemaVersionGateTestCase(unittest.TestCase):
     """initialize() refuses to open a DB older than the current schema."""
 
@@ -657,12 +603,14 @@ def _make_message(
     extra_imap_flags: frozenset[str] = frozenset(),
     storage_key: str | None = None,
 ) -> IndexedMessage:
+    """Build an unsaved IndexedMessage; the row id is assigned at insert time."""
     return IndexedMessage(
         message_ref=MessageRef(
             account_name=account_name,
             folder_name=folder_name,
-            rfc5322_id=message_id,
+            id=0,
         ),
+        message_id=message_id,
         sender=sender,
         recipients=recipients,
         cc=cc,
@@ -675,22 +623,4 @@ def _make_message(
         received_at=datetime(2026, 4, 10, 10, 0, 0, tzinfo=UTC),
         uid=uid,
         extra_imap_flags=extra_imap_flags,
-    )
-
-
-def _make_operation(
-    operation_id: str,
-    operation_type: OperationType,
-    *,
-    account_name: str = "personal",
-) -> PendingOperation:
-    return PendingOperation(
-        operation_id=operation_id,
-        account_name=account_name,
-        message_ref=MessageRef(
-            account_name=account_name,
-            folder_name="INBOX",
-            rfc5322_id="m-1",
-        ),
-        operation_type=operation_type,
     )

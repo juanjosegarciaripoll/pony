@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from email.message import EmailMessage
 
 from .domain import AppConfig, MessageRef, SearchQuery
@@ -17,10 +18,11 @@ def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:
 
     created_count = 0
     for account in config.accounts:
+        fixture_id = f"fixture-{account.name}"
         message_ref = MessageRef(
             account_name=account.name,
             folder_name="INBOX",
-            rfc5322_id=f"fixture-{account.name}",
+            id=0,
         )
         raw_fixture = _fixture_message_bytes(
             account_name=account.name, to_address=account.email_address
@@ -28,9 +30,12 @@ def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:
         fixture_message = project_rfc822_message(
             message_ref=message_ref,
             raw_message=raw_fixture,
-            storage_key=message_ref.rfc5322_id,
+            storage_key=fixture_id,
         )
-        repository.upsert_message(message=fixture_message)
+        fixture_message = dataclasses.replace(
+            fixture_message, message_id=f"<{fixture_id}@pony.local>",
+        )
+        repository.insert_message(message=fixture_message)
         created_count += 1
 
     return created_count

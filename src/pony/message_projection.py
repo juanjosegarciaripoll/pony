@@ -67,9 +67,14 @@ def project_rfc822_message(
     received_at = _parse_date(header_map.get(b"date", b""))
     has_attachments = bool(_ATTACHMENT_RE.search(raw_message))
     body_preview = _extract_body_preview(body, raw_message)
+    message_id_raw = header_map.get(b"message-id", b"")
+    message_id = (
+        " ".join(message_id_raw.decode("ascii", errors="replace").split())
+    )
 
     return IndexedMessage(
         message_ref=message_ref,
+        message_id=message_id,
         sender=sender,
         recipients=recipients,
         cc=cc,

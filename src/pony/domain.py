@@ -216,19 +216,19 @@ class FolderRef:
 
 @dataclass(frozen=True, slots=True)
 class MessageRef:
-    """A message's *semantic* identity, scoped to an account and folder.
+    """A message's row identity in the local index.
 
-    ``rfc5322_id`` is the value of the RFC 5322 ``Message-ID:`` header
-    (synthesised when missing).  It is deliberately *not* the backend's
-    on-disk storage key — that lives on :class:`IndexedMessage` as
-    ``storage_key`` and is consumed by :mod:`pony.storage` methods.
-    Mixing the two has been the source of silent failures; keep them
-    apart.
+    Identity is per-row: ``id`` is the SQLite autoincrement primary key
+    of the ``messages`` table, scoped by ``account_name`` and
+    ``folder_name`` for clarity at call sites (the id alone is unique
+    globally).  The RFC 5322 ``Message-ID:`` header is *not* part of
+    identity — it lives as a display attribute on
+    :class:`IndexedMessage` and may be empty or shared between rows.
     """
 
     account_name: str
     folder_name: str
-    rfc5322_id: str
+    id: int
 
 
 class MessageFlag(StrEnum):
@@ -247,6 +247,7 @@ class MessageStatus(StrEnum):
     ACTIVE = "active"
     TRASHED = "trashed"
     DELETED = "deleted"
+    PENDING_MOVE = "pending_move"
 
 
 # A set of known flags paired with opaque server-side flag strings that
@@ -352,27 +353,6 @@ class FolderQuickStatus:
 
 
 
-class OperationType(StrEnum):
-    """Mutation operations queued for remote reconciliation."""
-
-    DELETE = "delete"
-    MARK_READ = "mark-read"
-    MARK_UNREAD = "mark-unread"
-    FLAG = "flag"
-    UNFLAG = "unflag"
-
-
-@dataclass(frozen=True, slots=True)
-class PendingOperation:
-    """A deferred remote mutation operation."""
-
-    operation_id: str
-    account_name: str
-    message_ref: MessageRef
-    operation_type: OperationType
-    created_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
-
-
 @dataclass(frozen=True, slots=True)
 class SearchQuery:
     """A structured search request."""
@@ -390,9 +370,19 @@ class SearchQuery:
 class IndexedMessage:
     """Indexed metadata stored in SQLite.
 
+    ``message_ref.id`` is the row's primary key.  A row that has not
+    yet been persisted carries ``id=0``.
+
+    ``message_id`` is the RFC 5322 ``Message-ID:`` header, used for
+    display, reply threading, and import-time duplicate detection.  It
+    is not a key — multiple rows in one folder may share the same
+    value.  Empty when the header was missing on import.
+
     ``uid`` is the IMAP UID for this message in its folder.  It is
-    ``None`` for local-only messages (drafts, local accounts) and for
-    messages whose UIDVALIDITY has been reset (UIDs cleared).
+    ``None`` for local-only rows (compose drafts, pending moves not yet
+    pushed) and for messages whose UIDVALIDITY has been reset.
+    ``uid_validity`` is the server's UIDVALIDITY at the moment ``uid``
+    was assigned; ``0`` means UID has never been recorded.
 
     ``local_flags`` is what the user intends the flags to be.
     ``base_flags`` is the server's flag state at the last successful sync;
@@ -403,6 +393,11 @@ class IndexedMessage:
     ``$Important``, etc.) that Pony does not model but must round-trip
     through STORE operations.
     ``local_status`` tracks the message through its local lifecycle.
+    ``source_folder`` / ``source_uid`` are populated on
+    ``PENDING_MOVE`` rows: the row currently lives in
+    ``message_ref.folder_name`` but the server still has the message at
+    ``(source_folder, source_uid)``.  Sync executes the server-side
+    move and clears these fields once the new ``uid`` is known.
     ``synced_at`` records when this message was last reconciled with the
     IMAP server.
     """
@@ -418,12 +413,16 @@ class IndexedMessage:
     base_flags: frozenset[MessageFlag]
     local_status: MessageStatus
     received_at: datetime
+    message_id: str = ""
     uid: int | None = None
+    uid_validity: int = 0
     server_flags: frozenset[MessageFlag] = frozenset()
     extra_imap_flags: frozenset[str] = frozenset()
     has_attachments: bool = False
     trashed_at: datetime | None = None
     synced_at: datetime | None = None
+    source_folder: str | None = None
+    source_uid: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +440,7 @@ class FolderMessageSummary:
     """
 
     message_ref: MessageRef
+    message_id: str
     storage_key: str
     sender: str
     subject: str
@@ -452,44 +452,44 @@ class FolderMessageSummary:
 
 @dataclass(frozen=True, slots=True)
 class PendingPush:
-    """Narrow projection of ``messages`` for the sync fast-path planner.
+    """Narrow projection of ``messages`` for the sync planner.
 
-    ``_plan_fast_path_folder`` only emits ``PushFlagsOp``,
-    ``PushDeleteOp``, ``PushAppendOp``, or ``RestoreOp``, which together
-    need seven columns out of nineteen.  A SQL ``WHERE`` that already
-    filters to rows requiring a push returns zero rows for a quiescent
-    folder, so the fast path's cost scales with the number of *local
-    changes*, not the folder size.  Loading a full ``IndexedMessage``
-    and its datetime / flag parsing would dominate the fast path on
-    large archives; this type skips them.
+    Filters to rows that need a server-side push: pending appends,
+    pending moves, trashed rows, and rows with flag drift.  A SQL
+    ``WHERE`` that already filters returns zero rows for a quiescent
+    folder, so the cost scales with the number of *local changes*,
+    not the folder size.
     """
 
     message_ref: MessageRef
+    message_id: str
     local_status: MessageStatus
     uid: int | None
     storage_key: str
     local_flags: frozenset[MessageFlag]
     extra_imap_flags: frozenset[str]
+    source_folder: str | None = None
+    source_uid: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SlowPathRow:
-    """Narrow projection of ``messages`` for the sync slow-path planner.
+    """Narrow projection of ``messages`` for the sync planner.
 
-    ``_plan_folder`` only reads seven columns out of nineteen: the
-    message ref, uid, local/base flag sets, ``extra_imap_flags``,
-    ``storage_key`` and ``local_status``.  Hydrating a full
-    ``IndexedMessage`` for every row in the folder pays a datetime parse
-    per timestamp and frozenset construction per flag column for rows
-    the planner never touches (server-deleted UIDs it already matched,
-    surviving UIDs with stable flags, rows not considered by mid).
-    This projection skips that cost.
+    The planner reads only the message ref, uid, local/base flag sets,
+    ``extra_imap_flags``, ``storage_key``, ``local_status`` and the
+    source-fields.  Hydrating a full ``IndexedMessage`` would pay a
+    datetime parse and frozenset construction per row for columns the
+    planner never touches.
     """
 
     message_ref: MessageRef
+    message_id: str
     local_status: MessageStatus
     uid: int | None
     storage_key: str
     local_flags: frozenset[MessageFlag]
     base_flags: frozenset[MessageFlag]
     extra_imap_flags: frozenset[str]
+    source_folder: str | None = None
+    source_uid: int | None = None

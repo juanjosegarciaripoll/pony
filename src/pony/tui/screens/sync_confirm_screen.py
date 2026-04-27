@@ -14,12 +14,12 @@ from ...sync import (
     MergeFlagsOp,
     ProgressInfo,
     PullFlagsOp,
+    PushAppendOp,
     PushDeleteOp,
     PushFlagsOp,
     PushMoveOp,
     RestoreOp,
     ServerDeleteOp,
-    ServerMoveOp,
     SyncPlan,
 )
 from .dialog_screen import DialogScreen
@@ -28,8 +28,9 @@ from .dialog_screen import DialogScreen
 def _plan_summary(plan: SyncPlan) -> str:
     """One-line summary of non-fetch operations."""
     server_del = plan.count_ops(ServerDeleteOp)
-    server_move = plan.count_ops(ServerMoveOp)
     push_del = plan.count_ops(PushDeleteOp)
+    push_move = plan.count_ops(PushMoveOp)
+    push_append = plan.count_ops(PushAppendOp)
     pull_flags = plan.count_ops(PullFlagsOp)
     push_flags = plan.count_ops(PushFlagsOp)
     merge_flags = plan.count_ops(MergeFlagsOp)
@@ -38,8 +39,10 @@ def _plan_summary(plan: SyncPlan) -> str:
     parts: list[str] = []
     if server_del:
         parts.append(f"server-delete {server_del}")
-    if server_move:
-        parts.append(f"server-move {server_move}")
+    if push_move:
+        parts.append(f"push-move {push_move}")
+    if push_append:
+        parts.append(f"push-append {push_append}")
     if push_del:
         parts.append(f"push-delete {push_del}")
     if pull_flags:
@@ -84,10 +87,13 @@ def _plan_detail(plan: SyncPlan) -> str:
                 if isinstance(op, FetchNewOp):
                     continue
                 op_name = type(op).__name__.replace("Op", "")
-                if isinstance(op, (ServerDeleteOp, ServerMoveOp, PushMoveOp)):
-                    detail = op.message_id[:40]
+                if isinstance(op, PushMoveOp):
+                    detail = (
+                        f"{op.source_folder} uid={op.source_uid} "
+                        f"-> {op.target_folder}"
+                    )
                 elif hasattr(op, "message_ref"):
-                    detail = op.message_ref.rfc5322_id[:40]
+                    detail = f"id={op.message_ref.id}"
                 else:
                     detail = ""
                 rows.append(f"    {op_name:<16} {detail}")

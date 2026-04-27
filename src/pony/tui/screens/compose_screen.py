@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import email as _email
-import email.policy as _policy
 import logging
 import subprocess
 import tempfile
@@ -659,15 +657,15 @@ class ComposeScreen(Screen[bool]):
             self.notify(f"Could not save to {folder_hint}: {exc}", severity="warning")
             return
 
-        parsed = _email.message_from_bytes(raw, policy=_policy.default)
-        message_id = parsed.get("Message-ID", storage_key) or storage_key
         projected = project_rfc822_message(
             message_ref=MessageRef(
                 account_name=account.name,
                 folder_name=folder_name,
-                rfc5322_id=message_id,
+                id=0,
             ),
             raw_message=raw,
             storage_key=storage_key,
         )
-        self._index.upsert_message(message=projected)
+        # Sync's PushAppendOp picks the row up from the (folder, uid IS
+        # NULL) state and APPENDs it to the server.
+        self._index.insert_message(message=projected)

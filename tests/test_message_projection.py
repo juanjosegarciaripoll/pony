@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 _REF = MessageRef(
     account_name="personal",
     folder_name="INBOX",
-    rfc5322_id="test-msg",
+    id=0,
 )
 
 
