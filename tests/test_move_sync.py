@@ -54,21 +54,24 @@ def _simulate_tui_move_same_account(
         m for m in index.list_folder_messages(folder=source)
         if m.storage_key == source_storage_key
     ]
-    new_row = dataclasses.replace(
+    # Same-account move: keep the row, mark PENDING_MOVE.
+    updated = dataclasses.replace(
         source_row,
         message_ref=MessageRef(
             account_name=target.account_name,
             folder_name=target.folder_name,
-            rfc5322_id=source_row.message_ref.rfc5322_id,
+            id=source_row.message_ref.id,
         ),
         storage_key=new_key,
         uid=None,
         server_flags=frozenset(),
         extra_imap_flags=frozenset(),
         synced_at=None,
+        local_status=MessageStatus.PENDING_MOVE,
+        source_folder=source.folder_name,
+        source_uid=source_row.uid,
     )
-    index.delete_message(message_ref=source_row.message_ref)
-    index.upsert_message(message=new_row)
+    index.update_message(message=updated)
 
 
 def _simulate_tui_move_cross_account(
@@ -100,22 +103,26 @@ def _simulate_tui_move_cross_account(
         message_ref=MessageRef(
             account_name=target.account_name,
             folder_name=target.folder_name,
-            rfc5322_id=new_mid,
+            id=0,
         ),
+        message_id=new_mid,
         storage_key=new_key,
         uid=None,
+        uid_validity=0,
         base_flags=frozenset(),
         server_flags=frozenset(),
         extra_imap_flags=frozenset(),
         local_status=MessageStatus.ACTIVE,
         trashed_at=None,
         synced_at=None,
+        source_folder=None,
+        source_uid=None,
     )
-    index.upsert_message(message=target_row)
+    index.insert_message(message=target_row)
 
     # Trash the source (IMAP) so the next sync EXPUNGEs it server-side.
     trashed = dataclasses.replace(source_row, local_status=MessageStatus.TRASHED)
-    index.upsert_message(message=trashed)
+    index.update_message(message=trashed)
     return new_mid
 
 

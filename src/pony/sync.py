@@ -634,6 +634,26 @@ class ImapSyncService:
             uid_to_flags = {uid: v[1] for uid, v in uid_metadata.items()}
             slow_path[folder_name] = (uid_to_mid, uid_to_flags)
 
+        # Build a cross-folder UID view from the per-folder STATUS /
+        # FETCH outputs.  Fast and medium paths confirmed the server's
+        # UID set matches the local set; slow paths have an explicit
+        # uid_to_mid map.  PENDING_MOVE rows whose ``source_uid`` is
+        # absent from the source folder's view fall back to
+        # ``PushAppendOp`` — the move was interrupted (or the source
+        # was purged by another client) so APPEND is the only way to
+        # land the local copy on the server.
+        remote_uids_by_folder: dict[str, set[int]] = {}
+        for fn in fast_path:
+            remote_uids_by_folder[fn] = self._index.list_folder_uids(
+                account_name=account.name, folder_name=fn,
+            )
+        for fn in medium_path:
+            remote_uids_by_folder[fn] = self._index.list_folder_uids(
+                account_name=account.name, folder_name=fn,
+            )
+        for fn, (uid_to_mid, _) in slow_path.items():
+            remote_uids_by_folder[fn] = set(uid_to_mid.keys())
+
         # Plan each folder.
         folder_plans: list[FolderSyncPlan] = []
         for folder_name in server_folders:
@@ -646,6 +666,7 @@ class ImapSyncService:
                         folder_name=folder_name,
                         stored=fast_path[folder_name],
                         read_only=folder_policy.is_read_only(folder_name),
+                        remote_uids_by_folder=remote_uids_by_folder,
                     )
                 elif folder_name in medium_path:
                     stored, changed = medium_path[folder_name]
@@ -655,6 +676,7 @@ class ImapSyncService:
                         stored=stored,
                         changed_flags=changed,
                         read_only=folder_policy.is_read_only(folder_name),
+                        remote_uids_by_folder=remote_uids_by_folder,
                     )
                 else:
                     uid_to_mid, uid_to_flags = slow_path[folder_name]
@@ -665,6 +687,7 @@ class ImapSyncService:
                         uid_to_mid=uid_to_mid,
                         uid_to_flags=uid_to_flags,
                         read_only=folder_policy.is_read_only(folder_name),
+                        remote_uids_by_folder=remote_uids_by_folder,
                     )
                 plan = dataclasses.replace(
                     plan,
@@ -689,6 +712,7 @@ class ImapSyncService:
             folder_plans.append(
                 self._plan_new_folder(
                     account=account, folder_name=folder_name,
+                    remote_uids_by_folder=remote_uids_by_folder,
                 )
             )
 
@@ -737,10 +761,12 @@ class ImapSyncService:
         folder_name: str,
         stored: FolderSyncState,
         read_only: bool,
+        remote_uids_by_folder: dict[str, set[int]],
     ) -> FolderSyncPlan:
         """Push-only plan: no FETCH, no fresh UID/flag info from server."""
         ops = self._pending_push_ops(
             account=account, folder_name=folder_name, read_only=read_only,
+            remote_uids_by_folder=remote_uids_by_folder,
         )
         return FolderSyncPlan(
             folder_name=folder_name,
@@ -757,10 +783,12 @@ class ImapSyncService:
         stored: FolderSyncState,
         changed_flags: dict[int, FlagSet],
         read_only: bool,
+        remote_uids_by_folder: dict[str, set[int]],
     ) -> FolderSyncPlan:
         """UID set stable; reconcile only flags whose modseq advanced."""
         ops = self._pending_push_ops(
             account=account, folder_name=folder_name, read_only=read_only,
+            remote_uids_by_folder=remote_uids_by_folder,
         )
         if changed_flags:
             base_by_uid = self._index.list_folder_base_flags(
@@ -799,6 +827,7 @@ class ImapSyncService:
         uid_to_mid: dict[int, str],
         uid_to_flags: dict[int, FlagSet],
         read_only: bool,
+        remote_uids_by_folder: dict[str, set[int]],
     ) -> FolderSyncPlan:
         """Full per-folder UID-set diff (§6 of SYNCHRONIZATION.md)."""
         uid_validity = session.get_uid_validity(folder_name)
@@ -839,10 +868,29 @@ class ImapSyncService:
 
         ops: list[SyncOp] = []
 
+        # C-2 detection: a locally-TRASHED row whose server flags
+        # changed since base means the user's delete intent collides
+        # with a real server-side update.  Restore the row instead of
+        # pushing the deletion (the user can re-trash on their next
+        # pass).  Compute the row ids that get the C-2 treatment so
+        # ``_pending_push_ops`` can skip emitting PushDeleteOp for them.
+        c2_row_ids: set[int] = set()
+        for uid in remote_uids & local_uids:
+            row = rows_by_uid[uid]
+            if row.local_status != MessageStatus.TRASHED:
+                continue
+            remote_flags, _ = uid_to_flags.get(
+                uid, (frozenset(), frozenset()),
+            )
+            if remote_flags != row.base_flags and not read_only:
+                c2_row_ids.add(row.message_ref.id)
+
         # Pending-push rows for this folder (uid IS NULL or PENDING_MOVE
         # or TRASHED or flag drift).  Emitted regardless of UID diff.
         ops.extend(self._pending_push_ops(
-            account=account, folder_name=folder_name, read_only=read_only,
+            account=account, folder_name=folder_name,
+            read_only=read_only, suppress_delete_ids=c2_row_ids,
+            remote_uids_by_folder=remote_uids_by_folder,
         ))
 
         # Step: new UIDs on the server.
@@ -895,10 +943,13 @@ class ImapSyncService:
             )
             if row.local_status == MessageStatus.TRASHED:
                 # C-2: server still has a row we trashed.  In a
-                # writable folder push the delete (handled by
-                # _pending_push_ops); in read-only, restore.  When the
-                # server *also* changed flags, restore + pull.
-                if read_only:
+                # read-only folder we always restore (no way to push
+                # the delete); in a writable folder, restore + pull
+                # only when the server's flags actually changed —
+                # that's the signal that the deletion conflicts with
+                # a real server-side update.  Otherwise the delete
+                # already queued by ``_pending_push_ops`` runs.
+                if read_only or row.message_ref.id in c2_row_ids:
                     ops.append(RestoreOp(message_ref=row.message_ref))
                     ops.append(
                         PullFlagsOp(
@@ -943,10 +994,12 @@ class ImapSyncService:
         *,
         account: AccountConfig,
         folder_name: str,
+        remote_uids_by_folder: dict[str, set[int]],
     ) -> FolderSyncPlan:
         """Plan a folder that lives only locally (about to be CREATEd)."""
         ops = self._pending_push_ops(
             account=account, folder_name=folder_name, read_only=False,
+            remote_uids_by_folder=remote_uids_by_folder,
         )
         return FolderSyncPlan(
             folder_name=folder_name,
@@ -962,6 +1015,8 @@ class ImapSyncService:
         account: AccountConfig,
         folder_name: str,
         read_only: bool,
+        suppress_delete_ids: set[int] = frozenset(),  # type: ignore[assignment]
+        remote_uids_by_folder: dict[str, set[int]] | None = None,
     ) -> list[SyncOp]:
         """Emit ops driven by local mutations recorded in the index."""
         ops: list[SyncOp] = []
@@ -970,6 +1025,12 @@ class ImapSyncService:
         )
         for row in candidates:
             if row.local_status == MessageStatus.TRASHED:
+                if row.message_ref.id in suppress_delete_ids:
+                    # C-2: server changed flags on a locally-trashed
+                    # row.  The slow-path planner will emit RestoreOp
+                    # and PullFlagsOp for this row in its flag
+                    # reconciliation step.
+                    continue
                 if read_only:
                     ops.append(RestoreOp(message_ref=row.message_ref))
                 elif row.uid is not None:
@@ -996,9 +1057,24 @@ class ImapSyncService:
                     or row.source_folder is None
                     or row.source_uid is None
                 ):
-                    # Cannot push the move: the source state is gone
-                    # or the destination is read-only.  Leave the row
+                    # Cannot push the move: missing source handle or
+                    # the destination is read-only.  Leave the row
                     # untouched until the user resolves it.
+                    continue
+                # Interrupted-move recovery: if the source folder was
+                # scanned and ``source_uid`` is no longer there, the
+                # message is gone server-side.  APPEND to the target
+                # instead — the user's archive intent stands.
+                source_view = (
+                    remote_uids_by_folder.get(row.source_folder)
+                    if remote_uids_by_folder is not None
+                    else None
+                )
+                if (
+                    source_view is not None
+                    and row.source_uid not in source_view
+                ):
+                    ops.append(PushAppendOp(message_ref=row.message_ref))
                     continue
                 ops.append(
                     PushMoveOp(

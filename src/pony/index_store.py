@@ -338,10 +338,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 "WHERE type='table' AND name='messages'"
             ).fetchone() is not None
 
-            if has_messages and version not in (0, _MIGRATABLE_FROM, _SCHEMA_VERSION):
-                # Anything older than v2 predates the supported
-                # migration path; the CLI offers an export-then-reset
-                # recovery workflow for these.
+            if has_messages and version not in (
+                _MIGRATABLE_FROM, _SCHEMA_VERSION,
+            ):
+                # A messages table at any unrecognised version is a
+                # legacy DB.  The CLI offers an export-then-reset
+                # recovery workflow.  ``version == 0`` is a fresh DB
+                # only when there is no messages table yet.
                 raise SchemaMismatchError(
                     database_path=self._database_path,
                     found=version,
@@ -1022,8 +1025,27 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def clear_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> None:
-        """NULL out uid and server-state columns for a folder (UIDVALIDITY reset)."""
+        """Drop ACTIVE rows for a folder on UIDVALIDITY reset.
+
+        ACTIVE rows are recoverable from the server's new UID epoch
+        via the next slow-path scan, so deleting them here avoids a
+        spurious PushAppendOp for every row (which would happen if we
+        merely NULLed ``uid``).  PENDING_MOVE rows keep their
+        ``source_*`` server-side handle and so survive; TRASHED rows
+        survive too — the user already asked for them gone.
+        """
         with self._use() as conn:
+            conn.execute(
+                """
+                DELETE FROM messages
+                WHERE account_name = ? AND folder_name = ?
+                  AND local_status = ?
+                """,
+                (account_name, folder_name, MessageStatus.ACTIVE.value),
+            )
+            # Surviving non-ACTIVE rows lose their stale UID epoch so
+            # a stray uid_validity doesn't accidentally match a future
+            # uid in this folder.
             conn.execute(
                 """
                 UPDATE messages

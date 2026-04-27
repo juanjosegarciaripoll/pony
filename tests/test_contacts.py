@@ -209,8 +209,9 @@ def _make_indexed_message(
 ) -> IndexedMessage:
     return IndexedMessage(
         message_ref=MessageRef(
-            account_name="test", folder_name="INBOX", rfc5322_id="<t@t>"
+            account_name="test", folder_name="INBOX", id=0,
         ),
+        message_id="<t@t>",
         sender="sender@example.com",
         recipients=recipients,
         cc=cc,

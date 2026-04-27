@@ -264,7 +264,7 @@ class LegacyProjectionTest(unittest.TestCase):
             message_ref=MessageRef(
                 account_name="personal",
                 folder_name="INBOX",
-                rfc5322_id="m-42",
+                id=0,
             ),
             raw_message=message.as_bytes(),
             storage_key="m-42",

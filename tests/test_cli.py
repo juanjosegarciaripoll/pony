@@ -8,12 +8,27 @@ import os
 import sys
 import unittest
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
 
 from pony.cli import main
+
+
+@dataclass(frozen=True)
+class _SeedHandle:
+    """Carrier for a seeded message: row identity plus its display Message-ID.
+
+    Tests pass ``rfc5322_id`` to CLI commands that take a Message-ID
+    argument and ``id`` to commands that take a row id.
+    """
+
+    account_name: str
+    folder_name: str
+    id: int
+    rfc5322_id: str
 
 
 class CliTestCase(unittest.TestCase):
@@ -116,17 +131,13 @@ class CliTestCase(unittest.TestCase):
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
             storage_key = mirror.store_message(folder=folder, raw_message=raw)
-            message_ref = MessageRef(
-                account_name=account.name,
-                folder_name="INBOX",
-                rfc5322_id=rfc5322_id,
-            )
-
             # Seed the index with a row whose body_preview simulates the
             # pre-fix bug (CSS text leaked into the preview).
             projected = project_rfc822_message(
-                message_ref=message_ref, raw_message=raw,
-                storage_key=storage_key,
+                message_ref=MessageRef(
+                    account_name=account.name, folder_name="INBOX", id=0,
+                ),
+                raw_message=raw, storage_key=storage_key,
             )
             import dataclasses
             stale = dataclasses.replace(
@@ -136,13 +147,13 @@ class CliTestCase(unittest.TestCase):
             )
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
-            index.upsert_message(message=stale)
+            saved = index.insert_message(message=stale)
 
             output = run_cli("--config", str(config_path), "rescan")
             self.assertIn("Rescan complete", output)
             self.assertIn("1/1", output)
 
-            refreshed = index.get_message(message_ref=message_ref)
+            refreshed = index.get_message(message_ref=saved.message_ref)
             assert refreshed is not None
             self.assertNotIn("color:red", refreshed.body_preview)
             self.assertNotIn(".x{", refreshed.body_preview)
@@ -180,15 +191,11 @@ class CliTestCase(unittest.TestCase):
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
             storage_key = mirror.store_message(folder=folder, raw_message=raw)
-            message_ref = MessageRef(
-                account_name=account.name,
-                folder_name="INBOX",
-                rfc5322_id=rfc5322_id,
-            )
-
             projected = project_rfc822_message(
-                message_ref=message_ref, raw_message=raw,
-                storage_key=storage_key,
+                message_ref=MessageRef(
+                    account_name=account.name, folder_name="INBOX", id=0,
+                ),
+                raw_message=raw, storage_key=storage_key,
             )
             import dataclasses
             with_sync_state = dataclasses.replace(
@@ -201,11 +208,11 @@ class CliTestCase(unittest.TestCase):
             )
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
-            index.upsert_message(message=with_sync_state)
+            saved = index.insert_message(message=with_sync_state)
 
             run_cli("--config", str(config_path), "rescan")
 
-            refreshed = index.get_message(message_ref=message_ref)
+            refreshed = index.get_message(message_ref=saved.message_ref)
             assert refreshed is not None
             self.assertEqual(refreshed.uid, 4242)
             self.assertEqual(
@@ -522,19 +529,22 @@ def _seed_one_message(
     folder = FolderRef(account_name=account.name, folder_name="INBOX")
     storage_key = mirror.store_message(folder=folder, raw_message=raw)
 
-    message_ref = MessageRef(
-        account_name=account.name,
-        folder_name="INBOX",
-        rfc5322_id=rfc5322_id,
-    )
     projected = project_rfc822_message(
-        message_ref=message_ref, raw_message=raw, storage_key=storage_key,
+        message_ref=MessageRef(
+            account_name=account.name, folder_name="INBOX", id=0,
+        ),
+        raw_message=raw, storage_key=storage_key,
     )
     stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    index.upsert_message(message=stored)
-    return message_ref
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
 
 
 def _seed_message_with_attachments(config_path: Path):
@@ -567,19 +577,22 @@ def _seed_message_with_attachments(config_path: Path):
     folder = FolderRef(account_name=account.name, folder_name="INBOX")
     storage_key = mirror.store_message(folder=folder, raw_message=raw)
 
-    message_ref = MessageRef(
-        account_name=account.name,
-        folder_name="INBOX",
-        rfc5322_id="<att1-fixture@example.com>",
-    )
     projected = project_rfc822_message(
-        message_ref=message_ref, raw_message=raw, storage_key=storage_key,
+        message_ref=MessageRef(
+            account_name=account.name, folder_name="INBOX", id=0,
+        ),
+        raw_message=raw, storage_key=storage_key,
     )
     stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    index.upsert_message(message=stored)
-    return message_ref
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
 
 
 def run_cli(*argv: str) -> str:

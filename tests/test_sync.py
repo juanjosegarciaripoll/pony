@@ -181,7 +181,7 @@ class FakeImapSession:
         raw_message: bytes,
         flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str] = frozenset(),
-    ) -> None:
+    ) -> int | None:
         self.call_log.append(f"append:{folder_name}")
         # Mirror real IMAP: APPEND to a non-existent mailbox is an error.
         if folder_name not in self.folders:
@@ -202,6 +202,11 @@ class FakeImapSession:
             self._uidnext.get(folder_name, 1), new_uid + 1,
         )
         self._bump_modseq(folder_name, new_uid)
+        # Simulate APPENDUID (RFC 4315) — real servers usually advertise
+        # UIDPLUS, so the planner's fast path is what tests should
+        # exercise.  Tests that need the no-UIDPLUS branch can subclass
+        # and override.
+        return new_uid
 
     def mark_deleted(self, folder_name: str, uid: int) -> None:
         self.deleted_uids.append(uid)
@@ -215,7 +220,7 @@ class FakeImapSession:
 
     def move_message(
         self, source_folder: str, uid: int, target_folder: str,
-    ) -> None:
+    ) -> int | None:
         # Record the call so tests can assert PushMoveOp executed.
         self.call_log.append(f"move:{source_folder}->{target_folder}:{uid}")
         self.moves.append((source_folder, uid, target_folder))
@@ -228,7 +233,7 @@ class FakeImapSession:
         source = self.folders.get(source_folder, {})
         entry = source.pop(uid, None)
         if entry is None:
-            return
+            return None
         target = self.folders[target_folder]
         new_uid = max(target.keys(), default=0) + 2000
         target[new_uid] = entry
@@ -241,6 +246,8 @@ class FakeImapSession:
         extra = self.extra_flags.pop((source_folder, uid), frozenset())
         if extra:
             self.extra_flags[(target_folder, new_uid)] = extra
+        # Simulate COPYUID — UIDPLUS is universal on modern IMAP stacks.
+        return new_uid
 
     def create_folder(self, folder_name: str) -> None:
         self.call_log.append(f"create:{folder_name}")
@@ -364,7 +371,7 @@ class SyncedMessageRetrievalTestCase(unittest.TestCase):
         [row] = index.list_folder_messages(folder=folder)
         # Sanity: the two identifiers really are different — otherwise
         # this test would pass by the same accident that masked the bug.
-        self.assertNotEqual(row.message_ref.rfc5322_id, row.storage_key)
+        self.assertNotEqual(row.message_id, row.storage_key)
 
         # The public retrieval contract: the mirror takes a FolderRef +
         # storage_key pulled from the IndexedMessage.  This is what
@@ -394,7 +401,7 @@ class NewMessagesTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        mids = {r.message_ref.rfc5322_id for r in rows}
+        mids = {r.message_id for r in rows}
         self.assertIn("<msg1@example.com>", mids)
         self.assertIn("<msg2@example.com>", mids)
 
@@ -436,7 +443,7 @@ class NewMessagesTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].uid, 42)
-        self.assertEqual(rows[0].message_ref.rfc5322_id, "<hi@example.com>")
+        self.assertEqual(rows[0].message_id, "<hi@example.com>")
         self.assertIsNotNone(rows[0].synced_at)
 
     def test_sync_is_idempotent(self) -> None:
@@ -489,7 +496,7 @@ class FlagReconciliationTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
         phone = next(
-            r for r in rows if r.message_ref.rfc5322_id == "<phone@example.com>"
+            r for r in rows if r.message_id == "<phone@example.com>"
         )
         self.assertEqual(phone.local_flags, frozenset({MessageFlag.SEEN}))
 
@@ -549,7 +556,7 @@ class FlagReconciliationTestCase(unittest.TestCase):
         service.sync()
 
         rows = index.list_folder_messages(folder=folder)
-        both = next(r for r in rows if r.message_ref.rfc5322_id == "<both@example.com>")
+        both = next(r for r in rows if r.message_id == "<both@example.com>")
         self.assertIn(MessageFlag.SEEN, both.local_flags)
         self.assertIn(MessageFlag.FLAGGED, both.local_flags)
 
@@ -575,9 +582,17 @@ class ServerDeletionTestCase(unittest.TestCase):
 
 
 class ServerMoveTestCase(unittest.TestCase):
-    """Messages moved between folders on the server are tracked locally."""
+    """Server-side moves are detected as delete-on-source + fetch-on-target.
 
-    def test_server_move_updates_local_folder(self) -> None:
+    The new identity model has no cross-folder Message-ID tracking.  A
+    UID disappearing from one folder and a (different) UID appearing
+    in another with the same Message-ID are two independent events:
+    the source row is trashed; the target gets a fresh row.  The body
+    is re-downloaded once — acceptable for the rare server-side move
+    case (e.g. someone moved it via webmail).
+    """
+
+    def test_server_side_cross_folder_move_is_delete_plus_fetch(self) -> None:
         raw = _make_raw_message("Move me", "<move@example.com>")
         service, index, _, session = _setup(
             server_folders={
@@ -587,21 +602,28 @@ class ServerMoveTestCase(unittest.TestCase):
         )
         service.sync()  # ingest into INBOX
 
-        # Move from INBOX to Archive on the server.
+        # Server-side move: UID disappears from INBOX, appears in Archive.
         del session.folders["INBOX"][1]
         session.folders["Archive"][2] = ("<move@example.com>", frozenset(), raw)
         service.sync()
 
         inbox = FolderRef(account_name="personal", folder_name="INBOX")
         archive = FolderRef(account_name="personal", folder_name="Archive")
-        inbox_rows = index.list_folder_messages(folder=inbox)
-        archive_rows = index.list_folder_messages(folder=archive)
+        inbox_active = [
+            r for r in index.list_folder_messages(folder=inbox)
+            if r.local_status == MessageStatus.ACTIVE
+        ]
+        archive_active = [
+            r for r in index.list_folder_messages(folder=archive)
+            if r.local_status == MessageStatus.ACTIVE
+        ]
 
-        inbox_mids = {r.message_ref.rfc5322_id for r in inbox_rows}
-        archive_mids = {r.message_ref.rfc5322_id for r in archive_rows}
-
-        self.assertNotIn("<move@example.com>", inbox_mids)
-        self.assertIn("<move@example.com>", archive_mids)
+        # Source row trashed (deferred-destroy retention keeps it for
+        # the user to recover); target row fetched fresh.
+        self.assertEqual(inbox_active, [])
+        self.assertEqual(len(archive_active), 1)
+        self.assertEqual(archive_active[0].message_id, "<move@example.com>")
+        self.assertEqual(archive_active[0].uid, 2)
 
 
 class UidValidityResetTestCase(unittest.TestCase):
@@ -631,14 +653,14 @@ class UidValidityResetTestCase(unittest.TestCase):
         rows_after = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows_after), 1)
         self.assertEqual(rows_after[0].uid, 10)
-        mids = {r.message_ref.rfc5322_id for r in rows_after}
+        mids = {r.message_id for r in rows_after}
         self.assertIn("<reset@example.com>", mids)
 
 
-class SyntheticMessageIdTestCase(unittest.TestCase):
-    """Messages without a Message-ID header receive a stable synthetic ID."""
+class MissingMessageIdTestCase(unittest.TestCase):
+    """Messages without a Message-ID header are accepted with empty mid."""
 
-    def test_missing_message_id_gets_synthetic(self) -> None:
+    def test_missing_message_id_is_empty_string(self) -> None:
         msg = EmailMessage()
         msg["From"] = "sender@example.com"
         msg["To"] = "recipient@example.com"
@@ -655,10 +677,10 @@ class SyntheticMessageIdTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
-        self.assertTrue(
-            rows[0].message_ref.rfc5322_id.startswith("<synthetic-"),
-            f"Expected synthetic ID, got {rows[0].message_ref.rfc5322_id!r}",
-        )
+        # Identity is the row id; an empty message_id is fine and does
+        # not block ingestion or push-back.
+        self.assertEqual(rows[0].message_id, "")
+        self.assertGreater(rows[0].message_ref.id, 0)
 
     def test_synthetic_id_is_stable_across_syncs(self) -> None:
         msg = EmailMessage()
@@ -966,10 +988,15 @@ class WatermarkTestCase(unittest.TestCase):
 
 
 class DuplicateMessageIdTestCase(unittest.TestCase):
-    """C-7: duplicate Message-ID within and across folders."""
+    """Duplicate Message-ID within and across folders is no longer special."""
 
-    def test_duplicate_mid_within_folder_both_ingested(self) -> None:
-        """Two UIDs with the same Message-ID in one folder both end up indexed."""
+    def test_duplicate_mid_in_folder_creates_two_rows(self) -> None:
+        """Two UIDs with the same Message-ID in one folder yield two rows.
+
+        Identity is per-row, not per-(folder, mid).  Both rows share
+        the same display ``message_id``; their ``id`` and ``uid``
+        differ.  No synthetic IDs anywhere — that workaround is gone.
+        """
         raw1 = _make_raw_message("First", "<dup@example.com>")
         raw2 = _make_raw_message("Second", "<dup@example.com>")
         service, index, _, _ = _setup(
@@ -985,13 +1012,39 @@ class DuplicateMessageIdTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 2)
-        mids = {r.message_ref.rfc5322_id for r in rows}
-        # One keeps the real ID, the other gets a synthetic one.
-        self.assertTrue(
-            any(mid.startswith("<synthetic-") for mid in mids),
-            f"Expected one synthetic ID, got {mids!r}",
+        # Both rows expose the real Message-ID — no synthetics.
+        self.assertEqual(
+            {r.message_id for r in rows}, {"<dup@example.com>"},
         )
-        self.assertIn("<dup@example.com>", mids)
+        # Identities differ on row id and on UID.
+        self.assertEqual(len({r.message_ref.id for r in rows}), 2)
+        self.assertEqual({r.uid for r in rows}, {1, 2})
+
+    def test_no_append_loop_on_duplicate_mid(self) -> None:
+        """Regression: a folder with two same-mid UIDs converges in one sync.
+
+        The previous synthetic-mid workaround caused a non-converging
+        APPEND loop — every sync re-APPENDed the synthetic-id rows.
+        With per-row identity, the second sync emits zero ops.
+        """
+        raw1 = _make_raw_message("First", "<dup@example.com>")
+        raw2 = _make_raw_message("Second", "<dup@example.com>")
+        service, _, _, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("<dup@example.com>", frozenset(), raw1),
+                    2: ("<dup@example.com>", frozenset(), raw2),
+                }
+            }
+        )
+        service.sync()
+        appends_before = [c for c in session.call_log if c.startswith("append:")]
+        service.sync()
+        self.assertEqual(
+            [c for c in session.call_log if c.startswith("append:")],
+            appends_before,
+            "second sync must not APPEND anything (no synthetic-mid loop)",
+        )
 
     def test_duplicate_mid_across_folders_no_false_move(self) -> None:
         """Same Message-ID in two folders: deletion from one is NOT a move."""
@@ -1097,7 +1150,7 @@ class BaseFlagsComparisonTestCase(unittest.TestCase):
         service.sync()
 
         rows = index.list_folder_messages(folder=folder)
-        div = next(r for r in rows if r.message_ref.rfc5322_id == "<div@example.com>")
+        div = next(r for r in rows if r.message_id == "<div@example.com>")
         self.assertIn(MessageFlag.SEEN, div.local_flags)
 
 
@@ -1164,7 +1217,7 @@ class FetchFailureTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index_repo.list_folder_messages(folder=folder)
-        mids = {r.message_ref.rfc5322_id for r in rows}
+        mids = {r.message_id for r in rows}
         # UID 1 and 3 should have been ingested; UID 2 skipped.
         self.assertIn("<good@example.com>", mids)
         self.assertIn("<also-good@example.com>", mids)
@@ -1188,7 +1241,7 @@ class EmptyMessageTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        mids = {r.message_ref.rfc5322_id for r in rows}
+        mids = {r.message_id for r in rows}
         self.assertIn("<good2@example.com>", mids)
         self.assertNotIn("<empty@example.com>", mids)
 
@@ -1310,7 +1363,7 @@ class C2RestoreTestCase(unittest.TestCase):
 
         # Message should be restored to ACTIVE with new flags.
         rows = index.list_folder_messages(folder=folder)
-        c2 = next(r for r in rows if r.message_ref.rfc5322_id == "<c2@example.com>")
+        c2 = next(r for r in rows if r.message_id == "<c2@example.com>")
         self.assertEqual(c2.local_status, MessageStatus.ACTIVE)
         self.assertIn(MessageFlag.SEEN, c2.local_flags)
         # Server should NOT have received a delete.
@@ -1537,11 +1590,12 @@ class CleanupTestCase(unittest.TestCase):
         stale_ref = MessageRef(
             account_name="removed-account",
             folder_name="INBOX",
-            rfc5322_id="<orphan@example.com>",
+            id=0,
         )
-        index.upsert_message(
+        index.insert_message(
             message=IndexedMessage(
                 message_ref=stale_ref,
+                message_id="<orphan@example.com>",
                 sender="x", recipients="y", cc="", subject="orphan",
                 body_preview="", storage_key="",
                 local_flags=frozenset(), base_flags=frozenset(),
@@ -1641,10 +1695,15 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         target: str,
         message_id: str,
     ) -> None:
-        """Simulate the TUI ``A`` action at the index level."""
+        """Simulate the TUI ``A`` action at the index level.
+
+        In-place update: same row, new folder, ``PENDING_MOVE`` status
+        with ``source_folder`` / ``source_uid`` recording the server
+        handle.  No delete + reinsert.
+        """
         ref = FolderRef(account_name="personal", folder_name=source)
         rows = index.list_folder_messages(folder=ref)
-        row = next(r for r in rows if r.message_ref.rfc5322_id == message_id)
+        row = next(r for r in rows if r.message_id == message_id)
         new_ref = dataclasses.replace(
             row.message_ref, folder_name=target,
         )
@@ -1655,12 +1714,13 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
             synced_at=None,
+            local_status=MessageStatus.PENDING_MOVE,
+            source_folder=source,
+            source_uid=row.uid,
         )
-        with index.connection():
-            index.delete_message(message_ref=row.message_ref)
-            index.upsert_message(message=new_row)
+        index.update_message(message=new_row)
 
-    def test_archive_push_move_and_link_over_two_syncs(self) -> None:
+    def test_archive_uses_uid_move(self) -> None:
         raw = _make_raw_message("Archive me", "<archive@example.com>")
         service, index, _, session = _setup(
             server_folders={
@@ -1678,7 +1738,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             message_id="<archive@example.com>",
         )
 
-        # First post-archive sync: emits PushMoveOp (UID MOVE on server).
+        # One sync: PushMoveOp runs UID MOVE; the row's uid is set
+        # from the COPYUID response in the same op.
         service.sync()
 
         self.assertIn(
@@ -1690,21 +1751,24 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         self.assertEqual(len(session.folders["Archive"]), 1)
         new_uid = next(iter(session.folders["Archive"]))
 
-        # Local Archive row still has uid=NULL at this point
-        # (PushMoveOp does not update it; next sync adopts the uid).
         archive = FolderRef(account_name="personal", folder_name="Archive")
         rows = index.list_folder_messages(folder=archive)
         self.assertEqual(len(rows), 1)
-        self.assertIsNone(rows[0].uid)
-
-        # Second sync: LinkLocalOp adopts the new UID into the pending row.
-        service.sync()
-
-        rows = index.list_folder_messages(folder=archive)
-        self.assertEqual(len(rows), 1)
+        # UID was recovered via COPYUID — no second sync needed.
         self.assertEqual(rows[0].uid, new_uid)
+        self.assertEqual(rows[0].local_status, MessageStatus.ACTIVE)
+        self.assertIsNone(rows[0].source_folder)
+        self.assertIsNone(rows[0].source_uid)
+        self.assertEqual(rows[0].message_id, "<archive@example.com>")
+
+        # A repeat sync must be a no-op (no second MOVE, no APPEND).
+        moves_before = list(session.moves)
+        appends_before = [c for c in session.call_log if c.startswith("append:")]
+        service.sync()
+        self.assertEqual(session.moves, moves_before)
         self.assertEqual(
-            rows[0].message_ref.rfc5322_id, "<archive@example.com>",
+            [c for c in session.call_log if c.startswith("append:")],
+            appends_before,
         )
 
     def test_archive_appended_when_server_has_no_copy(self) -> None:
@@ -1781,8 +1845,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         )
         service.sync()
 
-        # TUI-style archive: move mirror bytes to Archive (creates the
-        # mirror dir via _ensure_folder_dirs) and shift the index row.
+        # TUI-style archive: move mirror bytes to Archive and update the
+        # index row in place (PENDING_MOVE with source pointer).
         inbox = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=inbox)
         row = rows[0]
@@ -1801,10 +1865,11 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
             synced_at=None,
+            local_status=MessageStatus.PENDING_MOVE,
+            source_folder="INBOX",
+            source_uid=row.uid,
         )
-        with index.connection():
-            index.delete_message(message_ref=row.message_ref)
-            index.upsert_message(message=new_row)
+        index.update_message(message=new_row)
 
         service.sync()
 
@@ -1881,13 +1946,14 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             MessageRef,
             MessageStatus,
         )
-        index.upsert_message(
+        index.insert_message(
             message=IndexedMessage(
                 message_ref=MessageRef(
                     account_name="personal",
                     folder_name="Archive",
-                    rfc5322_id="<local@example.com>",
+                    id=0,
                 ),
+                message_id="<local@example.com>",
                 sender="alice@example.com",
                 recipients="bob@example.com",
                 cc="",
@@ -2025,7 +2091,7 @@ class FastPathTestCase(unittest.TestCase):
         self.assertEqual(session.scan_count, 2)
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        mids = {r.message_ref.rfc5322_id for r in rows}
+        mids = {r.message_id for r in rows}
         self.assertIn("<m2@example.com>", mids)
 
     def test_server_deletion_falls_through(self) -> None:
@@ -2049,7 +2115,7 @@ class FastPathTestCase(unittest.TestCase):
         self.assertEqual(session.scan_count, 2)
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        gone = [r for r in rows if r.message_ref.rfc5322_id == "<gone@example.com>"]
+        gone = [r for r in rows if r.message_id == "<gone@example.com>"]
         self.assertEqual(len(gone), 1)
         self.assertEqual(gone[0].local_status, MessageStatus.TRASHED)
 
@@ -2074,13 +2140,14 @@ class FastPathTestCase(unittest.TestCase):
         raw = _make_raw_message("Local only", "<local@example.com>")
         inbox_ref = FolderRef(account_name="personal", folder_name="INBOX")
         storage_key = mirror.store_message(folder=inbox_ref, raw_message=raw)
-        index.upsert_message(
+        index.insert_message(
             message=_IndexedMessage(
                 message_ref=_MessageRef(
                     account_name="personal",
                     folder_name="INBOX",
-                    rfc5322_id="<local@example.com>",
+                    id=0,
                 ),
+                message_id="<local@example.com>",
                 sender="alice@example.com",
                 recipients="bob@example.com",
                 cc="",

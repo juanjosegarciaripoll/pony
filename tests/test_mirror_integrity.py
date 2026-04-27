@@ -50,13 +50,14 @@ def _index_message(
     storage_key: str,
 ) -> None:
     """Insert a minimal message row into the index."""
-    index.upsert_message(
+    index.insert_message(
         message=IndexedMessage(
             message_ref=MessageRef(
                 account_name="test",
                 folder_name=folder,
-                rfc5322_id=f"<{storage_key}@test>",
+                id=0,
             ),
+            message_id=f"<{storage_key}@test>",
             sender="a@test.com",
             recipients="b@test.com",
             cc="",
