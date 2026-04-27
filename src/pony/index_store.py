@@ -718,8 +718,12 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         )
         params: list[object] = [folder.account_name, folder.folder_name]
         if active_only:
-            sql += " AND local_status = ?"
+            # PENDING_MOVE rows live in their target folder awaiting a
+            # server-side push; the user expects them visible there
+            # immediately after archive/move, before the next sync.
+            sql += " AND local_status IN (?, ?)"
             params.append(MessageStatus.ACTIVE.value)
+            params.append(MessageStatus.PENDING_MOVE.value)
         sql += " ORDER BY received_at DESC"
         with self._use() as conn:
             rows = conn.execute(sql, params).fetchall()

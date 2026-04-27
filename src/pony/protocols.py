@@ -228,7 +228,9 @@ class IndexRepository(Protocol):
         Loads only the columns the folder list renders — no recipients,
         cc, body_preview, base_flags, server_flags, extra_imap_flags,
         trashed_at or synced_at — and skips their parsing cost.
-        ``active_only`` filters to ``local_status='active'`` in SQL.
+        ``active_only`` filters to ``local_status IN ('active',
+        'pending_move')`` in SQL — pending-move rows are visible in
+        their target folder while awaiting the next sync push.
         Ordered by ``received_at`` descending.
         """
         ...
