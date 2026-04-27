@@ -258,7 +258,7 @@ async def test_trash_flips_status() -> None:
         await _select_first_inbox(pilot)
         await pilot.press("down")
         await pilot.pause()
-        await pilot.press("d")
+        await pilot.press("D")
         await pilot.pause()
 
     newer_row = index.get_message(message_ref=newer_ref)

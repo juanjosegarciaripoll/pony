@@ -70,7 +70,7 @@ class MainScreen(Screen[None]):
         Binding("w", "open_browser", "Web view"),
         Binding("u", "mark_unread", "Mark unread"),
         Binding("!", "toggle_flagged", "Flag"),
-        Binding("d", "trash", "Trash"),
+        Binding("D", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
         Binding("C", "mark_all_read", "Mark all read"),
         Binding("Y", "copy", "Copy"),

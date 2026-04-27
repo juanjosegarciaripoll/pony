@@ -40,6 +40,7 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
     _Section("Compose", (
         ("c", "New message"),
         ("r", "Reply"),
+        ("R", "Reply all"),
         ("f", "Forward"),
         ("w", "Open in web browser"),
     )),
@@ -54,11 +55,12 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
 
 _RIGHT_SECTIONS: tuple[_Section, ...] = (
     _Section("Messages", (
-        ("R / u", "Mark read / unread"),
+        ("u", "Mark unread"),
+        ("C", "Mark all read"),
         ("!", "Flag / unflag"),
-        ("d", "Trash"),
+        ("D", "Trash"),
         ("A", "Archive"),
-        ("C", "Copy to folder…"),
+        ("Y", "Copy to folder…"),
         ("M", "Move to folder…"),
         ("m / Shift+↑↓", "Toggle mark / extend"),
     )),
