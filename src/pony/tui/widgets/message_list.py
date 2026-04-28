@@ -158,6 +158,15 @@ class MessageListPanel(DataTable[Text]):
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
 
+    def on_data_table_row_highlighted(
+        self, event: DataTable.RowHighlighted
+    ) -> None:
+        event.stop()
+        key = str(event.row_key.value) if event.row_key.value else ""
+        summary = self._find_summary(key)
+        if summary is not None:
+            self.post_message(self.MessageSelected(summary=summary))
+
     def on_data_table_row_selected(
         self, event: DataTable.RowSelected
     ) -> None:

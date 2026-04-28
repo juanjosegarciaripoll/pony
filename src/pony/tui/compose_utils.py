@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid
 from pathlib import Path
 
 from .message_renderer import RenderedMessage
+
+_QUOTE_BOUNDARY_RE = re.compile(
+    r'(?m)^(On .+ wrote:|---------- Forwarded message ----------)$'
+)
+
+
+def _split_at_quote_boundary(text: str) -> tuple[str, str]:
+    """Split *text* into (user_written, quoted) at the reply/forward boundary.
+
+    Returns the full text as the first element and an empty string if no
+    boundary is found.
+    """
+    m = _QUOTE_BOUNDARY_RE.search(text)
+    if not m:
+        return text, ""
+    cut = text.rfind("\n", 0, m.start())
+    if cut == -1:
+        return "", text
+    return text[:cut], text[cut + 1:]
 
 
 def _sig_block(signature: str) -> str:
@@ -116,6 +136,7 @@ def build_email_message(
     body: str,
     attachment_paths: list[Path],
     markdown_mode: bool = False,
+    forwarded_message: bytes | None = None,
 ) -> EmailMessage:
     """Build a ready-to-send :class:`EmailMessage`.
 
@@ -139,22 +160,38 @@ def build_email_message(
     msg["Message-ID"] = make_msgid()
 
     if markdown_mode:
+        import html as _html_mod
+
         from markdown_it import MarkdownIt
-        # Convert plain-text sig-dashes to a Markdown HR and fix up the
-        # signature body so its internal newlines become hard line breaks
-        # (two trailing spaces).  Without this Markdown collapses multi-line
-        # signatures into a single run-on line.
-        # The editor always stores "-- " so the split is safe regardless of
-        # whether the user toggled markdown mode after opening the composer.
+        md = MarkdownIt()
+
+        # Separate the signature first.
         sig_parts = body.rsplit("\n-- \n", 1)
         if len(sig_parts) == 2:
             main_part, sig_part = sig_parts
-            sig_md = sig_part.replace("\n", "  \n")
-            md_body = f"{main_part}\n\n---\n\n{sig_md}"
         else:
-            md_body = body
-        html_body = MarkdownIt().render(md_body)
-        msg.set_content(body)  # text/plain: sig-dashes and newlines intact
+            main_part, sig_part = body, None
+
+        # Separate user-written text from quoted/forwarded content so only
+        # the user's part is interpreted as Markdown.
+        user_part, quoted_part = _split_at_quote_boundary(main_part)
+
+        html_sections: list[str] = []
+        if user_part.strip():
+            html_sections.append(md.render(user_part))
+        if quoted_part.strip():
+            escaped = _html_mod.escape(quoted_part)
+            html_sections.append(
+                '<blockquote style="white-space:pre-wrap;'
+                'border-left:2px solid #ccc;margin:0;padding-left:1em">'
+                f"{escaped}</blockquote>"
+            )
+        if sig_part is not None:
+            sig_md = sig_part.replace("\n", "  \n")
+            html_sections.append(md.render(f"---\n\n{sig_md}"))
+
+        html_body = "\n".join(html_sections)
+        msg.set_content(body)  # text/plain unchanged
         msg.add_alternative(html_body, subtype="html")
     else:
         msg.set_content(body)
@@ -170,5 +207,12 @@ def build_email_message(
             subtype=subtype,
             filename=path.name,
         )
+
+    if forwarded_message is not None:
+        import email.policy
+        from email import message_from_bytes as _parse
+
+        original = _parse(forwarded_message, policy=email.policy.default)
+        msg.add_attachment(original)
 
     return msg

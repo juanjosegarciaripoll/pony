@@ -1365,6 +1365,7 @@ class MainScreen(Screen[None]):
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
+                    forwarded_message=raw,
                 ),
                 contacts=self._contacts,
             )
