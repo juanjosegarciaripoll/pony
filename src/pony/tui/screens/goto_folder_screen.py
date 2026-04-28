@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -13,26 +15,19 @@ from ...domain import FolderRef
 
 
 def _fuzzy_filter(query: str, folders: list[FolderRef]) -> list[FolderRef]:
-    """Return folders whose name contains all query chars in order.
+    """Return folders matching *query* as a subsequence, scored by match span.
 
-    Scored by span (last_match - first_match); ties broken alphabetically.
+    Each character in *query* must appear in the search text in order,
+    equivalent to the regex ``q[0].*?q[1].*?…``.  Shorter spans rank higher;
+    ties are broken alphabetically by folder name.
     """
-    q = query.lower()
+    pattern = re.compile(".*?".join(re.escape(ch) for ch in query.lower()))
     scored: list[tuple[int, str, FolderRef]] = []
     for ref in folders:
         text = f"{ref.account_name} {ref.folder_name}".lower()
-        pos = 0
-        first = last = -1
-        for ch in q:
-            idx = text.find(ch, pos)
-            if idx == -1:
-                break
-            if first == -1:
-                first = idx
-            last = idx
-            pos = idx + 1
-        else:
-            scored.append((last - first, ref.folder_name, ref))
+        m = pattern.search(text)
+        if m:
+            scored.append((m.end() - m.start(), ref.folder_name, ref))
     scored.sort(key=lambda x: (x[0], x[1]))
     return [ref for _, _, ref in scored]
 
