@@ -26,9 +26,9 @@ class FolderTreeNode:
     (``Archives.2026``); nesting is a display concern only.
     """
 
-    label: str                                # last path segment
-    folder_ref: FolderRef | None              # None for synthetic parents
-    own_unread: int                           # 0 for synthetic parents
+    label: str  # last path segment
+    folder_ref: FolderRef | None  # None for synthetic parents
+    own_unread: int  # 0 for synthetic parents
     children: tuple[FolderTreeNode, ...] = field(default_factory=tuple)
 
     def descendant_unread(self) -> int:
@@ -37,9 +37,7 @@ class FolderTreeNode:
         Used to decide whether a synthetic parent is dim (all quiet) or
         bright (at least one descendant has unread).
         """
-        return self.own_unread + sum(
-            c.descendant_unread() for c in self.children
-        )
+        return self.own_unread + sum(c.descendant_unread() for c in self.children)
 
 
 def _split_folder_name(name: str) -> tuple[str, ...]:
@@ -86,28 +84,31 @@ def build_folder_tree(
             all_paths.add(segments[:i])
 
     def _build_at(prefix: tuple[str, ...]) -> tuple[FolderTreeNode, ...]:
-        direct = sorted({
-            p[len(prefix)]
-            for p in all_paths
-            if len(p) == len(prefix) + 1 and p[: len(prefix)] == prefix
-        })
+        direct = sorted(
+            {
+                p[len(prefix)]
+                for p in all_paths
+                if len(p) == len(prefix) + 1 and p[: len(prefix)] == prefix
+            }
+        )
         nodes: list[FolderTreeNode] = []
         for seg in direct:
             child_path = (*prefix, seg)
             real_name = real_by_path.get(child_path)
             folder_ref = (
                 FolderRef(account_name=account_name, folder_name=real_name)
-                if real_name is not None else None
+                if real_name is not None
+                else None
             )
-            own_unread = (
-                unread_counts.get(real_name, 0) if real_name else 0
+            own_unread = unread_counts.get(real_name, 0) if real_name else 0
+            nodes.append(
+                FolderTreeNode(
+                    label=seg,
+                    folder_ref=folder_ref,
+                    own_unread=own_unread,
+                    children=_build_at(child_path),
+                )
             )
-            nodes.append(FolderTreeNode(
-                label=seg,
-                folder_ref=folder_ref,
-                own_unread=own_unread,
-                children=_build_at(child_path),
-            ))
         return tuple(nodes)
 
     roots = list(_build_at(()))
@@ -137,6 +138,7 @@ class FolderPanel(Tree[FolderRef | None]):
     @dataclass
     class FolderSelected(Message):
         """Posted when the user selects a folder."""
+
         folder_ref: FolderRef
 
     def __init__(
@@ -281,6 +283,26 @@ class FolderPanel(Tree[FolderRef | None]):
         if node.parent is self.root:
             return (str(node.label), None)
         return (None, None)
+
+    def select_folder_ref(self, target: FolderRef) -> None:
+        """Move the tree cursor to *target* and post FolderSelected."""
+        node = self._find_node_by_ref(self.root, target)
+        if node is not None:
+            self.move_cursor(node)
+        self.post_message(self.FolderSelected(folder_ref=target))
+
+    def _find_node_by_ref(
+        self,
+        parent: TreeNode[FolderRef | None],
+        target: FolderRef,
+    ) -> TreeNode[FolderRef | None] | None:
+        for node in parent.children:
+            if node.data == target:
+                return node
+            found = self._find_node_by_ref(node, target)
+            if found is not None:
+                return found
+        return None
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[FolderRef | None]) -> None:
         event.stop()

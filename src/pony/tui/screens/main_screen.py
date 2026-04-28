@@ -79,6 +79,7 @@ class MainScreen(Screen[None]):
         Binding("O", "attachments_open", "Open att.", show=False),
         Binding("S", "attachments_save", "Save att.", show=False),
         Binding("/", "search", "Search", show=False),
+        Binding("G", "goto_folder", "Goto folder", show=False),
         Binding("H", "harvest_contacts", "Harvest contacts", show=False),
         Binding("B", "browse_contacts", "Contacts"),
     ]
@@ -403,6 +404,25 @@ class MainScreen(Screen[None]):
         msg_list = self.query_one(MessageListPanel)
         msg_list.load_search_results(results, raw)
         msg_list.focus()
+
+    # ------------------------------------------------------------------
+    # Goto folder
+    # ------------------------------------------------------------------
+
+    def action_goto_folder(self) -> None:
+        from .goto_folder_screen import GotoFolderScreen
+
+        folders: list[FolderRef] = []
+        for account in self._config.accounts:
+            mirror = self._mirrors.get(account.name)
+            if mirror is not None:
+                folders.extend(mirror.list_folders(account_name=account.name))
+
+        def _on_folder(ref: FolderRef | None) -> None:
+            if ref is not None:
+                self.query_one(FolderPanel).select_folder_ref(ref)
+
+        self.app.push_screen(GotoFolderScreen(folders), _on_folder)  # pyright: ignore[reportUnknownMemberType]
 
     # ------------------------------------------------------------------
     # Post-sync refresh
