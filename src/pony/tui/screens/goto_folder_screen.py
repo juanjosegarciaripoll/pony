@@ -20,7 +20,7 @@ def _fuzzy_filter(query: str, folders: list[FolderRef]) -> list[FolderRef]:
     q = query.lower()
     scored: list[tuple[int, str, FolderRef]] = []
     for ref in folders:
-        text = ref.folder_name.lower()
+        text = f"{ref.account_name} {ref.folder_name}".lower()
         pos = 0
         first = last = -1
         for ch in q:
