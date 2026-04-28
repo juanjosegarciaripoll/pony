@@ -337,9 +337,11 @@ def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
 
 
 def _icon_column(summary: FolderMessageSummary) -> str:
-    """Single-character status marker: ``!`` flagged, ``+`` has-attachments."""
+    """Single-character status marker: ``!`` flagged, ``↩`` answered, ``+`` has-attachments."""
     if MessageFlag.FLAGGED in summary.local_flags:
         return "!"
+    if MessageFlag.ANSWERED in summary.local_flags:
+        return "↩"
     if summary.has_attachments:
         return "+"
     return " "
