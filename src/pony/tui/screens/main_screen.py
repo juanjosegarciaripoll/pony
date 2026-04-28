@@ -94,6 +94,11 @@ class MainScreen(Screen[None]):
         border: solid $primary;
     }
 
+    FolderPanel:focus {
+        background-tint: transparent;
+        border-title-color: $accent;
+    }
+
     #right-pane {
         width: 75%;
         height: 100%;
@@ -104,10 +109,19 @@ class MainScreen(Screen[None]):
         border: solid $primary;
     }
 
+    MessageListPanel:focus {
+        background-tint: transparent;
+        border-title-color: $accent;
+    }
+
     MessageViewPanel {
         height: 2fr;
         border: solid $primary;
         display: none;
+    }
+
+    MessageViewPanel:focus {
+        border-title-color: $accent;
     }
     """
 
@@ -505,6 +519,20 @@ class MainScreen(Screen[None]):
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
+
+    def _mark_answered(self, msg: IndexedMessage) -> None:
+        if MessageFlag.ANSWERED in msg.local_flags:
+            return
+        updated = dataclasses.replace(
+            msg, local_flags=msg.local_flags | {MessageFlag.ANSWERED}
+        )
+        with self._index.connection():
+            self._index.upsert_message(message=updated)
+        folder_ref = FolderRef(
+            account_name=msg.message_ref.account_name,
+            folder_name=msg.message_ref.folder_name,
+        )
+        self._reload_folder(folder_ref)
 
     def toggle_flag(self, flag: MessageFlag) -> None:
         """Toggle *flag* on every target message and refresh the list."""
@@ -1209,6 +1237,10 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+        def _on_reply_sent(result: bool | None) -> None:
+            if result:
+                self._mark_answered(msg)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1225,7 +1257,8 @@ class MainScreen(Screen[None]):
                     ),
                 ),
                 contacts=self._contacts,
-            )
+            ),
+            _on_reply_sent,
         )
 
     def compose_reply_all(self) -> None:
@@ -1262,6 +1295,11 @@ class MainScreen(Screen[None]):
         to, cc = build_reply_all_recipients(
             rendered, self_address=account.email_address,
         )
+
+        def _on_reply_all_sent(result: bool | None) -> None:
+            if result:
+                self._mark_answered(msg)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1279,7 +1317,8 @@ class MainScreen(Screen[None]):
                     ),
                 ),
                 contacts=self._contacts,
-            )
+            ),
+            _on_reply_all_sent,
         )
 
     def compose_forward(self) -> None:
