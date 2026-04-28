@@ -6,148 +6,86 @@
 src/pony/
   __init__.py
   __main__.py          # python -m pony entrypoint
-  version.py           # __version__ string (updated by release workflow)
+  version.py           # __version__ (release workflow)
   cli.py               # argparse command dispatch
-  config.py            # TOML config loader and validator
-  domain.py            # typed core data models (frozen dataclasses)
-  protocols.py         # repository and service interfaces (Protocols)
-  paths.py             # platform-specific directory resolution
-  storage.py           # Maildir and mbox mirror repositories
-  index_store.py       # SQLite metadata index + contacts repository
-  storage_indexing.py  # mirror-to-index projection pipeline
-  message_projection.py# RFC 5322 parsing and metadata extraction
-  sync.py              # IMAP sync engine (plan/execute)
-  imap_client.py       # ImapSession wrapper around imaplib
-  smtp_sender.py       # SMTP submission (SSL + STARTTLS)
-  bbdb.py              # BBDB v3 reader/writer (Emacs interop)
+  config.py            # TOML loader → domain objects
+  domain.py            # frozen dataclasses (core types)
+  protocols.py         # repository/service interfaces
+  paths.py             # platform-specific dir resolution
+  storage.py           # Maildir + mbox mirror repos
+  index_store.py       # SQLite index + contacts repo
+  storage_indexing.py  # mirror → index projection
+  message_projection.py# RFC 5322 parse → metadata
+  sync.py              # IMAP sync (plan/execute)
+  imap_client.py       # ImapSession wrapper (imaplib)
+  smtp_sender.py       # SMTP (SSL + STARTTLS)
+  bbdb.py              # BBDB v3 reader/writer
   credentials.py       # four credential backends
-  services.py          # doctor diagnostics, mirror integrity scan
-  folder_utils.py      # sent/draft folder auto-discovery
-  fixture_flow.py      # deterministic fixture ingest for development
+  services.py          # doctor + mirror integrity
+  folder_utils.py      # sent/draft auto-discovery
+  fixture_flow.py      # deterministic dev fixtures
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp
-    compose_utils.py   # reply/forward quoting, signature handling
-    message_renderer.py# RFC 5322 -> plain text / browser HTML
-    search_parser.py   # query language parser (from:, to:, subject:, etc.)
+    compose_utils.py   # reply/forward quoting + signature
+    message_renderer.py# RFC 5322 → plain text / browser HTML
+    search_parser.py   # query parser (from:, to:, subject:…)
     screens/
-      main_screen.py          # three-pane mail reader (owns all mail bindings)
-      compose_screen.py       # email composer (ctrl+x chord)
-      sync_confirm_screen.py  # sync plan confirmation + progress bar
-      search_dialog_screen.py # search query input dialog
-      contact_browser_screen.py  # contacts list with mark/merge/delete
-      contact_detail_screen.py   # read-only contact detail view
+      main_screen.py          # three-pane reader (all mail bindings)
+      compose_screen.py       # composer (ctrl+x chord)
+      sync_confirm_screen.py  # plan confirmation + progress
+      search_dialog_screen.py # search input dialog
+      contact_browser_screen.py  # contacts list/mark/merge/delete
+      contact_detail_screen.py   # read-only contact view
       contact_edit_screen.py     # contact editor form
-      confirm_screen.py       # generic yes/no dialog
+      confirm_screen.py       # yes/no dialog
       save_draft_screen.py    # draft save confirmation
       add_attachment_screen.py # file picker (DirectoryTree + typeahead)
     widgets/
       folder_panel.py        # collapsible per-account folder tree
       message_list.py        # sortable message DataTable
       message_view.py        # scrollable message reader
-      contact_suggester.py   # autocomplete dropdown for address fields
+      contact_suggester.py   # address autocomplete
 ```
 
 ## Subsystems
 
-### Domain layer (`domain.py`, `protocols.py`)
+**Domain** (`domain.py`, `protocols.py`): frozen dataclasses + Protocol interfaces; no I/O. Key types: `AppConfig`, `AccountConfig`, `IndexedMessage`, `MessageFlag`, `MessageStatus`, `FolderRef`, `MessageRef`, `Contact`, `SearchQuery`.
 
-Frozen dataclasses for all domain objects. Protocol classes define contracts
-for repositories and services. This layer has no protocol-specific or
-UI-specific logic.
+**Config** (`config.py`, `paths.py`): TOML → domain objects directly. `AppPaths` handles XDG/APPDATA. Paths expand `~`, `$VAR`, `%VAR%`.
 
-Key types: `AppConfig`, `AccountConfig`, `IndexedMessage`, `MessageFlag`,
-`MessageStatus`, `FolderRef`, `MessageRef`, `Contact`, `SearchQuery`.
+**Storage** (`storage.py`): `MaildirMirrorRepository` + `MboxMirrorRepository` implement `MirrorRepository` — store/retrieve/list/delete raw RFC 5322 bytes, linked to index via `storage_key`.
 
-### Configuration (`config.py`, `paths.py`)
+**Index** (`index_store.py`): `SqliteIndexRepository` implements `IndexRepository` + `ContactRepository`. Single `messages` table. `connection()` provides batched transactions with thread-local reuse and reentrant nesting. Tables: `messages`, `contacts`, `contact_emails`, `contact_aliases`, `folder_sync_state`, `encrypted_passwords`.
 
-TOML parsing directly into domain objects (no intermediate model layer).
-`AppPaths` resolves platform-specific directories (XDG on Linux/macOS,
-APPDATA/LOCALAPPDATA on Windows). Path values support `~`, `$VAR`, `%VAR%`
-expansion.
+**Sync** (`sync.py`, `imap_client.py`): two-pass plan/execute. Three-way flag merge (union policy). Mass-delete protection at 20%. Progress via `ProgressInfo`. TUI mutations set `uid IS NULL`; planner emits `PushMoveOp` or `PushAppendOp`; new UIDs captured via APPENDUID/COPYUID. Folder creation: mirror exposes new dir → `IMAP CREATE` at execute start. No pending-operations queue. Full algorithm: `ai/SYNCHRONIZATION.md`.
 
-### Storage (`storage.py`)
+**Send** (`smtp_sender.py`, `compose_utils.py`): SSL + STARTTLS. Reply/forward preserves quote levels. Markdown → `multipart/alternative`. Sent/draft folders discovered by fuzzy name match.
 
-`MaildirMirrorRepository` and `MboxMirrorRepository` implement the
-`MirrorRepository` protocol. Both store/retrieve/list/delete raw RFC 5322
-bytes. Connected to the index via `storage_key`.
+**TUI** (`tui/`): three `App` subclasses. Each screen owns `BINDINGS`. `MainScreen` owns all mail bindings + sync workflow. Screens use public Textual API (`push_screen`, `notify`) only. `SyncConfirmScreen` takes `on_confirm` callback.
 
-### Index (`index_store.py`)
-
-`SqliteIndexRepository` implements both `IndexRepository` and
-`ContactRepository`. All message state lives in a single unified `messages`
-table. The `connection()` context manager provides batched transactions with
-thread-local connection reuse and reentrant nesting.
-
-Tables: `messages`, `contacts`, `contact_emails`, `contact_aliases`,
-`folder_sync_state`, `pending_operations`, `encrypted_passwords`.
-
-### Sync (`sync.py`, `imap_client.py`)
-
-Two-pass IMAP sync: plan (read-only) then execute (apply changes). Three-way
-flag merge with union policy. Mass-deletion protection at 20% threshold.
-Progress callbacks via `ProgressInfo` dataclass. See `ai/SYNCHRONIZATION.md`
-for the full algorithm.
-
-Local mutations from the TUI (archive, future local compose) are recorded by
-leaving ``uid IS NULL`` on the relevant index row. The planner treats these
-rows as "push to server in this folder" — emitting ``PushMoveOp`` (UID MOVE
-from the folder the server still has the message in), ``PushAppendOp`` (APPEND
-when the server has no copy), or ``LinkLocalOp`` (adopt a freshly-assigned
-UID into the existing row). There is no separate pending-operations queue.
-
-Folder creation uses the same principle one level up: any folder that the
-mirror exposes but the server doesn't is propagated via an ``IMAP CREATE`` at
-the top of the execution pass. The TUI ``N`` action just adds an empty
-directory to the mirror; the archive action does the same implicitly via
-``MirrorRepository.move_message_to_folder`` when it needs to land a message in
-a folder that doesn't exist yet.
-
-### Send (`smtp_sender.py`, `compose_utils.py`)
-
-`SMTPSender` handles SSL and STARTTLS. Reply/forward quoting preserves
-existing quote levels. Markdown mode builds `multipart/alternative` via
-`markdown-it-py`. Sent/draft folders are auto-discovered by fuzzy name match.
-
-### TUI (`tui/`)
-
-Three separate `App` subclasses (see `ai/AGENTS.md` for details). Each screen
-owns its own bindings. `MainScreen` owns all mail-specific bindings and the
-sync workflow. Screens use `self.app.push_screen()` and `self.app.notify()`
-(public Textual API) but never call private App methods.
-
-### HTML rendering (`message_renderer.py`)
-
-`render_message()` extracts plain text for TUI display. HTML-only messages
-have `<style>` and `<script>` blocks stripped before tag removal.
-`build_browser_html()` creates self-contained HTML files with CID-resolved
-inline images for the `w` (web view) key.
+**HTML rendering** (`message_renderer.py`): `render_message()` → plain text (strips `<style>`/`<script>` first). `build_browser_html()` → self-contained HTML with CID-resolved inline images (for `w` key).
 
 ## Data flow
 
 ```
-config.toml -> AppConfig -> sync -> MirrorRepository -> IndexRepository
-                              |                              |
-                              v                              v
-                        IMAP server                   SQLite index
-                                                          |
-                                                          v
-                                                   TUI queries
-                                                   (lists, search)
-                                                          |
-                                                          v
-                                                MirrorRepository
-                                                (raw bytes, attachments)
-                                                          |
-                                                          v
-                                                 compose / send (SMTP)
+config.toml → AppConfig → sync → MirrorRepository
+                  |                      |
+                  v                      v
+            IMAP server           SQLite index
+                                       |
+                               TUI queries (list/search)
+                                       |
+                               MirrorRepository (raw bytes)
+                                       |
+                               compose / SMTP send
 ```
 
-## Dependencies
+## Runtime deps
 
-| Dependency | Purpose |
+| Package | Purpose |
 |---|---|
-| `imapclient` | IMAP protocol |
-| `textual` | Terminal UI framework |
-| `markdown-it-py` | CommonMark rendering for compose |
+| `imapclient` | IMAP |
+| `textual` | TUI framework |
+| `markdown-it-py` | Markdown → HTML for compose |
 
 Dev: `ruff`, `mypy`, `basedpyright`, `pytest`, `mkdocs-material`.

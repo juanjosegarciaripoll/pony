@@ -1,120 +1,69 @@
 # Engineering Conventions
 
-## Language and runtime
+## Stack
 
-- Python 3.13
-- `uv` for dependency and environment management
-- `hatchling` build backend
+Python 3.13, `uv`, `hatchling`.
 
-## Quality gates (all must pass)
+## Quality gates
 
 ```bash
-uv run ruff check src/ tests/        # lint
-uv run ruff format --check src/ tests/ # formatting
-uv run mypy src/                      # type check (strict)
-uv run basedpyright src/              # type check (strict)
-uv run python -m pytest tests/        # tests
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/
+uv run basedpyright src/
+uv run python -m pytest tests/
 ```
 
 ## Typing
 
-- `mypy` strict mode, `basedpyright` strict mode
-- Prefer `Protocol` classes over abstract base classes
-- Use frozen `@dataclass` for domain objects
-- Textual's generic `Screen.app` property causes `reportUnknownMemberType`
-  warnings -- suppress with `# pyright: ignore[reportUnknownMemberType]`
-  on public API calls (`push_screen`, `notify`). Never suppress on private
-  method access.
+- `mypy` + `basedpyright` strict.
+- `Protocol` over ABCs; frozen `@dataclass` for domain objects.
+- Textual `Screen.app` triggers `reportUnknownMemberType` — suppress with `# pyright: ignore[reportUnknownMemberType]` on public calls (`push_screen`, `notify`) only; never on private methods.
 
 ## Testing
 
-- Framework: `unittest` (stdlib), run via `pytest`
-- Test files: `tests/test_*.py`
-- Sync tests: `FakeImapSession` in `tests/test_sync.py`
-- Storage tests: shared conformance suite across Maildir and mbox backends
-- Contacts tests: real SQLite via `SqliteIndexRepository`
-- Fixture messages: `tests/corpus.py` (15 programmatic RFC 5322 types)
-- All test email addresses use `@example.com`
+- `unittest` (stdlib), run via `pytest`. Files: `tests/test_*.py`.
+- Sync: `FakeImapSession`. Storage: conformance suite (Maildir + mbox). Contacts: real `SqliteIndexRepository`.
+- Fixture messages: `tests/corpus.py` (15 RFC 5322 types). All addresses use `@example.com`.
 
-## Code style
+## Style
 
-- `ruff` with rules: E, F, I, B, UP, N, ARG, SIM
-- Line length: 88
-- Imports sorted by `ruff` (isort-compatible)
-- No emojis in code or docs unless explicitly requested
-- Prefer editing existing files over creating new ones
-- No docstrings on obvious methods; comments only where logic isn't self-evident
-- No error handling for scenarios that can't happen
+- `ruff` rules: E, F, I, B, UP, N, ARG, SIM. Line length 88.
+- No emojis, no docstrings on obvious methods, no error handling for impossible cases.
 
 ## Dependencies
 
-Approved runtime:
+Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `mcp`. New deps need approval.
+Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pyinstrument`, `mkdocs-material`, `pytest-asyncio`.
 
-| Package | Purpose |
-|---|---|
-| `imapclient` | IMAP protocol |
-| `textual` | Terminal UI |
-| `markdown-it-py` | Markdown rendering for compose |
+## Config
 
-Approved dev: `ruff`, `mypy`, `basedpyright`, `pytest`, `pyinstrument`,
-`mkdocs-material`.
+Single `config.toml` → domain objects directly. `config-sample.toml` must mirror the model. Paths expand `~`, `$VAR`, `%VAR%`.
 
-New runtime dependencies require explicit approval.
+## Versions
 
-## Configuration
+`pyproject.toml` + `version.py` updated atomically by release Action. To release: add an undated `## [X.Y.Z]` heading to `CHANGELOG.md`, trigger the workflow — it stamps the date, tags, and publishes. Guard: tag must not already exist.
 
-- Single TOML file (`config.toml`)
-- Parsed directly into domain objects (no intermediate model layer)
-- `config-sample.toml` must stay synchronized with the config model
-- Path values support `~`, `$VAR`, `%VAR%` expansion via `_expand_path`
-- All test/sample configs use `@example.com` addresses and `example.com` hosts
+## Build
 
-## Version management
+`docs/ → site/ → pony.spec → dist/pony/ → installers + archives`
 
-- Version string in `pyproject.toml` and `src/pony/version.py`
-- Both updated atomically by the release GitHub Action
-- `pony --version` reads from `version.py` (works in PyInstaller bundles)
-- CHANGELOG.md follows Keep a Changelog format
-- Release workflow: manually dispatched. CHANGELOG.md is the source of truth
-  for the release version — write a new undated `## [X.Y.Z]` heading, then
-  trigger the workflow. It reads X.Y.Z from the changelog, overwrites
-  `pyproject.toml` and `version.py` with that value, stamps the date, tags,
-  and creates the GitHub release. The only guard is that the tag `vX.Y.Z`
-  must not already exist.
-
-## Build process
-
-The standalone binary is the primary distribution format. The build chain is:
-
-```
-docs/ (MkDocs source) → site/ (HTML) → pony.spec → dist/pony/ → installers + archives
-```
-
-Install build tools:
 ```bash
 uv sync --group build --group docs
+uv run mkdocs build --strict
+uv run python scripts/build.py
+uv run python scripts/build.py --installer
+uv run python scripts/build.py --skip-tests --skip-docs --installer
 ```
 
-Local build commands:
-```bash
-uv run mkdocs build --strict               # generate site/ from docs/
-uv run python scripts/build.py             # full build: tests + docs + binary + archive
-uv run python scripts/build.py --installer # also produce platform installer
-uv run python scripts/build.py --skip-tests --skip-docs --installer  # binary + installer only
-```
+- `site/` is gitignored; never commit it.
+- `pony.spec` `datas` list controls bundled files.
+- `paths.bundled_docs_path()` detects PyInstaller execution.
+- Installers: Inno Setup (Win), `hdiutil` (macOS), `appimagetool` (Linux).
 
-Rules:
-- `site/` must not be committed; it is generated at build time and gitignored
-- Data files bundled into the binary are declared in `pony.spec` (`datas` list)
-- `paths.bundled_docs_path()` is the single place to detect frozen (PyInstaller) execution
-- Platform installers: Inno Setup (Windows), `hdiutil` (macOS), `appimagetool` (Linux)
-- Portable archives (ZIP / tar.gz) are suitable for Scoop, Homebrew, and similar
+## TUI
 
-## TUI conventions
-
-- Each screen owns its own `BINDINGS` list
-- Footer shows only the current screen's bindings
-- Screens use `self.app.push_screen()` and `self.app.notify()` (public API)
-- Screens never call `self.app._private_method()`
-- Sync workflow lives in `MainScreen`, not `PonyApp`
-- `SyncConfirmScreen` receives `on_confirm` callback, not app reference
+- Each screen owns `BINDINGS`; footer shows only its own.
+- `push_screen()` / `notify()` only — no private App methods.
+- Sync workflow in `MainScreen`, not `PonyApp`.
+- `SyncConfirmScreen` takes `on_confirm` callback, not app ref.

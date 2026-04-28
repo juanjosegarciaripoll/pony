@@ -1,58 +1,27 @@
-# Product Specifications
+# Specifications
 
-## Mission
+Standalone open-source Python 3.13 MUA. Clear mail workflow, flexible local storage, strong offline behavior.
 
-Pony Express is a standalone open source mail user agent written in Python
-3.13. It provides a clear, dependable mail workflow with flexible local
-storage, strong offline behavior, and interfaces that can evolve over time
-without rewriting the core application logic.
+## Capabilities
 
-## Product direction
+1. Mail synchronization (IMAP)
+2. Mail reading (TUI)
+3. Mail composing (SMTP + attachments + Markdown)
+4. Mail search (FTS5)
 
-Four major capabilities, sharing core services:
+## V1 (delivered)
 
-1. Mail synchronization
-2. Mail reading
-3. Mail composing (with attachments)
-4. Mail search
+IMAP sync, SMTP send, Maildir/mbox mirrors, SQLite+FTS5 index, Textual TUI, Markdown compose, BBDB contacts, MCP server, PyInstaller builds. Details in `ai/STATUS.md` and `CHANGELOG.md`.
 
-## V1 scope (delivered)
-
-Terminal-first, cross-platform. The delivered feature set — IMAP sync,
-SMTP send, Maildir/mbox mirrors, SQLite+FTS5 index, Textual TUI,
-Markdown composition, BBDB-compatible contacts, MCP server, and
-PyInstaller-based standalone builds — is summarised in
-`ai/STATUS.md` and detailed release-by-release in `CHANGELOG.md`.
-
-## Deferred scope
+## Deferred
 
 - POP support
-- OAuth authentication flows
-- Browser-based reader/composer UI
-- Advanced multi-machine conflict handling
-- Aggressive automatic remote mutation policies
-- Background / periodic sync
+- OAuth
+- Browser UI
+- Multi-machine conflict handling
+- Background/periodic sync
+- Aggressive auto remote mutations
 
-## User experience goals
+## Engineering
 
-Keyboard-centric pane-oriented workflow:
-
-- Folder view grouped by account
-- Message list view (sortable, searchable)
-- Message body view with attachment awareness
-- Screen-specific keybindings (each screen shows only its own bindings)
-
-## Storage and indexing
-
-- Per-account configurable mirror format (Maildir or mbox)
-- Raw message content stays in mirror storage
-- SQLite is the searchable metadata layer and control plane
-- Search supports: sender, recipients, subject, body, combined queries,
-  case-sensitive/insensitive matching
-- Unified `messages` table (no separate server-state table)
-- Batched transactions via `connection()` context manager
-
-## Engineering rules
-
-See `ai/CONVENTIONS.md` for language, tooling, typing, style, testing,
-dependency, and release rules.
+`ai/CONVENTIONS.md` — rules, quality gates, build. `ai/ARCHITECTURE.md` — design.
