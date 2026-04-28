@@ -158,12 +158,17 @@ class MessageListPanel(DataTable[Text]):
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
 
+    def _summary_for_row_key(self, row_key: object) -> FolderMessageSummary | None:
+        from textual.widgets._data_table import RowKey
+        if not isinstance(row_key, RowKey) or row_key.value is None:
+            return None
+        return self._find_summary(str(row_key.value))
+
     def on_data_table_row_highlighted(
         self, event: DataTable.RowHighlighted
     ) -> None:
         event.stop()
-        key = str(event.row_key.value) if event.row_key.value else ""
-        summary = self._find_summary(key)
+        summary = self._summary_for_row_key(event.row_key)
         if summary is not None:
             self.post_message(self.MessageSelected(summary=summary))
 
@@ -171,8 +176,7 @@ class MessageListPanel(DataTable[Text]):
         self, event: DataTable.RowSelected
     ) -> None:
         event.stop()
-        key = str(event.row_key.value) if event.row_key.value else ""
-        summary = self._find_summary(key)
+        summary = self._summary_for_row_key(event.row_key)
         if summary is not None:
             self.post_message(self.MessageSelected(summary=summary))
 
