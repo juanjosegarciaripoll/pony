@@ -48,15 +48,14 @@ class MessageListPanel(DataTable[Text]):
     @dataclass
     class MessageSelected(Message):
         """Posted when the user activates a message row."""
+
         summary: FolderMessageSummary
 
     @dataclass
     class SearchExited(Message):
         """Posted when the user exits search-results mode."""
 
-    def __init__(
-        self, index: IndexRepository, **kwargs: object
-    ) -> None:
+    def __init__(self, index: IndexRepository, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._index = index
         self._summaries: list[FolderMessageSummary] = []
@@ -66,6 +65,7 @@ class MessageListPanel(DataTable[Text]):
         self._date_col_key: ColumnKey | None = None
         self._from_col_key: ColumnKey | None = None
         self._subject_col_key: ColumnKey | None = None
+        self._last_from_max: int = 0
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
@@ -80,11 +80,13 @@ class MessageListPanel(DataTable[Text]):
         return max(10, min(40, table_width // 4))
 
     def _cells_for(
-        self, summary: FolderMessageSummary,
+        self,
+        summary: FolderMessageSummary,
     ) -> tuple[Text, Text, Text, Text]:
         style = _row_style(summary)
         icon = (
-            "*" if str(summary.message_ref.id) in self._marked
+            "*"
+            if str(summary.message_ref.id) in self._marked
             else _icon_column(summary)
         )
         return (
@@ -102,17 +104,25 @@ class MessageListPanel(DataTable[Text]):
         key = str(summary.message_ref.id)
         icons, date, sender, subject = self._cells_for(summary)
         self.update_cell(
-            row_key=key, column_key=self._icons_col_key, value=icons,
+            row_key=key,
+            column_key=self._icons_col_key,
+            value=icons,
         )
         self.update_cell(
-            row_key=key, column_key=self._date_col_key, value=date,
+            row_key=key,
+            column_key=self._date_col_key,
+            value=date,
         )
         self.update_cell(
-            row_key=key, column_key=self._from_col_key, value=sender,
+            row_key=key,
+            column_key=self._from_col_key,
+            value=sender,
             update_width=True,
         )
         self.update_cell(
-            row_key=key, column_key=self._subject_col_key, value=subject,
+            row_key=key,
+            column_key=self._subject_col_key,
+            value=subject,
         )
 
     def load_folder(self, folder_ref: FolderRef) -> None:
@@ -160,21 +170,18 @@ class MessageListPanel(DataTable[Text]):
 
     def _summary_for_row_key(self, row_key: object) -> FolderMessageSummary | None:
         from textual.widgets._data_table import RowKey
+
         if not isinstance(row_key, RowKey) or row_key.value is None:
             return None
         return self._find_summary(str(row_key.value))
 
-    def on_data_table_row_highlighted(
-        self, event: DataTable.RowHighlighted
-    ) -> None:
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         event.stop()
         summary = self._summary_for_row_key(event.row_key)
         if summary is not None:
             self.post_message(self.MessageSelected(summary=summary))
 
-    def on_data_table_row_selected(
-        self, event: DataTable.RowSelected
-    ) -> None:
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()
         summary = self._summary_for_row_key(event.row_key)
         if summary is not None:
@@ -227,6 +234,7 @@ class MessageListPanel(DataTable[Text]):
     def on_key(self, event: object) -> None:
         """Exit search mode when q or escape is pressed."""
         from textual.events import Key
+
         if not isinstance(event, Key):
             return
         if not self._in_search:
@@ -247,6 +255,10 @@ class MessageListPanel(DataTable[Text]):
         """Refresh all rows so the From column stays capped at 25% of width."""
         if self._from_col_key is None or not self._summaries:
             return
+        new_max = self._from_max()
+        if new_max == self._last_from_max:
+            return
+        self._last_from_max = new_max
         for summary in self._summaries:
             self._update_row(summary)
 
@@ -283,10 +295,7 @@ class MessageListPanel(DataTable[Text]):
 
     def marked_summaries(self) -> list[FolderMessageSummary]:
         """Summaries currently marked, ordered as they appear in the list."""
-        return [
-            s for s in self._summaries
-            if str(s.message_ref.id) in self._marked
-        ]
+        return [s for s in self._summaries if str(s.message_ref.id) in self._marked]
 
     def summaries_to_act_on(self) -> list[FolderMessageSummary]:
         """Marked summaries if any, otherwise the cursor row as a singleton."""
@@ -337,7 +346,7 @@ def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
 
 
 def _icon_column(summary: FolderMessageSummary) -> str:
-    """Single-character status marker: ``!`` flagged, ``↩`` answered, ``+`` has-attachments."""
+    """Status marker: ``!`` flagged, ``↩`` answered, ``+`` has-attachments."""
     if MessageFlag.FLAGGED in summary.local_flags:
         return "!"
     if MessageFlag.ANSWERED in summary.local_flags:
