@@ -147,7 +147,10 @@ class MainScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield FolderPanel(
-            self._config, self._index, self._mirrors, id="folder-panel",
+            self._config,
+            self._index,
+            self._mirrors,
+            id="folder-panel",
         )
         with Vertical(id="right-pane"):
             yield MessageListPanel(self._index, id="message-list")
@@ -429,9 +432,7 @@ class MainScreen(Screen[None]):
             return None
         return self._index.get_message(message_ref=summary.message_ref)
 
-    def _folder_ref_from_summary(
-        self, summary: FolderMessageSummary
-    ) -> FolderRef:
+    def _folder_ref_from_summary(self, summary: FolderMessageSummary) -> FolderRef:
         return FolderRef(
             account_name=summary.message_ref.account_name,
             folder_name=summary.message_ref.folder_name,
@@ -479,6 +480,7 @@ class MainScreen(Screen[None]):
         )
         self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).update_from_indexed(updated)
+        self.query_one(FolderPanel).refresh_folders()
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -510,8 +512,7 @@ class MainScreen(Screen[None]):
         with self._index.connection():
             for msg in messages:
                 new_flags = (
-                    msg.local_flags | {flag} if present
-                    else msg.local_flags - {flag}
+                    msg.local_flags | {flag} if present else msg.local_flags - {flag}
                 )
                 if new_flags == msg.local_flags:
                     continue
@@ -564,7 +565,8 @@ class MainScreen(Screen[None]):
         with self._index.connection():
             for msg in messages:
                 updated = dataclasses.replace(
-                    msg, local_status=MessageStatus.TRASHED,
+                    msg,
+                    local_status=MessageStatus.TRASHED,
                 )
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()
@@ -761,7 +763,8 @@ class MainScreen(Screen[None]):
             for msg in targets:
                 try:
                     raw_source = source_mirror.get_message_bytes(
-                        folder=source, storage_key=msg.storage_key,
+                        folder=source,
+                        storage_key=msg.storage_key,
                     )
                 except Exception:  # noqa: BLE001
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -770,11 +773,13 @@ class MainScreen(Screen[None]):
                     )
                     continue
                 new_raw, new_mid = copy_message_bytes(
-                    raw_source, rewrite_message_id=rewrite_mid,
+                    raw_source,
+                    rewrite_message_id=rewrite_mid,
                 )
                 try:
                     new_key = target_mirror.store_message(
-                        folder=target, raw_message=new_raw,
+                        folder=target,
+                        raw_message=new_raw,
                     )
                 except Exception:  # noqa: BLE001
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -1012,7 +1017,8 @@ class MainScreen(Screen[None]):
         """Copy bytes to target, then retire the source side."""
         try:
             raw = source_mirror.get_message_bytes(
-                folder=source, storage_key=msg.storage_key,
+                folder=source,
+                storage_key=msg.storage_key,
             )
         except Exception:  # noqa: BLE001
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -1026,7 +1032,8 @@ class MainScreen(Screen[None]):
         new_raw, new_mid = copy_message_bytes(raw, rewrite_message_id=False)
         try:
             new_key = target_mirror.store_message(
-                folder=target, raw_message=new_raw,
+                folder=target,
+                raw_message=new_raw,
             )
         except Exception:  # noqa: BLE001
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -1067,7 +1074,8 @@ class MainScreen(Screen[None]):
             # file will be picked up by the mirror integrity scan.
             with contextlib.suppress(Exception):
                 source_mirror.delete_message(
-                    folder=source, storage_key=msg.storage_key,
+                    folder=source,
+                    storage_key=msg.storage_key,
                 )
             self._index.delete_message(message_ref=msg.message_ref)
         return True
@@ -1136,11 +1144,11 @@ class MainScreen(Screen[None]):
         # Local accounts have no server side: the creation is terminal.
         # IMAP accounts get the folder pushed upstream on the next sync.
         account = next(
-            (a for a in self._config.accounts if a.name == account_name), None,
+            (a for a in self._config.accounts if a.name == account_name),
+            None,
         )
         suffix = (
-            "; run sync to propagate."
-            if isinstance(account, AccountConfig) else "."
+            "; run sync to propagate." if isinstance(account, AccountConfig) else "."
         )
         self.app.notify(  # pyright: ignore[reportUnknownMemberType]
             f"Folder {folder_name!r} created locally{suffix}"
@@ -1182,7 +1190,8 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         account = next(
             (
-                a for a in accounts
+                a
+                for a in accounts
                 if msg is not None and a.name == msg.message_ref.account_name
             ),
             accounts[0],
@@ -1237,6 +1246,7 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+
         def _on_reply_sent(result: bool | None) -> None:
             if result:
                 self._mark_answered(msg)
@@ -1293,7 +1303,8 @@ class MainScreen(Screen[None]):
             accounts[0],
         )
         to, cc = build_reply_all_recipients(
-            rendered, self_address=account.email_address,
+            rendered,
+            self_address=account.email_address,
         )
 
         def _on_reply_all_sent(result: bool | None) -> None:
@@ -1396,7 +1407,8 @@ class MainScreen(Screen[None]):
         count = self.query_one(MessageViewPanel).attachment_count
         if count == 0:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "No attachments on this message.", severity="warning",
+                "No attachments on this message.",
+                severity="warning",
             )
             return
         from .attachment_picker_screen import AttachmentPickerScreen
@@ -1408,7 +1420,8 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             AttachmentPickerScreen(
-                action_label=action_label, attachment_count=count,
+                action_label=action_label,
+                attachment_count=count,
             ),
             _on_selection,
         )
@@ -1430,8 +1443,7 @@ class MainScreen(Screen[None]):
             )
         if missing:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Attachment(s) not found: "
-                f"{', '.join(str(i) for i in missing)}",
+                f"Attachment(s) not found: {', '.join(str(i) for i in missing)}",
                 severity="warning",
             )
 
@@ -1447,8 +1459,7 @@ class MainScreen(Screen[None]):
                 missing.append(idx)
         if missing:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Attachment(s) not found: "
-                f"{', '.join(str(i) for i in missing)}",
+                f"Attachment(s) not found: {', '.join(str(i) for i in missing)}",
                 severity="warning",
             )
 
