@@ -65,19 +65,17 @@ class MessageListPanel(DataTable[Text]):
         self._date_col_key: ColumnKey | None = None
         self._from_col_key: ColumnKey | None = None
         self._subject_col_key: ColumnKey | None = None
-        self._last_from_max: int = 0
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
         self._icons_col_key = self.add_column(" ", width=1, key="icons")
         self._date_col_key = self.add_column("Date")
-        self._from_col_key = self.add_column("From")
+        self._from_col_key = self.add_column("From", width=self._from_width())
         self._subject_col_key = self.add_column("Subject")
 
-    def _from_max(self) -> int:
-        """Max characters for the From column — capped at 25% of table width."""
-        table_width = max(20, self.size.width)
-        return max(10, min(40, table_width // 4))
+    def _from_width(self) -> int:
+        """Fixed width for the From column — capped at 25% of table width."""
+        return max(10, min(40, max(20, self.size.width) // 4))
 
     def _cells_for(
         self,
@@ -92,7 +90,7 @@ class MessageListPanel(DataTable[Text]):
         return (
             Text(icon, style=style),
             Text(_format_date(summary.received_at), style=style),
-            Text(_truncate(summary.sender, self._from_max()), style=style),
+            Text(summary.sender, style=style),
             Text(summary.subject or "(no subject)", style=style),
         )
 
@@ -252,15 +250,15 @@ class MessageListPanel(DataTable[Text]):
         self.post_message(self.SearchExited())
 
     def on_resize(self) -> None:
-        """Refresh all rows so the From column stays capped at 25% of width."""
-        if self._from_col_key is None or not self._summaries:
+        """Adjust the From column width to track 25% of the new terminal width."""
+        if self._from_col_key is None:
             return
-        new_max = self._from_max()
-        if new_max == self._last_from_max:
+        new_width = self._from_width()
+        col = self.columns[self._from_col_key]
+        if col.width == new_width:
             return
-        self._last_from_max = new_max
-        for summary in self._summaries:
-            self._update_row(summary)
+        col.width = new_width
+        self.refresh()
 
     def move_cursor_by(self, delta: int) -> FolderMessageSummary | None:
         """Move the row cursor by *delta* (±1) and return the new summary."""
@@ -376,7 +374,3 @@ def _format_date(dt: datetime) -> str:
     if dt.year == now.year:
         return dt.strftime("%b %d")
     return dt.strftime("%Y-%m-%d")
-
-
-def _truncate(text: str, max_len: int) -> str:
-    return text if len(text) <= max_len else text[: max_len - 1] + "…"
