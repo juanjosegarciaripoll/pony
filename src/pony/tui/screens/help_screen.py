@@ -65,10 +65,8 @@ _RIGHT_SECTIONS: tuple[_Section, ...] = (
         ("m / Shift+↑↓", "Toggle mark / extend"),
     )),
     _Section("Attachments", (
-        ("1 / 2 / 3", "Open attachment N"),
-        ("0", "Open all attachments"),
-        ("Ctrl+1/2/3", "Save attachment N"),
-        ("Ctrl+0", "Save all attachments"),
+        ("1-9 / 0", "Open attachment N / open all"),
+        ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
     )),
     _Section("This panel", (
         ("F1", "Toggle this help"),

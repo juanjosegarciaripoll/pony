@@ -1457,6 +1457,24 @@ class MainScreen(Screen[None]):
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
         return self.query_one(MessageViewPanel).save_all_attachments(dest_dir)
 
+    def action_open_attachment(self, index: str) -> None:
+        """Open attachment by 1-based index; 0 means open all."""
+        idx = int(index)
+        if idx == 0:
+            count = self.query_one(MessageViewPanel).attachment_count
+            self._open_indices(list(range(1, count + 1)))
+        else:
+            self._open_indices([idx])
+
+    def action_save_attachment(self, index: str) -> None:
+        """Save attachment by 1-based index; 0 means save all."""
+        idx = int(index)
+        if idx == 0:
+            count = self.query_one(MessageViewPanel).attachment_count
+            self._save_indices(list(range(1, count + 1)))
+        else:
+            self._save_indices([idx])
+
     def _downloads_dir(self) -> Path:
         return self._config.downloads_path or Path.home() / "Downloads"
 

@@ -158,7 +158,10 @@ class FolderPanel(Tree[FolderRef | None]):
 
     def _select_first_inbox(self) -> None:
         if self._inbox_nodes:
-            self.move_cursor(self._inbox_nodes[0])
+            node = self._inbox_nodes[0]
+            self.move_cursor(node)
+            if node.data is not None:
+                self.post_message(self.FolderSelected(folder_ref=node.data))
 
     def refresh_folders(self) -> None:
         """Rebuild the tree from the current index state."""

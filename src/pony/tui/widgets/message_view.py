@@ -48,6 +48,26 @@ class MessageViewPanel(VerticalScroll):
         Binding("pagedown", "page_down_or_next", "Next page", show=False),
         Binding("<", "scroll_home", "Top", show=False),
         Binding(">", "scroll_end", "Bottom", show=False),
+        Binding("0", "screen.open_attachment('0')", show=False),
+        Binding("1", "screen.open_attachment('1')", show=False),
+        Binding("2", "screen.open_attachment('2')", show=False),
+        Binding("3", "screen.open_attachment('3')", show=False),
+        Binding("4", "screen.open_attachment('4')", show=False),
+        Binding("5", "screen.open_attachment('5')", show=False),
+        Binding("6", "screen.open_attachment('6')", show=False),
+        Binding("7", "screen.open_attachment('7')", show=False),
+        Binding("8", "screen.open_attachment('8')", show=False),
+        Binding("9", "screen.open_attachment('9')", show=False),
+        Binding("ctrl+0", "screen.save_attachment('0')", show=False),
+        Binding("ctrl+1", "screen.save_attachment('1')", show=False),
+        Binding("ctrl+2", "screen.save_attachment('2')", show=False),
+        Binding("ctrl+3", "screen.save_attachment('3')", show=False),
+        Binding("ctrl+4", "screen.save_attachment('4')", show=False),
+        Binding("ctrl+5", "screen.save_attachment('5')", show=False),
+        Binding("ctrl+6", "screen.save_attachment('6')", show=False),
+        Binding("ctrl+7", "screen.save_attachment('7')", show=False),
+        Binding("ctrl+8", "screen.save_attachment('8')", show=False),
+        Binding("ctrl+9", "screen.save_attachment('9')", show=False),
     ]
 
     @dataclass
@@ -180,7 +200,7 @@ class MessageViewPanel(VerticalScroll):
             lines.append("Attachments:")
             for att in r.attachments:
                 name = markup_escape(att.filename)
-                link = f"[@click=\"app.open_attachment('{att.index}')\"]"
+                link = f"[@click=\"screen.open_attachment('{att.index}')\"]"
                 lines.append(
                     f"  [{att.index}] {link}{name}[/]"
                     f"  {att.content_type}"
