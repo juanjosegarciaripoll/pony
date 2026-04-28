@@ -9,6 +9,8 @@ from textual.widgets import DataTable, Footer, Header, Input
 
 from ...domain import Contact
 from ...protocols import ContactRepository
+
+_BLANK_CONTACT = Contact(id=None, first_name="", last_name="", emails=())
 from ..bindings import MARK_BINDINGS
 
 
@@ -21,6 +23,7 @@ class ContactBrowserScreen(Screen[None]):
         Binding("slash", "search", "Search"),
         Binding("s", "search", "Search", show=False),
         *MARK_BINDINGS,
+        Binding("c", "new_contact", "New"),
         Binding("e", "edit", "Edit"),
         Binding("D", "delete_marked", "Delete marked"),
         Binding("M", "merge_marked", "Merge marked"),
@@ -184,8 +187,19 @@ class ContactBrowserScreen(Screen[None]):
         table.action_cursor_up()
 
     # ------------------------------------------------------------------
-    # Edit (direct, without detail view)
+    # New / Edit
     # ------------------------------------------------------------------
+
+    def action_new_contact(self) -> None:
+        from .contact_edit_screen import ContactEditScreen
+
+        def _on_saved(saved: Contact | None) -> None:
+            if saved is not None:
+                self._refresh_list()
+
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ContactEditScreen(_BLANK_CONTACT, self._contacts), _on_saved,
+        )
 
     def action_edit(self) -> None:
         contact = self._selected_contact()
