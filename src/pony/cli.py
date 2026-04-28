@@ -49,8 +49,10 @@ from .sync import (
     MergeFlagsOp,
     ProgressInfo,
     PullFlagsOp,
+    PushAppendOp,
     PushDeleteOp,
     PushFlagsOp,
+    PushMoveOp,
     RestoreOp,
     ServerDeleteOp,
     SyncPlan,
@@ -103,7 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
         "fields like body_preview without re-downloading).",
     )
     rescan_parser.add_argument(
-        "account", nargs="?", help="Only rescan one account.",
+        "account",
+        nargs="?",
+        help="Only rescan one account.",
     )
 
     sync_parser = subparsers.add_parser("sync", help="Run mail synchronization.")
@@ -257,33 +261,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     folder_parser = subparsers.add_parser(
-        "folder", help="Inspect mail folders.",
+        "folder",
+        help="Inspect mail folders.",
     )
     folder_subparsers = folder_parser.add_subparsers(
-        dest="folder_command", required=True,
+        dest="folder_command",
+        required=True,
     )
     folder_list = folder_subparsers.add_parser(
         "list",
         help="List folders with indexed message counts and sync status.",
     )
     folder_list.add_argument(
-        "account", nargs="?", help="Only list folders for one account.",
+        "account",
+        nargs="?",
+        help="Only list folders for one account.",
     )
 
     message_parser = subparsers.add_parser(
-        "message", help="Inspect individual messages.",
+        "message",
+        help="Inspect individual messages.",
     )
     message_subparsers = message_parser.add_subparsers(
-        dest="message_command", required=True,
+        dest="message_command",
+        required=True,
     )
     message_get = message_subparsers.add_parser(
-        "get", help="Print metadata for one message by ID.",
+        "get",
+        help="Print metadata for one message by ID.",
     )
     message_get.add_argument("account")
     message_get.add_argument("folder")
     message_get.add_argument("message_id")
     message_body = message_subparsers.add_parser(
-        "body", help="Print the full body of one message by ID.",
+        "body",
+        help="Print the full body of one message by ID.",
     )
     message_body.add_argument("account")
     message_body.add_argument("folder")
@@ -297,18 +309,25 @@ def build_parser() -> argparse.ArgumentParser:
     message_attachment.add_argument("folder")
     message_attachment.add_argument("message_id")
     message_attachment.add_argument(
-        "index", type=int, help="1-based attachment index (see 'message get').",
+        "index",
+        type=int,
+        help="1-based attachment index (see 'message get').",
     )
     message_attachment.add_argument(
-        "-o", "--output", metavar="PATH",
+        "-o",
+        "--output",
+        metavar="PATH",
         help="Write bytes to PATH.  Default: attachment's own filename in cwd.",
     )
     message_attachment.add_argument(
-        "--stdout", action="store_true",
+        "--stdout",
+        action="store_true",
         help="Write raw bytes to stdout; no file is created.",
     )
     message_attachment.add_argument(
-        "-f", "--force", action="store_true",
+        "-f",
+        "--force",
+        action="store_true",
         help="Overwrite the output file if it already exists.",
     )
 
@@ -348,7 +367,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch(args=args, paths=paths, parser=parser)
     except SchemaMismatchError as err:
         return run_schema_reset_prompt(
-            paths=paths, config_path=args.config, error=err,
+            paths=paths,
+            config_path=args.config,
+            error=err,
         )
 
 
@@ -377,7 +398,9 @@ def _dispatch(
         return run_fixture_ingest_command(paths=paths, config_path=args.config)
     if args.command == "rescan":
         return run_rescan(
-            paths=paths, config_path=args.config, account=args.account,
+            paths=paths,
+            config_path=args.config,
+            account=args.account,
         )
     if args.command == "search":
         return run_search(paths=paths, config_path=args.config, query=args.query)
@@ -458,7 +481,9 @@ def _dispatch(
 
     if args.command == "folder" and args.folder_command == "list":
         return run_folder_list(
-            paths=paths, config_path=args.config, account=args.account,
+            paths=paths,
+            config_path=args.config,
+            account=args.account,
         )
 
     if args.command == "message":
@@ -537,8 +562,10 @@ def run_schema_reset_prompt(
         targets.extend(account.mirror.path for account in config.accounts)
 
     print("=" * 66)
-    print("Pony's index database schema has changed "
-          f"(found v{error.found}, needs v{error.expected}).")
+    print(
+        "Pony's index database schema has changed "
+        f"(found v{error.found}, needs v{error.expected})."
+    )
     print()
     print("To move to the new schema, the following three steps are needed:")
     print(f"  1. Export your contacts to {backup_path}")
@@ -798,7 +825,8 @@ def _rescan_local_with_cli_progress(
     # 1. preamble — flushed so it shows before the first folder listing.
     print(
         f"[{account_name}] Scanning local mirror…",
-        flush=True, file=sys.stderr,
+        flush=True,
+        file=sys.stderr,
     )
 
     # \r returns to column 0; \033[K clears from cursor to end of line so
@@ -812,7 +840,9 @@ def _rescan_local_with_cli_progress(
         walked.append(folder)
         print(
             f"{erase}[{account_name}] scanning {folder}…",
-            end="", flush=True, file=sys.stderr,
+            end="",
+            flush=True,
+            file=sys.stderr,
         )
 
     def _on_plan(planned: RescanResult) -> None:
@@ -833,7 +863,9 @@ def _rescan_local_with_cli_progress(
         end = "\n" if current == total else ""
         print(
             f"{erase}[{account_name}] {folder}: {current}/{total}",
-            end=end, flush=True, file=sys.stderr,
+            end=end,
+            flush=True,
+            file=sys.stderr,
         )
 
     result = rescan_local_account(
@@ -855,8 +887,7 @@ def _rescan_local_with_cli_progress(
             )
         else:
             print(
-                f"{erase}[{account_name}] Local mirror unchanged "
-                "(all folders cached).",
+                f"{erase}[{account_name}] Local mirror unchanged (all folders cached).",
                 file=sys.stderr,
             )
 
@@ -971,7 +1002,10 @@ def render_sync_plan(plan: SyncPlan) -> str:
                 "push_flags": 0,
                 "merge_flags": 0,
                 "expunge": 0,
+                "push_move": 0,
+                "push_append": 0,
                 "restore": 0,
+                "other": 0,
             }
             for op in folder.ops:
                 if isinstance(op, FetchNewOp):
@@ -986,26 +1020,38 @@ def render_sync_plan(plan: SyncPlan) -> str:
                     counts["merge_flags"] += 1
                 elif isinstance(op, PushDeleteOp):
                     counts["expunge"] += 1
-                else:
+                elif isinstance(op, PushMoveOp):
+                    counts["push_move"] += 1
+                elif isinstance(op, PushAppendOp):
+                    counts["push_append"] += 1
+                elif isinstance(op, RestoreOp):
                     counts["restore"] += 1
+                else:
+                    counts["other"] += 1
             parts: list[str] = []
             if counts["fetch"]:
                 parts.append(f"{counts['fetch']} new message(s) to download")
             if counts["delete"]:
                 parts.append(f"{counts['delete']} message(s) deleted on server → trash")
+            if counts["push_move"]:
+                parts.append(f"{counts['push_move']} moved locally (push to server)")
+            if counts["push_append"]:
+                parts.append(f"{counts['push_append']} new local message(s) to upload")
+            if counts["expunge"]:
+                parts.append(f"{counts['expunge']} local deletion(s) to expunge")
             if counts["pull_flags"]:
                 parts.append(f"{counts['pull_flags']} flag update(s) from server")
             if counts["push_flags"]:
                 parts.append(f"{counts['push_flags']} flag update(s) to push")
             if counts["merge_flags"]:
                 parts.append(f"{counts['merge_flags']} flag conflict(s) to merge")
-            if counts["expunge"]:
-                parts.append(f"{counts['expunge']} local deletion(s) to expunge")
             if counts["restore"]:
                 parts.append(
                     f"{counts['restore']} locally-trashed message(s) to restore"
                     " (read-only folder)"
                 )
+            if counts["other"]:
+                parts.append(f"{counts['other']} other operation(s)")
             summary = ", ".join(parts) if parts else "no changes"
             lines.append(f"    {folder.folder_name}: {summary}")
     return "\n".join(lines)
@@ -1177,7 +1223,10 @@ def run_fixture_ingest_command(*, paths: AppPaths, config_path: Path | None) -> 
 
 
 def run_rescan(
-    *, paths: AppPaths, config_path: Path | None, account: str | None,
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,
 ) -> int:
     """Re-project indexed messages from the local mirror.
 
@@ -1210,7 +1259,8 @@ def run_rescan(
                 total += 1
                 try:
                     raw = mirror.get_message_bytes(
-                        folder=folder, storage_key=stored.storage_key,
+                        folder=folder,
+                        storage_key=stored.storage_key,
                     )
                 except (KeyError, FileNotFoundError):
                     missing += 1
@@ -1239,8 +1289,7 @@ def run_rescan(
             # Final line overwrites the progress ticker and terminates with \n.
             print(
                 f"\r  {folder.folder_name}: "
-                f"{folder_changed} updated ({folder_total} scanned)"
-                + " " * 20
+                f"{folder_changed} updated ({folder_total} scanned)" + " " * 20
             )
 
     print(
@@ -1271,14 +1320,15 @@ def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
 
 def _build_mirror(acc: AccountConfig) -> MirrorRepository:
     if acc.mirror.format == "maildir":
-        return MaildirMirrorRepository(
-            account_name=acc.name, root_dir=acc.mirror.path
-        )
+        return MaildirMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
     return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
 
 
 def run_folder_list(
-    *, paths: AppPaths, config_path: Path | None, account: str | None,
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,
 ) -> int:
     """List folders with indexed message counts and sync status."""
     paths.ensure_runtime_dirs()
@@ -1316,8 +1366,7 @@ def run_folder_list(
             else:
                 sync_suffix = ", never synced"
             print(
-                f"  {ref.folder_name:<{name_width}}  "
-                f"{count:>6} messages{sync_suffix}"
+                f"  {ref.folder_name:<{name_width}}  {count:>6} messages{sync_suffix}"
             )
     return 0
 
@@ -1342,12 +1391,12 @@ def run_message_get(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     hits = index.find_messages_by_message_id(
-        account_name=account, folder_name=folder, message_id=message_id,
+        account_name=account,
+        folder_name=folder,
+        message_id=message_id,
     )
     if not hits:
-        raise SystemExit(
-            f"Message not found in index: {account}/{folder}/{message_id}"
-        )
+        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
     if len(hits) > 1:
         print(
             f"Warning: {len(hits)} rows match Message-ID {message_id!r}; "
@@ -1381,7 +1430,9 @@ def run_message_get(
     from .tui.message_renderer import fmt_size
 
     rendered_attachments = _try_render_attachments(
-        config_path=config_path, account=account, folder=folder,
+        config_path=config_path,
+        account=account,
+        folder=folder,
         storage_key=msg.storage_key,
     )
     if rendered_attachments is not None:
@@ -1419,7 +1470,8 @@ def _try_render_attachments(
         return None
     acc = next(
         (
-            a for a in config.accounts
+            a
+            for a in config.accounts
             if isinstance(a, AccountConfig) and a.name == account
         ),
         None,
@@ -1454,7 +1506,8 @@ def run_message_body(
 
     acc = next(
         (
-            a for a in config.accounts
+            a
+            for a in config.accounts
             if isinstance(a, AccountConfig) and a.name == account
         ),
         None,
@@ -1468,12 +1521,12 @@ def run_message_body(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     hits = index.find_messages_by_message_id(
-        account_name=account, folder_name=folder, message_id=message_id,
+        account_name=account,
+        folder_name=folder,
+        message_id=message_id,
     )
     if not hits:
-        raise SystemExit(
-            f"Message not found in index: {account}/{folder}/{message_id}"
-        )
+        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
     indexed = hits[0]
     mirror = _build_mirror(acc)
     try:
@@ -1524,7 +1577,8 @@ def run_message_attachment(
 
     acc = next(
         (
-            a for a in config.accounts
+            a
+            for a in config.accounts
             if isinstance(a, AccountConfig) and a.name == account
         ),
         None,
@@ -1535,12 +1589,12 @@ def run_message_attachment(
     idx = SqliteIndexRepository(database_path=paths.index_db_file)
     idx.initialize()
     hits = idx.find_messages_by_message_id(
-        account_name=account, folder_name=folder, message_id=message_id,
+        account_name=account,
+        folder_name=folder,
+        message_id=message_id,
     )
     if not hits:
-        raise SystemExit(
-            f"Message not found in index: {account}/{folder}/{message_id}"
-        )
+        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
     indexed = hits[0]
     mirror = _build_mirror(acc)
     try:
@@ -2060,7 +2114,9 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
         if isinstance(acc, LocalAccountConfig):
             state = scan_state_by_account.setdefault(acc.name, {})
             _rescan_local_with_cli_progress(
-                mirror=mirrors[acc.name], index=index, account_name=acc.name,
+                mirror=mirrors[acc.name],
+                index=index,
+                account_name=acc.name,
                 scan_state=state,
             )
     _save_scan_state(scan_state_path, scan_state_by_account)
