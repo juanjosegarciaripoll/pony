@@ -148,8 +148,9 @@ class RescanLocalAccountTestCase(unittest.TestCase):
             message_ref=MessageRef(
                 account_name="local",
                 folder_name="INBOX",
-                rfc5322_id="<pending@example.com>",
+                id=0,
             ),
+            message_id="<pending@example.com>",
             sender="me@example.com",
             recipients="you@example.com",
             cc="",
@@ -161,7 +162,7 @@ class RescanLocalAccountTestCase(unittest.TestCase):
             local_status=MessageStatus.ACTIVE,
             received_at=datetime.now(UTC),
         )
-        index.upsert_message(message=pending)
+        index.insert_message(message=pending)
 
         result = rescan_local_account(
             mirror_repository=mirror,

@@ -53,7 +53,6 @@ from .sync import (
     PushFlagsOp,
     RestoreOp,
     ServerDeleteOp,
-    ServerMoveOp,
     SyncPlan,
 )
 from .version import __version__
@@ -968,7 +967,6 @@ def render_sync_plan(plan: SyncPlan) -> str:
             counts = {
                 "fetch": 0,
                 "delete": 0,
-                "move": 0,
                 "pull_flags": 0,
                 "push_flags": 0,
                 "merge_flags": 0,
@@ -980,8 +978,6 @@ def render_sync_plan(plan: SyncPlan) -> str:
                     counts["fetch"] += 1
                 elif isinstance(op, ServerDeleteOp):
                     counts["delete"] += 1
-                elif isinstance(op, ServerMoveOp):
-                    counts["move"] += 1
                 elif isinstance(op, PullFlagsOp):
                     counts["pull_flags"] += 1
                 elif isinstance(op, PushFlagsOp):
@@ -997,8 +993,6 @@ def render_sync_plan(plan: SyncPlan) -> str:
                 parts.append(f"{counts['fetch']} new message(s) to download")
             if counts["delete"]:
                 parts.append(f"{counts['delete']} message(s) deleted on server → trash")
-            if counts["move"]:
-                parts.append(f"{counts['move']} message(s) moved on server")
             if counts["pull_flags"]:
                 parts.append(f"{counts['pull_flags']} flag update(s) from server")
             if counts["push_flags"]:
@@ -1029,82 +1023,73 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
     rows: list[tuple[str, str, str, str, str]] = []
 
     for acc in plan.accounts:
-        # Build a cache of message_id → IndexedMessage for this account.
-        mid_to_row: dict[str, IndexedMessage | None] = {}
+        # Build a cache of row id → IndexedMessage for this account.
+        id_to_row: dict[int, IndexedMessage] = {}
         for folder_plan in acc.folders:
             folder_ref = FolderRef(
                 account_name=acc.account_name,
                 folder_name=folder_plan.folder_name,
             )
             for msg in index.list_folder_messages(folder=folder_ref):
-                mid_to_row[msg.message_ref.rfc5322_id] = msg
+                id_to_row[msg.message_ref.id] = msg
 
         for folder_plan in acc.folders:
             for op in folder_plan.ops:
                 if isinstance(op, ServerDeleteOp):
-                    hit = mid_to_row.get(op.message_id)
+                    hit = id_to_row.get(op.message_ref.id)
                     rows.append(
                         (
                             "server→trash",
                             acc.account_name,
                             folder_plan.folder_name,
                             hit.sender if hit else "",
-                            hit.subject if hit else op.message_id,
-                        )
-                    )
-                elif isinstance(op, ServerMoveOp):
-                    hit = mid_to_row.get(op.message_id)
-                    rows.append(
-                        (
-                            f"move→{op.new_folder}",
-                            acc.account_name,
-                            folder_plan.folder_name,
-                            hit.sender if hit else "",
-                            hit.subject if hit else op.message_id,
+                            hit.subject if hit else f"id={op.message_ref.id}",
                         )
                     )
                 elif isinstance(op, PushDeleteOp):
-                    hit = mid_to_row.get(op.message_ref.rfc5322_id)
+                    hit = id_to_row.get(op.message_ref.id)
                     rows.append(
                         (
                             "expunge",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             hit.sender if hit else "",
-                            hit.subject if hit else op.message_ref.rfc5322_id,
+                            hit.subject if hit else f"id={op.message_ref.id}",
                         )
                     )
                 elif isinstance(op, RestoreOp):
-                    hit = mid_to_row.get(op.message_ref.rfc5322_id)
+                    hit = id_to_row.get(op.message_ref.id)
                     rows.append(
                         (
                             "restore",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
                             hit.sender if hit else "",
-                            hit.subject if hit else op.message_ref.rfc5322_id,
+                            hit.subject if hit else f"id={op.message_ref.id}",
                         )
                     )
                 elif isinstance(op, MergeFlagsOp):
                     flag_str = ",".join(sorted(f.value for f in op.merged_flags)) or "—"
+                    hit = id_to_row.get(op.message_ref.id)
                     rows.append(
                         (
                             f"merge({flag_str})",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
-                            "",
-                            op.message_ref.rfc5322_id,
+                            hit.sender if hit else "",
+                            hit.subject if hit else f"id={op.message_ref.id}",
                         )
                     )
                 elif isinstance(op, PushFlagsOp):
                     flag_str = ",".join(sorted(f.value for f in op.new_flags)) or "—"
+                    hit = id_to_row.get(op.message_ref.id)
                     rows.append(
                         (
                             f"push({flag_str})",
                             op.message_ref.account_name,
                             op.message_ref.folder_name,
-                            "",
-                            op.message_ref.rfc5322_id,
+                            hit.sender if hit else "",
+                            hit.subject if hit else f"id={op.message_ref.id}",
                         )
                     )
 
@@ -1356,19 +1341,28 @@ def run_message_get(
     paths.ensure_runtime_dirs()
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    from .domain import MessageRef
-    ref = MessageRef(
-        account_name=account, folder_name=folder, rfc5322_id=message_id,
+    hits = index.find_messages_by_message_id(
+        account_name=account, folder_name=folder, message_id=message_id,
     )
-    msg = index.get_message(message_ref=ref)
-    if msg is None:
+    if not hits:
         raise SystemExit(
             f"Message not found in index: {account}/{folder}/{message_id}"
         )
+    if len(hits) > 1:
+        print(
+            f"Warning: {len(hits)} rows match Message-ID {message_id!r}; "
+            "showing the most recent.  Use 'pony show-id <id>' to "
+            "disambiguate by row id:"
+        )
+        for h in hits:
+            print(f"  id={h.message_ref.id}  {h.received_at.isoformat()}  {h.subject}")
+        print()
+    msg = hits[0]
     flags = ", ".join(sorted(f.value for f in msg.local_flags)) or "(none)"
     print(f"Account:    {msg.message_ref.account_name}")
     print(f"Folder:     {msg.message_ref.folder_name}")
-    print(f"Message-ID: {msg.message_ref.rfc5322_id}")
+    print(f"Row id:     {msg.message_ref.id}")
+    print(f"Message-ID: {msg.message_id}")
     print(f"From:       {msg.sender}")
     print(f"To:         {msg.recipients}")
     if msg.cc:
@@ -1456,7 +1450,6 @@ def run_message_body(
     """Print the full decoded body of a message from the local mirror."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .domain import MessageRef
     from .tui.message_renderer import fmt_size, render_message
 
     acc = next(
@@ -1470,21 +1463,18 @@ def run_message_body(
         raise SystemExit(f"No account named {account!r} in config.")
 
     # Users pass an RFC 5322 Message-ID (from search results); the mirror
-    # keys off the backend's own storage_key.  Resolve one to the other
-    # via the index.
+    # keys off the backend's own storage_key.  Resolve via the index;
+    # when a Message-ID has multiple matches, the most recent wins.
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    indexed = index.get_message(
-        message_ref=MessageRef(
-            account_name=account,
-            folder_name=folder,
-            rfc5322_id=message_id,
-        ),
+    hits = index.find_messages_by_message_id(
+        account_name=account, folder_name=folder, message_id=message_id,
     )
-    if indexed is None:
+    if not hits:
         raise SystemExit(
             f"Message not found in index: {account}/{folder}/{message_id}"
         )
+    indexed = hits[0]
     mirror = _build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
@@ -1530,7 +1520,6 @@ def run_message_attachment(
     """Write one attachment's bytes to a file or to stdout."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .domain import MessageRef
     from .tui.message_renderer import extract_attachment
 
     acc = next(
@@ -1545,15 +1534,14 @@ def run_message_attachment(
 
     idx = SqliteIndexRepository(database_path=paths.index_db_file)
     idx.initialize()
-    indexed = idx.get_message(
-        message_ref=MessageRef(
-            account_name=account, folder_name=folder, rfc5322_id=message_id,
-        ),
+    hits = idx.find_messages_by_message_id(
+        account_name=account, folder_name=folder, message_id=message_id,
     )
-    if indexed is None:
+    if not hits:
         raise SystemExit(
             f"Message not found in index: {account}/{folder}/{message_id}"
         )
+    indexed = hits[0]
     mirror = _build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
@@ -1610,8 +1598,8 @@ def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) 
         lines.append(f"Account {account.name}: {len(hits)} hit(s)")
         for hit in hits[:5]:
             lines.append(
-                f" - {hit.message_ref.folder_name}/"
-                f"{hit.message_ref.rfc5322_id}: {hit.subject}",
+                f" - {hit.message_ref.folder_name}/id={hit.message_ref.id}: "
+                f"{hit.subject}",
             )
     lines.append(f"Total hits: {total_hits}")
     print("\n".join(lines))

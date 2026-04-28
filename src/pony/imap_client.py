@@ -392,19 +392,26 @@ class ImapSession:
         raw_message: bytes,
         flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str] = frozenset(),
-    ) -> None:
-        """Upload a message to the server via IMAP APPEND."""
+    ) -> int | None:
+        """Upload via IMAP APPEND and return the new UID (or ``None``).
+
+        Parses the ``APPENDUID`` response code (RFC 4315) when the
+        server advertises ``UIDPLUS``.  Without it the caller has to
+        wait for the next sync to discover the UID via the per-folder
+        scan — correct but more I/O.
+        """
         flag_list = _format_imap_flags(flags, extra_imap_flags)
-        def _do() -> None:
+        def _do() -> int | None:
             logger.debug(
                 "APPEND to %s FLAGS %s (%d bytes)",
                 folder_name, flag_list, len(raw_message),
             )
             with _imap_errors(f"APPEND to {folder_name!r}"):
-                self._conn.append(
+                response = self._conn.append(
                     folder_name, raw_message, flag_list,
                 )
-        self._retry(_do, f"APPEND {folder_name}")
+            return _parse_appenduid(response)
+        return self._retry(_do, f"APPEND {folder_name}")
 
     def mark_deleted(self, folder_name: str, uid: int) -> None:
         """Set \\Deleted on one message."""
@@ -436,16 +443,21 @@ class ImapSession:
 
     def move_message(
         self, source_folder: str, uid: int, target_folder: str,
-    ) -> None:
-        """Move one message from *source_folder* to *target_folder*.
+    ) -> int | None:
+        """Move one message and return the new UID (or ``None``).
 
         The target folder must already exist on the server; callers
         should invoke :meth:`create_folder` first when in doubt.  Uses
         ``UID MOVE`` (RFC 6851) when the server advertises it, otherwise
         falls back to ``UID COPY`` + ``STORE +FLAGS \\Deleted`` +
         ``EXPUNGE`` on the source.
+
+        Parses the ``COPYUID`` response code (RFC 4315) for the
+        single-message case to recover the new UID; falls back to
+        ``None`` when the server omits it.  Callers without a new UID
+        wait for the next sync to discover it via the per-folder scan.
         """
-        def _do() -> None:
+        def _do() -> int | None:
             self._ensure_selected(source_folder)
             if b"MOVE" in self._conn.capabilities():
                 logger.debug(
@@ -455,8 +467,8 @@ class ImapSession:
                 with _imap_errors(
                     f"MOVE on {source_folder!r} -> {target_folder!r}",
                 ):
-                    self._conn.move([uid], target_folder)
-                return
+                    response = self._conn.move([uid], target_folder)
+                return _parse_copyuid(response)
             logger.debug(
                 "UID COPY %d from %s to %s (MOVE not supported)",
                 uid, source_folder, target_folder,
@@ -464,13 +476,15 @@ class ImapSession:
             with _imap_errors(
                 f"COPY on {source_folder!r} -> {target_folder!r}",
             ):
-                self._conn.copy([uid], target_folder)
+                copy_response = self._conn.copy([uid], target_folder)
+            new_uid = _parse_copyuid(copy_response)
             with _imap_errors(f"DELETE on {source_folder!r}"):
                 self._conn.delete_messages([uid])
             with _imap_errors(f"EXPUNGE on {source_folder!r}"):
                 self._conn.expunge()
+            return new_uid
 
-        self._retry(_do, f"MOVE {source_folder}->{target_folder}")
+        return self._retry(_do, f"MOVE {source_folder}->{target_folder}")
 
     # ------------------------------------------------------------------
     # Server summary helpers (not part of ImapClientSession protocol)
@@ -528,3 +542,65 @@ def _extract_message_id(header_bytes: bytes) -> str:
         if line.lower().startswith("message-id:"):
             return line.split(":", 1)[1].strip()
     return ""
+
+
+def _decode_response(response: object) -> str:
+    """Coerce an imapclient response value to a string for parsing."""
+    if response is None:
+        return ""
+    if isinstance(response, bytes):
+        return response.decode("ascii", errors="replace")
+    if isinstance(response, str):
+        return response
+    return str(response)
+
+
+def _parse_appenduid(response: object) -> int | None:
+    """Extract the new UID from an ``APPENDUID`` response code.
+
+    Format (RFC 4315): ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``
+    Returns ``None`` when the server omits ``APPENDUID`` (no UIDPLUS)
+    or the response cannot be parsed.
+    """
+    text = _decode_response(response)
+    marker = "APPENDUID"
+    idx = text.upper().find(marker)
+    if idx < 0:
+        return None
+    rest = text[idx + len(marker) :].lstrip()
+    parts = rest.split()
+    if len(parts) < 2:
+        return None
+    uid_token = parts[1].rstrip("]")
+    try:
+        return int(uid_token)
+    except ValueError:
+        return None
+
+
+def _parse_copyuid(response: object) -> int | None:
+    """Extract the new UID from a single-message ``COPYUID`` code.
+
+    Format (RFC 4315): ``[COPYUID <uidvalidity> <src-set> <dst-set>]``
+    where the sets are comma-separated UIDs or ranges.  This helper is
+    only used for single-message MOVE/COPY; multi-message paths would
+    need to map each source UID to its destination.  Returns ``None``
+    when the response is missing the code or contains a non-trivial
+    set (range / multi).
+    """
+    text = _decode_response(response)
+    marker = "COPYUID"
+    idx = text.upper().find(marker)
+    if idx < 0:
+        return None
+    rest = text[idx + len(marker) :].lstrip()
+    parts = rest.split()
+    if len(parts) < 3:
+        return None
+    dst = parts[2].rstrip("]")
+    if "," in dst or ":" in dst:
+        return None
+    try:
+        return int(dst)
+    except ValueError:
+        return None

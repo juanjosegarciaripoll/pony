@@ -94,6 +94,11 @@ class MainScreen(Screen[None]):
         border: solid $primary;
     }
 
+    FolderPanel:focus {
+        background-tint: transparent;
+        border-title-color: $accent;
+    }
+
     #right-pane {
         width: 75%;
         height: 100%;
@@ -104,10 +109,19 @@ class MainScreen(Screen[None]):
         border: solid $primary;
     }
 
+    MessageListPanel:focus {
+        background-tint: transparent;
+        border-title-color: $accent;
+    }
+
     MessageViewPanel {
         height: 2fr;
         border: solid $primary;
         display: none;
+    }
+
+    MessageViewPanel:focus {
+        border-title-color: $accent;
     }
     """
 
@@ -506,6 +520,20 @@ class MainScreen(Screen[None]):
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
+    def _mark_answered(self, msg: IndexedMessage) -> None:
+        if MessageFlag.ANSWERED in msg.local_flags:
+            return
+        updated = dataclasses.replace(
+            msg, local_flags=msg.local_flags | {MessageFlag.ANSWERED}
+        )
+        with self._index.connection():
+            self._index.upsert_message(message=updated)
+        folder_ref = FolderRef(
+            account_name=msg.message_ref.account_name,
+            folder_name=msg.message_ref.folder_name,
+        )
+        self._reload_folder(folder_ref)
+
     def toggle_flag(self, flag: MessageFlag) -> None:
         """Toggle *flag* on every target message and refresh the list."""
         targets = self._targets()
@@ -618,21 +646,27 @@ class MainScreen(Screen[None]):
                         severity="error",
                     )
                     continue
-                new_row = dataclasses.replace(
+                # Update in place: same row, new folder, PENDING_MOVE
+                # status with the original (folder, uid) recorded as the
+                # server-side source.  Sync executes UID MOVE (or
+                # APPEND+EXPUNGE) and clears the source fields.
+                updated = dataclasses.replace(
                     msg,
                     message_ref=MessageRef(
                         account_name=account.name,
                         folder_name=target,
-                        rfc5322_id=msg.message_ref.rfc5322_id,
+                        id=msg.message_ref.id,
                     ),
                     storage_key=new_storage_key,
                     uid=None,
                     server_flags=frozenset(),
                     extra_imap_flags=frozenset(),
                     synced_at=None,
+                    local_status=MessageStatus.PENDING_MOVE,
+                    source_folder=source,
+                    source_uid=msg.uid,
                 )
-                self._index.delete_message(message_ref=msg.message_ref)
-                self._index.upsert_message(message=new_row)
+                self._index.update_message(message=updated)
                 archived += 1
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(source_folder)
@@ -649,7 +683,10 @@ class MainScreen(Screen[None]):
         self.query_one(MessageListPanel).load_folder(folder_ref)
         self.query_one(FolderPanel).refresh_folders()
         if count:
-            self.app.notify(f"Marked {count} message{'s' if count != 1 else ''} as read.")  # pyright: ignore[reportUnknownMemberType]
+            suffix = "s" if count != 1 else ""
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Marked {count} message{suffix} as read.",
+            )
 
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)
@@ -750,18 +787,22 @@ class MainScreen(Screen[None]):
                     message_ref=MessageRef(
                         account_name=target.account_name,
                         folder_name=target.folder_name,
-                        rfc5322_id=new_mid,
+                        id=0,
                     ),
+                    message_id=new_mid,
                     storage_key=new_key,
                     uid=None,
+                    uid_validity=0,
                     base_flags=frozenset(),
                     server_flags=frozenset(),
                     extra_imap_flags=frozenset(),
                     local_status=MessageStatus.ACTIVE,
                     trashed_at=None,
                     synced_at=None,
+                    source_folder=None,
+                    source_uid=None,
                 )
-                self._index.upsert_message(message=new_row)
+                self._index.insert_message(message=new_row)
                 copied += 1
         self.query_one(MessageListPanel).clear_marks()
         if copied:
@@ -937,21 +978,25 @@ class MainScreen(Screen[None]):
                 severity="error",
             )
             return False
-        new_row = dataclasses.replace(
+        # Same-account move: keep the row, mark PENDING_MOVE so sync
+        # executes UID MOVE on the server.  No delete-then-insert.
+        updated = dataclasses.replace(
             msg,
             message_ref=MessageRef(
                 account_name=target.account_name,
                 folder_name=target.folder_name,
-                rfc5322_id=msg.message_ref.rfc5322_id,
+                id=msg.message_ref.id,
             ),
             storage_key=new_key,
             uid=None,
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
             synced_at=None,
+            local_status=MessageStatus.PENDING_MOVE,
+            source_folder=source.folder_name,
+            source_uid=msg.uid,
         )
-        self._index.delete_message(message_ref=msg.message_ref)
-        self._index.upsert_message(message=new_row)
+        self._index.update_message(message=updated)
         return True
 
     def _move_cross_account(
@@ -994,25 +1039,29 @@ class MainScreen(Screen[None]):
             message_ref=MessageRef(
                 account_name=target.account_name,
                 folder_name=target.folder_name,
-                rfc5322_id=new_mid,
+                id=0,
             ),
+            message_id=new_mid,
             storage_key=new_key,
             uid=None,
+            uid_validity=0,
             base_flags=frozenset(),
             server_flags=frozenset(),
             extra_imap_flags=frozenset(),
             local_status=MessageStatus.ACTIVE,
             trashed_at=None,
             synced_at=None,
+            source_folder=None,
+            source_uid=None,
         )
-        self._index.upsert_message(message=new_row)
+        self._index.insert_message(message=new_row)
 
         # Retire the source: IMAP sources get TRASHED so the next sync
         # expunges them; local sources have no sync to relay the
         # deletion, so we remove them outright (row + mirror file).
         if source_is_imap:
             trashed = dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
-            self._index.upsert_message(message=trashed)
+            self._index.update_message(message=trashed)
         else:
             # Best-effort delete: the index row is authoritative; a stray
             # file will be picked up by the mirror integrity scan.
@@ -1188,6 +1237,10 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+        def _on_reply_sent(result: bool | None) -> None:
+            if result:
+                self._mark_answered(msg)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1204,7 +1257,8 @@ class MainScreen(Screen[None]):
                     ),
                 ),
                 contacts=self._contacts,
-            )
+            ),
+            _on_reply_sent,
         )
 
     def compose_reply_all(self) -> None:
@@ -1241,6 +1295,11 @@ class MainScreen(Screen[None]):
         to, cc = build_reply_all_recipients(
             rendered, self_address=account.email_address,
         )
+
+        def _on_reply_all_sent(result: bool | None) -> None:
+            if result:
+                self._mark_answered(msg)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1258,7 +1317,8 @@ class MainScreen(Screen[None]):
                     ),
                 ),
                 contacts=self._contacts,
-            )
+            ),
+            _on_reply_all_sent,
         )
 
     def compose_forward(self) -> None:

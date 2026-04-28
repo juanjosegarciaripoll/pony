@@ -120,28 +120,33 @@ def seed_message(
     mirror: MirrorRepository,
     folder: FolderRef,
     raw: bytes,
-    rfc5322_id: str | None = None,
+    message_id: str | None = None,
 ) -> MessageRef:
-    """Write *raw* into *mirror*/*folder* and upsert its projection into *index*.
+    """Write *raw* into *mirror*/*folder* and insert its projection into *index*.
 
-    Returns the ``MessageRef`` of the indexed row so tests can look it up
-    later.  When *rfc5322_id* is None, a ``<seed-*@example.com>`` id is
-    synthesised — callers that share the same raw bytes across folders
-    should pass a distinct id per placement to avoid colliding rows.
+    Returns the assigned ``MessageRef`` (with the row id set) so tests
+    can look it up later.  When *message_id* is None the projection
+    uses whatever Message-ID header the raw bytes carry; callers that
+    share the same raw bytes across folders should pass a distinct
+    *message_id* per placement to avoid Message-ID display collisions.
     """
+    import dataclasses
+
     storage_key = mirror.store_message(folder=folder, raw_message=raw)
     ref = MessageRef(
         account_name=folder.account_name,
         folder_name=folder.folder_name,
-        rfc5322_id=rfc5322_id or f"<seed-{uuid4().hex}@example.com>",
+        id=0,
     )
     projected = project_rfc822_message(
         message_ref=ref,
         raw_message=raw,
         storage_key=storage_key,
     )
-    index.upsert_message(message=projected)
-    return ref
+    if message_id is not None:
+        projected = dataclasses.replace(projected, message_id=message_id)
+    saved = index.insert_message(message=projected)
+    return saved.message_ref
 
 
 def build_pony_app(

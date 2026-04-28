@@ -18,7 +18,6 @@ from .domain import (
     IndexedMessage,
     MessageFlag,
     MessageRef,
-    PendingOperation,
     PendingPush,
     SearchQuery,
     SlowPathRow,
@@ -129,12 +128,29 @@ class IndexRepository(Protocol):
         """Create required schema if it does not exist."""
         ...
 
-    def upsert_message(self, *, message: IndexedMessage) -> None:
-        """Insert or update one indexed message."""
+    def insert_message(self, *, message: IndexedMessage) -> IndexedMessage:
+        """Insert a new row and return it with its assigned ``id``.
+
+        Use for rows that have no row id yet (``message_ref.id == 0``):
+        first ingestion from the server, local compose, or pending
+        moves not yet persisted.
+        """
+        ...
+
+    def update_message(self, *, message: IndexedMessage) -> None:
+        """Persist changes to an existing row keyed by ``message_ref.id``."""
+        ...
+
+    def upsert_message(self, *, message: IndexedMessage) -> IndexedMessage:
+        """Insert when ``message_ref.id <= 0``, update otherwise.
+
+        Convenience for call sites that don't care which path applies.
+        Returns the row with its (possibly newly assigned) ``id``.
+        """
         ...
 
     def delete_message(self, *, message_ref: MessageRef) -> None:
-        """Remove a message from the index."""
+        """Remove one message row by ``message_ref.id``."""
         ...
 
     def purge_expired_trash(
@@ -179,7 +195,25 @@ class IndexRepository(Protocol):
         ...
 
     def get_message(self, *, message_ref: MessageRef) -> IndexedMessage | None:
-        """Return one indexed message by its primary key, or None."""
+        """Return one indexed message by ``message_ref.id``, or None."""
+        ...
+
+    def find_messages_by_message_id(
+        self,
+        *,
+        account_name: str,
+        message_id: str,
+        folder_name: str | None = None,
+    ) -> Sequence[IndexedMessage]:
+        """Return every row with the given RFC 5322 ``Message-ID:`` value.
+
+        Identity is row-keyed, so a single Message-ID may legitimately
+        match multiple rows: an alias delivered the same body twice, a
+        message stored both in INBOX and an aggregate folder, etc.
+        Callers (CLI, MCP) disambiguate by row id, folder, or
+        timestamp.  ``folder_name`` narrows the search; ``None``
+        searches the whole account.  Empty Message-IDs never match.
+        """
         ...
 
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
@@ -194,7 +228,9 @@ class IndexRepository(Protocol):
         Loads only the columns the folder list renders — no recipients,
         cc, body_preview, base_flags, server_flags, extra_imap_flags,
         trashed_at or synced_at — and skips their parsing cost.
-        ``active_only`` filters to ``local_status='active'`` in SQL.
+        ``active_only`` filters to ``local_status IN ('active',
+        'pending_move')`` in SQL — pending-move rows are visible in
+        their target folder while awaiting the next sync push.
         Ordered by ``received_at`` descending.
         """
         ...
@@ -240,15 +276,6 @@ class IndexRepository(Protocol):
     # UID / server-state queries (unified in the messages table)
     # ------------------------------------------------------------------
 
-    def list_folder_messages_with_uid(
-        self, *, account_name: str, folder_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return messages that have a non-NULL uid for one folder.
-
-        Used by the sync planner as the "last-known server snapshot".
-        """
-        ...
-
     def count_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> int:
@@ -260,14 +287,14 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def list_folder_uid_to_mid(
+    def list_folder_uids(
         self, *, account_name: str, folder_name: str
-    ) -> dict[int, str]:
-        """Return ``{uid: message_id}`` for rows with non-NULL uid in one folder.
+    ) -> set[int]:
+        """Return the set of UIDs known locally for one folder.
 
-        Used by the fast-path planner to synthesize the per-folder UID map
-        without issuing a server ``FETCH`` when STATUS says nothing
-        changed.
+        Used by the planner's fast-path UID-set check (compare against
+        ``STATUS MESSAGES`` count) and by the slow-path UID diff.  Only
+        rows with a non-NULL ``uid`` are included.
         """
         ...
 
@@ -279,14 +306,13 @@ class IndexRepository(Protocol):
         A row qualifies when any of:
 
         - ``local_status='trashed'`` (pending delete / restore), or
-        - ``local_status='active' AND uid IS NULL`` (pending append or
-          move target), or
+        - ``local_status='active' AND uid IS NULL`` (pending append), or
+        - ``local_status='pending_move'`` (move source recorded), or
         - ``local_status='active' AND uid IS NOT NULL AND
           local_flags != base_flags`` (flag drift).
 
-        Quiescent folders return zero rows so the fast-path planner
-        avoids hydrating 17k-row ``IndexedMessage``s only to find no
-        work to do.
+        Quiescent folders return zero rows so the planner avoids
+        hydrating 17k-row ``IndexedMessage``s to find no work.
         """
         ...
 
@@ -316,30 +342,6 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def list_mid_folders_for_account(
-        self, *, account_name: str
-    ) -> dict[str, set[str]]:
-        """Return ``{message_id: {folder_name, ...}}`` for UID-bearing rows.
-
-        Used by the slow-path planner's Step 1 to distinguish a
-        server-side move (message disappeared from this folder but is
-        in another local folder) from a real delete.  A narrow
-        ``SELECT`` — only ``folder_name`` and ``message_id`` columns,
-        no full ``IndexedMessage`` hydration — so rebuilding this map
-        across a 100k-row account is tens of milliseconds, not seconds.
-        """
-        ...
-
-    def list_pending_rows(
-        self, *, account_name: str
-    ) -> Sequence[IndexedMessage]:
-        """Return ACTIVE messages with ``uid IS NULL`` for one account.
-
-        These are local rows the user created (e.g. by archiving) that
-        have not yet been reconciled with the server.
-        """
-        ...
-
     def clear_uids_for_folder(
         self, *, account_name: str, folder_name: str
     ) -> None:
@@ -348,25 +350,6 @@ class IndexRepository(Protocol):
         Called when UIDVALIDITY changes and the UID epoch is invalid.
         """
         ...
-
-    # ------------------------------------------------------------------
-    # Pending operations write-ahead buffer
-    # ------------------------------------------------------------------
-
-    def enqueue_operation(self, *, operation: PendingOperation) -> None:
-        """Add a pending remote operation."""
-        ...
-
-    def complete_operation(self, *, operation_id: str) -> None:
-        """Remove a pending operation once it has been applied remotely."""
-        ...
-
-    def list_pending_operations(
-        self, *, account_name: str
-    ) -> Sequence[PendingOperation]:
-        """List pending operations for one account."""
-        ...
-
 
 class ImapClientSession(Protocol):
     """Interface for one authenticated IMAP session.
@@ -459,8 +442,15 @@ class ImapClientSession(Protocol):
         raw_message: bytes,
         flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str] = frozenset(),
-    ) -> None:
-        """Upload a message to the server via IMAP APPEND."""
+    ) -> int | None:
+        """Upload a message via IMAP APPEND.
+
+        Returns the new UID assigned by the server when the response
+        carries ``APPENDUID`` (RFC 4315 / UIDPLUS), otherwise ``None``.
+        Callers without UIDPLUS support fall back to a UID SEARCH on
+        the inserted Message-ID, or wait for the next sync to discover
+        the UID.
+        """
         ...
 
     def mark_deleted(self, folder_name: str, uid: int) -> None:
@@ -473,12 +463,17 @@ class ImapClientSession(Protocol):
 
     def move_message(
         self, source_folder: str, uid: int, target_folder: str,
-    ) -> None:
+    ) -> int | None:
         """Move one message from *source_folder* to *target_folder*.
 
-        Uses IMAP ``UID MOVE`` (RFC 6851) when the server advertises the
-        ``MOVE`` capability, otherwise falls back to ``UID COPY`` +
-        ``STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on the source folder.
+        Uses IMAP ``UID MOVE`` (RFC 6851) when the server advertises
+        the ``MOVE`` capability, otherwise falls back to ``UID COPY``
+        + ``STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on the source.
+
+        Returns the new UID in *target_folder* when the server's
+        response carries ``COPYUID``, otherwise ``None``.  Callers
+        record the new UID on the local row to avoid re-emitting the
+        move on the next sync.
         """
         ...
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,23 +11,6 @@ from .protocols import IndexRepository, MirrorRepository
 
 RescanProgress = Callable[[str, int, int], None]
 """``(message, current, total)`` callback.  ``total == 0`` means unknown."""
-
-# Pull the RFC 5322 Message-ID header out of the raw bytes so the index's
-# MessageRef carries the same identity the IMAP sync path produces.  Falls
-# back to the storage_key when the header is missing (some legacy or
-# malformed messages).
-_MESSAGE_ID_RE = re.compile(
-    rb"^Message-ID:\s*(.*(?:\r?\n[ \t]+.*)*)",
-    re.MULTILINE | re.IGNORECASE,
-)
-
-
-def _extract_message_id(raw: bytes) -> str:
-    match = _MESSAGE_ID_RE.search(raw)
-    if match is None:
-        return ""
-    value = match.group(1).decode("ascii", errors="replace")
-    return " ".join(value.split())
 
 
 def ingest_account_from_mirror(
@@ -78,18 +60,17 @@ def _ingest_one(
     raw_message = mirror_repository.get_message_bytes(
         folder=folder, storage_key=storage_key,
     )
-    rfc5322_id = _extract_message_id(raw_message) or storage_key
     message_ref = MessageRef(
         account_name=folder.account_name,
         folder_name=folder.folder_name,
-        rfc5322_id=rfc5322_id,
+        id=0,
     )
     projected = project_rfc822_message(
         message_ref=message_ref,
         raw_message=raw_message,
         storage_key=storage_key,
     )
-    index_repository.upsert_message(message=projected)
+    index_repository.insert_message(message=projected)
 
 
 @dataclass(frozen=True, slots=True)

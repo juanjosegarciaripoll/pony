@@ -66,18 +66,22 @@ def _simulate_tui_copy(
         message_ref=MessageRef(
             account_name=target.account_name,
             folder_name=target.folder_name,
-            rfc5322_id=new_mid,
+            id=0,
         ),
+        message_id=new_mid,
         storage_key=new_key,
         uid=None,
+        uid_validity=0,
         base_flags=frozenset(),
         server_flags=frozenset(),
         extra_imap_flags=frozenset(),
         local_status=MessageStatus.ACTIVE,
         trashed_at=None,
         synced_at=None,
+        source_folder=None,
+        source_uid=None,
     )
-    index.upsert_message(message=new_row)
+    index.insert_message(message=new_row)
     return new_raw, new_mid
 
 
@@ -150,7 +154,7 @@ class SameAccountCopyTest(unittest.TestCase):
         inbox = FolderRef(account_name="personal", folder_name="INBOX")
         archive = FolderRef(account_name="personal", folder_name="Archive")
         [orig_row] = index.list_folder_messages(folder=inbox)
-        self.assertEqual(orig_row.message_ref.rfc5322_id, "<orig-same@example.com>")
+        self.assertEqual(orig_row.message_id, "<orig-same@example.com>")
 
         # 2. TUI-side copy to Archive (same account → MID rewritten).
         _, new_mid = _simulate_tui_copy(

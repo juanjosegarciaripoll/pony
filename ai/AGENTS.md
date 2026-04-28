@@ -1,64 +1,34 @@
-# Agent Instructions for Pony Express
+# Pony Express — Agent Instructions
 
-You are working on **Pony Express**, a terminal-first mail user agent written
-in Python 3.13. Read this file first, then the sibling documents in `ai/`
-before making changes.
+Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI; SMTP out, optional Markdown compose.
 
-## Project overview
-
-Pony Express synchronises mail over IMAP, stores it locally in Maildir or mbox
-format, indexes it in SQLite for fast search, and presents it through a
-keyboard-driven terminal interface built with Textual. Outgoing mail is sent
-over SMTP with optional Markdown rendering.
-
-## Reading order
+## Docs
 
 | File | Purpose |
 |---|---|
-| `ai/SPECIFICATIONS.md` | Product goals, v1 scope, deferred scope |
-| `ai/ARCHITECTURE.md` | Package layout, subsystem boundaries, data flow |
-| `ai/SYNCHRONIZATION.md` | Sync algorithm, conflict taxonomy, schema, known limitations |
-| `ai/CONVENTIONS.md` | Engineering rules, coding style, quality gates |
-| `ai/STATUS.md` | What's delivered, what's queued |
-| `config-sample.toml` | Configuration reference (keep in sync with code) |
+| `ai/SPECIFICATIONS.md` | Goals, deferred scope |
+| `ai/ARCHITECTURE.md` | Package layout, subsystems, data flow |
+| `ai/SYNCHRONIZATION.md` | Sync algorithm, schema, conflicts |
+| `ai/CONVENTIONS.md` | Quality gates, style, build |
+| `ai/STATUS.md` | Delivered + queued work |
+| `config-sample.toml` | Config reference |
 | `CHANGELOG.md` | Release history |
 
-## How to work
+## Rules
 
-1. **Read before writing.** Use `ai/ARCHITECTURE.md` to locate the right
-   module; don't grep blindly.
+1. **Read first.** Use `ai/ARCHITECTURE.md` to locate the right module.
+2. **Quality gates after every change:** `ruff check`, `ruff format --check`, `mypy`, `basedpyright`, `pytest`.
+3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
+4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `mcp` — new ones need approval.
+5. **Keep docs in sync:** `config-sample.toml` ↔ config model; `ai/ARCHITECTURE.md` ↔ subsystem layout.
+6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
+7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite.
 
-2. **Run the quality gates** (defined in `ai/CONVENTIONS.md`) after every
-   change — ruff, mypy strict, basedpyright strict, pytest.
+## Local mutations
 
-3. **No speculative complexity.** No feature flags, no backward-compat
-   shims, no abstractions without a caller. Delete what is unused.
+TUI actions that round-trip to the server (archive, compose, folder create) set `uid IS NULL` on the index row. Sync planner is the sole observer — emitting `PushMoveOp` or `PushAppendOp`. No parallel queues or status flags. See `ai/SYNCHRONIZATION.md`.
 
-4. **Keep dependencies minimal.** Approved runtime deps: `imapclient`,
-   `textual`, `markdown-it-py`, `mcp`. New dependencies require approval.
-
-5. **Maintain the docs.** Update `config-sample.toml` when the config
-   model changes, `docs/` when behaviour changes, and `ai/ARCHITECTURE.md`
-   when subsystem boundaries move.
-
-6. **Don't touch the version string.** `pyproject.toml` and
-   `src/pony/version.py` are updated atomically by the release workflow
-   from a new heading in `CHANGELOG.md`.
-
-7. **Test strategy.** `unittest` (not pytest fixtures), run via `pytest`.
-   Sync tests use `FakeImapSession`. Storage tests run the same
-   conformance suite against both Maildir and mbox backends.
-
-## Local mutations and sync
-
-Any change the user makes in the TUI that should round-trip to the server
-(archive, local compose, folder create) is expressed by leaving
-``uid IS NULL`` on the relevant index row. The sync planner is the single
-observer of this signal — via `PushMoveOp`, `PushAppendOp`, or
-`LinkLocalOp`. Never invent parallel queues or status flags for this; see
-`ai/SYNCHRONIZATION.md` for the full model.
-
-## Building the standalone executable
+## Build
 
 ```bash
 uv sync --group build --group docs
@@ -66,20 +36,15 @@ uv run python scripts/build.py             # portable archive
 uv run python scripts/build.py --installer # + platform installer
 ```
 
-Artifacts land in `artifacts/` with an `artifacts.json` manifest.
-`pony.spec` controls bundling; `site/` (MkDocs output) and
-`config-sample.toml` are bundled as data. `paths.bundled_docs_path()`
-is the single place that distinguishes frozen from source execution.
+Artifacts → `artifacts/`. `pony.spec` controls bundling. `paths.bundled_docs_path()` detects frozen execution.
 
-## What NOT to do
+## Do NOT
 
-- Don't mock the database in tests — use real SQLite via `SqliteIndexRepository`.
-- Don't add `# type: ignore` without a specific diagnostic code.
-- Don't call `self.app._private_method()` from screens.
-- Don't add a separate "pending mutations" table for user actions — set
-  `uid=NULL` on the index row instead.
-- Don't commit the `site/` build artifact; it is generated at build time.
-- Don't add write/mutating tools to the MCP server without explicit
-  approval — read-only is the intended scope.
-- Don't create documentation files unless asked.
-- Don't add emojis to code or docs unless asked.
+- Mock the database — use real SQLite via `SqliteIndexRepository`.
+- Add `# type: ignore` without a diagnostic code.
+- Call `self.app._private_method()` from screens.
+- Add a pending-mutations table — set `uid=NULL` on the index row.
+- Commit `site/` — generated at build time.
+- Add write/mutating MCP tools without approval.
+- Create docs files unless asked.
+- Add emojis unless asked.

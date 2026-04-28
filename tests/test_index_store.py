@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -15,8 +16,6 @@ from pony.domain import (
     MessageFlag,
     MessageRef,
     MessageStatus,
-    OperationType,
-    PendingOperation,
     SearchQuery,
 )
 from pony.index_store import SqliteIndexRepository
@@ -34,15 +33,22 @@ class UpsertAndListTestCase(unittest.TestCase):
 
         rows = repo.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 2)
-        ids = {r.message_ref.rfc5322_id for r in rows}
+        ids = {r.message_id for r in rows}
         self.assertEqual(ids, {"m-1", "m-2"})
 
-    def test_upsert_is_idempotent(self) -> None:
+    def test_update_replaces_row_in_place(self) -> None:
+        """Identity is the row id; updating with the same id is in place."""
+        import dataclasses
+
         repo = _fresh_repo()
         folder = FolderRef(account_name="personal", folder_name="INBOX")
 
-        repo.upsert_message(message=_make_message("m-1", subject="Original"))
-        repo.upsert_message(message=_make_message("m-1", subject="Updated"))
+        saved = repo.insert_message(
+            message=_make_message("m-1", subject="Original"),
+        )
+        repo.update_message(
+            message=dataclasses.replace(saved, subject="Updated"),
+        )
 
         rows = repo.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
@@ -82,10 +88,9 @@ class DeleteMessageTestCase(unittest.TestCase):
 
     def test_delete_removes_message(self) -> None:
         repo = _fresh_repo()
-        repo.upsert_message(message=_make_message("m-1"))
+        saved = repo.insert_message(message=_make_message("m-1"))
 
-        ref = MessageRef(account_name="personal", folder_name="INBOX", rfc5322_id="m-1")
-        repo.delete_message(message_ref=ref)
+        repo.delete_message(message_ref=saved.message_ref)
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         self.assertEqual(repo.list_folder_messages(folder=folder), ())
@@ -93,7 +98,7 @@ class DeleteMessageTestCase(unittest.TestCase):
     def test_delete_nonexistent_is_silent(self) -> None:
         repo = _fresh_repo()
         ref = MessageRef(
-            account_name="personal", folder_name="INBOX", rfc5322_id="ghost"
+            account_name="personal", folder_name="INBOX", id=99999,
         )
         repo.delete_message(message_ref=ref)  # must not raise
 
@@ -140,35 +145,35 @@ class SearchTestCase(unittest.TestCase):
         hits = self.repo.search(
             query=SearchQuery(from_address="alice"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_to_address_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(to_address="alice"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_cc_address_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(cc_address="carol"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_subject_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(subject="Re:"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_body_filter(self) -> None:
         hits = self.repo.search(
             query=SearchQuery(body="looks good"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-2"})
 
     def test_combined_filters_narrow_results(self) -> None:
@@ -176,7 +181,7 @@ class SearchTestCase(unittest.TestCase):
             query=SearchQuery(from_address="alice", subject="Quarterly"),
             account_name="personal",
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-1"})
 
     def test_case_insensitive_by_default(self) -> None:
@@ -212,7 +217,7 @@ class SearchTestCase(unittest.TestCase):
         self.repo.upsert_message(message=other)
 
         hits = self.repo.search(query=SearchQuery(text="quarterly"), account_name=None)
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertIn("m-1", ids)
         self.assertIn("m-2", ids)
         self.assertIn("m-3", ids)
@@ -229,7 +234,7 @@ class SearchTestCase(unittest.TestCase):
         hits = self.repo.search(
             query=SearchQuery(text="quarterly"), account_name="personal"
         )
-        ids = {h.message_ref.rfc5322_id for h in hits}
+        ids = {h.message_id for h in hits}
         self.assertNotIn("m-3", ids)
 
 
@@ -248,7 +253,7 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
             query=SearchQuery(subject="maria"), account_name="personal",
         )
         self.assertEqual(
-            {h.message_ref.rfc5322_id for h in hits}, {"m-1"},
+            {h.message_id for h in hits}, {"m-1"},
         )
 
     def test_ascii_query_matches_accented_sender(self) -> None:
@@ -265,7 +270,7 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
             account_name="personal",
         )
         self.assertEqual(
-            {h.message_ref.rfc5322_id for h in hits}, {"m-1"},
+            {h.message_id for h in hits}, {"m-1"},
         )
 
     def test_field_scoping_is_enforced(self) -> None:
@@ -339,58 +344,6 @@ class FolderSyncStateTestCase(unittest.TestCase):
         self.assertEqual(loaded.highest_uid, 20)
 
 
-class PendingOperationsTestCase(unittest.TestCase):
-    """Validate pending operation enqueue/list/complete lifecycle."""
-
-    def test_enqueue_and_list(self) -> None:
-        repo = _fresh_repo()
-        op = _make_operation("op-1", OperationType.DELETE)
-        repo.enqueue_operation(operation=op)
-
-        pending = repo.list_pending_operations(account_name="personal")
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0].operation_type, OperationType.DELETE)
-
-    def test_complete_removes_operation(self) -> None:
-        repo = _fresh_repo()
-        repo.enqueue_operation(operation=_make_operation("op-1", OperationType.DELETE))
-        repo.enqueue_operation(
-            operation=_make_operation("op-2", OperationType.MARK_READ)
-        )
-
-        repo.complete_operation(operation_id="op-1")
-        pending = repo.list_pending_operations(account_name="personal")
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0].operation_id, "op-2")
-
-    def test_complete_nonexistent_is_silent(self) -> None:
-        repo = _fresh_repo()
-        repo.complete_operation(operation_id="ghost")  # must not raise
-
-    def test_list_isolates_accounts(self) -> None:
-        repo = _fresh_repo()
-        repo.enqueue_operation(
-            operation=_make_operation(
-                "op-1", OperationType.DELETE, account_name="personal"
-            )
-        )
-        repo.enqueue_operation(
-            operation=_make_operation("op-2", OperationType.FLAG, account_name="work")
-        )
-        personal = repo.list_pending_operations(account_name="personal")
-        work = repo.list_pending_operations(account_name="work")
-        self.assertEqual(len(personal), 1)
-        self.assertEqual(len(work), 1)
-
-    def test_all_operation_types_roundtrip(self) -> None:
-        repo = _fresh_repo()
-        for i, op_type in enumerate(OperationType):
-            repo.enqueue_operation(operation=_make_operation(f"op-{i}", op_type))
-        pending = repo.list_pending_operations(account_name="personal")
-        types = {p.operation_type for p in pending}
-        self.assertEqual(types, set(OperationType))
-
-
 class SchemaVersionGateTestCase(unittest.TestCase):
     """initialize() refuses to open a DB older than the current schema."""
 
@@ -430,6 +383,158 @@ class SchemaVersionGateTestCase(unittest.TestCase):
         finally:
             conn.close()
         self.assertGreaterEqual(version, 2)
+
+
+class V2ToV3MigrationTestCase(unittest.TestCase):
+    """The v2 → v3 in-place migration drops synthetic-mid orphans and
+    backfills uid_validity from folder_sync_state, while preserving
+    every real row."""
+
+    def _build_v2_db(self, path: Path) -> None:
+        """Create a minimal v2 (synthetic-mid era) database at *path*."""
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE messages (
+                    account_name     TEXT NOT NULL,
+                    folder_name      TEXT NOT NULL,
+                    message_id       TEXT NOT NULL,
+                    sender           TEXT NOT NULL,
+                    recipients       TEXT NOT NULL,
+                    cc               TEXT NOT NULL,
+                    subject          TEXT NOT NULL,
+                    body_preview     TEXT NOT NULL,
+                    storage_key      TEXT NOT NULL DEFAULT '',
+                    has_attachments  INTEGER NOT NULL DEFAULT 0,
+                    local_flags      TEXT NOT NULL,
+                    base_flags       TEXT NOT NULL,
+                    local_status     TEXT NOT NULL,
+                    received_at      TEXT NOT NULL,
+                    uid              INTEGER,
+                    server_flags     TEXT NOT NULL DEFAULT '',
+                    extra_imap_flags TEXT NOT NULL DEFAULT '',
+                    trashed_at       TEXT,
+                    synced_at        TEXT,
+                    PRIMARY KEY (account_name, folder_name, message_id)
+                );
+                CREATE TABLE folder_sync_state (
+                    account_name   TEXT NOT NULL,
+                    folder_name    TEXT NOT NULL,
+                    uid_validity   INTEGER NOT NULL,
+                    highest_uid    INTEGER NOT NULL,
+                    uidnext        INTEGER NOT NULL DEFAULT 0,
+                    highest_modseq INTEGER NOT NULL DEFAULT 0,
+                    synced_at      TEXT NOT NULL,
+                    PRIMARY KEY (account_name, folder_name)
+                );
+                CREATE TABLE pending_operations (
+                    operation_id   TEXT PRIMARY KEY,
+                    account_name   TEXT NOT NULL,
+                    folder_name    TEXT NOT NULL,
+                    message_id     TEXT NOT NULL,
+                    operation_type TEXT NOT NULL,
+                    created_at     TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO folder_sync_state VALUES "
+                "('personal','INBOX',42,7,8,12345,'2026-04-20T00:00:00+00:00')",
+            )
+            # A real (non-synthetic) row, synced.
+            conn.execute(
+                "INSERT INTO messages VALUES "
+                "('personal','INBOX','<real@example.com>',"
+                "'a@example.com','b@example.com','','Real subject','body',"
+                "'maildir-key',0,'seen','seen','active',"
+                "'2026-04-20T10:00:00+00:00',7,'seen','',NULL,"
+                "'2026-04-20T10:00:01+00:00')",
+            )
+            # A synthetic-mid orphan — exactly the row that drove the
+            # APPEND loop in production.
+            conn.execute(
+                "INSERT INTO messages VALUES "
+                "('personal','INBOX','<synthetic-deadbeef@pony.local>',"
+                "'a@example.com','b@example.com','','Stuck synthetic','body',"
+                "'',0,'','','active',"
+                "'2026-04-20T10:00:00+00:00',NULL,'','',NULL,NULL)",
+            )
+            # A synthetic-mid row with a uid (e.g. an indexed copy that
+            # *did* round-trip): this one survives — only ``uid IS NULL``
+            # synthetics drove the duplicate-APPEND loop.
+            conn.execute(
+                "INSERT INTO messages VALUES "
+                "('personal','INBOX','<synthetic-cafe@pony.local>',"
+                "'a@example.com','b@example.com','','Synthetic w/ uid','body',"
+                "'k2',0,'','','active',"
+                "'2026-04-20T10:00:00+00:00',9,'','',NULL,"
+                "'2026-04-20T10:00:01+00:00')",
+            )
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v2_to_v3_drops_synthetic_orphans_and_backfills_validity(
+        self,
+    ) -> None:
+        path = TMP_ROOT / "v2-migration" / f"{uuid4().hex}.sqlite3"
+        self._build_v2_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()  # runs the v2 → v3 migration
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = repo.list_folder_messages(folder=folder)
+        # The synthetic-mid orphan is gone; the real row and the
+        # synthetic-with-uid row survive.
+        ids = {r.message_id for r in rows}
+        self.assertIn("<real@example.com>", ids)
+        self.assertIn("<synthetic-cafe@pony.local>", ids)
+        self.assertNotIn("<synthetic-deadbeef@pony.local>", ids)
+        # uid_validity is backfilled from folder_sync_state on every
+        # surviving row.
+        self.assertTrue(all(r.uid_validity == 42 for r in rows))
+        # Every row got a fresh autoincrement id.
+        self.assertEqual(len({r.message_ref.id for r in rows}), len(rows))
+
+    def test_v2_to_v3_is_idempotent(self) -> None:
+        path = TMP_ROOT / "v2-migration-idem" / f"{uuid4().hex}.sqlite3"
+        self._build_v2_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()  # v2 → v3
+        repo.initialize()  # second init must be a no-op
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = repo.list_folder_messages(folder=folder)
+        self.assertEqual(
+            {r.message_id for r in rows},
+            {"<real@example.com>", "<synthetic-cafe@pony.local>"},
+        )
+
+    def test_v2_to_v3_drops_pending_operations_table(self) -> None:
+        import sqlite3
+
+        path = TMP_ROOT / "v2-migration-pending" / f"{uuid4().hex}.sqlite3"
+        self._build_v2_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='pending_operations'",
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(row, "pending_operations table must be dropped")
 
     def test_load_contacts_for_backup_reads_legacy_db(self) -> None:
         """The emergency loader must work on a DB initialize() refuses."""
@@ -521,7 +626,7 @@ class BatchedTransactionTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = repo.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].message_ref.rfc5322_id, "m-0")
+        self.assertEqual(rows[0].message_id, "m-0")
 
     def test_nested_connection_reuses_outer(self) -> None:
         """Nested connection() blocks do not commit early."""
@@ -571,7 +676,7 @@ class NarrowSyncProjectionTestCase(unittest.TestCase):
             account_name="personal", folder_name="INBOX",
         )
         self.assertEqual(len(rows), 3)
-        by_mid = {r.message_ref.rfc5322_id: r for r in rows}
+        by_mid = {r.message_id: r for r in rows}
 
         self.assertEqual(by_mid["m-1"].uid, 10)
         self.assertEqual(
@@ -657,12 +762,14 @@ def _make_message(
     extra_imap_flags: frozenset[str] = frozenset(),
     storage_key: str | None = None,
 ) -> IndexedMessage:
+    """Build an unsaved IndexedMessage; the row id is assigned at insert time."""
     return IndexedMessage(
         message_ref=MessageRef(
             account_name=account_name,
             folder_name=folder_name,
-            rfc5322_id=message_id,
+            id=0,
         ),
+        message_id=message_id,
         sender=sender,
         recipients=recipients,
         cc=cc,
@@ -675,22 +782,4 @@ def _make_message(
         received_at=datetime(2026, 4, 10, 10, 0, 0, tzinfo=UTC),
         uid=uid,
         extra_imap_flags=extra_imap_flags,
-    )
-
-
-def _make_operation(
-    operation_id: str,
-    operation_type: OperationType,
-    *,
-    account_name: str = "personal",
-) -> PendingOperation:
-    return PendingOperation(
-        operation_id=operation_id,
-        account_name=account_name,
-        message_ref=MessageRef(
-            account_name=account_name,
-            folder_name="INBOX",
-            rfc5322_id="m-1",
-        ),
-        operation_type=operation_type,
     )

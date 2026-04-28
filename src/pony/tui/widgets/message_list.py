@@ -60,7 +60,7 @@ class MessageListPanel(DataTable[Text]):
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._index = index
         self._summaries: list[FolderMessageSummary] = []
-        self._marked: set[str] = set()  # rfc5322_ids
+        self._marked: set[str] = set()  # str(message_ref.id)
         self._in_search: bool = False
         self._icons_col_key: ColumnKey | None = None
         self._date_col_key: ColumnKey | None = None
@@ -84,7 +84,7 @@ class MessageListPanel(DataTable[Text]):
     ) -> tuple[Text, Text, Text, Text]:
         style = _row_style(summary)
         icon = (
-            "*" if summary.message_ref.rfc5322_id in self._marked
+            "*" if str(summary.message_ref.id) in self._marked
             else _icon_column(summary)
         )
         return (
@@ -99,20 +99,20 @@ class MessageListPanel(DataTable[Text]):
         assert self._date_col_key is not None
         assert self._from_col_key is not None
         assert self._subject_col_key is not None
-        mid = summary.message_ref.rfc5322_id
+        key = str(summary.message_ref.id)
         icons, date, sender, subject = self._cells_for(summary)
         self.update_cell(
-            row_key=mid, column_key=self._icons_col_key, value=icons,
+            row_key=key, column_key=self._icons_col_key, value=icons,
         )
         self.update_cell(
-            row_key=mid, column_key=self._date_col_key, value=date,
+            row_key=key, column_key=self._date_col_key, value=date,
         )
         self.update_cell(
-            row_key=mid, column_key=self._from_col_key, value=sender,
+            row_key=key, column_key=self._from_col_key, value=sender,
             update_width=True,
         )
         self.update_cell(
-            row_key=mid, column_key=self._subject_col_key, value=subject,
+            row_key=key, column_key=self._subject_col_key, value=subject,
         )
 
     def load_folder(self, folder_ref: FolderRef) -> None:
@@ -131,7 +131,7 @@ class MessageListPanel(DataTable[Text]):
         for summary in summaries:
             self.add_row(
                 *self._cells_for(summary),
-                key=summary.message_ref.rfc5322_id,
+                key=str(summary.message_ref.id),
             )
 
     def load_search_results(
@@ -153,7 +153,7 @@ class MessageListPanel(DataTable[Text]):
         for summary in summaries:
             self.add_row(
                 *self._cells_for(summary),
-                key=summary.message_ref.rfc5322_id,
+                key=str(summary.message_ref.id),
             )
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
@@ -200,9 +200,9 @@ class MessageListPanel(DataTable[Text]):
         Used by flag/status/seen actions after they've written the
         change back to the index via ``upsert_message``.
         """
-        mid = updated.message_ref.rfc5322_id
+        target = updated.message_ref.id
         for i, summary in enumerate(self._summaries):
-            if summary.message_ref.rfc5322_id == mid:
+            if summary.message_ref.id == target:
                 self._summaries[i] = updated
                 self._update_row(updated)
                 break
@@ -253,7 +253,7 @@ class MessageListPanel(DataTable[Text]):
         summary = self.get_selected_summary()
         if summary is None:
             return
-        mid = summary.message_ref.rfc5322_id
+        mid = str(summary.message_ref.id)
         if mid in self._marked:
             self._marked.discard(mid)
         else:
@@ -272,7 +272,7 @@ class MessageListPanel(DataTable[Text]):
         """Summaries currently marked, ordered as they appear in the list."""
         return [
             s for s in self._summaries
-            if s.message_ref.rfc5322_id in self._marked
+            if str(s.message_ref.id) in self._marked
         ]
 
     def summaries_to_act_on(self) -> list[FolderMessageSummary]:
@@ -289,16 +289,16 @@ class MessageListPanel(DataTable[Text]):
         previously_marked = set(self._marked)
         self._marked.clear()
         for summary in self._summaries:
-            if summary.message_ref.rfc5322_id in previously_marked:
+            if str(summary.message_ref.id) in previously_marked:
                 self._update_row(summary)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _find_summary(self, rfc5322_id: str) -> FolderMessageSummary | None:
+    def _find_summary(self, key: str) -> FolderMessageSummary | None:
         for s in self._summaries:
-            if s.message_ref.rfc5322_id == rfc5322_id:
+            if str(s.message_ref.id) == key:
                 return s
         return None
 
@@ -312,6 +312,7 @@ def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
     """Project an IndexedMessage down to the fields the list needs."""
     return FolderMessageSummary(
         message_ref=msg.message_ref,
+        message_id=msg.message_id,
         storage_key=msg.storage_key,
         sender=msg.sender,
         subject=msg.subject,
