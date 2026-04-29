@@ -63,6 +63,10 @@ class AppPaths:
             index_db_file=data_dir / "index.sqlite3",
         )
 
+    @property
+    def mcp_state_file(self) -> Path:
+        return self.state_dir / "mcp.json"
+
     def ensure_runtime_dirs(self) -> None:
         """Create expected runtime directories if missing."""
         self.config_file.parent.mkdir(parents=True, exist_ok=True)

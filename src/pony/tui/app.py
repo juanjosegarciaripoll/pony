@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
 from ..domain import AnyAccount, AppConfig
+from ..paths import AppPaths
 from ..protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -59,12 +62,14 @@ class PonyApp(App[None]):
         self._credentials = credentials
         self._contacts = contacts
         self._config_path = config_path
+        self._mcp_tcp_server: asyncio.Server | None = None
+        self._mcp_state_file: Path | None = None
 
     def compose(self) -> ComposeResult:
         # Screens are pushed via on_mount; compose yields nothing at app level.
         return iter([])
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.push_screen(
             MainScreen(
                 self._config,
@@ -74,16 +79,27 @@ class PonyApp(App[None]):
                 contacts=self._contacts,
             )
         )
-        if self._config.mcp is not None:
-            from ..mcp_server import start_mcp_thread
+        await self._start_mcp_tcp_server()
 
-            mcp = self._config.mcp
-            start_mcp_thread(self._config_path, mcp)
-            self.notify(
-                f"MCP server listening on http://{mcp.host}:{mcp.port}/mcp",
-                title="MCP",
-                timeout=5,
-            )
+    async def _start_mcp_tcp_server(self) -> None:
+        from ..mcp_server import start_tcp_mcp_server
+
+        paths = AppPaths.default()
+        state_file = paths.mcp_state_file
+        server, _ = await start_tcp_mcp_server(self._config_path, state_file)
+        self._mcp_tcp_server = server
+        self._mcp_state_file = state_file
+        asyncio.create_task(server.serve_forever(), name="mcp-tcp")
+
+    async def on_unmount(self) -> None:
+        from ..mcp_server import clear_mcp_state
+
+        if self._mcp_tcp_server is not None:
+            self._mcp_tcp_server.close()
+            with contextlib.suppress(Exception):
+                await self._mcp_tcp_server.wait_closed()
+        if self._mcp_state_file is not None:
+            clear_mcp_state(self._mcp_state_file)
 
 
 class ComposeApp(App[None]):

@@ -336,21 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the Pony Express documentation in a browser.",
     )
 
-    mcp_parser = subparsers.add_parser(
-        "mcp-server",
-        help="Start an MCP server exposing read-only mail tools.",
-    )
-    mcp_parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Bind address for HTTP mode (default: 127.0.0.1).",
-    )
-    mcp_parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        metavar="PORT",
-        help="Port for Streamable HTTP transport. Omit to use stdio.",
+    subparsers.add_parser(
+        "mcp",
+        help="Start the MCP server (bridges to TUI if running, else stdio).",
     )
 
     return parser
@@ -523,12 +511,8 @@ def _dispatch(
     if args.command == "docs":
         return run_docs()
 
-    if args.command == "mcp-server":
-        return run_mcp_server_command(
-            config_path=args.config,
-            host=args.host,
-            port=args.port,
-        )
+    if args.command == "mcp":
+        return run_mcp_server_command(config_path=args.config, paths=paths)
 
     parser.error("Unhandled command.")
     return 2
@@ -627,16 +611,15 @@ def run_docs() -> int:
     return 0
 
 
-def run_mcp_server_command(
-    *,
-    config_path: Path | None,
-    host: str,
-    port: int | None,
-) -> int:
-    """Start the MCP server (stdio or Streamable HTTP)."""
+def run_mcp_server_command(*, config_path: Path | None, paths: AppPaths) -> int:
+    """Start the MCP server.
+
+    Bridges to the TUI's TCP server when one is running; otherwise opens
+    local connections and serves via stdio.
+    """
     from .mcp_server import run_mcp_server
 
-    run_mcp_server(config_path=config_path, host=host, port=port)
+    run_mcp_server(config_path=config_path, state_file=paths.mcp_state_file)
     return 0
 
 

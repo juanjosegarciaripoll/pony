@@ -2,38 +2,63 @@
 
 Exposes read-only mail and contacts operations as MCP tools.
 
-Transports
-----------
-stdio (default)
-    ``pony mcp-server``
-    Use with Claude Desktop or any local MCP client.
-
-Streamable HTTP
-    ``pony mcp-server --port 8765``
-    Use in Docker or remote deployments; any MCP client that supports HTTP.
-
-Compatibility with the TUI
---------------------------
-HTTP mode can run alongside ``pony tui`` — each process opens its own
-SQLite connection; the MCP server only reads, so there are no write
-conflicts.  stdio mode cannot run alongside the TUI (both own stdin/stdout).
+When the TUI is running it starts a TCP server on ``127.0.0.1`` with a
+per-session auth token stored in a state file.  ``pony mcp`` checks for this
+file and proxies stdin/stdout to the TCP server (bridge mode), avoiding a
+competing SQLite opener.  When no TUI is running ``pony mcp`` opens its own
+connections and serves tools directly via stdio.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
-import threading
+import json
+import secrets
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import load_config
-from .domain import AccountConfig, AnyAccount, McpConfig, SearchQuery
+from .domain import AccountConfig, AnyAccount, SearchQuery
 from .index_store import SqliteIndexRepository
 from .paths import AppPaths
 from .protocols import MirrorRepository
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
 from .tui.message_renderer import AttachmentPayload, extract_attachment, render_message
+
+# ---------------------------------------------------------------------------
+# MCP state (TUI ↔ bridge IPC)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class McpState:
+    """Port and auth token published by the TUI's embedded TCP MCP server."""
+
+    port: int
+    token: str
+
+
+def write_mcp_state(state_file: Path, state: McpState) -> None:
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(json.dumps({"port": state.port, "token": state.token}))
+
+
+def read_mcp_state(state_file: Path) -> McpState | None:
+    try:
+        data = json.loads(state_file.read_text())
+        return McpState(port=int(data["port"]), token=str(data["token"]))
+    except Exception:
+        return None
+
+
+def clear_mcp_state(state_file: Path) -> None:
+    with contextlib.suppress(Exception):
+        state_file.unlink()
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -202,10 +227,14 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
             mirror = mirrors.get(acc.name)
             if mirror is None:
                 continue
-            sync_by_folder = {
-                s.folder_name: s
-                for s in index.list_folder_sync_states(account_name=acc.name)
-            } if isinstance(acc, AccountConfig) else {}
+            sync_by_folder = (
+                {
+                    s.folder_name: s
+                    for s in index.list_folder_sync_states(account_name=acc.name)
+                }
+                if isinstance(acc, AccountConfig)
+                else {}
+            )
             folder_refs = sorted(
                 mirror.list_folders(account_name=acc.name),
                 key=lambda r: r.folder_name,
@@ -216,11 +245,13 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
                     "message_count": index.count_folder_messages(folder=ref),
                     "highest_uid": (
                         sync_by_folder[ref.folder_name].highest_uid
-                        if ref.folder_name in sync_by_folder else None
+                        if ref.folder_name in sync_by_folder
+                        else None
                     ),
                     "synced_at": (
                         sync_by_folder[ref.folder_name].synced_at
-                        if ref.folder_name in sync_by_folder else None
+                        if ref.folder_name in sync_by_folder
+                        else None
                     ),
                 }
                 for ref in folder_refs
@@ -253,7 +284,9 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # ------------------------------------------------------------------
 
     def _resolve_message(
-        account: str, folder: str, message_id: str,
+        account: str,
+        folder: str,
+        message_id: str,
     ) -> Any | None:
         """Resolve display Message-ID → indexed row.
 
@@ -263,12 +296,16 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         ``find_messages_by_message_id``.
         """
         hits = index.find_messages_by_message_id(
-            account_name=account, folder_name=folder, message_id=message_id,
+            account_name=account,
+            folder_name=folder,
+            message_id=message_id,
         )
         return hits[0] if hits else None
 
     def _fetch_raw_bytes(
-        account: str, folder: str, message_id: str,
+        account: str,
+        folder: str,
+        message_id: str,
     ) -> bytes | None:
         """Resolve Message-ID → mirror bytes (or ``None`` on miss)."""
         from .domain import FolderRef
@@ -430,46 +467,145 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     return mcp
 
 
-def start_mcp_thread(
+async def _handle_mcp_tcp_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    token: str,
+    mcp: Any,
+) -> None:
+    """Authenticate and run one MCP session over a TCP connection."""
+    import anyio
+    import mcp.types as types
+    from mcp.shared.message import SessionMessage
+
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+    except TimeoutError:
+        writer.close()
+        return
+    if line.decode("utf-8").strip() != f"TOKEN:{token}":
+        writer.close()
+        return
+
+    read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+    write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+
+    async def from_tcp() -> None:
+        async with read_stream_writer:
+            while not reader.at_eof():
+                raw = await reader.readline()
+                if not raw:
+                    break
+                try:
+                    msg = types.JSONRPCMessage.model_validate_json(raw)
+                    await read_stream_writer.send(SessionMessage(msg))
+                except Exception as exc:
+                    await read_stream_writer.send(exc)
+
+    async def to_tcp() -> None:
+        async with write_stream_reader:
+            async for sm in write_stream_reader:
+                json_line = (
+                    sm.message.model_dump_json(by_alias=True, exclude_none=True) + "\n"
+                )
+                writer.write(json_line.encode("utf-8"))
+                await writer.drain()
+        writer.close()
+
+    from_task = asyncio.create_task(from_tcp())
+    to_task = asyncio.create_task(to_tcp())
+    try:
+        await mcp._mcp_server.run(
+            read_stream,
+            write_stream,
+            mcp._mcp_server.create_initialization_options(),
+        )
+    finally:
+        from_task.cancel()
+        to_task.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.gather(from_task, to_task)
+
+
+async def start_tcp_mcp_server(
     config_path: Path | None,
-    mcp_config: McpConfig,
-) -> threading.Thread:
-    """Start the MCP HTTP server in a background daemon thread.
+    state_file: Path,
+) -> tuple[asyncio.Server, McpState]:
+    """Start the embedded TCP MCP server for the TUI.
 
-    Returns the thread object (already started).  Because the thread is a
-    daemon, it terminates automatically when the main process exits — no
-    explicit shutdown is required.
-
-    Only HTTP transport is supported here; stdio cannot run alongside the TUI
-    because both would compete for stdin/stdout.
+    Binds to a random loopback port, writes the port and a fresh auth token
+    to *state_file*, and returns the running server and its state.  Call
+    ``asyncio.create_task(server.serve_forever())`` to keep it alive in the
+    background.
     """
-    import uvicorn  # deferred: only when embedded MCP is enabled
+    token = secrets.token_hex(32)
+    mcp = build_mcp_server(config_path)
 
-    server = build_mcp_server(config_path)
-    uv_config = uvicorn.Config(
-        server.streamable_http_app(),
-        host=mcp_config.host,
-        port=mcp_config.port,
-        log_level="warning",
-    )
-    uv_server = uvicorn.Server(uv_config)
-    thread = threading.Thread(target=uv_server.run, daemon=True, name="mcp-http")
-    thread.start()
-    return thread
+    def _on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        asyncio.create_task(_handle_mcp_tcp_client(reader, writer, token, mcp))
+
+    server = await asyncio.start_server(_on_client, "127.0.0.1", 0)
+    port: int = server.sockets[0].getsockname()[1]
+    state = McpState(port=port, token=token)
+    write_mcp_state(state_file, state)
+    return server, state
+
+
+async def _bridge_stdio_to_tcp(state: McpState) -> bool:
+    """Proxy stdin/stdout to the TUI's TCP MCP server.
+
+    Returns ``True`` when the session completes normally, ``False`` when the
+    TCP server cannot be reached (stale state file).
+    """
+    try:
+        tcp_reader, tcp_writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", state.port), timeout=2.0
+        )
+    except Exception:
+        return False
+
+    tcp_writer.write(f"TOKEN:{state.token}\n".encode())
+    await tcp_writer.drain()
+
+    loop = asyncio.get_running_loop()
+    stdin_buf = sys.stdin.buffer
+    stdout_buf = sys.stdout.buffer
+
+    async def pipe_in() -> None:
+        while True:
+            line = await loop.run_in_executor(None, stdin_buf.readline)
+            if not line:
+                break
+            tcp_writer.write(line)
+            await tcp_writer.drain()
+        with contextlib.suppress(Exception):
+            tcp_writer.close()
+            await tcp_writer.wait_closed()
+
+    async def pipe_out() -> None:
+        while True:
+            chunk = await tcp_reader.read(65536)
+            if not chunk:
+                break
+            stdout_buf.write(chunk)
+            stdout_buf.flush()
+
+    await asyncio.gather(pipe_in(), pipe_out(), return_exceptions=True)
+    return True
 
 
 def run_mcp_server(
     config_path: Path | None = None,
-    host: str = "127.0.0.1",
-    port: int | None = None,
+    state_file: Path | None = None,
 ) -> None:
     """Start the MCP server.
 
-    Uses stdio when *port* is None (local / Claude Desktop use).
-    Uses Streamable HTTP on *host*:*port* when *port* is given (Docker / remote).
+    When *state_file* exists and points to a reachable TUI TCP server, act as
+    a bridge (stdin/stdout ↔ TCP).  Otherwise open local connections and serve
+    via stdio directly.
     """
-    server = build_mcp_server(config_path)
-    if port is not None:
-        server.run(transport="streamable-http", host=host, port=port)
-    else:
-        server.run(transport="stdio")
+    if state_file is not None:
+        state = read_mcp_state(state_file)
+        if state is not None and asyncio.run(_bridge_stdio_to_tcp(state)):
+            return
+    build_mcp_server(config_path).run(transport="stdio")

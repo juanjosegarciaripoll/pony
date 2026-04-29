@@ -170,14 +170,6 @@ class LocalAccountConfig:
 type AnyAccount = AccountConfig | LocalAccountConfig
 
 
-@dataclass(frozen=True, slots=True)
-class McpConfig:
-    """Configuration for the embedded MCP HTTP server."""
-
-    host: str = "127.0.0.1"
-    port: int = 8765
-
-
 # The TOML format version Pony Express expects on disk.  Bumped when
 # the schema changes in a way that requires user intervention.  The
 # parser rejects configs that do not declare exactly this value — a
@@ -202,8 +194,6 @@ class AppConfig:
     # Target directory for attachments opened/saved from the TUI.  When
     # None, resolves to ``~/Downloads`` at use time.
     downloads_path: Path | None = None
-    # When set, start the MCP HTTP server automatically with `pony tui`.
-    mcp: McpConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,16 +28,6 @@
 #                      expansion rules as bbdb_path.  Default: ~/Downloads.
 #                      Example: downloads_path = "~/mail-attachments"
 #
-# MCP server auto-start (optional):
-# Uncomment the [mcp] section to start the MCP HTTP server automatically
-# whenever `pony tui` launches.  The server runs in a background thread and
-# stops when the TUI exits.  Only HTTP transport is supported here; use
-# `pony mcp-server` (without the TUI) for stdio transport.
-#
-# [mcp]
-# host = "127.0.0.1"   # bind address — use 0.0.0.0 for network access
-# port = 8765           # MCP endpoint: http://<host>:<port>/mcp
-#
 # Per-account optional composer options:
 # - sent_folder:   Name of the folder where sent messages are saved.
 #                  If omitted, the folder closest to "Sent" is auto-discovered.

@@ -86,7 +86,7 @@ def make_test_account(
 def make_test_config(
     accounts: Sequence[AnyAccount] = (),
 ) -> AppConfig:
-    """Wrap *accounts* in an :class:`AppConfig` with MCP disabled."""
+    """Wrap *accounts* in an :class:`AppConfig`."""
     return AppConfig(accounts=tuple(accounts))
 
 
