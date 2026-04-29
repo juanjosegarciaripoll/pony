@@ -19,7 +19,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 1. **Read first.** Use `ai/ARCHITECTURE.md` to locate the right module.
 2. **Quality gates after every change:** `ruff check`, `ruff format --check`, `mypy`, `basedpyright`, `pytest`.
 3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
-4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `mcp` — new ones need approval.
+4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py` — new ones need approval.
 5. **Keep docs in sync:** `config-sample.toml` ↔ config model; `ai/ARCHITECTURE.md` ↔ subsystem layout.
 6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
 7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite.

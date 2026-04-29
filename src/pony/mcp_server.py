@@ -1,6 +1,7 @@
 """MCP server for Pony Express.
 
-Exposes read-only mail and contacts operations as MCP tools.
+Implements the MCP stdio wire format (newline-delimited JSON-RPC 2.0) directly
+without the MCP SDK, eliminating its HTTP-stack transitive dependencies.
 
 When the TUI is running it starts a TCP server on ``127.0.0.1`` with a
 per-session auth token stored in a state file.  ``pony mcp`` checks for this
@@ -14,12 +15,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import inspect
 import json
 import secrets
 import sys
+import typing
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .config import load_config
 from .domain import AccountConfig, AnyAccount, SearchQuery
@@ -58,6 +62,215 @@ def read_mcp_state(state_file: Path) -> McpState | None:
 def clear_mcp_state(state_file: Path) -> None:
     with contextlib.suppress(Exception):
         state_file.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Minimal MCP server (no external SDK)
+# ---------------------------------------------------------------------------
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+_MCP_PROTOCOL_VERSION = "2024-11-05"
+
+
+@dataclass
+class _Tool:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    fn: Callable[..., Any]
+
+
+def _hint_to_schema(hint: Any) -> dict[str, Any]:
+    """Best-effort Python type hint → JSON Schema fragment."""
+    origin = typing.get_origin(hint)
+    args = typing.get_args(hint)
+
+    # Optional / Union — drop None variant and recurse
+    if origin is not None and args and type(None) in args:
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            return _hint_to_schema(non_none[0])
+
+    if hint is str or hint is bytes:
+        return {"type": "string"}
+    if hint is int:
+        return {"type": "integer"}
+    if hint is bool:
+        return {"type": "boolean"}
+    if hint is float:
+        return {"type": "number"}
+    if hint is type(None):
+        return {"type": "null"}
+    if origin is list or hint is list:
+        return {"type": "array"}
+    if origin is dict or hint is dict:
+        return {"type": "object"}
+    return {"type": "string"}  # safe fallback
+
+
+def _build_input_schema(fn: Callable[..., Any]) -> dict[str, Any]:
+    """Build an MCP inputSchema from the function's parameter annotations."""
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception:
+        hints = {}
+    sig = inspect.signature(fn)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, param in sig.parameters.items():
+        properties[name] = _hint_to_schema(hints.get(name, str))
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+class McpServer:
+    """Minimal MCP server: register tools, serve over stdio or a stream pair."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._tools: list[_Tool] = []
+
+    def tool(self) -> Callable[[_F], _F]:
+        """Decorator: register a callable as an MCP tool."""
+
+        def decorator(fn: _F) -> _F:
+            self._tools.append(
+                _Tool(
+                    name=fn.__name__,
+                    description=(fn.__doc__ or "").strip(),
+                    input_schema=_build_input_schema(fn),
+                    fn=fn,
+                )
+            )
+            return fn
+
+        return decorator
+
+    def _handle(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+        """Dispatch one JSON-RPC message; return a response or None."""
+        method: str = msg.get("method", "")
+        msg_id = msg.get("id")
+        params: dict[str, Any] = msg.get("params") or {}
+
+        if method == "initialize":
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "protocolVersion": _MCP_PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": self._name, "version": "1.0"},
+                },
+            }
+
+        if method in {
+            "notifications/initialized",
+            "notifications/cancelled",
+            "notifications/progress",
+        }:
+            return None
+
+        if method == "ping":
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+        if method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "tools": [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": t.input_schema,
+                        }
+                        for t in self._tools
+                    ]
+                },
+            }
+
+        if method == "tools/call":
+            name = params.get("name", "")
+            arguments: dict[str, Any] = params.get("arguments") or {}
+            tool = next((t for t in self._tools if t.name == name), None)
+            if tool is None:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32601, "message": f"Unknown tool: {name}"},
+                }
+            try:
+                result = tool.fn(**arguments)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "content": [
+                            {"type": "text", "text": json.dumps(result, default=str)}
+                        ],
+                        "isError": False,
+                    },
+                }
+            except Exception as exc:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "content": [{"type": "text", "text": str(exc)}],
+                        "isError": True,
+                    },
+                }
+
+        if method in {"resources/list", "prompts/list", "resources/templates/list"}:
+            key = method.split("/")[0] + "s"
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {key: []}}
+
+        if msg_id is not None:
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+            }
+        return None
+
+    async def _serve(
+        self,
+        readline: Callable[[], Any],
+        writeline: Callable[[bytes], Any],
+    ) -> None:
+        """Read/dispatch/write loop shared by stdio and TCP handlers."""
+        while True:
+            raw = await readline()
+            if not raw:
+                break
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            response = self._handle(msg)
+            if response is not None:
+                line = json.dumps(response, separators=(",", ":")).encode() + b"\n"
+                await writeline(line)
+
+    def run(self) -> None:
+        """Run the MCP server over stdin/stdout (blocking)."""
+        asyncio.run(self._run_stdio())
+
+    async def _run_stdio(self) -> None:
+        loop = asyncio.get_running_loop()
+        stdin_buf = sys.stdin.buffer
+        stdout_buf = sys.stdout.buffer
+
+        async def readline() -> bytes:
+            return await loop.run_in_executor(None, stdin_buf.readline)
+
+        async def writeline(data: bytes) -> None:
+            stdout_buf.write(data)
+            stdout_buf.flush()
+
+        await self._serve(readline, writeline)
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +366,12 @@ def _sync_state_to_dict(s: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_mcp_server(config_path: Path | None = None) -> Any:
-    """Build and return a configured FastMCP instance.
+def build_mcp_server(config_path: Path | None = None) -> McpServer:
+    """Build and return a configured :class:`McpServer` instance.
 
     All tools are registered as closures that capture the index and mirror
     objects built at startup — no per-call reconnection overhead.
     """
-    from mcp.server.fastmcp import FastMCP  # deferred: only when subcommand runs
-
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
     config = load_config(config_path or paths.config_file)
@@ -170,13 +381,13 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
         acc.name: _make_mirror(acc) for acc in config.accounts
     }
 
-    mcp: Any = FastMCP("Pony Express")
+    mcp = McpServer("Pony Express")
 
     # ------------------------------------------------------------------
     # Tool: search_messages
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def search_messages(  # pyright: ignore[reportUnusedFunction]
         query: str = "",
         from_address: str = "",
@@ -209,7 +420,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: list_folders
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def list_folders(  # pyright: ignore[reportUnusedFunction]
         account: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -263,7 +474,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: list_messages
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def list_messages(  # pyright: ignore[reportUnusedFunction]
         account: str,
         folder: str,
@@ -325,7 +536,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
             return None
         return raw or None
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def get_message(  # pyright: ignore[reportUnusedFunction]
         account: str,
         folder: str,
@@ -359,7 +570,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: get_message_body
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def get_message_body(  # pyright: ignore[reportUnusedFunction]
         account: str,
         folder: str,
@@ -398,7 +609,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: get_attachment
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def get_attachment(  # pyright: ignore[reportUnusedFunction]
         account: str,
         folder: str,
@@ -433,7 +644,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: search_contacts
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def search_contacts(  # pyright: ignore[reportUnusedFunction]
         prefix: str,
         limit: int = 20,
@@ -446,7 +657,7 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     # Tool: get_sync_status
     # ------------------------------------------------------------------
 
-    @mcp.tool()  # type: ignore[untyped-decorator]
+    @mcp.tool()
     def get_sync_status(  # pyright: ignore[reportUnusedFunction]
         account: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -467,64 +678,36 @@ def build_mcp_server(config_path: Path | None = None) -> Any:
     return mcp
 
 
-async def _handle_mcp_tcp_client(
+# ---------------------------------------------------------------------------
+# TCP embedded server (TUI) and stdio bridge
+# ---------------------------------------------------------------------------
+
+
+async def _handle_tcp_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     token: str,
-    mcp: Any,
+    server: McpServer,
 ) -> None:
     """Authenticate and run one MCP session over a TCP connection."""
-    import anyio
-    import mcp.types as types
-    from mcp.shared.message import SessionMessage
-
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=5.0)
     except TimeoutError:
         writer.close()
         return
-    if line.decode("utf-8").strip() != f"TOKEN:{token}":
+    if line.decode("utf-8", errors="replace").strip() != f"TOKEN:{token}":
         writer.close()
         return
 
-    read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
-    write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+    async def readline() -> bytes:
+        return await reader.readline()
 
-    async def from_tcp() -> None:
-        async with read_stream_writer:
-            while not reader.at_eof():
-                raw = await reader.readline()
-                if not raw:
-                    break
-                try:
-                    msg = types.JSONRPCMessage.model_validate_json(raw)
-                    await read_stream_writer.send(SessionMessage(msg))
-                except Exception as exc:
-                    await read_stream_writer.send(exc)
+    async def writeline(data: bytes) -> None:
+        writer.write(data)
+        await writer.drain()
 
-    async def to_tcp() -> None:
-        async with write_stream_reader:
-            async for sm in write_stream_reader:
-                json_line = (
-                    sm.message.model_dump_json(by_alias=True, exclude_none=True) + "\n"
-                )
-                writer.write(json_line.encode("utf-8"))
-                await writer.drain()
-        writer.close()
-
-    from_task = asyncio.create_task(from_tcp())
-    to_task = asyncio.create_task(to_tcp())
-    try:
-        await mcp._mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp._mcp_server.create_initialization_options(),
-        )
-    finally:
-        from_task.cancel()
-        to_task.cancel()
-        with contextlib.suppress(Exception):
-            await asyncio.gather(from_task, to_task)
+    await server._serve(readline, writeline)
+    writer.close()
 
 
 async def start_tcp_mcp_server(
@@ -542,7 +725,7 @@ async def start_tcp_mcp_server(
     mcp = build_mcp_server(config_path)
 
     def _on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        asyncio.create_task(_handle_mcp_tcp_client(reader, writer, token, mcp))
+        asyncio.create_task(_handle_tcp_client(reader, writer, token, mcp))
 
     server = await asyncio.start_server(_on_client, "127.0.0.1", 0)
     port: int = server.sockets[0].getsockname()[1]
@@ -608,4 +791,4 @@ def run_mcp_server(
         state = read_mcp_state(state_file)
         if state is not None and asyncio.run(_bridge_stdio_to_tcp(state)):
             return
-    build_mcp_server(config_path).run(transport="stdio")
+    build_mcp_server(config_path).run()
