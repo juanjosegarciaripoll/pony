@@ -32,34 +32,43 @@ rendering to `multipart/alternative`.
 
 ## Installation
 
+**From GitHub with uv (no clone needed):**
+
 ```bash
-# Clone the repository
-git clone https://github.com/juanjosegarciaripoll/pony.git
-cd pony
-
-# Install dependencies and create the virtual environment
-uv sync
-
-# Verify the installation
-uv run pony --help
+uv tool install git+https://github.com/juanjosegarciaripoll/pony.git
+pony --help
 ```
 
-!!! note
-    The `pony` command is also available as `python -m pony` inside the
-    virtual environment.
+**From source:**
+
+```bash
+git clone https://github.com/juanjosegarciaripoll/pony.git
+cd pony
+uv tool install .
+pony --help
+```
+
+**Prebuilt relocatable archive** — download the `.zip` (Windows) or `.tar.gz`
+(macOS/Linux) from the
+[Releases](https://github.com/juanjosegarciaripoll/pony/releases) page,
+extract it anywhere, and run the `pony` executable inside.
+
+**Windows installer** — download `pony-windows-vX.Y.Z-setup.exe` from
+[Releases](https://github.com/juanjosegarciaripoll/pony/releases) and run it.
+The installer adds `pony` to your PATH automatically.
 
 ## Quick start
 
 1. **Add your first account** (the wizard guides you through it):
 
     ```
-    uv run pony account add
+    pony account add
     ```
 
     Or edit the config file directly:
 
     ```
-    uv run pony config edit
+    pony config edit
     ```
 
     !!! tip
@@ -69,19 +78,19 @@ uv run pony --help
 2. **Check the setup:**
 
     ```
-    uv run pony doctor
+    pony doctor
     ```
 
 3. **Run your first sync:**
 
     ```
-    uv run pony sync
+    pony sync
     ```
 
 4. **Open the TUI:**
 
     ```
-    uv run pony tui
+    pony tui
     ```
 
 See the [Configuration](configuration.md) page for a full reference on account

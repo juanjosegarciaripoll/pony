@@ -31,18 +31,41 @@ or in the [`docs/`](docs/index.md) directory:
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
 
+## Installation
+
+**From GitHub with uv (no clone needed):**
+
+```bash
+uv tool install git+https://github.com/juanjosegarciaripoll/pony.git
+pony --help
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/juanjosegarciaripoll/pony.git
+cd pony
+uv tool install .
+pony --help
+```
+
+**Prebuilt relocatable archive** — download the `.zip` (Windows) or `.tar.gz`
+(macOS/Linux) from the [Releases](https://github.com/juanjosegarciaripoll/pony/releases)
+page, extract it anywhere, and run the `pony` executable inside.
+
+**Windows installer** — download `pony-windows-vX.Y.Z-setup.exe` from
+[Releases](https://github.com/juanjosegarciaripoll/pony/releases) and run it.
+The installer adds `pony` to your PATH automatically.
+
 ## Quick start
 
 ```bash
-# Install dependencies
-uv sync
-
 # Check your setup
-uv run pony doctor
+pony doctor
 
 # Sync and read mail
-uv run pony sync
-uv run pony tui
+pony sync
+pony tui
 ```
 
 ## Development
@@ -66,4 +89,4 @@ uv run mkdocs serve
 
 ## License
 
-MIT
+[MIT](LICENSE)

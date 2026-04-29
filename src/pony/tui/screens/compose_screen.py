@@ -12,6 +12,8 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.events import Paste
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -38,6 +40,34 @@ from ..compose_utils import build_email_message
 
 _log = logging.getLogger(__name__)
 
+
+class AttachmentsBar(Static):
+    can_focus = True
+
+    class FilesDropped(Message):
+        def __init__(self, paths: list[Path]) -> None:
+            super().__init__()
+            self.paths = paths
+
+    def on_paste(self, event: Paste) -> None:
+        from urllib.parse import unquote
+
+        candidates: list[Path] = []
+        for raw_line in event.text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            line = line.strip("'\"")
+            if line.startswith("file://"):
+                line = unquote(line[len("file://") :])
+            p = Path(line)
+            if not p.is_file():
+                self.notify(f"Not a file: {line}", severity="warning")
+                return
+            candidates.append(p)
+        if candidates:
+            event.stop()
+            self.post_message(self.FilesDropped(candidates))
 
 
 def _split_addresses(addresses: str) -> list[str]:
@@ -147,6 +177,11 @@ class ComposeScreen(Screen[bool]):
         color: $text-muted;
     }
 
+    #attachments-bar:focus {
+        color: $text;
+        background: $accent 20%;
+    }
+
     /* ── Dynamic address rows (Cc / Bcc) ────────────────── */
 
     .addr-group {
@@ -244,11 +279,11 @@ class ComposeScreen(Screen[bool]):
 
     def compose(self) -> ComposeResult:
         from ..widgets.contact_suggester import ContactSuggester
+
         suggester = ContactSuggester(self._contacts) if self._contacts else None
 
         from_options: list[tuple[str, str]] = [
-            (f"{a.name} <{a.email_address}>", a.name)
-            for a in self._accounts
+            (f"{a.name} <{a.email_address}>", a.name) for a in self._accounts
         ]
         # ── Header block (auto height, one row per field) ──
         with Vertical(id="header-fields"):
@@ -286,7 +321,7 @@ class ComposeScreen(Screen[bool]):
                     id="subject-input",
                     classes="field-input",
                 )
-            yield Static("", id="attachments-bar")
+            yield AttachmentsBar("", id="attachments-bar")
         # ── Body fills remaining screen space ──
         yield TextArea(self._initial.body, id="body-area")
         yield Static("", id="compose-footer")
@@ -375,7 +410,8 @@ class ComposeScreen(Screen[bool]):
 
         raw = msg.as_bytes()
         self._save_to_folder(
-            raw, account,
+            raw,
+            account,
             folder_hint="Sent",
             override=account.sent_folder,
         )
@@ -408,13 +444,15 @@ class ComposeScreen(Screen[bool]):
                         markdown_mode=self._markdown_mode,
                     )
                     self._save_to_folder(
-                        msg.as_bytes(), account,
+                        msg.as_bytes(),
+                        account,
                         folder_hint="Drafts",
                         override=account.drafts_folder,
                     )
             self.dismiss(False)
 
         from .save_draft_screen import SaveDraftScreen
+
         self.app.push_screen(SaveDraftScreen(), _on_save)  # pyright: ignore[reportUnknownMemberType]
 
     def action_prefix(self) -> None:
@@ -433,6 +471,7 @@ class ComposeScreen(Screen[bool]):
     def on_key(self, event: object) -> None:
         """Handle the second key of a ctrl+x chord."""
         from textual.events import Key
+
         if not isinstance(event, Key):
             return
         if not self._prefix_active:
@@ -440,6 +479,7 @@ class ComposeScreen(Screen[bool]):
         self._prefix_active = False
         # Restore focus to whichever field the user was in.
         from textual.widget import Widget
+
         if isinstance(self._focus_before_prefix, Widget):
             self.set_focus(self._focus_before_prefix)
         self._focus_before_prefix = None
@@ -481,7 +521,9 @@ class ComposeScreen(Screen[bool]):
                 last = ""
             self._contacts.upsert_contact(
                 contact=Contact(
-                    id=None, first_name=first, last_name=last,
+                    id=None,
+                    first_name=first,
+                    last_name=last,
                     emails=(addr,),
                 )
             )
@@ -500,6 +542,7 @@ class ComposeScreen(Screen[bool]):
         parts.append("Markdown ON" if self._markdown_mode else "Markdown OFF")
         self.query_one("#body-area", TextArea).border_title = "  ".join(parts)
         from rich.text import Text
+
         t = Text()
         if self._markdown_mode:
             t.append("[MD] ", style="bold green")
@@ -536,13 +579,6 @@ class ComposeScreen(Screen[bool]):
         """Push the file-picker screen."""
         from .add_attachment_screen import AddAttachmentScreen
 
-        # Start in the last attachment's directory, or home.
-        start = (
-            self._attachment_paths[-1].parent
-            if self._attachment_paths
-            else Path.home()
-        )
-
         def _on_path(path_str: str | None) -> None:
             if not path_str:
                 return
@@ -553,7 +589,13 @@ class ComposeScreen(Screen[bool]):
             self._attachment_paths.append(p)
             self._refresh_attachments_bar()
 
-        self.app.push_screen(AddAttachmentScreen(start_dir=start), _on_path)  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(AddAttachmentScreen(), _on_path)  # pyright: ignore[reportUnknownMemberType]
+
+    def on_attachments_bar_files_dropped(
+        self, event: AttachmentsBar.FilesDropped
+    ) -> None:
+        self._attachment_paths.extend(event.paths)
+        self._refresh_attachments_bar()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -563,9 +605,7 @@ class ComposeScreen(Screen[bool]):
         """Comma-joined non-empty address inputs in *container_id*."""
         container = self.query_one(f"#{container_id}", Vertical)
         return ", ".join(
-            inp.value.strip()
-            for inp in container.query(Input)
-            if inp.value.strip()
+            inp.value.strip() for inp in container.query(Input) if inp.value.strip()
         )
 
     def _refresh_add_buttons(self, container: Vertical) -> None:
@@ -579,6 +619,7 @@ class ComposeScreen(Screen[bool]):
     def _add_addr_row(self, container_id: str) -> None:
         """Append a new empty address row and refresh + button visibility."""
         from ..widgets.contact_suggester import ContactSuggester
+
         suggester = ContactSuggester(self._contacts) if self._contacts else None
         container = self.query_one(f"#{container_id}", Vertical)
         new_row = _AddrRow(suggester=suggester, classes="addr-row")
@@ -616,12 +657,12 @@ class ComposeScreen(Screen[bool]):
 
     def _refresh_attachments_bar(self) -> None:
         if not self._attachment_paths:
-            text = "Attachments: (none)  [ctrl+x a to add]"
+            text = "Attachments: (none)  [ctrl+x a  or drop files here]"
         else:
             names = "  ".join(p.name for p in self._attachment_paths)
             count = len(self._attachment_paths)
             text = f"Attachments ({count}): {names}  [ctrl+x a to add more]"
-        self.query_one("#attachments-bar", Static).update(text)
+        self.query_one("#attachments-bar", AttachmentsBar).update(text)
 
     def _save_to_folder(
         self,
@@ -635,7 +676,8 @@ class ComposeScreen(Screen[bool]):
         if mirror is None:
             _log.warning(
                 "No mirror for account %r — cannot save to %s",
-                account.name, folder_hint,
+                account.name,
+                folder_hint,
             )
             return
 
@@ -655,7 +697,9 @@ class ComposeScreen(Screen[bool]):
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "Failed to store message in %s/%s: %s",
-                account.name, folder_name, exc,
+                account.name,
+                folder_name,
+                exc,
             )
             self.notify(f"Could not save to {folder_hint}: {exc}", severity="warning")
             return
