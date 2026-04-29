@@ -12,6 +12,10 @@ from textual.widgets import DirectoryTree, Footer, Input, Label
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
+# Persists the last-used directory across picker invocations within a session.
+# None means "not yet used"; the picker then falls back to cwd at launch time.
+_session_dir: Path | None = None
+
 
 class AddAttachmentScreen(Screen[str | None]):
     """Full-screen file browser for picking an attachment.
@@ -83,7 +87,7 @@ class AddAttachmentScreen(Screen[str | None]):
 
     def __init__(self, start_dir: Path | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._root = (start_dir or Path.home()).resolve()
+        self._root = (start_dir or _session_dir or Path.cwd()).resolve()
         self._typeahead: str = ""
         self._typeahead_version: int = 0  # incremented each keystroke to debounce
 
@@ -113,7 +117,9 @@ class AddAttachmentScreen(Screen[str | None]):
     def on_directory_tree_file_selected(
         self, event: DirectoryTree.FileSelected
     ) -> None:
+        global _session_dir
         event.stop()
+        _session_dir = event.path.parent
         self.dismiss(str(event.path))
 
     def on_directory_tree_directory_selected(
@@ -130,6 +136,7 @@ class AddAttachmentScreen(Screen[str | None]):
     def on_key(self, event: object) -> None:
         """Intercept printable keys while the tree is focused for typeahead."""
         from textual.events import Key
+
         if not isinstance(event, Key):
             return
 
@@ -191,7 +198,7 @@ class AddAttachmentScreen(Screen[str | None]):
             start = 0
 
         # Search from the node after cursor, wrapping around.
-        ordered = candidates[start + 1:] + candidates[:start + 1]
+        ordered = candidates[start + 1 :] + candidates[: start + 1]
         for node in ordered:
             label = str(node.label).lower()
             if label.startswith(query):
@@ -201,9 +208,7 @@ class AddAttachmentScreen(Screen[str | None]):
     def _update_hint(self) -> None:
         hint = self.query_one("#hint-bar", Label)
         if self._typeahead:
-            hint.update(
-                f"Search: {self._typeahead}▌  Backspace=trim  Esc=cancel"
-            )
+            hint.update(f"Search: {self._typeahead}▌  Backspace=trim  Esc=cancel")
         else:
             hint.update("Enter=attach  ctrl+l=edit path  Esc=cancel")
 
@@ -231,6 +236,8 @@ class AddAttachmentScreen(Screen[str | None]):
         if not target.is_dir():
             self.notify(f"Not a directory: {raw}", severity="error")
             return
+        global _session_dir
+        _session_dir = target
         self._root = target
         self.query_one("#path-input", Input).value = str(target)
         old_tree = self.query_one("#file-tree", DirectoryTree)
