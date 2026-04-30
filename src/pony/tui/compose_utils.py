@@ -5,14 +5,29 @@ from __future__ import annotations
 import mimetypes
 import re
 from email.message import EmailMessage
-from email.utils import formataddr, formatdate, getaddresses, make_msgid
+from email.utils import formatdate, getaddresses, make_msgid
 from pathlib import Path
 
 from .message_renderer import RenderedMessage
 
 _QUOTE_BOUNDARY_RE = re.compile(
-    r'(?m)^(On .+ wrote:|---------- Forwarded message ----------)$'
+    r"(?m)^(On .+ wrote:|---------- Forwarded message ----------)$"
 )
+
+_ADDR_SPECIAL_RE = re.compile(r'[",;:<>\[\]()\\]')
+
+
+def format_display_address(name: str, addr: str) -> str:
+    """Format an address pair as a human-readable string without RFC 2047 encoding.
+
+    Used for display in the composer UI.  Python's EmailMessage re-encodes
+    non-ASCII display names to RFC 2047 automatically when serializing for SMTP.
+    """
+    if not name:
+        return addr
+    if _ADDR_SPECIAL_RE.search(name):
+        name = '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return f"{name} <{addr}>"
 
 
 def _split_at_quote_boundary(text: str) -> tuple[str, str]:
@@ -27,7 +42,7 @@ def _split_at_quote_boundary(text: str) -> tuple[str, str]:
     cut = text.rfind("\n", 0, m.start())
     if cut == -1:
         return "", text
-    return text[:cut], text[cut + 1:]
+    return text[:cut], text[cut + 1 :]
 
 
 def _sig_block(signature: str) -> str:
@@ -82,7 +97,9 @@ def build_forward_body(
 
 
 def build_reply_all_recipients(
-    rendered: RenderedMessage, *, self_address: str,
+    rendered: RenderedMessage,
+    *,
+    self_address: str,
 ) -> tuple[str, str]:
     """Return ``(to, cc)`` for a reply-all to *rendered*.
 
@@ -107,7 +124,7 @@ def build_reply_all_recipients(
         if norm in seen:
             continue
         seen.add(norm)
-        cc_parts.append(formataddr((name, addr)))
+        cc_parts.append(format_display_address(name, addr))
 
     return rendered.from_, ", ".join(cc_parts)
 
@@ -163,6 +180,7 @@ def build_email_message(
         import html as _html_mod
 
         from markdown_it import MarkdownIt
+
         md = MarkdownIt()
 
         # Separate the signature first.

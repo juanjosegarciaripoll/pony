@@ -245,6 +245,10 @@ async def test_trash_flips_status() -> None:
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
+        # _select_first_inbox ends with MessageViewPanel focused; bring
+        # focus back to the list so "down" navigates the cursor.
+        pilot.app.screen.query_one(MessageListPanel).focus()
+        await pilot.pause()
         await pilot.press("down")
         await pilot.pause()
         await pilot.press("D")
@@ -477,6 +481,10 @@ async def test_folder_tree_next_inbox() -> None:
         first = fp.cursor_node
         assert first is not None
         assert first.data == FolderRef(account_name="one", folder_name="INBOX")
+        # on_mount auto-selects the first INBOX, which shifts focus to the
+        # message list; restore it so the FolderPanel bindings are active.
+        fp.focus()
+        await pilot.pause()
         await pilot.press("N")
         await pilot.pause()
         assert fp.cursor_node is not None

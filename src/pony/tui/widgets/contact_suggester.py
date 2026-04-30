@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from email.utils import formataddr
-
 from textual.suggester import Suggester
 
 from ...protocols import ContactRepository
+from ..compose_utils import format_display_address
 
 
 class ContactSuggester(Suggester):
@@ -43,6 +42,6 @@ class ContactSuggester(Suggester):
         email = contact.primary_email
         if not email:
             return None
-        suggestion = formataddr((name, email)) if name else email
+        suggestion = format_display_address(name, email)
 
         return prefix_part + suggestion
