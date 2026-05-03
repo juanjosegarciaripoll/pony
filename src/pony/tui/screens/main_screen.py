@@ -360,10 +360,8 @@ class MainScreen(Screen[None]):
             msg = f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
             self.app.notify(msg)  # pyright: ignore[reportUnknownMemberType]
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-            self.app.screen.dismiss(  # pyright: ignore[reportUnknownMemberType]
-                worker.state == worker.state.SUCCESS,
-            )
-        self.call_after_refresh(self._refresh_after_sync)
+            dismiss_result = True if worker.state == worker.state.SUCCESS else None
+            self.app.screen.dismiss(dismiss_result)  # pyright: ignore[reportUnknownMemberType]
 
     def _sync_progress(self, info: ProgressInfo) -> None:
         """Update the sync screen's status (called from worker thread)."""

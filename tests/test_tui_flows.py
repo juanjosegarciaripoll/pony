@@ -35,6 +35,7 @@ from pony.domain import (
     MessageFlag,
     MessageStatus,
 )
+from pony.sync import ImapSyncService, SyncPlan
 from pony.tui.app import PonyApp
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
@@ -499,3 +500,36 @@ async def test_folder_tree_next_inbox() -> None:
             account_name="one",
             folder_name="INBOX",
         )
+
+
+async def test_sync_nothing_to_sync_no_cancel_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When planning returns an empty plan, only 'Nothing to sync.' appears.
+
+    Regression guard: a previous bug caused 'Sync cancelled.' to also fire
+    when the plan was empty or the exec worker failed.
+    """
+    empty_plan = SyncPlan(accounts=())
+    monkeypatch.setattr(ImapSyncService, "plan", lambda self, **kwargs: empty_plan)
+
+    app, *_ = build_pony_app(label="nothing-to-sync")
+
+    notifications: list[str] = []
+    original_notify = app.notify
+
+    def _capture(msg: str, **kw: object) -> None:
+        notifications.append(msg)
+        original_notify(msg, **kw)  # type: ignore[arg-type]
+
+    app.notify = _capture  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+    assert "Nothing to sync." in notifications
+    assert "Sync cancelled." not in notifications
