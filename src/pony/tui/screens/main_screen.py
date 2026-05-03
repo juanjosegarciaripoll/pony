@@ -272,7 +272,7 @@ class MainScreen(Screen[None]):
         )
 
         def _on_dismiss(result: bool | None) -> None:
-            if not result:
+            if result is False:
                 self.app.notify("Sync cancelled.")  # pyright: ignore[reportUnknownMemberType]
             self.call_after_refresh(self._refresh_after_sync)
 
@@ -318,7 +318,7 @@ class MainScreen(Screen[None]):
 
         if worker.state == worker.state.ERROR:
             if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-                self.app.screen.dismiss(False)  # pyright: ignore[reportUnknownMemberType]
+                self.app.screen.dismiss(None)  # pyright: ignore[reportUnknownMemberType]
             err = worker.error
             msg = str(err) if err else "unknown error"
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -330,7 +330,7 @@ class MainScreen(Screen[None]):
         plan: SyncPlan | None = worker.result
         if plan is None or plan.is_empty():
             if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-                self.app.screen.dismiss(False)  # pyright: ignore[reportUnknownMemberType]
+                self.app.screen.dismiss(None)  # pyright: ignore[reportUnknownMemberType]
             self.app.notify("Nothing to sync.")  # pyright: ignore[reportUnknownMemberType]
             return
 
