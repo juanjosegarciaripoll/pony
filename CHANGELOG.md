@@ -5,6 +5,26 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+### Changed
+
+- **Shared sync-plan formatting**: the plan categorisation and
+  human-readable label logic that previously existed as private helpers
+  in ``sync_confirm_screen.py`` and a separate duplicate in ``cli.py``
+  (``render_sync_plan``) is now a single canonical implementation in
+  ``sync.py`` (``format_plan_detail``, ``format_plan_summary``).  Both
+  the TUI confirm screen and the CLI sync command use the same
+  functions, so label text and op coverage are always in sync.  The old
+  CLI implementation was also missing the ``reupload`` and ``purge`` op
+  types added in a previous release.
+- **Silent no-activity accounts and folders**: the CLI post-sync summary
+  now skips accounts and per-folder timing lines where no messages were
+  fetched, no flags changed, and no server-side mutations occurred.
+  Only accounts or folders with actual changes (plus any with skipped
+  folders) appear in the output.  The TUI post-sync notification
+  likewise omits account entries with zero fetched messages and zero
+  flag conflicts merged.
+
 ## [0.6.0] - 2026-04-20
 ### Fixed
 

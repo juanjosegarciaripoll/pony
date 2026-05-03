@@ -95,6 +95,18 @@ class FolderSyncResult:
     fetch_ms: int = 0
     ingest_ms: int = 0
 
+    @property
+    def has_changes(self) -> bool:
+        return bool(
+            self.fetched
+            or self.flag_updates_from_server
+            or self.flag_pushes_to_server
+            or self.flag_conflicts_merged
+            or self.deleted_on_server
+            or self.moved_to_server
+            or self.appended_to_server
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AccountSyncResult:
@@ -283,6 +295,98 @@ class SyncPlan:
 
 
 # ---------------------------------------------------------------------------
+# Plan formatting
+# ---------------------------------------------------------------------------
+
+_OP_LABELS: tuple[tuple[str, str], ...] = (
+    ("download", "{n} new message(s) to download"),
+    ("server_delete", "{n} deleted on server (move to trash)"),
+    ("push_move", "{n} moved locally (push to server)"),
+    ("push_append", "{n} new local message(s) to upload"),
+    ("push_delete", "{n} local deletion(s) to expunge"),
+    ("pull_flags", "{n} flag update(s) from server"),
+    ("push_flags", "{n} flag update(s) to push"),
+    ("merge_flags", "{n} flag conflict(s) to merge"),
+    ("restore", "{n} locally-trashed message(s) to restore"),
+    ("reupload", "{n} message(s) to re-upload"),
+    ("purge", "{n} local-only row(s) to drop"),
+)
+
+
+def _categorize_ops(ops: tuple[SyncOp, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for op in ops:
+        if isinstance(op, FetchNewOp):
+            key = "download"
+        elif isinstance(op, ServerDeleteOp):
+            key = "server_delete"
+        elif isinstance(op, PushMoveOp):
+            key = "push_move"
+        elif isinstance(op, PushAppendOp):
+            key = "push_append"
+        elif isinstance(op, PushDeleteOp):
+            key = "push_delete"
+        elif isinstance(op, PullFlagsOp):
+            key = "pull_flags"
+        elif isinstance(op, PushFlagsOp):
+            key = "push_flags"
+        elif isinstance(op, MergeFlagsOp):
+            key = "merge_flags"
+        elif isinstance(op, RestoreOp):
+            key = "restore"
+        elif isinstance(op, ReUploadOp):
+            key = "reupload"
+        elif isinstance(op, PurgeLocalOp):
+            key = "purge"
+        else:
+            key = "other"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _format_op_counts(counts: dict[str, int]) -> list[str]:
+    parts = [
+        template.format(n=counts[key])
+        for key, template in _OP_LABELS
+        if counts.get(key)
+    ]
+    if counts.get("other"):
+        parts.append(f"{counts['other']} other operation(s)")
+    return parts
+
+
+def format_plan_summary(plan: SyncPlan) -> str:
+    """One-line summary of total operations across all folders."""
+    totals: dict[str, int] = {}
+    for acct in plan.accounts:
+        for folder in acct.folders:
+            for key, n in _categorize_ops(folder.ops).items():
+                totals[key] = totals.get(key, 0) + n
+    return ", ".join(_format_op_counts(totals))
+
+
+def format_plan_detail(plan: SyncPlan) -> str:
+    """Multi-line detail: per-account, per-folder human-readable counts."""
+    lines: list[str] = []
+    for acct in plan.accounts:
+        header = f"  {acct.account_name}"
+        if acct.skipped_folders:
+            header += f"  (skipped: {', '.join(acct.skipped_folders)})"
+        lines.append(header)
+        if acct.creates:
+            lines.append(f"    create folder(s): {', '.join(acct.creates)}")
+        for folder in acct.folders:
+            counts = _categorize_ops(folder.ops)
+            parts = _format_op_counts(counts)
+            confirm = " [needs confirmation]" if folder.needs_confirmation else ""
+            if parts:
+                lines.append(f"    {folder.folder_name}: " + ", ".join(parts) + confirm)
+            elif folder.is_new:
+                lines.append(f"    {folder.folder_name}: new folder")
+    return "\n".join(lines) if lines else "  (nothing to do)"
+
+
+# ---------------------------------------------------------------------------
 # Three-way flag merge
 # ---------------------------------------------------------------------------
 
@@ -406,9 +510,7 @@ class ImapSyncService:
 
     def sync(self, *, account_name: str | None = None) -> SyncResult:
         plan = self.plan(account_name=account_name)
-        all_folders = frozenset(
-            f.folder_name for a in plan.accounts for f in a.folders
-        )
+        all_folders = frozenset(f.folder_name for a in plan.accounts for f in a.folders)
         return self.execute(plan, confirmed_folders=all_folders)
 
     # ------------------------------------------------------------------
@@ -435,8 +537,10 @@ class ImapSyncService:
 
         try:
             return self._plan_folders(
-                account=account, session=session,
-                progress=progress, reconnect=_reconnect,
+                account=account,
+                session=session,
+                progress=progress,
+                reconnect=_reconnect,
             )
         finally:
             with contextlib.suppress(Exception):
@@ -452,9 +556,7 @@ class ImapSyncService:
     ) -> AccountSyncPlan:
         folder_policy = account.folders
         all_server_folders = list(session.list_folders())
-        server_folders = [
-            f for f in all_server_folders if folder_policy.should_sync(f)
-        ]
+        server_folders = [f for f in all_server_folders if folder_policy.should_sync(f)]
 
         # Folders that exist in the local mirror but not on the server
         # get a CREATE op at the head of execution so any PushAppendOp
@@ -462,30 +564,33 @@ class ImapSyncService:
         mirror = self._mirror_factory(account)
         try:
             mirror_folder_names = {
-                f.folder_name
-                for f in mirror.list_folders(account_name=account.name)
+                f.folder_name for f in mirror.list_folders(account_name=account.name)
             }
         except Exception:
             logger.exception(
-                "Failed to list mirror folders for %r", account.name,
+                "Failed to list mirror folders for %r",
+                account.name,
             )
             mirror_folder_names = set()
         server_folder_set = set(all_server_folders)
         creates = tuple(
             sorted(
-                name for name in mirror_folder_names - server_folder_set
+                name
+                for name in mirror_folder_names - server_folder_set
                 if folder_policy.should_sync(name)
             )
         )
 
         with self._index.connection():
             return self._plan_folders_inner(
-                account=account, session=session,
+                account=account,
+                session=session,
                 folder_policy=folder_policy,
                 all_server_folders=all_server_folders,
                 server_folders=server_folders,
                 creates=creates,
-                progress=progress, reconnect=reconnect,
+                progress=progress,
+                reconnect=reconnect,
             )
 
     def _plan_folders_inner(
@@ -509,7 +614,8 @@ class ImapSyncService:
             logger.warning(
                 "Account %r syncs Gmail aggregate folder(s) %s — consider "
                 "excluding them via folders.exclude",
-                account.name, ", ".join(sorted(synced_aggregate)),
+                account.name,
+                ", ".join(sorted(synced_aggregate)),
             )
 
         stale = self._index.purge_stale_folders(
@@ -519,7 +625,9 @@ class ImapSyncService:
         if stale:
             logger.info(
                 "Cleanup: purged state for %d stale folder(s) in %r: %s",
-                len(stale), account.name, ", ".join(stale),
+                len(stale),
+                account.name,
+                ", ".join(stale),
             )
 
         # Per-folder STATUS gate.  Outputs:
@@ -529,9 +637,7 @@ class ImapSyncService:
         # plus per-folder observed UIDNEXT/HIGHESTMODSEQ for the watermark.
         fast_path: dict[str, FolderSyncState] = {}
         medium_path: dict[str, tuple[FolderSyncState, dict[int, FlagSet]]] = {}
-        slow_path: dict[
-            str, tuple[dict[int, str], dict[int, FlagSet]]
-        ] = {}
+        slow_path: dict[str, tuple[dict[int, str], dict[int, FlagSet]]] = {}
         observed_uidnext: dict[str, int] = {}
         observed_modseq: dict[str, int] = {}
         scan_ms: dict[str, int] = {}
@@ -539,18 +645,24 @@ class ImapSyncService:
 
         for i, folder_name in enumerate(server_folders, 1):
             if progress is not None:
-                progress(ProgressInfo(
-                    f"{account.name}: scanning {folder_name}"
-                    f" ({i}/{len(server_folders)})",
-                    current=i, total=len(server_folders),
-                ))
+                progress(
+                    ProgressInfo(
+                        f"{account.name}: scanning {folder_name}"
+                        f" ({i}/{len(server_folders)})",
+                        current=i,
+                        total=len(server_folders),
+                    )
+                )
 
             stored = self._index.get_folder_sync_state(
-                account_name=account.name, folder_name=folder_name,
+                account_name=account.name,
+                folder_name=folder_name,
             )
             quick = self._safe_status(
-                session, folder_name,
-                reconnect=reconnect, scan_ms=scan_ms,
+                session,
+                folder_name,
+                reconnect=reconnect,
+                scan_ms=scan_ms,
             )
             if quick is None:
                 skipped.append(folder_name)
@@ -565,8 +677,10 @@ class ImapSyncService:
                 and quick.uid_validity == stored.uid_validity
                 and stored.uidnext > 0
                 and quick.uidnext == stored.uidnext
-                and quick.messages == self._index.count_uids_for_folder(
-                    account_name=account.name, folder_name=folder_name,
+                and quick.messages
+                == self._index.count_uids_for_folder(
+                    account_name=account.name,
+                    folder_name=folder_name,
                 )
             )
 
@@ -580,7 +694,9 @@ class ImapSyncService:
                     fast_path[folder_name] = stored
                     logger.debug(
                         "Fast-path %s/%s: %d msg(s)",
-                        account.name, folder_name, quick.messages,
+                        account.name,
+                        folder_name,
+                        quick.messages,
                     )
                     continue
 
@@ -588,7 +704,8 @@ class ImapSyncService:
                 try:
                     _t = time.perf_counter()
                     changed = session.fetch_flags_changed_since(
-                        folder_name, stored.highest_modseq,
+                        folder_name,
+                        stored.highest_modseq,
                     )
                     scan_ms[folder_name] = scan_ms.get(folder_name, 0) + int(
                         (time.perf_counter() - _t) * 1000
@@ -597,7 +714,9 @@ class ImapSyncService:
                     logger.info(
                         "Medium-path CHANGEDSINCE failed on %s/%s: %s"
                         " — falling through to slow path",
-                        account.name, folder_name, exc,
+                        account.name,
+                        folder_name,
+                        exc,
                     )
                 else:
                     medium_path[folder_name] = (stored, changed)
@@ -612,7 +731,9 @@ class ImapSyncService:
                 if reconnect is not None:
                     logger.info(
                         "Connection lost scanning %s/%s: %s — reconnecting",
-                        account.name, folder_name, exc,
+                        account.name,
+                        folder_name,
+                        exc,
                     )
                     try:
                         session = reconnect()
@@ -620,9 +741,7 @@ class ImapSyncService:
                         uid_metadata = session.fetch_uid_to_message_id(
                             folder_name,
                         )
-                        scan_ms[folder_name] = int(
-                            (time.perf_counter() - _t) * 1000
-                        )
+                        scan_ms[folder_name] = int((time.perf_counter() - _t) * 1000)
                     except (OSError, EOFError):
                         skipped.append(folder_name)
                         continue
@@ -645,11 +764,13 @@ class ImapSyncService:
         remote_uids_by_folder: dict[str, set[int]] = {}
         for fn in fast_path:
             remote_uids_by_folder[fn] = self._index.list_folder_uids(
-                account_name=account.name, folder_name=fn,
+                account_name=account.name,
+                folder_name=fn,
             )
         for fn in medium_path:
             remote_uids_by_folder[fn] = self._index.list_folder_uids(
-                account_name=account.name, folder_name=fn,
+                account_name=account.name,
+                folder_name=fn,
             )
         for fn, (uid_to_mid, _) in slow_path.items():
             remote_uids_by_folder[fn] = set(uid_to_mid.keys())
@@ -698,7 +819,9 @@ class ImapSyncService:
             except OSError as exc:
                 logger.warning(
                     "Failed to plan folder %s/%s: %s",
-                    account.name, folder_name, exc,
+                    account.name,
+                    folder_name,
+                    exc,
                 )
                 skipped.append(folder_name)
                 continue
@@ -711,7 +834,8 @@ class ImapSyncService:
         for folder_name in creates:
             folder_plans.append(
                 self._plan_new_folder(
-                    account=account, folder_name=folder_name,
+                    account=account,
+                    folder_name=folder_name,
                     remote_uids_by_folder=remote_uids_by_folder,
                 )
             )
@@ -765,7 +889,9 @@ class ImapSyncService:
     ) -> FolderSyncPlan:
         """Push-only plan: no FETCH, no fresh UID/flag info from server."""
         ops = self._pending_push_ops(
-            account=account, folder_name=folder_name, read_only=read_only,
+            account=account,
+            folder_name=folder_name,
+            read_only=read_only,
             remote_uids_by_folder=remote_uids_by_folder,
         )
         return FolderSyncPlan(
@@ -787,17 +913,21 @@ class ImapSyncService:
     ) -> FolderSyncPlan:
         """UID set stable; reconcile only flags whose modseq advanced."""
         ops = self._pending_push_ops(
-            account=account, folder_name=folder_name, read_only=read_only,
+            account=account,
+            folder_name=folder_name,
+            read_only=read_only,
             remote_uids_by_folder=remote_uids_by_folder,
         )
         if changed_flags:
             base_by_uid = self._index.list_folder_base_flags(
-                account_name=account.name, folder_name=folder_name,
+                account_name=account.name,
+                folder_name=folder_name,
             )
             uid_to_row = {
                 row.uid: row
                 for row in self._index.list_folder_slow_path_rows(
-                    account_name=account.name, folder_name=folder_name,
+                    account_name=account.name,
+                    folder_name=folder_name,
                 )
                 if row.uid is not None
             }
@@ -807,9 +937,13 @@ class ImapSyncService:
                     continue
                 base, _ = base_by_uid.get(uid, (frozenset(), frozenset()))
                 self._reconcile_flags(
-                    ops=ops, row=row, uid=uid,
-                    remote=remote_flags, base=base,
-                    extra=extra, read_only=read_only,
+                    ops=ops,
+                    row=row,
+                    uid=uid,
+                    remote=remote_flags,
+                    base=base,
+                    extra=extra,
+                    read_only=read_only,
                 )
         return FolderSyncPlan(
             folder_name=folder_name,
@@ -835,26 +969,33 @@ class ImapSyncService:
             logger.warning(
                 "Server reported UIDVALIDITY %d for %s/%s — UID stability"
                 " is not guaranteed",
-                uid_validity, account.name, folder_name,
+                uid_validity,
+                account.name,
+                folder_name,
             )
 
         stored = self._index.get_folder_sync_state(
-            account_name=account.name, folder_name=folder_name,
+            account_name=account.name,
+            folder_name=folder_name,
         )
         if stored is not None and stored.uid_validity != uid_validity:
             # C-4: UIDVALIDITY reset.
             logger.warning(
                 "UIDVALIDITY changed for %s/%s (was %d, now %d) — full resync",
-                account.name, folder_name,
-                stored.uid_validity, uid_validity,
+                account.name,
+                folder_name,
+                stored.uid_validity,
+                uid_validity,
             )
             self._index.clear_uids_for_folder(
-                account_name=account.name, folder_name=folder_name,
+                account_name=account.name,
+                folder_name=folder_name,
             )
             stored = None
 
         rows = self._index.list_folder_slow_path_rows(
-            account_name=account.name, folder_name=folder_name,
+            account_name=account.name,
+            folder_name=folder_name,
         )
         rows_by_uid: dict[int, SlowPathRow] = {
             row.uid: row for row in rows if row.uid is not None
@@ -880,18 +1021,23 @@ class ImapSyncService:
             if row.local_status != MessageStatus.TRASHED:
                 continue
             remote_flags, _ = uid_to_flags.get(
-                uid, (frozenset(), frozenset()),
+                uid,
+                (frozenset(), frozenset()),
             )
             if remote_flags != row.base_flags and not read_only:
                 c2_row_ids.add(row.message_ref.id)
 
         # Pending-push rows for this folder (uid IS NULL or PENDING_MOVE
         # or TRASHED or flag drift).  Emitted regardless of UID diff.
-        ops.extend(self._pending_push_ops(
-            account=account, folder_name=folder_name,
-            read_only=read_only, suppress_delete_ids=c2_row_ids,
-            remote_uids_by_folder=remote_uids_by_folder,
-        ))
+        ops.extend(
+            self._pending_push_ops(
+                account=account,
+                folder_name=folder_name,
+                read_only=read_only,
+                suppress_delete_ids=c2_row_ids,
+                remote_uids_by_folder=remote_uids_by_folder,
+            )
+        )
 
         # Step: new UIDs on the server.
         for uid in new_uids:
@@ -901,10 +1047,12 @@ class ImapSyncService:
                     uid=uid,
                     message_id=mid,
                     server_flags=uid_to_flags.get(
-                        uid, (frozenset(), frozenset()),
+                        uid,
+                        (frozenset(), frozenset()),
                     )[0],
                     extra_imap_flags=uid_to_flags.get(
-                        uid, (frozenset(), frozenset()),
+                        uid,
+                        (frozenset(), frozenset()),
                     )[1],
                 )
             )
@@ -931,15 +1079,14 @@ class ImapSyncService:
                     )
                 )
             else:
-                ops.append(
-                    ServerDeleteOp(uid=uid, message_ref=row.message_ref)
-                )
+                ops.append(ServerDeleteOp(uid=uid, message_ref=row.message_ref))
 
         # Step: flag reconciliation for surviving UIDs.
         for uid in common_uids:
             row = rows_by_uid[uid]
             remote_flags, extra = uid_to_flags.get(
-                uid, (frozenset(), frozenset()),
+                uid,
+                (frozenset(), frozenset()),
             )
             if row.local_status == MessageStatus.TRASHED:
                 # C-2: server still has a row we trashed.  In a
@@ -953,21 +1100,25 @@ class ImapSyncService:
                     ops.append(RestoreOp(message_ref=row.message_ref))
                     ops.append(
                         PullFlagsOp(
-                            uid=uid, message_ref=row.message_ref,
-                            new_flags=remote_flags, extra_imap_flags=extra,
+                            uid=uid,
+                            message_ref=row.message_ref,
+                            new_flags=remote_flags,
+                            extra_imap_flags=extra,
                         )
                     )
                 continue
             self._reconcile_flags(
-                ops=ops, row=row, uid=uid,
-                remote=remote_flags, base=row.base_flags,
-                extra=extra, read_only=read_only,
+                ops=ops,
+                row=row,
+                uid=uid,
+                remote=remote_flags,
+                base=row.base_flags,
+                extra=extra,
+                read_only=read_only,
             )
 
         # C-6: mass-deletion safety halt.
-        delete_count = sum(
-            1 for op in ops if isinstance(op, ServerDeleteOp)
-        )
+        delete_count = sum(1 for op in ops if isinstance(op, ServerDeleteOp))
         total_known = len(local_uids)
         needs_confirmation = (
             total_known >= _MASS_DELETE_MIN
@@ -976,8 +1127,10 @@ class ImapSyncService:
         if needs_confirmation:
             logger.warning(
                 "Mass deletion in %s/%s: %d of %d (%.0f%%) — needs confirmation",
-                account.name, folder_name,
-                delete_count, total_known,
+                account.name,
+                folder_name,
+                delete_count,
+                total_known,
                 delete_count / total_known * 100,
             )
 
@@ -998,7 +1151,9 @@ class ImapSyncService:
     ) -> FolderSyncPlan:
         """Plan a folder that lives only locally (about to be CREATEd)."""
         ops = self._pending_push_ops(
-            account=account, folder_name=folder_name, read_only=False,
+            account=account,
+            folder_name=folder_name,
+            read_only=False,
             remote_uids_by_folder=remote_uids_by_folder,
         )
         return FolderSyncPlan(
@@ -1021,7 +1176,8 @@ class ImapSyncService:
         """Emit ops driven by local mutations recorded in the index."""
         ops: list[SyncOp] = []
         candidates = self._index.list_folder_push_candidates(
-            account_name=account.name, folder_name=folder_name,
+            account_name=account.name,
+            folder_name=folder_name,
         )
         for row in candidates:
             if row.local_status == MessageStatus.TRASHED:
@@ -1052,11 +1208,7 @@ class ImapSyncService:
                 continue
 
             if row.local_status == MessageStatus.PENDING_MOVE:
-                if (
-                    read_only
-                    or row.source_folder is None
-                    or row.source_uid is None
-                ):
+                if read_only or row.source_folder is None or row.source_uid is None:
                     # Cannot push the move: missing source handle or
                     # the destination is read-only.  Leave the row
                     # untouched until the user resolves it.
@@ -1070,10 +1222,7 @@ class ImapSyncService:
                     if remote_uids_by_folder is not None
                     else None
                 )
-                if (
-                    source_view is not None
-                    and row.source_uid not in source_view
-                ):
+                if source_view is not None and row.source_uid not in source_view:
                     ops.append(PushAppendOp(message_ref=row.message_ref))
                     continue
                 ops.append(
@@ -1098,7 +1247,8 @@ class ImapSyncService:
                 continue
             ops.append(
                 PushFlagsOp(
-                    uid=row.uid, message_ref=row.message_ref,
+                    uid=row.uid,
+                    message_ref=row.message_ref,
                     new_flags=row.local_flags,
                     extra_imap_flags=row.extra_imap_flags,
                 )
@@ -1122,24 +1272,31 @@ class ImapSyncService:
         if server_changed and not local_changed:
             ops.append(
                 PullFlagsOp(
-                    uid=uid, message_ref=row.message_ref,
-                    new_flags=remote, extra_imap_flags=extra,
+                    uid=uid,
+                    message_ref=row.message_ref,
+                    new_flags=remote,
+                    extra_imap_flags=extra,
                 )
             )
         elif local_changed and not server_changed and not read_only:
             ops.append(
                 PushFlagsOp(
-                    uid=uid, message_ref=row.message_ref,
-                    new_flags=row.local_flags, extra_imap_flags=extra,
+                    uid=uid,
+                    message_ref=row.message_ref,
+                    new_flags=row.local_flags,
+                    extra_imap_flags=extra,
                 )
             )
         elif server_changed and local_changed:
             merged = _merge_flags(
-                local=row.local_flags, base=base, remote=remote,
+                local=row.local_flags,
+                base=base,
+                remote=remote,
             )
             ops.append(
                 MergeFlagsOp(
-                    uid=uid, message_ref=row.message_ref,
+                    uid=uid,
+                    message_ref=row.message_ref,
                     merged_flags=merged,
                     push_to_server=not read_only,
                     extra_imap_flags=extra,
@@ -1171,16 +1328,20 @@ class ImapSyncService:
                     session.create_folder(folder_name)
                     logger.info(
                         "Created server folder %s/%s",
-                        account.name, folder_name,
+                        account.name,
+                        folder_name,
                     )
                     if progress is not None:
-                        progress(ProgressInfo(
-                            f"{account.name}: created {folder_name}",
-                        ))
+                        progress(
+                            ProgressInfo(
+                                f"{account.name}: created {folder_name}",
+                            )
+                        )
                 except Exception:
                     logger.exception(
                         "Failed to create folder %s/%s",
-                        account.name, folder_name,
+                        account.name,
+                        folder_name,
                     )
 
             for folder_plan in plan.folders:
@@ -1190,55 +1351,75 @@ class ImapSyncService:
                 ):
                     logger.warning(
                         "Skipping %s/%s — needs confirmation",
-                        account.name, folder_plan.folder_name,
+                        account.name,
+                        folder_plan.folder_name,
                     )
                     skipped.append(folder_plan.folder_name)
                     continue
                 logger.info(
                     "Executing %d op(s) for %s/%s",
                     len(folder_plan.ops),
-                    account.name, folder_plan.folder_name,
+                    account.name,
+                    folder_plan.folder_name,
                 )
                 try:
                     result = self._execute_folder_plan(
-                        account=account, plan=folder_plan,
-                        session=session, mirror=mirror, progress=progress,
+                        account=account,
+                        plan=folder_plan,
+                        session=session,
+                        mirror=mirror,
+                        progress=progress,
                     )
                 except (OSError, EOFError) as exc:
                     logger.info(
                         "Connection lost executing %s/%s: %s — reconnecting",
-                        account.name, folder_plan.folder_name, exc,
+                        account.name,
+                        folder_plan.folder_name,
+                        exc,
                     )
                     try:
                         with contextlib.suppress(Exception):
                             session.logout()
                         session = self._session_factory(account, password)
                         result = self._execute_folder_plan(
-                            account=account, plan=folder_plan,
-                            session=session, mirror=mirror, progress=progress,
+                            account=account,
+                            plan=folder_plan,
+                            session=session,
+                            mirror=mirror,
+                            progress=progress,
                         )
                     except (OSError, EOFError) as retry_exc:
                         logger.warning(
                             "Retry failed for %s/%s: %s",
-                            account.name, folder_plan.folder_name, retry_exc,
+                            account.name,
+                            folder_plan.folder_name,
+                            retry_exc,
                         )
                         skipped.append(folder_plan.folder_name)
                         continue
-                msg = (
-                    f"{account.name}/{folder_plan.folder_name}: "
-                    f"{result.fetched} fetched, "
-                    f"{result.flag_updates_from_server} flag updates"
+                logger.info(
+                    "%s/%s: %d fetched, %d flag updates",
+                    account.name,
+                    folder_plan.folder_name,
+                    result.fetched,
+                    result.flag_updates_from_server,
                 )
-                logger.info("%s", msg)
-                if progress is not None:
-                    progress(ProgressInfo(msg))
+                if progress is not None and result.has_changes:
+                    progress(
+                        ProgressInfo(
+                            f"{account.name}/{folder_plan.folder_name}: "
+                            f"{result.fetched} fetched, "
+                            f"{result.flag_updates_from_server} flag updates"
+                        )
+                    )
                 folder_results.append(result)
         finally:
             session.logout()
 
         logger.info(
             "Finished execution for account %r: %d folder(s)",
-            account.name, len(folder_results),
+            account.name,
+            len(folder_results),
         )
         return AccountSyncResult(
             account_name=account.name,
@@ -1275,8 +1456,14 @@ class ImapSyncService:
         for op in plan.ops:
             if isinstance(
                 op,
-                (PushFlagsOp, PushDeleteOp, PushMoveOp,
-                 PushAppendOp, ReUploadOp, PurgeLocalOp),
+                (
+                    PushFlagsOp,
+                    PushDeleteOp,
+                    PushMoveOp,
+                    PushAppendOp,
+                    ReUploadOp,
+                    PurgeLocalOp,
+                ),
             ):
                 phase2.append(op)
             else:
@@ -1305,7 +1492,8 @@ class ImapSyncService:
             try:
                 _t = time.perf_counter()
                 raw_map = session.fetch_messages_batch(
-                    folder_name, [op.uid for op in batch],
+                    folder_name,
+                    [op.uid for op in batch],
                 )
                 fetch_ns.append(int((time.perf_counter() - _t) * 1_000_000_000))
             except Exception:
@@ -1329,9 +1517,13 @@ class ImapSyncService:
                     try:
                         _t = time.perf_counter()
                         self._execute_one(
-                            op, raw, account=account,
-                            folder_name=folder_name, folder_ref=folder_ref,
-                            session=session, mirror=mirror,
+                            op,
+                            raw,
+                            account=account,
+                            folder_name=folder_name,
+                            folder_ref=folder_ref,
+                            session=session,
+                            mirror=mirror,
                             counters=counters,
                         )
                         if isinstance(op, FetchNewOp) and raw:
@@ -1341,38 +1533,51 @@ class ImapSyncService:
                     except Exception:
                         logger.exception(
                             "%s failed for %s/%s — skipping",
-                            type(op).__name__, account.name, folder_name,
+                            type(op).__name__,
+                            account.name,
+                            folder_name,
                         )
                     completed += 1
                     if progress is not None:
-                        progress(ProgressInfo(
-                            f"{account.name}/{folder_name}: "
-                            f"{completed}/{total_ops}",
-                            current=completed, total=total_ops,
-                        ))
+                        progress(
+                            ProgressInfo(
+                                f"{account.name}/{folder_name}: "
+                                f"{completed}/{total_ops}",
+                                current=completed,
+                                total=total_ops,
+                            )
+                        )
             if producer is not None:
                 producer.join()
 
             for op in phase2:
                 try:
                     self._execute_one(
-                        op, None, account=account,
-                        folder_name=folder_name, folder_ref=folder_ref,
-                        session=session, mirror=mirror,
+                        op,
+                        None,
+                        account=account,
+                        folder_name=folder_name,
+                        folder_ref=folder_ref,
+                        session=session,
+                        mirror=mirror,
                         counters=counters,
                     )
                 except Exception:
                     logger.exception(
                         "%s failed for %s/%s — skipping",
-                        type(op).__name__, account.name, folder_name,
+                        type(op).__name__,
+                        account.name,
+                        folder_name,
                     )
                 completed += 1
                 if progress is not None:
-                    progress(ProgressInfo(
-                        f"{account.name}/{folder_name}: "
-                        f"{completed}/{total_ops}",
-                        current=completed, total=total_ops,
-                    ))
+                    progress(
+                        ProgressInfo(
+                            f"{account.name}/{folder_name}: {completed}/{total_ops}",
+                            current=completed,
+                            total=total_ops,
+                        )
+                    )
 
             if not plan.is_new:
                 self._index.record_folder_sync_state(
@@ -1421,11 +1626,14 @@ class ImapSyncService:
         match op:
             case FetchNewOp() if raw:
                 self._ingest_raw(
-                    account=account, folder_ref=folder_ref,
-                    mirror=mirror, uid=op.uid,
+                    account=account,
+                    folder_ref=folder_ref,
+                    mirror=mirror,
+                    uid=op.uid,
                     message_id=op.message_id,
                     server_flags=op.server_flags,
-                    extra_imap_flags=op.extra_imap_flags, raw=raw,
+                    extra_imap_flags=op.extra_imap_flags,
+                    raw=raw,
                 )
                 counters["fetched"] += 1
 
@@ -1463,8 +1671,10 @@ class ImapSyncService:
 
             case PushFlagsOp():
                 session.store_flags(
-                    folder_name, op.uid,
-                    op.new_flags, op.extra_imap_flags,
+                    folder_name,
+                    op.uid,
+                    op.new_flags,
+                    op.extra_imap_flags,
                 )
                 row = self._index.get_message(message_ref=op.message_ref)
                 if row is not None:
@@ -1483,8 +1693,10 @@ class ImapSyncService:
             case MergeFlagsOp():
                 if op.push_to_server:
                     session.store_flags(
-                        folder_name, op.uid,
-                        op.merged_flags, op.extra_imap_flags,
+                        folder_name,
+                        op.uid,
+                        op.merged_flags,
+                        op.extra_imap_flags,
                     )
                 row = self._index.get_message(message_ref=op.message_ref)
                 if row is not None:
@@ -1503,8 +1715,11 @@ class ImapSyncService:
 
             case ReUploadOp():
                 self._execute_reupload(
-                    op, account=account, folder_name=folder_name,
-                    session=session, now=now,
+                    op,
+                    account=account,
+                    folder_name=folder_name,
+                    session=session,
+                    now=now,
                 )
 
             case PushDeleteOp():
@@ -1518,19 +1733,27 @@ class ImapSyncService:
                 if op.storage_key:
                     with contextlib.suppress(Exception):
                         mirror.delete_message(
-                            folder=folder_ref, storage_key=op.storage_key,
+                            folder=folder_ref,
+                            storage_key=op.storage_key,
                         )
 
             case PushMoveOp():
                 self._execute_push_move(
-                    op, account=account,
-                    session=session, mirror=mirror, now=now,
+                    op,
+                    account=account,
+                    session=session,
+                    mirror=mirror,
+                    now=now,
                 )
 
             case PushAppendOp():
                 self._execute_push_append(
-                    op, account=account, folder_name=folder_name,
-                    session=session, mirror=mirror, now=now,
+                    op,
+                    account=account,
+                    folder_name=folder_name,
+                    session=session,
+                    mirror=mirror,
+                    now=now,
                 )
 
             case RestoreOp():
@@ -1538,12 +1761,15 @@ class ImapSyncService:
                 if row is not None:
                     self._index.update_message(
                         message=dataclasses.replace(
-                            row, local_status=MessageStatus.ACTIVE,
+                            row,
+                            local_status=MessageStatus.ACTIVE,
                         )
                     )
                     logger.info(
                         "Restored message id=%d in %s/%s",
-                        op.message_ref.id, account.name, folder_name,
+                        op.message_ref.id,
+                        account.name,
+                        folder_name,
                     )
 
     def _execute_reupload(
@@ -1562,7 +1788,8 @@ class ImapSyncService:
         try:
             raw = mirror.get_message_bytes(
                 folder=FolderRef(
-                    account_name=account.name, folder_name=folder_name,
+                    account_name=account.name,
+                    folder_name=folder_name,
                 ),
                 storage_key=row.storage_key,
             )
@@ -1573,11 +1800,17 @@ class ImapSyncService:
             )
             return
         new_uid = session.append_message(
-            folder_name, raw, op.local_flags, op.extra_imap_flags,
+            folder_name,
+            raw,
+            op.local_flags,
+            op.extra_imap_flags,
         )
         logger.info(
             "Re-uploaded id=%d to %s/%s (new uid=%s)",
-            op.message_ref.id, account.name, folder_name, new_uid,
+            op.message_ref.id,
+            account.name,
+            folder_name,
+            new_uid,
         )
         self._index.update_message(
             message=dataclasses.replace(
@@ -1606,21 +1839,29 @@ class ImapSyncService:
         try:
             raw = mirror.get_message_bytes(
                 folder=FolderRef(
-                    account_name=account.name, folder_name=folder_name,
+                    account_name=account.name,
+                    folder_name=folder_name,
                 ),
                 storage_key=row.storage_key,
             )
         except Exception:
             logger.exception(
-                "Cannot APPEND id=%d — mirror read failed", op.message_ref.id,
+                "Cannot APPEND id=%d — mirror read failed",
+                op.message_ref.id,
             )
             return
         new_uid = session.append_message(
-            folder_name, raw, row.local_flags, row.extra_imap_flags,
+            folder_name,
+            raw,
+            row.local_flags,
+            row.extra_imap_flags,
         )
         logger.info(
             "APPENDed id=%d to %s/%s (new uid=%s)",
-            op.message_ref.id, account.name, folder_name, new_uid,
+            op.message_ref.id,
+            account.name,
+            folder_name,
+            new_uid,
         )
         if new_uid is not None:
             self._index.update_message(
@@ -1651,19 +1892,26 @@ class ImapSyncService:
             return
         try:
             new_uid = session.move_message(
-                op.source_folder, op.source_uid, op.target_folder,
+                op.source_folder,
+                op.source_uid,
+                op.target_folder,
             )
         except Exception:
             logger.exception(
                 "MOVE failed for id=%d (%s -> %s, src uid=%d)",
-                op.message_ref.id, op.source_folder, op.target_folder,
+                op.message_ref.id,
+                op.source_folder,
+                op.target_folder,
                 op.source_uid,
             )
             return
         logger.info(
             "Pushed local move: id=%d %s -> %s (src uid=%d, new uid=%s)",
-            op.message_ref.id, op.source_folder, op.target_folder,
-            op.source_uid, new_uid,
+            op.message_ref.id,
+            op.source_folder,
+            op.target_folder,
+            op.source_uid,
+            new_uid,
         )
         if new_uid is not None:
             self._index.update_message(
@@ -1711,7 +1959,9 @@ class ImapSyncService:
         if not raw:
             logger.warning(
                 "Empty body for UID %d in %s/%s — skipping",
-                uid, account.name, folder_ref.folder_name,
+                uid,
+                account.name,
+                folder_ref.folder_name,
             )
             return
         try:
@@ -1720,7 +1970,8 @@ class ImapSyncService:
                 storage_key = store(folder=folder_ref, raw_message=raw)
             else:
                 storage_key = mirror.store_message(
-                    folder=folder_ref, raw_message=raw,
+                    folder=folder_ref,
+                    raw_message=raw,
                 )
         except Exception:
             logger.exception("Failed to store UID %d to mirror", uid)
@@ -1772,23 +2023,25 @@ class ImapSyncService:
                     for folder_ref, storage_key in purged:
                         try:
                             mirror.delete_message(
-                                folder=folder_ref, storage_key=storage_key,
+                                folder=folder_ref,
+                                storage_key=storage_key,
                             )
                         except Exception:
                             logger.debug(
-                                "Mirror cleanup failed for %r", storage_key,
+                                "Mirror cleanup failed for %r",
+                                storage_key,
                             )
                     logger.info(
                         "Cleanup: purged %d expired trashed message(s) for %r",
-                        len(purged), account.name,
+                        len(purged),
+                        account.name,
                     )
 
     def _select_accounts(
-        self, account_name: str | None,
+        self,
+        account_name: str | None,
     ) -> list[AccountConfig]:
-        imap = [
-            a for a in self._config.accounts if isinstance(a, AccountConfig)
-        ]
+        imap = [a for a in self._config.accounts if isinstance(a, AccountConfig)]
         if account_name is not None:
             return [a for a in imap if a.name == account_name]
         return imap

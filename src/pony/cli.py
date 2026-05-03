@@ -44,18 +44,16 @@ from .services import CheckStatus, ServiceStatus, build_service_status
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
 from .storage_indexing import RescanResult, ScanState, rescan_local_account
 from .sync import (
-    FetchNewOp,
     ImapSyncService,
     MergeFlagsOp,
     ProgressInfo,
-    PullFlagsOp,
-    PushAppendOp,
     PushDeleteOp,
     PushFlagsOp,
-    PushMoveOp,
     RestoreOp,
     ServerDeleteOp,
     SyncPlan,
+    format_plan_detail,
+    format_plan_summary,
 )
 from .version import __version__
 
@@ -698,7 +696,9 @@ def run_sync(
         print("Nothing to sync — already up to date.")
         return 0
 
-    print(render_sync_plan(plan))
+    summary = format_plan_summary(plan)
+    header = f"Sync plan: {summary}" if summary else "Sync plan"
+    print(f"{header}\n{format_plan_detail(plan)}")
 
     if not yes:
         if not sys.stdin.isatty():
@@ -727,7 +727,7 @@ def run_sync(
                 break
             if answer in ("l", "list"):
                 _run_pager(_build_ops_detail_table(plan, index))
-                print(render_sync_plan(plan))
+                print(f"{header}\n{format_plan_detail(plan)}")
                 continue
             print("Aborted.")
             return 0
@@ -738,23 +738,24 @@ def run_sync(
     print()  # newline after any \r progress
 
     for account_result in result.accounts:
-        total_fetched = sum(f.fetched for f in account_result.folders)
-        total_flag_updates = sum(
-            f.flag_updates_from_server for f in account_result.folders
-        )
-        total_pushes = sum(f.flag_pushes_to_server for f in account_result.folders)
+        active = [f for f in account_result.folders if f.has_changes]
         skipped = account_result.skipped_folders
+        if not active and not skipped:
+            continue
+        total_fetched = sum(f.fetched for f in active)
+        total_flag_updates = sum(f.flag_updates_from_server for f in active)
+        total_pushes = sum(f.flag_pushes_to_server for f in active)
         skipped_suffix = (
             f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""
         )
         print(
             f"{account_result.account_name}: "
-            f"{len(account_result.folders)} folder(s) synced{skipped_suffix}, "
+            f"{len(active)} folder(s) with changes{skipped_suffix}, "
             f"{total_fetched} new message(s), "
             f"{total_flag_updates} flag update(s) from server, "
             f"{total_pushes} flag push(es) to server"
         )
-        for f in account_result.folders:
+        for f in active:
             print(
                 f"  {f.folder_name}: "
                 f"scan {_fmt_ms(f.scan_ms)}"
@@ -964,80 +965,6 @@ def _bbdb_auto_sync(
     export_path = paths.data_dir / "contacts.bbdb"
     contacts = index.list_all_contacts()
     write_bbdb(contacts, export_path)
-
-
-def render_sync_plan(plan: SyncPlan) -> str:
-    """Format a SyncPlan as a human-readable summary."""
-    lines: list[str] = ["Sync plan"]
-    for acc in plan.accounts:
-        skipped_note = (
-            f"  ({len(acc.skipped_folders)} folder(s) skipped: "
-            f"{', '.join(acc.skipped_folders)})"
-            if acc.skipped_folders
-            else ""
-        )
-        lines.append(f"  Account: {acc.account_name}{skipped_note}")
-        for folder in acc.folders:
-            counts = {
-                "fetch": 0,
-                "delete": 0,
-                "pull_flags": 0,
-                "push_flags": 0,
-                "merge_flags": 0,
-                "expunge": 0,
-                "push_move": 0,
-                "push_append": 0,
-                "restore": 0,
-                "other": 0,
-            }
-            for op in folder.ops:
-                if isinstance(op, FetchNewOp):
-                    counts["fetch"] += 1
-                elif isinstance(op, ServerDeleteOp):
-                    counts["delete"] += 1
-                elif isinstance(op, PullFlagsOp):
-                    counts["pull_flags"] += 1
-                elif isinstance(op, PushFlagsOp):
-                    counts["push_flags"] += 1
-                elif isinstance(op, MergeFlagsOp):
-                    counts["merge_flags"] += 1
-                elif isinstance(op, PushDeleteOp):
-                    counts["expunge"] += 1
-                elif isinstance(op, PushMoveOp):
-                    counts["push_move"] += 1
-                elif isinstance(op, PushAppendOp):
-                    counts["push_append"] += 1
-                elif isinstance(op, RestoreOp):
-                    counts["restore"] += 1
-                else:
-                    counts["other"] += 1
-            parts: list[str] = []
-            if counts["fetch"]:
-                parts.append(f"{counts['fetch']} new message(s) to download")
-            if counts["delete"]:
-                parts.append(f"{counts['delete']} message(s) deleted on server → trash")
-            if counts["push_move"]:
-                parts.append(f"{counts['push_move']} moved locally (push to server)")
-            if counts["push_append"]:
-                parts.append(f"{counts['push_append']} new local message(s) to upload")
-            if counts["expunge"]:
-                parts.append(f"{counts['expunge']} local deletion(s) to expunge")
-            if counts["pull_flags"]:
-                parts.append(f"{counts['pull_flags']} flag update(s) from server")
-            if counts["push_flags"]:
-                parts.append(f"{counts['push_flags']} flag update(s) to push")
-            if counts["merge_flags"]:
-                parts.append(f"{counts['merge_flags']} flag conflict(s) to merge")
-            if counts["restore"]:
-                parts.append(
-                    f"{counts['restore']} locally-trashed message(s) to restore"
-                    " (read-only folder)"
-                )
-            if counts["other"]:
-                parts.append(f"{counts['other']} other operation(s)")
-            summary = ", ".join(parts) if parts else "no changes"
-            lines.append(f"    {folder.folder_name}: {summary}")
-    return "\n".join(lines)
 
 
 def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str:
