@@ -519,21 +519,11 @@ async def _run_mcp_server_async(
     config_path: Path | None,
     state_file: Path | None,
 ) -> None:
-    from tinymcp import CONNECT_TIMEOUT, run_stdio_bridge
+    from tinymcp import run_mcp
 
-    if state_file is not None:
-        state = read_mcp_state(state_file)
-        if state is not None:
-            try:
-                _r, _w = await asyncio.wait_for(
-                    asyncio.open_connection("127.0.0.1", state.port),
-                    timeout=CONNECT_TIMEOUT,
-                )
-                _w.close()
-                await run_stdio_bridge(
-                    host="127.0.0.1", port=state.port, token=state.token
-                )
-                return
-            except (TimeoutError, ConnectionRefusedError, OSError):
-                pass
-    await run_stdio_standalone(build_mcp_server(config_path))
+    state = read_mcp_state(state_file) if state_file is not None else None
+    await run_mcp(
+        build_mcp_server(config_path),
+        remote_port=state.port if state is not None else None,
+        remote_token=state.token if state is not None else None,
+    )
