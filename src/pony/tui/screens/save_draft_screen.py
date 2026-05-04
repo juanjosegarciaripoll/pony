@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Label
 
@@ -16,6 +17,14 @@ class SaveDraftScreen(DialogScreen):
     """
 
     INHERIT_BINDINGS = False
+    DEFAULT_BUTTON_ID = "save-btn"
+
+    BINDINGS = [
+        Binding("y", "save", show=False),
+        Binding("n", "discard", show=False),
+        Binding("q", "discard", show=False),
+        Binding("escape", "discard", show=False),
+    ]
 
     CSS = """
     #dialog {
@@ -34,10 +43,8 @@ class SaveDraftScreen(DialogScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "save-btn")
 
-    def on_key(self, event: object) -> None:
-        from textual.events import Key
-        if isinstance(event, Key):
-            if event.key in ("y", "enter"):
-                self.dismiss(True)
-            elif event.key in ("n", "escape", "q"):
-                self.dismiss(False)
+    def action_save(self) -> None:
+        self.dismiss(True)
+
+    def action_discard(self) -> None:
+        self.dismiss(False)

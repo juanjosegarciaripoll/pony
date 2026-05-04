@@ -129,6 +129,7 @@ class SyncConfirmScreen(DialogScreen):
             id="buttons",
         )
         dialog.mount(buttons)
+        self.query_one("#proceed", Button).focus()
 
     def _skipped_text(self) -> str:
         if self._plan is None:
@@ -173,16 +174,15 @@ class SyncConfirmScreen(DialogScreen):
             return
         if self._syncing or self._planning:
             return
-        if event.key in ("y", "enter"):
+        if event.key == "y":
             self._enter_syncing()
         elif event.key in ("n", "escape", "q"):
             self.dismiss(False)
 
     def _enter_syncing(self) -> None:
         self._syncing = True
+        self.mark_busy("proceed", "Syncing…")
         self.query_one("#title", Label).update("Syncing…")
-        self.query_one("#proceed", Button).display = False
-        self.query_one("#cancel", Button).display = False
         self.query_one("#detail", Static).update("Starting…")
         if self._on_confirm is not None:
             self._on_confirm()
