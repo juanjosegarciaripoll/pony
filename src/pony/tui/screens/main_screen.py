@@ -21,6 +21,7 @@ from ...domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
+    Contact,
     FolderMessageSummary,
     FolderRef,
     IndexedMessage,
@@ -222,6 +223,53 @@ class MainScreen(Screen[None]):
     ) -> None:
         event.stop()
         self._navigate_from_view(delta=-1)
+
+    def action_compose_address(self, idx: str) -> None:
+        pair = self.query_one(MessageViewPanel).header_address(int(idx))
+        if pair is None:
+            return
+        display, addr = pair
+        self.compose_new(to=f"{display} <{addr}>" if display else addr)
+
+    def action_harvest_contact(self, idx: str) -> None:
+        if self._contacts is None:
+            return
+        pair = self.query_one(MessageViewPanel).header_address(int(idx))
+        if pair is None:
+            return
+        from .contact_edit_screen import ContactEditScreen
+
+        display, addr = pair
+        addr = addr.lower().strip()
+
+        existing = self._contacts.find_contact_by_email(email_address=addr)
+        if existing is not None:
+            if not existing.first_name and not existing.last_name and display.strip():
+                parts = display.strip().split()
+                first = " ".join(parts[:-1]) if len(parts) > 1 else parts[0]
+                last = parts[-1] if len(parts) > 1 else ""
+                existing = dataclasses.replace(
+                    existing, first_name=first, last_name=last
+                )
+            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+                ContactEditScreen(existing, self._contacts),
+            )
+            return
+
+        display = display.strip()
+        parts = display.split()
+        if not parts:
+            first, last = "", ""
+        elif len(parts) == 1:
+            first, last = parts[0], ""
+        else:
+            first, last = " ".join(parts[:-1]), parts[-1]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ContactEditScreen(
+                Contact(id=None, first_name=first, last_name=last, emails=(addr,)),
+                self._contacts,
+            ),
+        )
 
     def _navigate_from_view(self, delta: int) -> None:
         msg_list = self.query_one(MessageListPanel)
@@ -1196,8 +1244,8 @@ class MainScreen(Screen[None]):
         """Accounts that can send via SMTP (IMAP or local-with-SMTP)."""
         return [a for a in self._config.accounts if a.can_send]
 
-    def compose_new(self) -> None:
-        """Open a blank compose screen."""
+    def compose_new(self, to: str = "") -> None:
+        """Open a blank compose screen, optionally pre-filled with *to*."""
         from .compose_screen import ComposeInitial, ComposeScreen
 
         accounts = self._sendable_accounts()
@@ -1226,6 +1274,7 @@ class MainScreen(Screen[None]):
                 self._mirrors,
                 ComposeInitial(
                     account_name=account.name,
+                    to=to,
                     body=new_compose_body(account.signature),
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose

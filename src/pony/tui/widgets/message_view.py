@@ -6,6 +6,7 @@ import logging
 import tempfile
 import webbrowser
 from dataclasses import dataclass
+from email.utils import getaddresses
 from pathlib import Path
 
 from rich.markup import escape as markup_escape
@@ -178,6 +179,13 @@ class MessageViewPanel(VerticalScroll):
                 saved.append(result)
         return saved
 
+    def header_address(self, idx: int) -> tuple[str, str] | None:
+        """Return the (display_name, email) pair at *idx*, or None if out of range."""
+        try:
+            return self._header_addresses[idx]
+        except (AttributeError, IndexError):
+            return None
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -185,13 +193,34 @@ class MessageViewPanel(VerticalScroll):
     def _set_content(self, text: str) -> None:
         self.query_one("#content", Static).update(text)
 
+    def _addr_field(self, label: str, header_str: str) -> str | None:
+        pairs = [(d, a) for d, a in getaddresses([header_str]) if a]
+        if not pairs:
+            return None
+        parts: list[str] = []
+        for raw_display, addr in pairs:
+            display = raw_display.strip().strip("\"'")
+            idx = len(self._header_addresses)
+            self._header_addresses.append((display, addr))
+            shown = markup_escape(f"{display} <{addr}>" if display else addr)
+            parts.append(
+                f"[@click=\"screen.compose_address('{idx}')\"]{shown}[/]"
+                f"[@click=\"screen.harvest_contact('{idx}')\"] (+)[/]"
+            )
+        return label + ", ".join(parts)
+
     def _build_markup(self, r: RenderedMessage) -> str:
+        self._header_addresses: list[tuple[str, str]] = []
         lines: list[str] = []
 
-        lines.append(f"From:    {r.from_}")
-        lines.append(f"To:      {r.to}")
-        if r.cc:
-            lines.append(f"Cc:      {r.cc}")
+        for label, header in (
+            ("From:    ", r.from_),
+            ("To:      ", r.to),
+            ("Cc:      ", r.cc),
+        ):
+            line = self._addr_field(label, header)
+            if line is not None:
+                lines.append(line)
         lines.append(f"Date:    {r.date}")
         lines.append(f"Subject: {r.subject}")
 
