@@ -52,3 +52,5 @@ def send_message(
                 server.send_message(msg)
     except smtplib.SMTPException as exc:
         raise SMTPError(str(exc)) from exc
+    except OSError as exc:
+        raise SMTPError(str(exc)) from exc

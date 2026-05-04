@@ -29,6 +29,7 @@ from ...domain import (
     AppConfig,
     Contact,
     FolderRef,
+    IndexedMessage,
     MessageRef,
 )
 from ...folder_utils import find_folder
@@ -396,6 +397,20 @@ class ComposeScreen(Screen[bool]):
                 severity="error",
             )
             return
+
+        raw = msg.as_bytes()
+
+        # Save to Drafts before attempting SMTP so the message survives a
+        # connection failure.  On success we remove this draft entry and store
+        # the message in Sent instead.
+        draft_entry = self._save_to_folder(
+            raw,
+            account,
+            folder_hint="Drafts",
+            override=account.drafts_folder,
+            silent=True,
+        )
+
         try:
             smtp_send(
                 smtp=account.smtp,
@@ -404,11 +419,14 @@ class ComposeScreen(Screen[bool]):
                 msg=msg,
             )
         except (SMTPError, ValueError) as exc:
-            self.notify(f"Send failed: {exc}", severity="error")
+            suffix = " (message saved to Drafts)" if draft_entry is not None else ""
+            self.notify(f"Send failed: {exc}{suffix}", severity="error")
             _log.error("SMTP send failed: %s", exc)
             return
 
-        raw = msg.as_bytes()
+        # SMTP succeeded — remove the draft and record the sent copy.
+        if draft_entry is not None:
+            self._delete_local_message(account, draft_entry)
         self._save_to_folder(
             raw,
             account,
@@ -670,8 +688,18 @@ class ComposeScreen(Screen[bool]):
         account: AnyAccount,
         folder_hint: str,
         override: str | None,
-    ) -> None:
-        """Store *raw* bytes in the named folder and upsert the index row."""
+        *,
+        silent: bool = False,
+    ) -> IndexedMessage | None:
+        """Store *raw* bytes in the named folder and insert the index row.
+
+        Returns the inserted ``IndexedMessage`` (with its assigned id) on
+        success, or ``None`` if the folder could not be found or the write
+        failed.  Sync's PushAppendOp picks up rows where ``uid IS NULL``.
+
+        Pass ``silent=True`` to suppress user-visible notifications on
+        folder-not-found and write errors (used when the save is best-effort).
+        """
         mirror = self._mirrors.get(account.name)
         if mirror is None:
             _log.warning(
@@ -679,17 +707,18 @@ class ComposeScreen(Screen[bool]):
                 account.name,
                 folder_hint,
             )
-            return
+            return None
 
         folder_refs = mirror.list_folders(account_name=account.name)
         folder_names = [fr.folder_name for fr in folder_refs]
         folder_name = override or find_folder(folder_names, folder_hint)
         if folder_name is None:
-            self.notify(
-                f"Could not find '{folder_hint}' folder for {account.name}",
-                severity="warning",
-            )
-            return
+            if not silent:
+                self.notify(
+                    f"Could not find '{folder_hint}' folder for {account.name}",
+                    severity="warning",
+                )
+            return None
 
         folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
         try:
@@ -701,8 +730,11 @@ class ComposeScreen(Screen[bool]):
                 folder_name,
                 exc,
             )
-            self.notify(f"Could not save to {folder_hint}: {exc}", severity="warning")
-            return
+            if not silent:
+                self.notify(
+                    f"Could not save to {folder_hint}: {exc}", severity="warning"
+                )
+            return None
 
         projected = project_rfc822_message(
             message_ref=MessageRef(
@@ -713,6 +745,18 @@ class ComposeScreen(Screen[bool]):
             raw_message=raw,
             storage_key=storage_key,
         )
-        # Sync's PushAppendOp picks the row up from the (folder, uid IS
-        # NULL) state and APPENDs it to the server.
-        self._index.insert_message(message=projected)
+        return self._index.insert_message(message=projected)
+
+    def _delete_local_message(self, account: AnyAccount, entry: IndexedMessage) -> None:
+        """Remove a locally stored message from the mirror and the index."""
+        mirror = self._mirrors.get(account.name)
+        if mirror is not None:
+            folder_ref = FolderRef(
+                account_name=entry.message_ref.account_name,
+                folder_name=entry.message_ref.folder_name,
+            )
+            try:
+                mirror.delete_message(folder=folder_ref, storage_key=entry.storage_key)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Could not delete draft from mirror: %s", exc)
+        self._index.delete_message(message_ref=entry.message_ref)
