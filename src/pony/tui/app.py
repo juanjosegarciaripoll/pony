@@ -62,7 +62,7 @@ class PonyApp(App[None]):
         self._credentials = credentials
         self._contacts = contacts
         self._config_path = config_path
-        self._mcp_tcp_server: asyncio.Server | None = None
+        self._mcp_tcp_task: asyncio.Task[None] | None = None
         self._mcp_state_file: Path | None = None
 
     def compose(self) -> ComposeResult:
@@ -86,18 +86,16 @@ class PonyApp(App[None]):
 
         paths = AppPaths.default()
         state_file = paths.mcp_state_file
-        server, _ = await start_tcp_mcp_server(self._config_path, state_file)
-        self._mcp_tcp_server = server
+        task, _ = await start_tcp_mcp_server(self._config_path, state_file)
+        self._mcp_tcp_task = task
         self._mcp_state_file = state_file
-        asyncio.create_task(server.serve_forever(), name="mcp-tcp")
 
     async def on_unmount(self) -> None:
         from ..mcp_server import clear_mcp_state
 
-        if self._mcp_tcp_server is not None:
-            self._mcp_tcp_server.close()
-            with contextlib.suppress(Exception):
-                await self._mcp_tcp_server.wait_closed()
+        if self._mcp_tcp_task is not None:
+            self._mcp_tcp_task.cancel()
+            await asyncio.gather(self._mcp_tcp_task, return_exceptions=True)
         if self._mcp_state_file is not None:
             clear_mcp_state(self._mcp_state_file)
 

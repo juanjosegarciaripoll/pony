@@ -15,15 +15,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import inspect
 import json
 import secrets
-import sys
-import typing
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
+
+from tinymcp import McpServer, run_stdio_standalone, serve_tcp
 
 from .config import load_config
 from .domain import AccountConfig, AnyAccount, SearchQuery
@@ -62,215 +60,6 @@ def read_mcp_state(state_file: Path) -> McpState | None:
 def clear_mcp_state(state_file: Path) -> None:
     with contextlib.suppress(Exception):
         state_file.unlink()
-
-
-# ---------------------------------------------------------------------------
-# Minimal MCP server (no external SDK)
-# ---------------------------------------------------------------------------
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-_MCP_PROTOCOL_VERSION = "2024-11-05"
-
-
-@dataclass
-class _Tool:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    fn: Callable[..., Any]
-
-
-def _hint_to_schema(hint: Any) -> dict[str, Any]:
-    """Best-effort Python type hint → JSON Schema fragment."""
-    origin = typing.get_origin(hint)
-    args = typing.get_args(hint)
-
-    # Optional / Union — drop None variant and recurse
-    if origin is not None and args and type(None) in args:
-        non_none = [a for a in args if a is not type(None)]
-        if len(non_none) == 1:
-            return _hint_to_schema(non_none[0])
-
-    if hint is str or hint is bytes:
-        return {"type": "string"}
-    if hint is int:
-        return {"type": "integer"}
-    if hint is bool:
-        return {"type": "boolean"}
-    if hint is float:
-        return {"type": "number"}
-    if hint is type(None):
-        return {"type": "null"}
-    if origin is list or hint is list:
-        return {"type": "array"}
-    if origin is dict or hint is dict:
-        return {"type": "object"}
-    return {"type": "string"}  # safe fallback
-
-
-def _build_input_schema(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Build an MCP inputSchema from the function's parameter annotations."""
-    try:
-        hints = typing.get_type_hints(fn)
-    except Exception:
-        hints = {}
-    sig = inspect.signature(fn)
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    for name, param in sig.parameters.items():
-        properties[name] = _hint_to_schema(hints.get(name, str))
-        if param.default is inspect.Parameter.empty:
-            required.append(name)
-    return {"type": "object", "properties": properties, "required": required}
-
-
-class McpServer:
-    """Minimal MCP server: register tools, serve over stdio or a stream pair."""
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self._tools: list[_Tool] = []
-
-    def tool(self) -> Callable[[_F], _F]:
-        """Decorator: register a callable as an MCP tool."""
-
-        def decorator(fn: _F) -> _F:
-            self._tools.append(
-                _Tool(
-                    name=fn.__name__,
-                    description=(fn.__doc__ or "").strip(),
-                    input_schema=_build_input_schema(fn),
-                    fn=fn,
-                )
-            )
-            return fn
-
-        return decorator
-
-    def _handle(self, msg: dict[str, Any]) -> dict[str, Any] | None:
-        """Dispatch one JSON-RPC message; return a response or None."""
-        method: str = msg.get("method", "")
-        msg_id = msg.get("id")
-        params: dict[str, Any] = msg.get("params") or {}
-
-        if method == "initialize":
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": _MCP_PROTOCOL_VERSION,
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": self._name, "version": "1.0"},
-                },
-            }
-
-        if method in {
-            "notifications/initialized",
-            "notifications/cancelled",
-            "notifications/progress",
-        }:
-            return None
-
-        if method == "ping":
-            return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
-
-        if method == "tools/list":
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "tools": [
-                        {
-                            "name": t.name,
-                            "description": t.description,
-                            "inputSchema": t.input_schema,
-                        }
-                        for t in self._tools
-                    ]
-                },
-            }
-
-        if method == "tools/call":
-            name = params.get("name", "")
-            arguments: dict[str, Any] = params.get("arguments") or {}
-            tool = next((t for t in self._tools if t.name == name), None)
-            if tool is None:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {"code": -32601, "message": f"Unknown tool: {name}"},
-                }
-            try:
-                result = tool.fn(**arguments)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "result": {
-                        "content": [
-                            {"type": "text", "text": json.dumps(result, default=str)}
-                        ],
-                        "isError": False,
-                    },
-                }
-            except Exception as exc:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "result": {
-                        "content": [{"type": "text", "text": str(exc)}],
-                        "isError": True,
-                    },
-                }
-
-        if method in {"resources/list", "prompts/list", "resources/templates/list"}:
-            key = method.split("/")[0] + "s"
-            return {"jsonrpc": "2.0", "id": msg_id, "result": {key: []}}
-
-        if msg_id is not None:
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"},
-            }
-        return None
-
-    async def _serve(
-        self,
-        readline: Callable[[], Any],
-        writeline: Callable[[bytes], Any],
-    ) -> None:
-        """Read/dispatch/write loop shared by stdio and TCP handlers."""
-        while True:
-            raw = await readline()
-            if not raw:
-                break
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            response = self._handle(msg)
-            if response is not None:
-                line = json.dumps(response, separators=(",", ":")).encode() + b"\n"
-                await writeline(line)
-
-    def run(self) -> None:
-        """Run the MCP server over stdin/stdout (blocking)."""
-        asyncio.run(self._run_stdio())
-
-    async def _run_stdio(self) -> None:
-        loop = asyncio.get_running_loop()
-        stdin_buf = sys.stdin.buffer
-        stdout_buf = sys.stdout.buffer
-
-        async def readline() -> bytes:
-            return await loop.run_in_executor(None, stdin_buf.readline)
-
-        async def writeline(data: bytes) -> None:
-            stdout_buf.write(data)
-            stdout_buf.flush()
-
-        await self._serve(readline, writeline)
 
 
 # ---------------------------------------------------------------------------
@@ -679,102 +468,39 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
 
 
 # ---------------------------------------------------------------------------
-# TCP embedded server (TUI) and stdio bridge
+# TCP embedded server (TUI) and stdio entry point
 # ---------------------------------------------------------------------------
-
-
-async def _handle_tcp_client(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    token: str,
-    server: McpServer,
-) -> None:
-    """Authenticate and run one MCP session over a TCP connection."""
-    try:
-        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-    except TimeoutError:
-        writer.close()
-        return
-    if line.decode("utf-8", errors="replace").strip() != f"TOKEN:{token}":
-        writer.close()
-        return
-
-    async def readline() -> bytes:
-        return await reader.readline()
-
-    async def writeline(data: bytes) -> None:
-        writer.write(data)
-        await writer.drain()
-
-    await server._serve(readline, writeline)
-    writer.close()
 
 
 async def start_tcp_mcp_server(
     config_path: Path | None,
     state_file: Path,
-) -> tuple[asyncio.Server, McpState]:
+) -> tuple[asyncio.Task[None], McpState]:
     """Start the embedded TCP MCP server for the TUI.
 
     Binds to a random loopback port, writes the port and a fresh auth token
-    to *state_file*, and returns the running server and its state.  Call
-    ``asyncio.create_task(server.serve_forever())`` to keep it alive in the
-    background.
+    to *state_file*, and returns a running background task and the bound state.
+    Cancel the task to stop the server.
     """
     token = secrets.token_hex(32)
     mcp = build_mcp_server(config_path)
+    state_holder: list[McpState] = []
 
-    def _on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        asyncio.create_task(_handle_tcp_client(reader, writer, token, mcp))
+    def on_bound(port: int) -> None:
+        state = McpState(port=port, token=token)
+        write_mcp_state(state_file, state)
+        state_holder.append(state)
 
-    server = await asyncio.start_server(_on_client, "127.0.0.1", 0)
-    port: int = server.sockets[0].getsockname()[1]
-    state = McpState(port=port, token=token)
-    write_mcp_state(state_file, state)
-    return server, state
-
-
-async def _bridge_stdio_to_tcp(state: McpState) -> bool:
-    """Proxy stdin/stdout to the TUI's TCP MCP server.
-
-    Returns ``True`` when the session completes normally, ``False`` when the
-    TCP server cannot be reached (stale state file).
-    """
-    try:
-        tcp_reader, tcp_writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", state.port), timeout=2.0
-        )
-    except Exception:
-        return False
-
-    tcp_writer.write(f"TOKEN:{state.token}\n".encode())
-    await tcp_writer.drain()
-
-    loop = asyncio.get_running_loop()
-    stdin_buf = sys.stdin.buffer
-    stdout_buf = sys.stdout.buffer
-
-    async def pipe_in() -> None:
-        while True:
-            line = await loop.run_in_executor(None, stdin_buf.readline)
-            if not line:
-                break
-            tcp_writer.write(line)
-            await tcp_writer.drain()
-        with contextlib.suppress(Exception):
-            tcp_writer.close()
-            await tcp_writer.wait_closed()
-
-    async def pipe_out() -> None:
-        while True:
-            chunk = await tcp_reader.read(65536)
-            if not chunk:
-                break
-            stdout_buf.write(chunk)
-            stdout_buf.flush()
-
-    await asyncio.gather(pipe_in(), pipe_out(), return_exceptions=True)
-    return True
+    task: asyncio.Task[None] = asyncio.create_task(
+        serve_tcp(mcp, port=0, token=token, on_bound=on_bound),
+        name="mcp-tcp",
+    )
+    for _ in range(100):
+        if state_holder:
+            return task, state_holder[0]
+        await asyncio.sleep(0.01)
+    task.cancel()
+    raise RuntimeError("MCP TCP server failed to bind within 1 s")
 
 
 def run_mcp_server(
@@ -784,11 +510,30 @@ def run_mcp_server(
     """Start the MCP server.
 
     When *state_file* exists and points to a reachable TUI TCP server, act as
-    a bridge (stdin/stdout ↔ TCP).  Otherwise open local connections and serve
-    via stdio directly.
+    a bridge (stdin/stdout ↔ TCP).  Otherwise serve via stdio directly.
     """
+    asyncio.run(_run_mcp_server_async(config_path, state_file))
+
+
+async def _run_mcp_server_async(
+    config_path: Path | None,
+    state_file: Path | None,
+) -> None:
+    from tinymcp import CONNECT_TIMEOUT, run_stdio_bridge
+
     if state_file is not None:
         state = read_mcp_state(state_file)
-        if state is not None and asyncio.run(_bridge_stdio_to_tcp(state)):
-            return
-    build_mcp_server(config_path).run()
+        if state is not None:
+            try:
+                _r, _w = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", state.port),
+                    timeout=CONNECT_TIMEOUT,
+                )
+                _w.close()
+                await run_stdio_bridge(
+                    host="127.0.0.1", port=state.port, token=state.token
+                )
+                return
+            except (TimeoutError, ConnectionRefusedError, OSError):
+                pass
+    await run_stdio_standalone(build_mcp_server(config_path))
