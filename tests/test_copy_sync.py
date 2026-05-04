@@ -51,14 +51,16 @@ def _simulate_tui_copy(
     bytes that ultimately hit the target server via APPEND.
     """
     raw = source_mirror.get_message_bytes(
-        folder=source, storage_key=source_storage_key,
+        folder=source,
+        storage_key=source_storage_key,
     )
     rewrite = target.account_name == source.account_name
     new_raw, new_mid = copy_message_bytes(raw, rewrite_message_id=rewrite)
     new_key = target_mirror.store_message(folder=target, raw_message=new_raw)
 
     [source_row] = [
-        m for m in index.list_folder_messages(folder=source)
+        m
+        for m in index.list_folder_messages(folder=source)
         if m.storage_key == source_storage_key
     ]
     new_row = dataclasses.replace(
@@ -101,7 +103,8 @@ class SameAccountCopyTest(unittest.TestCase):
         tmp.mkdir(parents=True, exist_ok=True)
 
         mirror = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror",
+            account_name="personal",
+            root_dir=tmp / "mirror",
         )
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
@@ -133,7 +136,8 @@ class SameAccountCopyTest(unittest.TestCase):
             return mirror
 
         def _session_factory(
-            _acc: AccountConfig, _pw: str,
+            _acc: AccountConfig,
+            _pw: str,
         ) -> ImapClientSession:
             return session
 
@@ -203,13 +207,16 @@ class CrossAccountCopyTest(unittest.TestCase):
         tmp.mkdir(parents=True, exist_ok=True)
 
         mirror_a = MaildirMirrorRepository(
-            account_name="work", root_dir=tmp / "mirror-a",
+            account_name="work",
+            root_dir=tmp / "mirror-a",
         )
         mirror_b = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror-b",
+            account_name="personal",
+            root_dir=tmp / "mirror-b",
         )
         mirrors: dict[str, MaildirMirrorRepository] = {
-            "work": mirror_a, "personal": mirror_b,
+            "work": mirror_a,
+            "personal": mirror_b,
         }
 
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
@@ -245,7 +252,8 @@ class CrossAccountCopyTest(unittest.TestCase):
             folders={"INBOX": {}},
         )
         sessions: dict[str, FakeImapSession] = {
-            "work": session_work, "personal": session_personal,
+            "work": session_work,
+            "personal": session_personal,
         }
 
         class _Creds:
@@ -256,7 +264,8 @@ class CrossAccountCopyTest(unittest.TestCase):
             return mirrors[acc.name]
 
         def _session_factory(
-            acc: AccountConfig, _pw: str,
+            acc: AccountConfig,
+            _pw: str,
         ) -> ImapClientSession:
             return sessions[acc.name]
 
@@ -305,6 +314,6 @@ class CrossAccountCopyTest(unittest.TestCase):
         [(personal_mid, _, _)] = list(personal_server.values())
         self.assertEqual(personal_mid, "<orig-cross@example.com>")
         # Personal account's session saw an APPEND.
-        self.assertTrue(any(
-            call == "append:INBOX" for call in sessions["personal"].call_log
-        ))
+        self.assertTrue(
+            any(call == "append:INBOX" for call in sessions["personal"].call_log)
+        )

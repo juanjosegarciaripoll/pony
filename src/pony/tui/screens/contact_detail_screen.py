@@ -132,7 +132,8 @@ class ContactDetailScreen(Screen[bool]):
                 self._refresh_detail()
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ContactEditScreen(self._contact, self._contacts), _on_saved,
+            ContactEditScreen(self._contact, self._contacts),
+            _on_saved,
         )
 
     def _refresh_detail(self) -> None:

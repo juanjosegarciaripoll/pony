@@ -29,7 +29,6 @@ from ..message_renderer import (
 _log = logging.getLogger(__name__)
 
 
-
 class MessageViewPanel(VerticalScroll):
     """Scrollable message reader: header block, attachment list, body text.
 
@@ -126,9 +125,7 @@ class MessageViewPanel(VerticalScroll):
             )
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", summary.message_ref)
-            self._set_content(
-                f"(could not load message: {type(exc).__name__}: {exc})"
-            )
+            self._set_content(f"(could not load message: {type(exc).__name__}: {exc})")
             return
         self._rendered = render_message(raw)
         self._set_content(self._build_markup(self._rendered))
@@ -241,5 +238,3 @@ class MessageViewPanel(VerticalScroll):
         lines.append(r.body)
 
         return "\n".join(lines)
-
-

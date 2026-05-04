@@ -142,8 +142,7 @@ class HtmlStyleScriptProjectionTest(unittest.TestCase):
 
     def test_script_block_content_not_in_preview(self) -> None:
         raw = self._html_message(
-            "<html><body><script>var x = 1;</script>"
-            "<p>Visible text</p></body></html>"
+            "<html><body><script>var x = 1;</script><p>Visible text</p></body></html>"
         )
         preview = _project(raw).body_preview
         self.assertIn("Visible text", preview)
@@ -368,8 +367,7 @@ class NestedEmailRendererTest(unittest.TestCase):
 
     def test_attached_emails_listed(self) -> None:
         eml_atts = [
-            a for a in self.rendered.attachments
-            if a.content_type == "message/rfc822"
+            a for a in self.rendered.attachments if a.content_type == "message/rfc822"
         ]
         self.assertEqual(len(eml_atts), 2)
         names = {a.filename for a in eml_atts}
@@ -378,8 +376,7 @@ class NestedEmailRendererTest(unittest.TestCase):
 
     def test_inner_attachments_listed(self) -> None:
         file_atts = [
-            a for a in self.rendered.attachments
-            if a.content_type != "message/rfc822"
+            a for a in self.rendered.attachments if a.content_type != "message/rfc822"
         ]
         names = {a.filename for a in file_atts}
         self.assertIn("contract.pdf", names)
@@ -415,6 +412,7 @@ class HtmlOnlyRenderTest(unittest.TestCase):
 
     def _make_html_only_message(self, html_body: str) -> bytes:
         from email.message import EmailMessage
+
         msg = EmailMessage()
         msg["From"] = "sender@example.com"
         msg["To"] = "recipient@example.com"
@@ -438,8 +436,7 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         from pony.tui.message_renderer import render_message
 
         raw = self._make_html_only_message(
-            "<html><body><script>var x = 1;</script>"
-            "<p>Visible text</p></body></html>"
+            "<html><body><script>var x = 1;</script><p>Visible text</p></body></html>"
         )
         rendered = render_message(raw)
         self.assertIn("Visible text", rendered.body)

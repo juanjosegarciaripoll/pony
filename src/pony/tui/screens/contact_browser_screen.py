@@ -9,9 +9,9 @@ from textual.widgets import DataTable, Footer, Header, Input
 
 from ...domain import Contact
 from ...protocols import ContactRepository
+from ..bindings import MARK_BINDINGS
 
 _BLANK_CONTACT = Contact(id=None, first_name="", last_name="", emails=())
-from ..bindings import MARK_BINDINGS
 
 
 class ContactBrowserScreen(Screen[None]):
@@ -71,7 +71,8 @@ class ContactBrowserScreen(Screen[None]):
     def _refresh_list(self) -> None:
         if self._filter:
             self._displayed = self._contacts.search_contacts(
-                prefix=self._filter, limit=500,
+                prefix=self._filter,
+                limit=500,
             )
         else:
             self._displayed = self._contacts.list_all_contacts()
@@ -119,7 +120,8 @@ class ContactBrowserScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def on_data_table_row_selected(
-        self, event: DataTable.RowSelected,
+        self,
+        event: DataTable.RowSelected,
     ) -> None:
         """Show the detail screen when the user presses Enter on a row."""
         event.stop()
@@ -133,7 +135,8 @@ class ContactBrowserScreen(Screen[None]):
                 self._refresh_list()
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ContactDetailScreen(contact, self._contacts), _on_dismiss,
+            ContactDetailScreen(contact, self._contacts),
+            _on_dismiss,
         )
 
     # ------------------------------------------------------------------
@@ -198,7 +201,8 @@ class ContactBrowserScreen(Screen[None]):
                 self._refresh_list()
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ContactEditScreen(_BLANK_CONTACT, self._contacts), _on_saved,
+            ContactEditScreen(_BLANK_CONTACT, self._contacts),
+            _on_saved,
         )
 
     def action_edit(self) -> None:
@@ -212,7 +216,8 @@ class ContactBrowserScreen(Screen[None]):
                 self._refresh_list()
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ContactEditScreen(contact, self._contacts), _on_saved,
+            ContactEditScreen(contact, self._contacts),
+            _on_saved,
         )
 
     # ------------------------------------------------------------------
@@ -227,9 +232,7 @@ class ContactBrowserScreen(Screen[None]):
             names = []
             for c in self._displayed:
                 if c.id in self._marked:
-                    label = c.display_name or (
-                        c.emails[0] if c.emails else "(no name)"
-                    )
+                    label = c.display_name or (c.emails[0] if c.emails else "(no name)")
                     names.append(label)
             body = "\n".join(f"  - {n}" for n in names[:10])
             if len(names) > 10:
@@ -248,7 +251,8 @@ class ContactBrowserScreen(Screen[None]):
 
             self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
                 ConfirmScreen(
-                    f"Delete {len(ids)} contact(s)?", body,
+                    f"Delete {len(ids)} contact(s)?",
+                    body,
                 ),
                 _on_confirm,
             )
@@ -292,7 +296,8 @@ class ContactBrowserScreen(Screen[None]):
         target = ids[0]
         sources = ids[1:]
         self._contacts.merge_contacts(
-            target_id=target, source_ids=sources,
+            target_id=target,
+            source_ids=sources,
         )
         self._marked.clear()
         self._refresh_list()

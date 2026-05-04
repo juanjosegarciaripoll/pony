@@ -98,7 +98,9 @@ class DeleteMessageTestCase(unittest.TestCase):
     def test_delete_nonexistent_is_silent(self) -> None:
         repo = _fresh_repo()
         ref = MessageRef(
-            account_name="personal", folder_name="INBOX", id=99999,
+            account_name="personal",
+            folder_name="INBOX",
+            id=99999,
         )
         repo.delete_message(message_ref=ref)  # must not raise
 
@@ -245,15 +247,18 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
         repo = _fresh_repo()
         repo.upsert_message(
             message=_make_message(
-                "m-1", subject="Carta de María",
+                "m-1",
+                subject="Carta de María",
                 body_preview="contenido cualquiera",
             ),
         )
         hits = repo.search(
-            query=SearchQuery(subject="maria"), account_name="personal",
+            query=SearchQuery(subject="maria"),
+            account_name="personal",
         )
         self.assertEqual(
-            {h.message_id for h in hits}, {"m-1"},
+            {h.message_id for h in hits},
+            {"m-1"},
         )
 
     def test_ascii_query_matches_accented_sender(self) -> None:
@@ -270,7 +275,8 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
             account_name="personal",
         )
         self.assertEqual(
-            {h.message_id for h in hits}, {"m-1"},
+            {h.message_id for h in hits},
+            {"m-1"},
         )
 
     def test_field_scoping_is_enforced(self) -> None:
@@ -286,7 +292,8 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
         # "foo" appears only in the sender column — a subject-scoped
         # query must not find it.
         hits = repo.search(
-            query=SearchQuery(subject="foo"), account_name="personal",
+            query=SearchQuery(subject="foo"),
+            account_name="personal",
         )
         self.assertEqual(hits, ())
 
@@ -656,37 +663,56 @@ class NarrowSyncProjectionTestCase(unittest.TestCase):
 
     def test_slow_path_rows_include_all_folder_rows(self) -> None:
         repo = _fresh_repo()
-        repo.upsert_message(message=_make_message(
-            "m-1", uid=10, local_flags=frozenset({MessageFlag.SEEN}),
-            base_flags=frozenset({MessageFlag.SEEN}),
-            extra_imap_flags=frozenset({"$Important"}),
-        ))
-        repo.upsert_message(message=_make_message(
-            "m-2", uid=None,
-            local_status=MessageStatus.ACTIVE,
-        ))
-        repo.upsert_message(message=_make_message(
-            "m-3", uid=12, local_status=MessageStatus.TRASHED,
-        ))
-        repo.upsert_message(message=_make_message(
-            "m-other", folder_name="Sent", uid=99,
-        ))
+        repo.upsert_message(
+            message=_make_message(
+                "m-1",
+                uid=10,
+                local_flags=frozenset({MessageFlag.SEEN}),
+                base_flags=frozenset({MessageFlag.SEEN}),
+                extra_imap_flags=frozenset({"$Important"}),
+            )
+        )
+        repo.upsert_message(
+            message=_make_message(
+                "m-2",
+                uid=None,
+                local_status=MessageStatus.ACTIVE,
+            )
+        )
+        repo.upsert_message(
+            message=_make_message(
+                "m-3",
+                uid=12,
+                local_status=MessageStatus.TRASHED,
+            )
+        )
+        repo.upsert_message(
+            message=_make_message(
+                "m-other",
+                folder_name="Sent",
+                uid=99,
+            )
+        )
 
         rows = repo.list_folder_slow_path_rows(
-            account_name="personal", folder_name="INBOX",
+            account_name="personal",
+            folder_name="INBOX",
         )
         self.assertEqual(len(rows), 3)
         by_mid = {r.message_id: r for r in rows}
 
         self.assertEqual(by_mid["m-1"].uid, 10)
         self.assertEqual(
-            by_mid["m-1"].local_flags, frozenset({MessageFlag.SEEN}),
+            by_mid["m-1"].local_flags,
+            frozenset({MessageFlag.SEEN}),
         )
         self.assertEqual(
-            by_mid["m-1"].base_flags, frozenset({MessageFlag.SEEN}),
+            by_mid["m-1"].base_flags,
+            frozenset({MessageFlag.SEEN}),
         )
         self.assertEqual(
-            by_mid["m-1"].extra_imap_flags, frozenset({"$Important"}),
+            by_mid["m-1"].extra_imap_flags,
+            frozenset({"$Important"}),
         )
 
         self.assertIsNone(by_mid["m-2"].uid)
@@ -697,23 +723,33 @@ class NarrowSyncProjectionTestCase(unittest.TestCase):
     def test_slow_path_rows_empty_folder(self) -> None:
         repo = _fresh_repo()
         rows = repo.list_folder_slow_path_rows(
-            account_name="personal", folder_name="INBOX",
+            account_name="personal",
+            folder_name="INBOX",
         )
         self.assertEqual(rows, ())
 
     def test_base_flags_returns_uid_bearing_rows_only(self) -> None:
         repo = _fresh_repo()
-        repo.upsert_message(message=_make_message(
-            "m-1", uid=10, base_flags=frozenset({MessageFlag.SEEN}),
-            extra_imap_flags=frozenset({"$Junk", "$Important"}),
-        ))
-        repo.upsert_message(message=_make_message(
-            "m-2", uid=11, base_flags=frozenset(),
-        ))
+        repo.upsert_message(
+            message=_make_message(
+                "m-1",
+                uid=10,
+                base_flags=frozenset({MessageFlag.SEEN}),
+                extra_imap_flags=frozenset({"$Junk", "$Important"}),
+            )
+        )
+        repo.upsert_message(
+            message=_make_message(
+                "m-2",
+                uid=11,
+                base_flags=frozenset(),
+            )
+        )
         repo.upsert_message(message=_make_message("m-3", uid=None))
 
         result = repo.list_folder_base_flags(
-            account_name="personal", folder_name="INBOX",
+            account_name="personal",
+            folder_name="INBOX",
         )
         self.assertEqual(set(result.keys()), {10, 11})
         self.assertEqual(result[10][0], frozenset({MessageFlag.SEEN}))
@@ -723,11 +759,16 @@ class NarrowSyncProjectionTestCase(unittest.TestCase):
     def test_base_flags_isolates_folder(self) -> None:
         repo = _fresh_repo()
         repo.upsert_message(message=_make_message("m-1", uid=10))
-        repo.upsert_message(message=_make_message(
-            "m-other", folder_name="Sent", uid=99,
-        ))
+        repo.upsert_message(
+            message=_make_message(
+                "m-other",
+                folder_name="Sent",
+                uid=99,
+            )
+        )
         result = repo.list_folder_base_flags(
-            account_name="personal", folder_name="INBOX",
+            account_name="personal",
+            folder_name="INBOX",
         )
         self.assertEqual(set(result.keys()), {10})
 

@@ -58,7 +58,8 @@ def _ingest_one(
     storage_key: str,
 ) -> None:
     raw_message = mirror_repository.get_message_bytes(
-        folder=folder, storage_key=storage_key,
+        folder=folder,
+        storage_key=storage_key,
     )
     message_ref = MessageRef(
         account_name=folder.account_name,
@@ -158,13 +159,16 @@ def rescan_local_account(
         }
         new_keys = tuple(sorted(disk_keys - set(indexed)))
         gone = tuple(
-            (key, indexed[key].message_ref)
-            for key in sorted(set(indexed) - disk_keys)
+            (key, indexed[key].message_ref) for key in sorted(set(indexed) - disk_keys)
         )
-        plans.append(_FolderPlan(
-            folder=folder, new_keys=new_keys, gone=gone,
-            current_mtime_ns=current_mtime,
-        ))
+        plans.append(
+            _FolderPlan(
+                folder=folder,
+                new_keys=new_keys,
+                gone=gone,
+                current_mtime_ns=current_mtime,
+            )
+        )
 
     planned = RescanResult(
         added=sum(len(p.new_keys) for p in plans),

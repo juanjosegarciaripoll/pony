@@ -293,9 +293,7 @@ def base64_body() -> bytes:
         b"MIME-Version: 1.0\r\n"
         b"Content-Type: text/plain; charset=utf-8\r\n"
         b"Content-Transfer-Encoding: base64\r\n"
-        b"\r\n"
-        + encoded.encode()
-        + b"\r\n"
+        b"\r\n" + encoded.encode() + b"\r\n"
     )
 
 
@@ -432,12 +430,8 @@ def many_recipients() -> bytes:
 
     Exercises contact harvesting with a large address list.
     """
-    to_addrs = ", ".join(
-        f"User{i} <user{i}@example.com>" for i in range(1, 21)
-    )
-    cc_addrs = ", ".join(
-        f"CC{i} <cc{i}@example.com>" for i in range(1, 11)
-    )
+    to_addrs = ", ".join(f"User{i} <user{i}@example.com>" for i in range(1, 21))
+    cc_addrs = ", ".join(f"CC{i} <cc{i}@example.com>" for i in range(1, 11))
     msg = EmailMessage()
     msg["From"] = FROM_ADDR
     msg["To"] = to_addrs

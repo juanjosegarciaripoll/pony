@@ -44,9 +44,7 @@ def _detect_eol(raw: bytes) -> bytes:
     return b"\r\n" if b"\r\n" in raw[:200] else b"\n"
 
 
-def copy_message_bytes(
-    raw: bytes, *, rewrite_message_id: bool
-) -> tuple[bytes, str]:
+def copy_message_bytes(raw: bytes, *, rewrite_message_id: bool) -> tuple[bytes, str]:
     """Return ``(new_raw, message_id)``.
 
     When *rewrite_message_id* is ``True`` the existing ``Message-ID``

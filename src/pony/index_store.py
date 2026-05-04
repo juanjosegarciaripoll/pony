@@ -61,13 +61,28 @@ class SchemaMismatchError(RuntimeError):
 # primary key — omitted from INSERT, never updated.
 _FULL_COLS: tuple[str, ...] = (
     "id",
-    "account_name", "folder_name",
-    "uid", "uid_validity", "message_id",
-    "sender", "recipients", "cc", "subject", "body_preview",
-    "storage_key", "has_attachments",
-    "local_flags", "base_flags", "server_flags", "extra_imap_flags",
-    "local_status", "received_at", "trashed_at", "synced_at",
-    "source_folder", "source_uid",
+    "account_name",
+    "folder_name",
+    "uid",
+    "uid_validity",
+    "message_id",
+    "sender",
+    "recipients",
+    "cc",
+    "subject",
+    "body_preview",
+    "storage_key",
+    "has_attachments",
+    "local_flags",
+    "base_flags",
+    "server_flags",
+    "extra_imap_flags",
+    "local_status",
+    "received_at",
+    "trashed_at",
+    "synced_at",
+    "source_folder",
+    "source_uid",
 )
 _FULL_SELECT = ", ".join(_FULL_COLS)
 _INSERT_COLS = ", ".join(_FULL_COLS[1:])  # skip id
@@ -77,12 +92,8 @@ _UPDATE_ASSIGNS = ", ".join(f"{c} = ?" for c in _FULL_COLS[1:])
 
 def _row_params(message: IndexedMessage) -> tuple[object, ...]:
     """Convert an IndexedMessage to the parameter tuple used by INSERT/UPDATE."""
-    trashed_at = (
-        message.trashed_at.isoformat() if message.trashed_at else None
-    )
-    synced_at = (
-        message.synced_at.isoformat() if message.synced_at else None
-    )
+    trashed_at = message.trashed_at.isoformat() if message.trashed_at else None
+    synced_at = message.synced_at.isoformat() if message.synced_at else None
     return (
         message.message_ref.account_name,
         message.message_ref.folder_name,
@@ -125,7 +136,9 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     # and the rebuild path will re-create them once the new schema is
     # in place.
     for trigger in (
-        "messages_ai", "messages_ad", "messages_au",
+        "messages_ai",
+        "messages_ad",
+        "messages_au",
     ):
         conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     conn.execute("DROP TABLE IF EXISTS messages_fts")
@@ -234,9 +247,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         except sqlite3.OperationalError:
             # Stale lock — remove journal files and retry.
             for suffix in ("-wal", "-shm", "-journal"):
-                p = self._database_path.parent / (
-                    self._database_path.name + suffix
-                )
+                p = self._database_path.parent / (self._database_path.name + suffix)
                 p.unlink(missing_ok=True)
             conn = sqlite3.connect(self._database_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -287,14 +298,18 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         (caller must commit and close via the ``with`` statement).
         """
         active: sqlite3.Connection | None = getattr(
-            self._local, "conn", None,
+            self._local,
+            "conn",
+            None,
         )
         if active is not None:
             return active, True
         return self._open_connection(), False
 
     def _done(
-        self, conn: sqlite3.Connection, managed: bool,
+        self,
+        conn: sqlite3.Connection,
+        managed: bool,
     ) -> None:
         """Commit and close *conn* if it is **not** managed."""
         if not managed:
@@ -333,13 +348,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             version_row = conn.execute("PRAGMA user_version").fetchone()
             version = int(version_row[0]) if version_row is not None else 0
-            has_messages = conn.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type='table' AND name='messages'"
-            ).fetchone() is not None
+            has_messages = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+                ).fetchone()
+                is not None
+            )
 
             if has_messages and version not in (
-                _MIGRATABLE_FROM, _SCHEMA_VERSION,
+                _MIGRATABLE_FROM,
+                _SCHEMA_VERSION,
             ):
                 # A messages table at any unrecognised version is a
                 # legacy DB.  The CLI offers an export-then-reset
@@ -469,9 +487,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     # Messages
     # ------------------------------------------------------------------
 
-    def insert_message(
-        self, *, message: IndexedMessage
-    ) -> IndexedMessage:
+    def insert_message(self, *, message: IndexedMessage) -> IndexedMessage:
         """Insert a fresh row, returning it with its assigned id."""
         params = _row_params(message)
         with self._use() as conn:
@@ -525,9 +541,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         Returns ``[(folder_ref, storage_key), ...]`` for each purged row so
         the caller can clean up the corresponding mirror files.
         """
-        cutoff = (
-            datetime.now(tz=UTC) - timedelta(days=retention_days)
-        ).isoformat()
+        cutoff = (datetime.now(tz=UTC) - timedelta(days=retention_days)).isoformat()
         with self._use() as conn:
             rows = conn.execute(
                 """
@@ -543,7 +557,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             entries = [
                 (
                     FolderRef(
-                        account_name=str(r[0]), folder_name=str(r[1]),
+                        account_name=str(r[0]),
+                        folder_name=str(r[1]),
                     ),
                     str(r[2]),
                 )
@@ -567,9 +582,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         if not self._database_path.exists():
             return []
         with self._use() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT account_name FROM messages"
-            ).fetchall()
+            rows = conn.execute("SELECT DISTINCT account_name FROM messages").fetchall()
         return [str(r[0]) for r in rows]
 
     def purge_account(self, *, account_name: str) -> None:
@@ -596,9 +609,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 """,
                 (account_name,),
             ).fetchall()
-            stale = [
-                str(r[0]) for r in rows if str(r[0]) not in active_folders
-            ]
+            stale = [str(r[0]) for r in rows if str(r[0]) not in active_folders]
             for folder_name in stale:
                 conn.execute(
                     """
@@ -659,9 +670,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
-    def unread_counts_by_folder(
-        self, *, account_name: str
-    ) -> dict[str, int]:
+    def unread_counts_by_folder(self, *, account_name: str) -> dict[str, int]:
         """Return ``{folder_name: unread_count}`` for one account.
 
         Done in one GROUP BY so the folder panel doesn't have to
@@ -772,9 +781,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             clauses.append("m.account_name = ?")
             params.append(account_name)
         where_sql = " AND ".join(clauses) if clauses else "1=1"
-        join_sql = (
-            "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
-        )
+        join_sql = "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
 
         select_cols = ", ".join(f"m.{c}" for c in _FULL_COLS)
         with self._use() as conn:
@@ -850,9 +857,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             synced_at=datetime.fromisoformat(str(row[6])),
         )
 
-    def list_folder_sync_states(
-        self, *, account_name: str
-    ) -> list[FolderSyncState]:
+    def list_folder_sync_states(self, *, account_name: str) -> list[FolderSyncState]:
         """Return all sync watermarks for one account."""
         if not self._database_path.exists():
             return []
@@ -883,9 +888,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     # Planner-facing queries
     # ------------------------------------------------------------------
 
-    def count_uids_for_folder(
-        self, *, account_name: str, folder_name: str
-    ) -> int:
+    def count_uids_for_folder(self, *, account_name: str, folder_name: str) -> int:
         """Return ``COUNT(*)`` of rows with ``uid IS NOT NULL`` for one folder."""
         with self._use() as conn:
             row = conn.execute(
@@ -897,9 +900,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
-    def list_folder_uids(
-        self, *, account_name: str, folder_name: str
-    ) -> set[int]:
+    def list_folder_uids(self, *, account_name: str, folder_name: str) -> set[int]:
         """Return the set of locally-known UIDs for one folder."""
         with self._use() as conn:
             rows = conn.execute(
@@ -935,7 +936,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                   )
                 """,
                 (
-                    account_name, folder_name,
+                    account_name,
+                    folder_name,
                     MessageStatus.TRASHED.value,
                     MessageStatus.PENDING_MOVE.value,
                     MessageStatus.ACTIVE.value,
@@ -955,8 +957,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 storage_key=str(r[4]),
                 local_flags=_flags_from_csv(str(r[5])),
                 extra_imap_flags=(
-                    frozenset(str(r[6]).split(",")) - {""}
-                    if r[6] else frozenset()
+                    frozenset(str(r[6]).split(",")) - {""} if r[6] else frozenset()
                 ),
                 source_folder=str(r[7]) if r[7] is not None else None,
                 source_uid=int(str(r[8])) if r[8] is not None else None,
@@ -993,8 +994,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 local_flags=_flags_from_csv(str(r[5])),
                 base_flags=_flags_from_csv(str(r[6])),
                 extra_imap_flags=(
-                    frozenset(str(r[7]).split(",")) - {""}
-                    if r[7] else frozenset()
+                    frozenset(str(r[7]).split(",")) - {""} if r[7] else frozenset()
                 ),
                 source_folder=str(r[8]) if r[8] is not None else None,
                 source_uid=int(str(r[9])) if r[9] is not None else None,
@@ -1019,16 +1019,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         for uid, base_flags, extra_imap_flags in rows:
             extras = (
                 frozenset(str(extra_imap_flags).split(",")) - {""}
-                if extra_imap_flags else frozenset()
+                if extra_imap_flags
+                else frozenset()
             )
             result[int(str(uid))] = (
-                _flags_from_csv(str(base_flags)), extras,
+                _flags_from_csv(str(base_flags)),
+                extras,
             )
         return result
 
-    def clear_uids_for_folder(
-        self, *, account_name: str, folder_name: str
-    ) -> None:
+    def clear_uids_for_folder(self, *, account_name: str, folder_name: str) -> None:
         """Drop ACTIVE rows for a folder on UIDVALIDITY reset.
 
         ACTIVE rows are recoverable from the server's new UID epoch
@@ -1061,7 +1061,6 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (account_name, folder_name),
             )
 
-
     # ------------------------------------------------------------------
     # Contacts
     # ------------------------------------------------------------------
@@ -1081,12 +1080,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     WHERE id = ?
                     """,
                     (
-                        contact.first_name, contact.last_name,
+                        contact.first_name,
+                        contact.last_name,
                         json.dumps(list(contact.affix)),
-                        contact.organization, contact.notes,
+                        contact.organization,
+                        contact.notes,
                         contact.message_count,
                         contact.last_seen.isoformat() if contact.last_seen else None,
-                        now.isoformat(), contact.id,
+                        now.isoformat(),
+                        contact.id,
                     ),
                 )
                 contact_id = contact.id
@@ -1100,12 +1102,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        contact.first_name, contact.last_name,
+                        contact.first_name,
+                        contact.last_name,
                         json.dumps(list(contact.affix)),
-                        contact.organization, contact.notes,
+                        contact.organization,
+                        contact.notes,
                         contact.message_count,
                         contact.last_seen.isoformat() if contact.last_seen else None,
-                        created_at, updated_at,
+                        created_at,
+                        updated_at,
                     ),
                 )
                 contact_id = cur.lastrowid or 0
@@ -1188,9 +1193,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
 
-    def merge_contacts(
-        self, *, target_id: int, source_ids: list[int]
-    ) -> Contact:
+    def merge_contacts(self, *, target_id: int, source_ids: list[int]) -> Contact:
         """Merge *source_ids* into *target_id*."""
         with self._use() as conn:
             conn.execute("PRAGMA foreign_keys = ON")
@@ -1230,7 +1233,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 )
                 # Delete source.
                 conn.execute(
-                    "DELETE FROM contacts WHERE id = ?", (src_id,),
+                    "DELETE FROM contacts WHERE id = ?",
+                    (src_id,),
                 )
         return self._load_contact(target_id)
 
@@ -1349,10 +1353,12 @@ def load_contacts_for_backup(*, database_path: Path) -> list[Contact]:
         return []
     conn = sqlite3.connect(database_path, timeout=10)
     try:
-        has_contacts = conn.execute(
-            "SELECT 1 FROM sqlite_master "
-            "WHERE type='table' AND name='contacts'",
-        ).fetchone() is not None
+        has_contacts = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='contacts'",
+            ).fetchone()
+            is not None
+        )
         if not has_contacts:
             return []
         rows = conn.execute(
@@ -1514,8 +1520,7 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
     # re-insert an aggregated row from the current state of all three
     # source tables.  For INSERT/DELETE we refresh exactly one row; for
     # UPDATE we refresh old and new in case the key changed.
-    contact_refresh = (
-        """
+    contact_refresh = """
         DELETE FROM contacts_fts WHERE rowid = {cid};
         INSERT INTO contacts_fts(
             rowid, first_name, last_name, email_addresses, aliases
@@ -1536,7 +1541,6 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
             )
         FROM contacts c WHERE c.id = {cid};
         """
-    )
     conn.execute(
         f"""
         CREATE TRIGGER IF NOT EXISTS contacts_ai AFTER INSERT ON contacts
@@ -1632,17 +1636,13 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
     uid = int(str(row[3])) if row[3] is not None else None
     extra_raw = str(row[16]) if row[16] is not None else ""
     extras: frozenset[str] = (
-        frozenset(extra_raw.split(",")) - {""}
-        if extra_raw
-        else frozenset()
+        frozenset(extra_raw.split(",")) - {""} if extra_raw else frozenset()
     )
     trashed_at = (
-        datetime.fromisoformat(str(row[19])).astimezone(UTC)
-        if row[19] else None
+        datetime.fromisoformat(str(row[19])).astimezone(UTC) if row[19] else None
     )
     synced_at = (
-        datetime.fromisoformat(str(row[20])).astimezone(UTC)
-        if row[20] else None
+        datetime.fromisoformat(str(row[20])).astimezone(UTC) if row[20] else None
     )
     return IndexedMessage(
         message_ref=MessageRef(

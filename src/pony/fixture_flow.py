@@ -33,7 +33,8 @@ def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:
             storage_key=fixture_id,
         )
         fixture_message = dataclasses.replace(
-            fixture_message, message_id=f"<{fixture_id}@pony.local>",
+            fixture_message,
+            message_id=f"<{fixture_id}@pony.local>",
         )
         repository.insert_message(message=fixture_message)
         created_count += 1

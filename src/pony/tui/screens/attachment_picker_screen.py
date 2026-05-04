@@ -107,7 +107,8 @@ class AttachmentPickerScreen(Screen[list[int] | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         indices = parse_attachment_selection(
-            event.value, total=self._attachment_count,
+            event.value,
+            total=self._attachment_count,
         )
         self.dismiss(indices)
 

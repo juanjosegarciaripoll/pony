@@ -178,9 +178,7 @@ class MaildirIntegrityTests(unittest.TestCase):
         """Account whose mirror dir doesn't exist yet."""
         tmp = TMP_ROOT / "integrity" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
-        index = SqliteIndexRepository(
-            database_path=tmp / "index.sqlite3"
-        )
+        index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
         account = AccountConfig(
             name="test",

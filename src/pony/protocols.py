@@ -51,7 +51,10 @@ class MirrorRepository(Protocol):
         ...
 
     def get_message_bytes(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> bytes:
         """Return raw RFC 5322 message bytes."""
         ...
@@ -67,7 +70,10 @@ class MirrorRepository(Protocol):
         ...
 
     def delete_message(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> None:
         """Delete a message from local mirror storage."""
         ...
@@ -183,9 +189,7 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def unread_counts_by_folder(
-        self, *, account_name: str
-    ) -> dict[str, int]:
+    def unread_counts_by_folder(self, *, account_name: str) -> dict[str, int]:
         """Return ``{folder_name: unread_count}`` for one account.
 
         Folders with zero unread are omitted from the mapping; callers
@@ -276,9 +280,7 @@ class IndexRepository(Protocol):
     # UID / server-state queries (unified in the messages table)
     # ------------------------------------------------------------------
 
-    def count_uids_for_folder(
-        self, *, account_name: str, folder_name: str
-    ) -> int:
+    def count_uids_for_folder(self, *, account_name: str, folder_name: str) -> int:
         """Return the number of rows with ``uid IS NOT NULL`` for one folder.
 
         Used by the sync fast-path to compare against the server's
@@ -287,9 +289,7 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def list_folder_uids(
-        self, *, account_name: str, folder_name: str
-    ) -> set[int]:
+    def list_folder_uids(self, *, account_name: str, folder_name: str) -> set[int]:
         """Return the set of UIDs known locally for one folder.
 
         Used by the planner's fast-path UID-set check (compare against
@@ -342,14 +342,13 @@ class IndexRepository(Protocol):
         """
         ...
 
-    def clear_uids_for_folder(
-        self, *, account_name: str, folder_name: str
-    ) -> None:
+    def clear_uids_for_folder(self, *, account_name: str, folder_name: str) -> None:
         """NULL out uid, server_flags, extra_imap_flags, synced_at for a folder.
 
         Called when UIDVALIDITY changes and the UID epoch is invalid.
         """
         ...
+
 
 class ImapClientSession(Protocol):
     """Interface for one authenticated IMAP session.
@@ -392,14 +391,14 @@ class ImapClientSession(Protocol):
         """
         ...
 
-    def fetch_flags(
-        self, folder_name: str, uids: Sequence[int]
-    ) -> dict[int, FlagSet]:
+    def fetch_flags(self, folder_name: str, uids: Sequence[int]) -> dict[int, FlagSet]:
         """Return a mapping of UID → (known_flags, extra_imap_flags)."""
         ...
 
     def fetch_flags_changed_since(
-        self, folder_name: str, modseq: int,
+        self,
+        folder_name: str,
+        modseq: int,
     ) -> dict[int, FlagSet]:
         """Fetch flags for messages whose state changed since ``modseq``.
 
@@ -417,7 +416,9 @@ class ImapClientSession(Protocol):
         ...
 
     def fetch_messages_batch(
-        self, folder_name: str, uids: Sequence[int],
+        self,
+        folder_name: str,
+        uids: Sequence[int],
     ) -> dict[int, bytes]:
         """Fetch full RFC 5322 messages for multiple UIDs."""
         ...
@@ -462,7 +463,10 @@ class ImapClientSession(Protocol):
         ...
 
     def move_message(
-        self, source_folder: str, uid: int, target_folder: str,
+        self,
+        source_folder: str,
+        uid: int,
+        target_folder: str,
     ) -> int | None:
         """Move one message from *source_folder* to *target_folder*.
 

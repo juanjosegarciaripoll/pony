@@ -45,21 +45,21 @@ def write_bbdb(contacts: list[Contact], path: Path) -> None:
 def _contact_to_bbdb_line(contact: Contact) -> str:
     """Serialize one Contact as a BBDB v3 record line."""
     fields = [
-        _lisp_string(contact.first_name),                      # 0: firstname
-        _lisp_string(contact.last_name),                       # 1: lastname
-        _lisp_string_list(contact.affix),                      # 2: affix
-        _lisp_string_list(contact.aliases),                    # 3: aka
+        _lisp_string(contact.first_name),  # 0: firstname
+        _lisp_string(contact.last_name),  # 1: lastname
+        _lisp_string_list(contact.affix),  # 2: affix
+        _lisp_string_list(contact.aliases),  # 3: aka
         _lisp_string_list(
             (contact.organization,) if contact.organization else ()
-        ),                                                     # 4: organization
-        "nil",                                                 # 5: phone
-        "nil",                                                 # 6: address
-        _lisp_string_list(contact.emails),                     # 7: mail
-        _lisp_xfields(contact.notes),                          # 8: xfields
-        f'(bbdb-id . "{uuid.uuid4()}")',                       # 9: uuid
+        ),  # 4: organization
+        "nil",  # 5: phone
+        "nil",  # 6: address
+        _lisp_string_list(contact.emails),  # 7: mail
+        _lisp_xfields(contact.notes),  # 8: xfields
+        f'(bbdb-id . "{uuid.uuid4()}")',  # 9: uuid
         f'(creation-date . "{contact.created_at:%Y-%m-%d}")',  # 10: creation-date
-        f'(timestamp . "{contact.updated_at:%Y-%m-%d}")',      # 11: timestamp
-        "nil",                                                 # 12: cache
+        f'(timestamp . "{contact.updated_at:%Y-%m-%d}")',  # 11: timestamp
+        "nil",  # 12: cache
     ]
     return "[" + " ".join(fields) + "]\n"
 
@@ -80,7 +80,7 @@ def _lisp_string_list(items: tuple[str, ...]) -> str:
 def _lisp_xfields(notes: str) -> str:
     if not notes:
         return "nil"
-    return f'((notes . {_lisp_string(notes)}))'
+    return f"((notes . {_lisp_string(notes)}))"
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +148,10 @@ def _parse_bbdb_record(line: str) -> Contact | None:
 # Tokenizer: strings, parens, dots, nil, symbols, dotted pairs.
 _TOKEN_RE = re.compile(
     r'"(?:[^"\\]|\\.)*"'  # quoted string
-    r"|[(\)\[\]]"         # brackets/parens
-    r"|nil"               # nil literal
-    r"|\.(?=\s)"          # dot (for dotted pairs)
-    r"|[^\s()\[\]\".]+"   # bare symbol/number
+    r"|[(\)\[\]]"  # brackets/parens
+    r"|nil"  # nil literal
+    r"|\.(?=\s)"  # dot (for dotted pairs)
+    r"|[^\s()\[\]\".]+"  # bare symbol/number
 )
 
 
@@ -283,9 +283,9 @@ def _parse_bbdb_date(value: object) -> datetime | None:
 
 
 _DATE_FORMATS = (
-    "%Y-%m-%d %H:%M:%S %z",   # "2019-04-29 09:27:04 +0000"
-    "%Y-%m-%d %H:%M:%S",       # "2019-04-29 09:27:04"
-    "%Y-%m-%d",                 # "2019-04-29"
+    "%Y-%m-%d %H:%M:%S %z",  # "2019-04-29 09:27:04 +0000"
+    "%Y-%m-%d %H:%M:%S",  # "2019-04-29 09:27:04"
+    "%Y-%m-%d",  # "2019-04-29"
 )
 
 

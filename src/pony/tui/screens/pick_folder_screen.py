@@ -110,7 +110,8 @@ class PickFolderScreen(Screen["FolderRef | None"]):
         self.dismiss(node.data)
 
     def on_tree_node_selected(
-        self, event: Tree.NodeSelected[FolderRef | None],
+        self,
+        event: Tree.NodeSelected[FolderRef | None],
     ) -> None:
         event.stop()
         if event.node.data is None:

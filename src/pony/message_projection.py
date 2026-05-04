@@ -68,9 +68,7 @@ def project_rfc822_message(
     has_attachments = bool(_ATTACHMENT_RE.search(raw_message))
     body_preview = _extract_body_preview(body, raw_message)
     message_id_raw = header_map.get(b"message-id", b"")
-    message_id = (
-        " ".join(message_id_raw.decode("ascii", errors="replace").split())
-    )
+    message_id = " ".join(message_id_raw.decode("ascii", errors="replace").split())
 
     return IndexedMessage(
         message_ref=message_ref,
@@ -153,7 +151,8 @@ def _parse_date(raw: bytes) -> datetime:
 
 
 _CTE_RE = re.compile(
-    rb"Content-Transfer-Encoding:\s*(\S+)", re.IGNORECASE,
+    rb"Content-Transfer-Encoding:\s*(\S+)",
+    re.IGNORECASE,
 )
 
 # Safety cap applied to the final collapsed body text.  Protects against

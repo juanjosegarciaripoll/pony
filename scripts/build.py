@@ -172,10 +172,15 @@ def build_macos_dmg(version: str) -> Path:
         (staging / "Applications").symlink_to("/Applications")
         dmg_path = ARTIFACTS_DIR / f"pony-macos-v{version}.dmg"
         run(
-            "hdiutil", "create",
-            "-volname", "Pony Express",
-            "-srcfolder", str(staging),
-            "-ov", "-format", "UDZO",
+            "hdiutil",
+            "create",
+            "-volname",
+            "Pony Express",
+            "-srcfolder",
+            str(staging),
+            "-ov",
+            "-format",
+            "UDZO",
             str(dmg_path),
         )
     finally:
@@ -198,7 +203,7 @@ def build_linux_appimage(version: str) -> Path:
 
         apprun = appdir / "AppRun"
         apprun.write_text(
-            '#!/bin/sh\n'
+            "#!/bin/sh\n"
             'HERE="$(dirname "$(readlink -f "$0")")"\n'
             'exec "$HERE/usr/bin/pony_bundle/pony" "$@"\n',
             encoding="utf-8",

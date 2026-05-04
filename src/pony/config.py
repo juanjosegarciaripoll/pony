@@ -61,7 +61,9 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
 
 def parse_config(
-    data: object, *, base_dir: Path | None = None  # noqa: ARG001
+    data: object,
+    *,
+    base_dir: Path | None = None,  # noqa: ARG001
 ) -> AppConfig:
     """Validate raw TOML/JSON data and return a typed ``AppConfig``.
 
@@ -100,8 +102,7 @@ def _parse_app_config(raw: object) -> AppConfig:
         raise ConfigError("'accounts' must be a list of tables")
     # isinstance narrows to list[Unknown]; cast to list[object] for element access.
     accounts: tuple[AnyAccount, ...] = tuple(
-        _parse_any_account(item)
-        for item in cast("list[object]", accounts_raw)
+        _parse_any_account(item) for item in cast("list[object]", accounts_raw)
     )
     use_utf8 = _require_bool(data, "use_utf8", default=False)
     editor = _optional_string(data, "editor")
@@ -130,9 +131,7 @@ def _parse_any_account(raw: object) -> AnyAccount:
         return _parse_local_account(data)
     if account_type == "imap":
         return _parse_imap_account(data)
-    raise ConfigError(
-        f"account_type must be 'imap' or 'local', got {account_type!r}"
-    )
+    raise ConfigError(f"account_type must be 'imap' or 'local', got {account_type!r}")
 
 
 def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
@@ -364,7 +363,6 @@ def _require_mirror_format(data: dict[str, object]) -> MirrorFormat:
     if raw not in _VALID_MIRROR_FORMATS:
         raise ConfigError("mirror.format must be 'maildir' or 'mbox'")
     return cast("MirrorFormat", raw)
-
 
 
 def _require_credentials_source(data: dict[str, object]) -> CredentialsSource:

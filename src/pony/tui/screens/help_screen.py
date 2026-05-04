@@ -30,48 +30,64 @@ class _Section:
 # Two-column layout: left list first, right list second.  Keep sections
 # short so the modal fits on a standard 80×24 terminal.
 _LEFT_SECTIONS: tuple[_Section, ...] = (
-    _Section("Navigation", (
-        ("g", "Get mail (sync)"),
-        ("n / p", "Next / previous folder"),
-        ("N / P", "Next / previous INBOX"),
-        ("/", "Search current folder"),
-        ("Q", "Quit"),
-    )),
-    _Section("Compose", (
-        ("c", "New message"),
-        ("r", "Reply"),
-        ("R", "Reply all"),
-        ("f", "Forward"),
-        ("w", "Open in web browser"),
-    )),
-    _Section("Folders", (
-        ("Shift+N", "New folder"),
-    )),
-    _Section("Contacts", (
-        ("B", "Browse contacts"),
-        ("H", "Harvest from folder"),
-    )),
+    _Section(
+        "Navigation",
+        (
+            ("g", "Get mail (sync)"),
+            ("n / p", "Next / previous folder"),
+            ("N / P", "Next / previous INBOX"),
+            ("/", "Search current folder"),
+            ("Q", "Quit"),
+        ),
+    ),
+    _Section(
+        "Compose",
+        (
+            ("c", "New message"),
+            ("r", "Reply"),
+            ("R", "Reply all"),
+            ("f", "Forward"),
+            ("w", "Open in web browser"),
+        ),
+    ),
+    _Section("Folders", (("Shift+N", "New folder"),)),
+    _Section(
+        "Contacts",
+        (
+            ("B", "Browse contacts"),
+            ("H", "Harvest from folder"),
+        ),
+    ),
 )
 
 _RIGHT_SECTIONS: tuple[_Section, ...] = (
-    _Section("Messages", (
-        ("u", "Mark unread"),
-        ("C", "Mark all read"),
-        ("!", "Flag / unflag"),
-        ("D", "Trash"),
-        ("A", "Archive"),
-        ("Y", "Copy to folder…"),
-        ("M", "Move to folder…"),
-        ("m / Shift+↑↓", "Toggle mark / extend"),
-    )),
-    _Section("Attachments", (
-        ("1-9 / 0", "Open attachment N / open all"),
-        ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
-    )),
-    _Section("This panel", (
-        ("F1", "Toggle this help"),
-        ("Esc / q", "Dismiss"),
-    )),
+    _Section(
+        "Messages",
+        (
+            ("u", "Mark unread"),
+            ("C", "Mark all read"),
+            ("!", "Flag / unflag"),
+            ("D", "Trash"),
+            ("A", "Archive"),
+            ("Y", "Copy to folder…"),
+            ("M", "Move to folder…"),
+            ("m / Shift+↑↓", "Toggle mark / extend"),
+        ),
+    ),
+    _Section(
+        "Attachments",
+        (
+            ("1-9 / 0", "Open attachment N / open all"),
+            ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
+        ),
+    ),
+    _Section(
+        "This panel",
+        (
+            ("F1", "Toggle this help"),
+            ("Esc / q", "Dismiss"),
+        ),
+    ),
 )
 
 
@@ -86,8 +102,7 @@ def _render_column(sections: tuple[_Section, ...]) -> str:
         width = max(len(key) for key, _ in section.bindings) + 2
         for key, desc in section.bindings:
             lines.append(
-                f"[b]{markup_escape(key).ljust(width)}[/b]"
-                f" {markup_escape(desc)}"
+                f"[b]{markup_escape(key).ljust(width)}[/b] {markup_escape(desc)}"
             )
     return "\n".join(lines)
 

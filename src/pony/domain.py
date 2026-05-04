@@ -267,8 +267,8 @@ class Contact:
     id: int | None
     first_name: str
     last_name: str
-    emails: tuple[str, ...]        # all email addresses (lowercase)
-    affix: tuple[str, ...] = ()    # titles/suffixes: "Dr.", "Jr."
+    emails: tuple[str, ...]  # all email addresses (lowercase)
+    affix: tuple[str, ...] = ()  # titles/suffixes: "Dr.", "Jr."
     aliases: tuple[str, ...] = ()  # alternate names / nicknames
     organization: str = ""
     notes: str = ""
@@ -340,7 +340,6 @@ class FolderQuickStatus:
     uidnext: int
     messages: int
     highest_modseq: int | None = None
-
 
 
 @dataclass(frozen=True, slots=True)

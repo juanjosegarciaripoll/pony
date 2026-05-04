@@ -54,39 +54,54 @@ def build_service_status(
     if ver >= (3, 13):
         checks.append(DoctorCheck("Python version", CheckStatus.OK, ver_str))
     else:
-        checks.append(DoctorCheck(
-            "Python version", CheckStatus.WARN,
-            f"{ver_str} (3.13+ recommended)",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Python version",
+                CheckStatus.WARN,
+                f"{ver_str} (3.13+ recommended)",
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # Configuration file
     # ------------------------------------------------------------------ #
     if not effective_config_path.exists():
-        checks.append(DoctorCheck(
-            "Config file", CheckStatus.ERROR,
-            f"Not found: {effective_config_path}",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Config file",
+                CheckStatus.ERROR,
+                f"Not found: {effective_config_path}",
+            )
+        )
     elif config is None:
-        checks.append(DoctorCheck(
-            "Config file", CheckStatus.ERROR,
-            f"Could not parse: {effective_config_path}",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Config file",
+                CheckStatus.ERROR,
+                f"Could not parse: {effective_config_path}",
+            )
+        )
     else:
         names = ", ".join(a.name for a in config.accounts)
-        checks.append(DoctorCheck(
-            "Config file", CheckStatus.OK,
-            f"{len(config.accounts)} account(s): {names}",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Config file",
+                CheckStatus.OK,
+                f"{len(config.accounts)} account(s): {names}",
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # Index database
     # ------------------------------------------------------------------ #
     if not paths.index_db_file.exists():
-        checks.append(DoctorCheck(
-            "Index database", CheckStatus.WARN,
-            f'Not yet created (run "pony sync" first): {paths.index_db_file}',
-        ))
+        checks.append(
+            DoctorCheck(
+                "Index database",
+                CheckStatus.WARN,
+                f'Not yet created (run "pony sync" first): {paths.index_db_file}',
+            )
+        )
     else:
         try:
             conn = sqlite3.connect(str(paths.index_db_file))
@@ -95,15 +110,21 @@ def build_service_status(
             ).fetchone()
             conn.close()
             table_count = row[0] if row else 0
-            checks.append(DoctorCheck(
-                "Index database", CheckStatus.OK,
-                f"{table_count} table(s): {paths.index_db_file}",
-            ))
+            checks.append(
+                DoctorCheck(
+                    "Index database",
+                    CheckStatus.OK,
+                    f"{table_count} table(s): {paths.index_db_file}",
+                )
+            )
         except sqlite3.Error as exc:
-            checks.append(DoctorCheck(
-                "Index database", CheckStatus.ERROR,
-                f"Cannot open: {exc}",
-            ))
+            checks.append(
+                DoctorCheck(
+                    "Index database",
+                    CheckStatus.ERROR,
+                    f"Cannot open: {exc}",
+                )
+            )
 
     # ------------------------------------------------------------------ #
     # Per-account mirror paths
@@ -113,15 +134,21 @@ def build_service_status(
             label = f'Mirror "{account.name}"'
             mirror_path = account.mirror.path
             if not mirror_path.exists():
-                checks.append(DoctorCheck(
-                    label, CheckStatus.WARN,
-                    f"Does not exist (created on first sync): {mirror_path}",
-                ))
+                checks.append(
+                    DoctorCheck(
+                        label,
+                        CheckStatus.WARN,
+                        f"Does not exist (created on first sync): {mirror_path}",
+                    )
+                )
             elif not mirror_path.is_dir():
-                checks.append(DoctorCheck(
-                    label, CheckStatus.ERROR,
-                    f"Not a directory: {mirror_path}",
-                ))
+                checks.append(
+                    DoctorCheck(
+                        label,
+                        CheckStatus.ERROR,
+                        f"Not a directory: {mirror_path}",
+                    )
+                )
             else:
                 test_file = mirror_path / ".pony_write_test"
                 try:
@@ -129,25 +156,35 @@ def build_service_status(
                     test_file.unlink()
                     checks.append(DoctorCheck(label, CheckStatus.OK, str(mirror_path)))
                 except OSError:
-                    checks.append(DoctorCheck(
-                        label, CheckStatus.WARN,
-                        f"Not writable: {mirror_path}",
-                    ))
+                    checks.append(
+                        DoctorCheck(
+                            label,
+                            CheckStatus.WARN,
+                            f"Not writable: {mirror_path}",
+                        )
+                    )
 
     # ------------------------------------------------------------------ #
     # Markdown renderer (optional runtime dep)
     # ------------------------------------------------------------------ #
     import importlib.util
+
     if importlib.util.find_spec("markdown_it") is not None:
-        checks.append(DoctorCheck(
-            "Markdown renderer", CheckStatus.OK,
-            "markdown-it-py available",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Markdown renderer",
+                CheckStatus.OK,
+                "markdown-it-py available",
+            )
+        )
     else:
-        checks.append(DoctorCheck(
-            "Markdown renderer", CheckStatus.WARN,
-            "markdown-it-py not installed (Markdown mode unavailable)",
-        ))
+        checks.append(
+            DoctorCheck(
+                "Markdown renderer",
+                CheckStatus.WARN,
+                "markdown-it-py not installed (Markdown mode unavailable)",
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # Mirror integrity (only when index exists and config is available)
@@ -162,14 +199,18 @@ def build_service_status(
             index.initialize()
             for account in config.accounts:
                 result = check_mirror_integrity(
-                    account=account, index=index,
+                    account=account,
+                    index=index,
                 )
                 checks.append(result)
         except Exception as exc:  # noqa: BLE001
-            checks.append(DoctorCheck(
-                "Mirror integrity", CheckStatus.WARN,
-                f"Scan failed: {exc}",
-            ))
+            checks.append(
+                DoctorCheck(
+                    "Mirror integrity",
+                    CheckStatus.WARN,
+                    f"Scan failed: {exc}",
+                )
+            )
 
     return ServiceStatus(paths=paths, checks=tuple(checks))
 
@@ -236,18 +277,23 @@ def check_mirror_integrity(
 
     if account.mirror.format == "maildir":
         orphan_files, stale_keys = _scan_maildir(
-            mirror_path, account.name, indexed_keys,
+            mirror_path,
+            account.name,
+            indexed_keys,
         )
     else:
         # mbox: only check stale keys (no per-message files to orphan).
         stale_keys = _scan_mbox_stale(
-            mirror_path, account.name, indexed_keys,
+            mirror_path,
+            account.name,
+            indexed_keys,
         )
 
     if not orphan_files and not stale_keys:
         total = sum(len(v) for v in indexed_keys.values())
         return DoctorCheck(
-            label, CheckStatus.OK,
+            label,
+            CheckStatus.OK,
             f"{total} message(s) verified",
         )
 
@@ -312,9 +358,7 @@ def _scan_maildir(
 
         # Stale: in index but not on disk.
         for key in keys_in_index - keys_on_disk:
-            stale_keys.append(
-                f"{account_name}/{folder_name}/{key}"
-            )
+            stale_keys.append(f"{account_name}/{folder_name}/{key}")
 
     return orphan_files, stale_keys
 
@@ -331,7 +375,5 @@ def _scan_mbox_stale(
         if not mbox_file.exists():
             # Entire folder file is missing — all keys are stale.
             for key in keys:
-                stale.append(
-                    f"{account_name}/{folder_name}/{key}"
-                )
+                stale.append(f"{account_name}/{folder_name}/{key}")
     return stale

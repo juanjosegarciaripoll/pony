@@ -21,7 +21,8 @@ from pony.html_sanitize import strip_invisible_blocks
 # Used by build_browser_html() to carry the original email's <style> blocks
 # into the self-contained view so the browser renders with the same styling.
 _STYLE_BLOCK_RE = re.compile(
-    r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL,
+    r"<style[^>]*>.*?</style>",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -29,7 +30,7 @@ _STYLE_BLOCK_RE = re.compile(
 class AttachmentInfo:
     """Metadata for one attachment part."""
 
-    index: int          # 1-based display number
+    index: int  # 1-based display number
     filename: str
     content_type: str
     size_bytes: int
@@ -54,9 +55,9 @@ class RenderedMessage:
     to: str
     cc: str
     date: str
-    body: str                           # plain text, always
+    body: str  # plain text, always
     attachments: tuple[AttachmentInfo, ...]
-    raw_bytes: bytes                    # kept for W (open in browser)
+    raw_bytes: bytes  # kept for W (open in browser)
 
 
 def render_message(raw_bytes: bytes) -> RenderedMessage:
@@ -126,11 +127,7 @@ def _extract_body_and_attachments(
                 subj = _header(inner_msg, "Subject") or "(no subject)"
                 frm = _header(inner_msg, "From")
                 date = _header(inner_msg, "Date")
-                sep = (
-                    f"\n{'─' * 60}\n"
-                    f"  Attached email: {subj}\n"
-                    f"  From: {frm}\n"
-                )
+                sep = f"\n{'─' * 60}\n  Attached email: {subj}\n  From: {frm}\n"
                 if date:
                     sep += f"  Date: {date}\n"
                 sep += f"{'─' * 60}\n"
@@ -173,9 +170,7 @@ def _extract_body_and_attachments(
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = part.get_content_charset() or "utf-8"
-                body_parts.append(
-                    payload.decode(charset, errors="replace")
-                )
+                body_parts.append(payload.decode(charset, errors="replace"))
 
         elif content_type == "text/html" and not body_parts and not in_nested:
             # Only collect HTML if we have no plain text yet and we're
@@ -183,9 +178,7 @@ def _extract_body_and_attachments(
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = part.get_content_charset() or "utf-8"
-                html_parts.append(
-                    payload.decode(charset, errors="replace")
-                )
+                html_parts.append(payload.decode(charset, errors="replace"))
 
     if body_parts:
         body = "\n".join(body_parts)
@@ -240,14 +233,14 @@ def build_browser_html(raw_bytes: bytes) -> str:
     assert isinstance(msg, EmailMessage)
 
     subject = _header(msg, "Subject")
-    from_   = _header(msg, "From")
-    to      = _header(msg, "To")
-    cc      = _header(msg, "Cc")
-    date    = _header(msg, "Date")
+    from_ = _header(msg, "From")
+    to = _header(msg, "To")
+    cc = _header(msg, "Cc")
+    date = _header(msg, "Date")
 
     html_body: str | None = None
     plain_body: str | None = None
-    cid_map: dict[str, str] = {}        # bare Content-ID → data URI
+    cid_map: dict[str, str] = {}  # bare Content-ID → data URI
     attachments: list[AttachmentInfo] = []
     attach_index = 1
 
@@ -276,21 +269,23 @@ def build_browser_html(raw_bytes: bytes) -> str:
                     + (f"<br>Date: {_html.escape(dt)}" if dt else "")
                     + "</div>"
                 )
-                attachments.append(AttachmentInfo(
-                    index=attach_index,
-                    filename=f"{subj}.eml",
-                    content_type="message/rfc822",
-                    size_bytes=len(raw_inner),
-                ))
+                attachments.append(
+                    AttachmentInfo(
+                        index=attach_index,
+                        filename=f"{subj}.eml",
+                        content_type="message/rfc822",
+                        size_bytes=len(raw_inner),
+                    )
+                )
                 attach_index += 1
             continue
 
         if part.get_content_maintype() == "multipart":
             continue
 
-        disposition  = part.get_content_disposition() or ""
-        filename     = part.get_filename()
-        content_id   = part.get("Content-ID", "").strip().strip("<>")
+        disposition = part.get_content_disposition() or ""
+        filename = part.get_filename()
+        content_id = part.get("Content-ID", "").strip().strip("<>")
 
         payload = part.get_payload(decode=True)
 
@@ -302,12 +297,14 @@ def build_browser_html(raw_bytes: bytes) -> str:
         # Real attachments go to the list.
         if disposition == "attachment" or (filename and disposition != "inline"):
             size = len(payload) if isinstance(payload, bytes) else 0
-            attachments.append(AttachmentInfo(
-                index=attach_index,
-                filename=filename or "(unnamed)",
-                content_type=content_type,
-                size_bytes=size,
-            ))
+            attachments.append(
+                AttachmentInfo(
+                    index=attach_index,
+                    filename=filename or "(unnamed)",
+                    content_type=content_type,
+                    size_bytes=size,
+                )
+            )
             attach_index += 1
             continue
 
@@ -325,6 +322,7 @@ def build_browser_html(raw_bytes: bytes) -> str:
 
     # Resolve cid: references in the HTML body.
     if html_body is not None:
+
         def _replace_cid(m: re.Match[str]) -> str:
             quote, cid, end = m.group(1), m.group(2), m.group(3)
             return quote + cid_map.get(cid, f"cid:{cid}") + end
@@ -343,12 +341,9 @@ def build_browser_html(raw_bytes: bytes) -> str:
         body_content = body_match.group(1) if body_match else html_body
 
         # Carry over any <style> blocks from the original <head>.
-        extra_styles = "".join(
-            m.group(0)
-            for m in _STYLE_BLOCK_RE.finditer(html_body)
-        )
+        extra_styles = "".join(m.group(0) for m in _STYLE_BLOCK_RE.finditer(html_body))
     elif plain_body is not None:
-        body_content  = (
+        body_content = (
             "<pre style='white-space:pre-wrap;font-family:monospace'>"
             + _html.escape(plain_body)
             + "</pre>"
@@ -363,9 +358,7 @@ def build_browser_html(raw_bytes: bytes) -> str:
         body_content += "\n".join(nested_headers)
 
     # Header block.
-    cc_row = (
-        f"<tr><td>Cc</td><td>{_html.escape(cc)}</td></tr>" if cc else ""
-    )
+    cc_row = f"<tr><td>Cc</td><td>{_html.escape(cc)}</td></tr>" if cc else ""
     header_block = f"""
 <table class="headers">
   <tr><td>From</td><td>{_html.escape(from_)}</td></tr>

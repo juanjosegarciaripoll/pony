@@ -66,21 +66,29 @@ class ContactEditScreen(Screen[Contact | None]):
             yield Input(c.last_name, id="last-name", classes="field-input")
             yield Label("Affix (comma-separated: Dr., Jr.)", classes="field-label")
             yield Input(
-                ", ".join(c.affix), id="affix", classes="field-input",
+                ", ".join(c.affix),
+                id="affix",
+                classes="field-input",
             )
             yield Label("Organization", classes="field-label")
             yield Input(c.organization, id="organization", classes="field-input")
             yield Label(
-                "Email addresses (comma-separated)", classes="field-label",
+                "Email addresses (comma-separated)",
+                classes="field-label",
             )
             yield Input(
-                ", ".join(c.emails), id="emails", classes="field-input",
+                ", ".join(c.emails),
+                id="emails",
+                classes="field-input",
             )
             yield Label(
-                "Aliases / nicknames (comma-separated)", classes="field-label",
+                "Aliases / nicknames (comma-separated)",
+                classes="field-label",
             )
             yield Input(
-                ", ".join(c.aliases), id="aliases", classes="field-input",
+                ", ".join(c.aliases),
+                id="aliases",
+                classes="field-input",
             )
             yield Label("Notes", classes="field-label")
             yield TextArea(c.notes, id="notes-area")
@@ -96,15 +104,9 @@ class ContactEditScreen(Screen[Contact | None]):
         affix = tuple(s.strip() for s in affix_raw.split(",") if s.strip())
         org = self.query_one("#organization", Input).value.strip()
         emails_raw = self.query_one("#emails", Input).value
-        emails = tuple(
-            s.strip().lower()
-            for s in emails_raw.split(",")
-            if s.strip()
-        )
+        emails = tuple(s.strip().lower() for s in emails_raw.split(",") if s.strip())
         aliases_raw = self.query_one("#aliases", Input).value
-        aliases = tuple(
-            s.strip() for s in aliases_raw.split(",") if s.strip()
-        )
+        aliases = tuple(s.strip() for s in aliases_raw.split(",") if s.strip())
         notes = self.query_one("#notes-area", TextArea).text.strip()
 
         updated = dataclasses.replace(

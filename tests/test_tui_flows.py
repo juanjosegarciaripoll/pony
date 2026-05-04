@@ -39,6 +39,7 @@ from pony.sync import ImapSyncService, SyncPlan
 from pony.tui.app import PonyApp
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
+from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.folder_panel import FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
@@ -346,12 +347,16 @@ async def test_archive_advances_view_to_remaining_message() -> None:
     credentials = PlaintextCredentialsProvider(config)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     seed_message(
-        index=index, mirror=mirrors["acct"], folder=folder,
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
         raw=_custom_plain("first-subject", body="first body"),
         message_id="<arch1@example.com>",
     )
     seed_message(
-        index=index, mirror=mirrors["acct"], folder=folder,
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
         raw=_custom_plain("second-subject", body="second body"),
         message_id="<arch2@example.com>",
     )
@@ -379,9 +384,7 @@ async def test_archive_advances_view_to_remaining_message() -> None:
         assert opened_subject not in after
         # The surviving message should be on screen.
         survivor = (
-            "second-subject"
-            if opened_subject == "first-subject"
-            else "first-subject"
+            "second-subject" if opened_subject == "first-subject" else "first-subject"
         )
         assert survivor in after
 
@@ -405,8 +408,8 @@ async def test_copy_to_folder() -> None:
     # covered by other Pilot tests and racy here on Windows.
     async with app.run_test():
         screen = app.screen
+        assert isinstance(screen, MainScreen)
         msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
-        # type: ignore[attr-defined]
         screen._copy_to_folder(msgs, folder, drafts)  # noqa: SLF001
 
     source_rows = list(index.list_folder_messages(folder=folder))
@@ -511,7 +514,7 @@ async def test_sync_nothing_to_sync_no_cancel_notification(
     when the plan was empty or the exec worker failed.
     """
     empty_plan = SyncPlan(accounts=())
-    monkeypatch.setattr(ImapSyncService, "plan", lambda self, **kwargs: empty_plan)
+    monkeypatch.setattr(ImapSyncService, "plan", lambda _self, **_kwargs: empty_plan)
 
     app, *_ = build_pony_app(label="nothing-to-sync")
 

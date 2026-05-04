@@ -19,7 +19,9 @@ from pony.tui.widgets.folder_panel import (
 
 
 def _build(
-    names: list[str], *, unread: dict[str, int] | None = None,
+    names: list[str],
+    *,
+    unread: dict[str, int] | None = None,
 ) -> tuple[FolderTreeNode, ...]:
     return build_folder_tree(
         folder_names=tuple(names),
@@ -36,18 +38,21 @@ class SplitFolderNameTest(unittest.TestCase):
 
     def test_dotted_path_splits_on_dot(self) -> None:
         self.assertEqual(
-            _split_folder_name("Archives.2026"), ("Archives", "2026"),
+            _split_folder_name("Archives.2026"),
+            ("Archives", "2026"),
         )
 
     def test_slashed_path_splits_on_slash(self) -> None:
         self.assertEqual(
-            _split_folder_name("Lists/Unions"), ("Lists", "Unions"),
+            _split_folder_name("Lists/Unions"),
+            ("Lists", "Unions"),
         )
 
     def test_first_delimiter_wins_when_both_appear(self) -> None:
         # Dot appears before slash: whole name treated as dot-delimited.
         self.assertEqual(
-            _split_folder_name("a.b/c"), ("a", "b/c"),
+            _split_folder_name("a.b/c"),
+            ("a", "b/c"),
         )
 
     def test_flat_name_returns_single_segment(self) -> None:

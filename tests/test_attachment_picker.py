@@ -12,7 +12,8 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
 
     def test_star_expands_to_full_range(self) -> None:
         self.assertEqual(
-            parse_attachment_selection("*", total=3), [1, 2, 3],
+            parse_attachment_selection("*", total=3),
+            [1, 2, 3],
         )
 
     def test_single_index(self) -> None:
@@ -20,12 +21,14 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
 
     def test_comma_list_preserves_order(self) -> None:
         self.assertEqual(
-            parse_attachment_selection("3,1,2", total=3), [3, 1, 2],
+            parse_attachment_selection("3,1,2", total=3),
+            [3, 1, 2],
         )
 
     def test_whitespace_is_tolerated(self) -> None:
         self.assertEqual(
-            parse_attachment_selection(" 1 , 3 ", total=3), [1, 3],
+            parse_attachment_selection(" 1 , 3 ", total=3),
+            [1, 3],
         )
 
     def test_empty_input_returns_none(self) -> None:

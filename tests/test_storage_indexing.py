@@ -211,12 +211,14 @@ class ScanStateFastPathTestCase(unittest.TestCase):
         # listing must be skipped — prove it by making list_messages
         # throw, and rely on the fast path to never call it.
         import pony.storage as storage_mod
+
         orig_list = storage_mod.MaildirMirrorRepository.list_messages
 
         def _boom(self, *, folder):  # noqa: ANN001, ARG001
             raise AssertionError(
                 f"list_messages called on unchanged folder {folder.folder_name!r}",
             )
+
         try:
             storage_mod.MaildirMirrorRepository.list_messages = _boom  # type: ignore[assignment,method-assign]
             result = rescan_local_account(
@@ -251,6 +253,7 @@ class ScanStateFastPathTestCase(unittest.TestCase):
         # writes onto the same tick on Windows.
         import os
         import time
+
         mirror.store_message(folder=folder, raw_message=sample_message_bytes())
         future = time.time_ns() + 1_000_000_000  # 1 s in the future
         future_sec = future / 1_000_000_000

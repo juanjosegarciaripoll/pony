@@ -78,7 +78,10 @@ class MaildirMirrorRepository(MirrorRepository):
         return filename
 
     def store_message_async(
-        self, *, folder: FolderRef, raw_message: bytes,
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
     ) -> str:
         """Generate the filename and return immediately; write in background.
 
@@ -91,7 +94,8 @@ class MaildirMirrorRepository(MirrorRepository):
         new_path = folder_path / "new" / filename
         if self._write_pool is None:
             self._write_pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="mirror-write",
+                max_workers=4,
+                thread_name_prefix="mirror-write",
             )
         future = self._write_pool.submit(new_path.write_bytes, raw_message)
         self._write_futures.append(future)
@@ -116,18 +120,25 @@ class MaildirMirrorRepository(MirrorRepository):
         return tuple(sorted(str(key) for key in maildir.keys()))  # noqa: SIM118
 
     def get_message_bytes(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> bytes:
         self._require_folder(folder)
         path = self._find_message_file(
-            folder_name=folder.folder_name, storage_key=storage_key,
+            folder_name=folder.folder_name,
+            storage_key=storage_key,
         )
         if path is None:
             raise KeyError(f"message not found: {storage_key}")
         return path.read_bytes()
 
     def _find_message_file(
-        self, *, folder_name: str, storage_key: str,
+        self,
+        *,
+        folder_name: str,
+        storage_key: str,
     ) -> Path | None:
         """Locate the Maildir file for a storage_key (handles flag suffixes).
 
@@ -164,7 +175,8 @@ class MaildirMirrorRepository(MirrorRepository):
     ) -> None:
         self._require_folder(folder)
         path = self._find_message_file(
-            folder_name=folder.folder_name, storage_key=storage_key,
+            folder_name=folder.folder_name,
+            storage_key=storage_key,
         )
         if path is None:
             raise KeyError(f"message not found: {storage_key}")
@@ -178,11 +190,15 @@ class MaildirMirrorRepository(MirrorRepository):
         path.rename(dest)
 
     def delete_message(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> None:
         self._require_folder(folder)
         path = self._find_message_file(
-            folder_name=folder.folder_name, storage_key=storage_key,
+            folder_name=folder.folder_name,
+            storage_key=storage_key,
         )
         if path is not None:
             path.unlink(missing_ok=True)
@@ -204,7 +220,8 @@ class MaildirMirrorRepository(MirrorRepository):
         if target_folder == folder.folder_name:
             return storage_key
         src = self._find_message_file(
-            folder_name=folder.folder_name, storage_key=storage_key,
+            folder_name=folder.folder_name,
+            storage_key=storage_key,
         )
         if src is None:
             raise KeyError(f"message not found: {storage_key}")
@@ -338,7 +355,10 @@ class MboxMirrorRepository(MirrorRepository):
         return tuple(sorted(str(key) for key in mbox.keys()))  # noqa: SIM118
 
     def get_message_bytes(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> bytes:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
@@ -368,7 +388,10 @@ class MboxMirrorRepository(MirrorRepository):
         mbox.flush()
 
     def delete_message(
-        self, *, folder: FolderRef, storage_key: str,
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
     ) -> None:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)

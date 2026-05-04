@@ -53,8 +53,7 @@ class ExtractAttachmentTest(unittest.TestCase):
         raw = corpus.double_attached_emails()
         rendered = render_message(raw)
         eml_indices = [
-            a.index for a in rendered.attachments
-            if a.content_type == "message/rfc822"
+            a.index for a in rendered.attachments if a.content_type == "message/rfc822"
         ]
         self.assertTrue(eml_indices, "fixture should contain attached emails")
         for idx in eml_indices:

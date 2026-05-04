@@ -80,9 +80,7 @@ class UpsertContactTests(unittest.TestCase):
 
     def test_aliases_stored(self) -> None:
         repo = _make_repo()
-        saved = repo.upsert_contact(
-            contact=_make_contact(aliases=("Ali", "Allie"))
-        )
+        saved = repo.upsert_contact(contact=_make_contact(aliases=("Ali", "Allie")))
         self.assertEqual(saved.aliases, ("Ali", "Allie"))
 
     def test_display_name_property(self) -> None:
@@ -108,14 +106,18 @@ class SearchContactsTests(unittest.TestCase):
         repo = _make_repo()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Alice", last_name="Smith",
-                emails=("alice@example.com",), message_count=10,
+                first_name="Alice",
+                last_name="Smith",
+                emails=("alice@example.com",),
+                message_count=10,
             )
         )
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Bob", last_name="Jones",
-                emails=("bob@example.com",), message_count=5,
+                first_name="Bob",
+                last_name="Jones",
+                emails=("bob@example.com",),
+                message_count=5,
                 aliases=("Bobby",),
             )
         )
@@ -158,7 +160,8 @@ class SearchContactsTests(unittest.TestCase):
         repo = _make_repo()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="María", last_name="López",
+                first_name="María",
+                last_name="López",
                 emails=("maria@example.com",),
             )
         )
@@ -170,13 +173,15 @@ class SearchContactsTests(unittest.TestCase):
         repo = _make_repo()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="María", last_name="L",
+                first_name="María",
+                last_name="L",
                 emails=("maria@example.com",),
             )
         )
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Mariano", last_name="R",
+                first_name="Mariano",
+                last_name="R",
                 emails=("mariano@example.com",),
             )
         )
@@ -188,7 +193,8 @@ class SearchContactsTests(unittest.TestCase):
         repo = _make_repo()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Juan", last_name="Garcia",
+                first_name="Juan",
+                last_name="Garcia",
                 emails=("juan.garcia@example.com",),
             )
         )
@@ -204,12 +210,12 @@ class SearchContactsTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _make_indexed_message(
-    recipients: str, cc: str = ""
-) -> IndexedMessage:
+def _make_indexed_message(recipients: str, cc: str = "") -> IndexedMessage:
     return IndexedMessage(
         message_ref=MessageRef(
-            account_name="test", folder_name="INBOX", id=0,
+            account_name="test",
+            folder_name="INBOX",
+            id=0,
         ),
         message_id="<t@t>",
         sender="sender@example.com",
@@ -283,15 +289,14 @@ class DeleteContactTests(unittest.TestCase):
         saved = repo.upsert_contact(contact=_make_contact())
         assert saved.id is not None
         repo.delete_contact(contact_id=saved.id)
-        self.assertIsNone(
-            repo.find_contact_by_email(email_address="alice@example.com")
-        )
+        self.assertIsNone(repo.find_contact_by_email(email_address="alice@example.com"))
 
     def test_delete_removes_emails_and_aliases(self) -> None:
         repo = _make_repo()
         saved = repo.upsert_contact(
             contact=_make_contact(
-                emails=("a@x.com", "b@x.com"), aliases=("Ali",),
+                emails=("a@x.com", "b@x.com"),
+                aliases=("Ali",),
             )
         )
         assert saved.id is not None
@@ -305,13 +310,17 @@ class MergeContactsTests(unittest.TestCase):
         repo = _make_repo()
         c1 = repo.upsert_contact(
             contact=_make_contact(
-                first_name="Alice", emails=("a@work.com",), message_count=3,
+                first_name="Alice",
+                emails=("a@work.com",),
+                message_count=3,
             )
         )
         c2 = repo.upsert_contact(
             contact=_make_contact(
-                first_name="Alice", last_name="S",
-                emails=("a@home.com",), message_count=7,
+                first_name="Alice",
+                last_name="S",
+                emails=("a@home.com",),
+                message_count=7,
             )
         )
         assert c1.id is not None and c2.id is not None
@@ -333,7 +342,9 @@ class MergeContactsTests(unittest.TestCase):
         )
         c2 = repo.upsert_contact(
             contact=_make_contact(
-                first_name="Bob", emails=("b@x.com",), aliases=("Bobby",),
+                first_name="Bob",
+                emails=("b@x.com",),
+                aliases=("Bobby",),
             )
         )
         assert c1.id is not None and c2.id is not None
@@ -348,17 +359,22 @@ class MergeContactsTests(unittest.TestCase):
         )
         c2 = repo.upsert_contact(
             contact=_make_contact(
-                first_name="B", emails=("b@x.com",), message_count=2,
+                first_name="B",
+                emails=("b@x.com",),
+                message_count=2,
             )
         )
         c3 = repo.upsert_contact(
             contact=_make_contact(
-                first_name="C", emails=("c@x.com",), message_count=3,
+                first_name="C",
+                emails=("c@x.com",),
+                message_count=3,
             )
         )
         assert c1.id is not None and c2.id is not None and c3.id is not None
         merged = repo.merge_contacts(
-            target_id=c1.id, source_ids=[c2.id, c3.id],
+            target_id=c1.id,
+            source_ids=[c2.id, c3.id],
         )
         self.assertEqual(len(merged.emails), 3)
         self.assertEqual(merged.message_count, 6)
@@ -454,13 +470,17 @@ class ContactsCliTests(unittest.TestCase):
         paths, repo = _cli_paths()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Test", last_name="User",
+                first_name="Test",
+                last_name="User",
                 emails=("test@example.com",),
             )
         )
 
         output = _capture(
-            run_contacts_search, paths=paths, prefix="test", limit=10,
+            run_contacts_search,
+            paths=paths,
+            prefix="test",
+            limit=10,
         )
         self.assertIn("test@example.com", output)
         self.assertIn("Test User", output)
@@ -472,7 +492,10 @@ class ContactsCliTests(unittest.TestCase):
         del repo  # unused — just need initialized DB
 
         output = _capture(
-            run_contacts_search, paths=paths, prefix="nobody", limit=10,
+            run_contacts_search,
+            paths=paths,
+            prefix="nobody",
+            limit=10,
         )
         self.assertIn("No contacts", output)
 
@@ -482,7 +505,8 @@ class ContactsCliTests(unittest.TestCase):
         paths, repo = _cli_paths()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Alice", last_name="Smith",
+                first_name="Alice",
+                last_name="Smith",
                 emails=("alice@example.com",),
                 organization="Acme",
                 aliases=("Ali",),
@@ -490,7 +514,9 @@ class ContactsCliTests(unittest.TestCase):
         )
 
         output = _capture(
-            run_contacts_show, paths=paths, email="alice@example.com",
+            run_contacts_show,
+            paths=paths,
+            email="alice@example.com",
         )
         self.assertIn("Alice Smith", output)
         self.assertIn("alice@example.com", output)
@@ -522,7 +548,8 @@ class ContactsCliTests(unittest.TestCase):
         paths, repo = _cli_paths()
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Juan", last_name="Garcia",
+                first_name="Juan",
+                last_name="Garcia",
                 emails=("juan@example.com",),
             )
         )
@@ -571,16 +598,21 @@ class ContactsCliTests(unittest.TestCase):
         del repo
         bbdb_file = paths.data_dir / "test.bbdb"
         write_bbdb(
-            [_make_contact(
-                first_name="Eve", last_name="New",
-                emails=("eve@example.com",),
-            )],
+            [
+                _make_contact(
+                    first_name="Eve",
+                    last_name="New",
+                    emails=("eve@example.com",),
+                )
+            ],
             bbdb_file,
         )
 
         output = _capture(
             run_contacts_import,
-            paths=paths, config_path=None, input_path=str(bbdb_file),
+            paths=paths,
+            config_path=None,
+            input_path=str(bbdb_file),
         )
         self.assertIn("1 new", output)
 
@@ -598,7 +630,8 @@ class ContactsCliTests(unittest.TestCase):
         # Seed an existing contact.
         repo.upsert_contact(
             contact=_make_contact(
-                first_name="Alice", last_name="Smith",
+                first_name="Alice",
+                last_name="Smith",
                 emails=("alice@example.com",),
                 aliases=("Ali",),
             )
@@ -607,17 +640,21 @@ class ContactsCliTests(unittest.TestCase):
         # Import a BBDB file that has the same email with extra info.
         bbdb_file = paths.data_dir / "merge.bbdb"
         write_bbdb(
-            [_make_contact(
-                first_name="Alice", last_name="Smith",
-                emails=("alice@example.com", "alice@work.com"),
-                organization="Acme",
-                aliases=("Allie",),
-            )],
+            [
+                _make_contact(
+                    first_name="Alice",
+                    last_name="Smith",
+                    emails=("alice@example.com", "alice@work.com"),
+                    organization="Acme",
+                    aliases=("Allie",),
+                )
+            ],
             bbdb_file,
         )
 
         created, updated = import_bbdb_contacts(
-            index=repo, bbdb_path=bbdb_file,
+            index=repo,
+            bbdb_path=bbdb_file,
         )
         self.assertEqual(created, 0)
         self.assertEqual(updated, 1)

@@ -140,7 +140,9 @@ class ImapSession:
         """Open, authenticate, and optionally compress a fresh connection."""
         logger.debug(
             "Connecting to %s:%d (ssl=%s)",
-            self._host, self._port, self._ssl,
+            self._host,
+            self._port,
+            self._ssl,
         )
         conn = IMAPClient(self._host, port=self._port, ssl=self._ssl)
         logger.debug("Logging in as %s", self._username)
@@ -161,7 +163,9 @@ class ImapSession:
     def _reconnect(self) -> None:
         """Drop the current connection and open a fresh one."""
         logger.info(
-            "Reconnecting to %s:%d", self._host, self._port,
+            "Reconnecting to %s:%d",
+            self._host,
+            self._port,
         )
         with contextlib.suppress(Exception):
             self._conn.logout()
@@ -182,10 +186,11 @@ class ImapSession:
                 if attempt == self._max_retries:
                     raise
                 logger.info(
-                    "%s: transient error (attempt %d/%d): %s"
-                    " — reconnecting",
-                    label or "IMAP", attempt,
-                    self._max_retries, exc,
+                    "%s: transient error (attempt %d/%d): %s — reconnecting",
+                    label or "IMAP",
+                    attempt,
+                    self._max_retries,
+                    exc,
                 )
                 self._reconnect()
                 time.sleep(delay)
@@ -198,6 +203,7 @@ class ImapSession:
 
     def list_folders(self) -> Sequence[str]:
         """Return all visible mailbox names."""
+
         def _do() -> Sequence[str]:
             with _imap_errors("LIST"):
                 raw = self._conn.list_folders()
@@ -207,21 +213,26 @@ class ImapSession:
                     name = name.decode(errors="replace")
                 folders.append(name)
             return folders
+
         return self._retry(_do, "LIST")
 
     def get_uid_validity(self, folder_name: str) -> int:
         """SELECT the folder and return its UIDVALIDITY."""
+
         def _do() -> int:
             self._do_select(folder_name)
             with _imap_errors(f"STATUS {folder_name!r}"):
                 info = self._conn.folder_status(
-                    folder_name, ["UIDVALIDITY"],
+                    folder_name,
+                    ["UIDVALIDITY"],
                 )
             return int(info.get(b"UIDVALIDITY", 0))
+
         return self._retry(_do, f"UIDVALIDITY {folder_name}")
 
     def folder_quick_status(self, folder_name: str) -> FolderQuickStatus:
         """Return UIDVALIDITY / UIDNEXT / MESSAGES [/ HIGHESTMODSEQ] via STATUS."""
+
         def _do() -> FolderQuickStatus:
             attrs = ["UIDVALIDITY", "UIDNEXT", "MESSAGES"]
             if b"CONDSTORE" in self._conn.capabilities():
@@ -234,10 +245,9 @@ class ImapSession:
                 uid_validity=int(info.get(b"UIDVALIDITY", 0)),
                 uidnext=int(info.get(b"UIDNEXT", 0)),
                 messages=int(info.get(b"MESSAGES", 0)),
-                highest_modseq=(
-                    int(modseq_raw) if modseq_raw is not None else None
-                ),
+                highest_modseq=(int(modseq_raw) if modseq_raw is not None else None),
             )
+
         return self._retry(_do, f"STATUS {folder_name}")
 
     def _do_select(self, folder_name: str) -> None:
@@ -258,6 +268,7 @@ class ImapSession:
         self, folder_name: str
     ) -> dict[int, tuple[str, FlagSet]]:
         """Fetch UID -> (Message-ID, flags) mapping for all messages in the folder."""
+
         def _do() -> dict[int, tuple[str, FlagSet]]:
             self._ensure_selected(folder_name)
             logger.debug(
@@ -267,26 +278,33 @@ class ImapSession:
             with _imap_errors(f"FETCH on {folder_name!r}"):
                 data = self._conn.fetch(
                     "1:*",
-                    ["FLAGS",
-                     "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]"],
+                    ["FLAGS", "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]"],
                 )
             result: dict[int, tuple[str, FlagSet]] = {}
             for uid, msg_data in data.items():
-                header_bytes = cast(bytes, msg_data.get(
-                    b"BODY[HEADER.FIELDS (MESSAGE-ID)]", b"",
-                ))
+                header_bytes = cast(
+                    bytes,
+                    msg_data.get(
+                        b"BODY[HEADER.FIELDS (MESSAGE-ID)]",
+                        b"",
+                    ),
+                )
                 mid = _extract_message_id(header_bytes)
                 raw_flags = cast(tuple[bytes, ...], msg_data.get(b"FLAGS", ()))
                 result[uid] = (mid, _parse_imap_flags(raw_flags))
             return result
+
         return self._retry(_do, f"FETCH MID {folder_name}")
 
     def fetch_flags(
-        self, folder_name: str, uids: Sequence[int],
+        self,
+        folder_name: str,
+        uids: Sequence[int],
     ) -> dict[int, FlagSet]:
         """Return current flags for the given UIDs (batched)."""
         if not uids:
             return {}
+
         def _do() -> dict[int, FlagSet]:
             self._ensure_selected(folder_name)
             result: dict[int, FlagSet] = {}
@@ -295,7 +313,8 @@ class ImapSession:
                 batch = uids[start : start + batch_size]
                 logger.debug(
                     "FETCH %d UIDs (FLAGS) on %s",
-                    len(batch), folder_name,
+                    len(batch),
+                    folder_name,
                 )
                 with _imap_errors(f"FETCH FLAGS on {folder_name!r}"):
                     data = self._conn.fetch(batch, ["FLAGS"])
@@ -303,21 +322,27 @@ class ImapSession:
                     raw_flags = cast(tuple[bytes, ...], msg_data.get(b"FLAGS", ()))
                     result[uid] = _parse_imap_flags(raw_flags)
             return result
+
         return self._retry(_do, f"FETCH FLAGS {folder_name}")
 
     def fetch_flags_changed_since(
-        self, folder_name: str, modseq: int,
+        self,
+        folder_name: str,
+        modseq: int,
     ) -> dict[int, FlagSet]:
         """CONDSTORE: fetch flags for messages changed since *modseq*."""
+
         def _do() -> dict[int, FlagSet]:
             self._ensure_selected(folder_name)
             logger.debug(
                 "FETCH all (FLAGS) CHANGEDSINCE %d on %s",
-                modseq, folder_name,
+                modseq,
+                folder_name,
             )
             with _imap_errors(f"FETCH CHANGEDSINCE on {folder_name!r}"):
                 data = self._conn.fetch(
-                    "1:*", ["FLAGS"],
+                    "1:*",
+                    ["FLAGS"],
                     modifiers=[f"CHANGEDSINCE {modseq}"],
                 )
             result: dict[int, FlagSet] = {}
@@ -325,6 +350,7 @@ class ImapSession:
                 raw_flags = cast(tuple[bytes, ...], msg_data.get(b"FLAGS", ()))
                 result[uid] = _parse_imap_flags(raw_flags)
             return result
+
         return self._retry(_do, f"FETCH CHANGEDSINCE {folder_name}")
 
     def fetch_message_bytes(self, folder_name: str, uid: int) -> bytes:
@@ -337,11 +363,14 @@ class ImapSession:
         return result[uid]
 
     def fetch_messages_batch(
-        self, folder_name: str, uids: Sequence[int],
+        self,
+        folder_name: str,
+        uids: Sequence[int],
     ) -> dict[int, bytes]:
         """Fetch full RFC 5322 messages for multiple UIDs (batched)."""
         if not uids:
             return {}
+
         def _do() -> dict[int, bytes]:
             self._ensure_selected(folder_name)
             result: dict[int, bytes] = {}
@@ -350,7 +379,8 @@ class ImapSession:
                 batch = uids[start : start + batch_size]
                 logger.debug(
                     "FETCH %d msgs (RFC822) on %s",
-                    len(batch), folder_name,
+                    len(batch),
+                    folder_name,
                 )
                 with _imap_errors(
                     f"FETCH RFC822 on {folder_name!r}",
@@ -361,6 +391,7 @@ class ImapSession:
                     if isinstance(body, bytes) and body:
                         result[uid] = body
             return result
+
         return self._retry(_do, f"FETCH RFC822 {folder_name}")
 
     # ------------------------------------------------------------------
@@ -376,14 +407,18 @@ class ImapSession:
     ) -> None:
         """Replace flags on the server (absolute STORE)."""
         flag_list = _format_imap_flags(flags, extra_imap_flags)
+
         def _do() -> None:
             self._ensure_selected(folder_name)
             logger.debug(
-                "STORE %d FLAGS %s on %s", uid, flag_list,
+                "STORE %d FLAGS %s on %s",
+                uid,
+                flag_list,
                 folder_name,
             )
             with _imap_errors(f"STORE on {folder_name!r}"):
                 self._conn.set_flags([uid], flag_list, silent=True)
+
         self._retry(_do, f"STORE {folder_name}")
 
     def append_message(
@@ -401,48 +436,63 @@ class ImapSession:
         scan — correct but more I/O.
         """
         flag_list = _format_imap_flags(flags, extra_imap_flags)
+
         def _do() -> int | None:
             logger.debug(
                 "APPEND to %s FLAGS %s (%d bytes)",
-                folder_name, flag_list, len(raw_message),
+                folder_name,
+                flag_list,
+                len(raw_message),
             )
             with _imap_errors(f"APPEND to {folder_name!r}"):
                 response = self._conn.append(
-                    folder_name, raw_message, flag_list,
+                    folder_name,
+                    raw_message,
+                    flag_list,
                 )
             return _parse_appenduid(response)
+
         return self._retry(_do, f"APPEND {folder_name}")
 
     def mark_deleted(self, folder_name: str, uid: int) -> None:
         """Set \\Deleted on one message."""
+
         def _do() -> None:
             self._ensure_selected(folder_name)
             logger.debug("DELETE %d on %s", uid, folder_name)
             with _imap_errors(f"DELETE on {folder_name!r}"):
                 self._conn.delete_messages([uid])
+
         self._retry(_do, f"DELETE {folder_name}")
 
     def expunge(self, folder_name: str) -> None:
         """Expunge all \\Deleted messages in the given folder."""
+
         def _do() -> None:
             self._ensure_selected(folder_name)
             logger.debug("EXPUNGE on %s", folder_name)
             with _imap_errors(f"EXPUNGE on {folder_name!r}"):
                 self._conn.expunge()
+
         self._retry(_do, f"EXPUNGE {folder_name}")
 
     def create_folder(self, folder_name: str) -> None:
         """Create a folder on the server (idempotent — no-op if it exists)."""
+
         def _do() -> None:
             if self._conn.folder_exists(folder_name):
                 return
             logger.debug("CREATE %s", folder_name)
             with _imap_errors(f"CREATE {folder_name!r}"):
                 self._conn.create_folder(folder_name)
+
         self._retry(_do, f"CREATE {folder_name}")
 
     def move_message(
-        self, source_folder: str, uid: int, target_folder: str,
+        self,
+        source_folder: str,
+        uid: int,
+        target_folder: str,
     ) -> int | None:
         """Move one message and return the new UID (or ``None``).
 
@@ -457,12 +507,15 @@ class ImapSession:
         ``None`` when the server omits it.  Callers without a new UID
         wait for the next sync to discover it via the per-folder scan.
         """
+
         def _do() -> int | None:
             self._ensure_selected(source_folder)
             if b"MOVE" in self._conn.capabilities():
                 logger.debug(
                     "UID MOVE %d from %s to %s",
-                    uid, source_folder, target_folder,
+                    uid,
+                    source_folder,
+                    target_folder,
                 )
                 with _imap_errors(
                     f"MOVE on {source_folder!r} -> {target_folder!r}",
@@ -471,7 +524,9 @@ class ImapSession:
                 return _parse_copyuid(response)
             logger.debug(
                 "UID COPY %d from %s to %s (MOVE not supported)",
-                uid, source_folder, target_folder,
+                uid,
+                source_folder,
+                target_folder,
             )
             with _imap_errors(
                 f"COPY on {source_folder!r} -> {target_folder!r}",
@@ -492,21 +547,26 @@ class ImapSession:
 
     def get_folder_status(self, folder_name: str) -> tuple[int, int]:
         """Return ``(message_count, unseen_count)`` via IMAP STATUS."""
+
         def _do() -> tuple[int, int]:
             logger.debug("STATUS %s (MESSAGES UNSEEN)", folder_name)
             with _imap_errors(f"STATUS {folder_name!r}"):
                 info = self._conn.folder_status(
-                    folder_name, ["MESSAGES", "UNSEEN"],
+                    folder_name,
+                    ["MESSAGES", "UNSEEN"],
                 )
             messages = int(info.get(b"MESSAGES", 0))
             unseen = int(info.get(b"UNSEEN", 0))
             return messages, unseen
+
         return self._retry(_do, f"STATUS {folder_name}")
 
     def fetch_last_message_date(
-        self, folder_name: str,
+        self,
+        folder_name: str,
     ) -> str | None:
         """Return the INTERNALDATE of the last message, or None."""
+
         def _do() -> str | None:
             self._do_select(folder_name)
             try:
@@ -518,6 +578,7 @@ class ImapSession:
                 if date is not None:
                     return str(date)
             return None
+
         return self._retry(_do, f"INTERNALDATE {folder_name}")
 
     # ------------------------------------------------------------------

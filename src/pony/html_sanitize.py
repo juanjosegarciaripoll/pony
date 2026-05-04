@@ -17,16 +17,20 @@ import re
 # text.
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _HEAD_RE = re.compile(
-    r"<head[^>]*>.*?</head>", re.IGNORECASE | re.DOTALL,
+    r"<head[^>]*>.*?</head>",
+    re.IGNORECASE | re.DOTALL,
 )
 _STYLE_RE = re.compile(
-    r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL,
+    r"<style[^>]*>.*?</style>",
+    re.IGNORECASE | re.DOTALL,
 )
 _SCRIPT_RE = re.compile(
-    r"<script[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL,
+    r"<script[^>]*>.*?</script>",
+    re.IGNORECASE | re.DOTALL,
 )
 _NOSCRIPT_RE = re.compile(
-    r"<noscript[^>]*>.*?</noscript>", re.IGNORECASE | re.DOTALL,
+    r"<noscript[^>]*>.*?</noscript>",
+    re.IGNORECASE | re.DOTALL,
 )
 
 _TAG_RE = re.compile(r"<[^>]+>")

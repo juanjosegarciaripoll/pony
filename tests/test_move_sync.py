@@ -51,7 +51,8 @@ def _simulate_tui_move_same_account(
         target_folder=target.folder_name,
     )
     [source_row] = [
-        m for m in index.list_folder_messages(folder=source)
+        m
+        for m in index.list_folder_messages(folder=source)
         if m.storage_key == source_storage_key
     ]
     # Same-account move: keep the row, mark PENDING_MOVE.
@@ -89,13 +90,15 @@ def _simulate_tui_move_cross_account(
     Returns the Message-ID of the new target-side row (which for
     cross-account moves must equal the source MID)."""
     raw = source_mirror.get_message_bytes(
-        folder=source, storage_key=source_storage_key,
+        folder=source,
+        storage_key=source_storage_key,
     )
     new_raw, new_mid = copy_message_bytes(raw, rewrite_message_id=False)
     new_key = target_mirror.store_message(folder=target, raw_message=new_raw)
 
     [source_row] = [
-        m for m in index.list_folder_messages(folder=source)
+        m
+        for m in index.list_folder_messages(folder=source)
         if m.storage_key == source_storage_key
     ]
     target_row = dataclasses.replace(
@@ -140,7 +143,8 @@ class SameAccountMoveTest(unittest.TestCase):
         tmp = TMP_ROOT / "move-sync-one" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
         mirror = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror",
+            account_name="personal",
+            root_dir=tmp / "mirror",
         )
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
@@ -171,7 +175,8 @@ class SameAccountMoveTest(unittest.TestCase):
             return mirror
 
         def _session_factory(
-            _acc: AccountConfig, _pw: str,
+            _acc: AccountConfig,
+            _pw: str,
         ) -> ImapClientSession:
             return session
 
@@ -212,12 +217,10 @@ class SameAccountMoveTest(unittest.TestCase):
         [(filed_mid, _, _)] = list(session.folders["Filed"].values())
         self.assertEqual(filed_mid, "<orig-move-same@example.com>")
         # Sync used UID MOVE, not APPEND.
-        self.assertTrue(any(
-            call.startswith("move:INBOX->Filed") for call in session.call_log
-        ))
-        self.assertFalse(any(
-            call.startswith("append:") for call in session.call_log
-        ))
+        self.assertTrue(
+            any(call.startswith("move:INBOX->Filed") for call in session.call_log)
+        )
+        self.assertFalse(any(call.startswith("append:") for call in session.call_log))
 
 
 class CrossAccountMoveTest(unittest.TestCase):
@@ -234,13 +237,16 @@ class CrossAccountMoveTest(unittest.TestCase):
         tmp = TMP_ROOT / "move-sync-two" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
         mirror_a = MaildirMirrorRepository(
-            account_name="work", root_dir=tmp / "mirror-a",
+            account_name="work",
+            root_dir=tmp / "mirror-a",
         )
         mirror_b = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror-b",
+            account_name="personal",
+            root_dir=tmp / "mirror-b",
         )
         mirrors: dict[str, MaildirMirrorRepository] = {
-            "work": mirror_a, "personal": mirror_b,
+            "work": mirror_a,
+            "personal": mirror_b,
         }
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
@@ -267,9 +273,11 @@ class CrossAccountMoveTest(unittest.TestCase):
 
         raw = _make_raw_message("Cross move", "<orig-move-cross@example.com>")
         session_work = FakeImapSession(
-            folders={"INBOX": {
-                1: ("<orig-move-cross@example.com>", frozenset(), raw),
-            }},
+            folders={
+                "INBOX": {
+                    1: ("<orig-move-cross@example.com>", frozenset(), raw),
+                }
+            },
         )
         session_personal = FakeImapSession(folders={"INBOX": {}})
         sessions = {"work": session_work, "personal": session_personal}
@@ -282,7 +290,8 @@ class CrossAccountMoveTest(unittest.TestCase):
             return mirrors[acc.name]
 
         def _session_factory(
-            acc: AccountConfig, _pw: str,
+            acc: AccountConfig,
+            _pw: str,
         ) -> ImapClientSession:
             return sessions[acc.name]
 
@@ -325,7 +334,7 @@ class CrossAccountMoveTest(unittest.TestCase):
         )
         self.assertEqual(personal_mid, "<orig-move-cross@example.com>")
         # And the wire-protocol calls happened on the right sessions.
-        self.assertTrue(any(
-            call == "append:INBOX" for call in sessions["personal"].call_log
-        ))
+        self.assertTrue(
+            any(call == "append:INBOX" for call in sessions["personal"].call_log)
+        )
         self.assertIn(1, sessions["work"].deleted_uids)

@@ -53,6 +53,7 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_folders_defaults_to_empty_policy(self) -> None:
         from pony.domain import AccountConfig
+
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
         config = parse_config(sample_config(), base_dir=base_dir)
@@ -62,6 +63,7 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_folders_parsed_from_dict(self) -> None:
         from pony.domain import AccountConfig
+
         data = sample_config()
         account = data["accounts"][0]  # type: ignore[index]
         account["folders"] = {
@@ -234,6 +236,7 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_imap_account_can_send(self) -> None:
         from pony.domain import AccountConfig
+
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
         config = parse_config(sample_config(), base_dir=base_dir)
@@ -261,6 +264,7 @@ class ConfigParsingTestCase(unittest.TestCase):
     def test_imap_account_default_when_type_absent(self) -> None:
         """Existing configs without account_type should still parse as IMAP accounts."""
         from pony.domain import AccountConfig
+
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
         config = parse_config(sample_config(), base_dir=base_dir)

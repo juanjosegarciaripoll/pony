@@ -60,7 +60,8 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         self.assertEqual(listed, (storage_key,))
 
         payload = repository.get_message_bytes(
-            folder=folder, storage_key=storage_key,
+            folder=folder,
+            storage_key=storage_key,
         )
         self.assertIn(b"Subject: hello", payload)
 
@@ -85,7 +86,8 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         updated_keys = repository.list_messages(folder=folder)
         self.assertEqual(len(updated_keys), 1)
         payload = repository.get_message_bytes(
-            folder=folder, storage_key=updated_keys[0],
+            folder=folder,
+            storage_key=updated_keys[0],
         )
         self.assertIn(b"Subject: flag-test", payload)
 
@@ -93,21 +95,26 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         repository = self.make_repository()
         inbox = FolderRef(account_name=self.account_name, folder_name="INBOX")
         storage_key = repository.store_message(
-            folder=inbox, raw_message=sample_message_bytes("to-archive"),
+            folder=inbox,
+            raw_message=sample_message_bytes("to-archive"),
         )
 
         new_key = repository.move_message_to_folder(
-            folder=inbox, storage_key=storage_key, target_folder="Archive",
+            folder=inbox,
+            storage_key=storage_key,
+            target_folder="Archive",
         )
 
         self.assertEqual(repository.list_messages(folder=inbox), ())
         archive = FolderRef(
-            account_name=self.account_name, folder_name="Archive",
+            account_name=self.account_name,
+            folder_name="Archive",
         )
         self.assertEqual(len(repository.list_messages(folder=archive)), 1)
 
         payload = repository.get_message_bytes(
-            folder=archive, storage_key=new_key,
+            folder=archive,
+            storage_key=new_key,
         )
         self.assertIn(b"Subject: to-archive", payload)
 
@@ -123,24 +130,30 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         repository = self.make_repository()
         inbox = FolderRef(account_name=self.account_name, folder_name="INBOX")
         storage_key = repository.store_message(
-            folder=inbox, raw_message=sample_message_bytes("moving"),
+            folder=inbox,
+            raw_message=sample_message_bytes("moving"),
         )
         archive = FolderRef(
-            account_name=self.account_name, folder_name="Archive",
+            account_name=self.account_name,
+            folder_name="Archive",
         )
         new_key = repository.move_message_to_folder(
-            folder=inbox, storage_key=storage_key, target_folder="Archive",
+            folder=inbox,
+            storage_key=storage_key,
+            target_folder="Archive",
         )
 
         payload = repository.get_message_bytes(
-            folder=archive, storage_key=new_key,
+            folder=archive,
+            storage_key=new_key,
         )
         self.assertIn(b"Subject: moving", payload)
 
         # Looking in the old folder for the old key must fail.
         with self.assertRaises(KeyError):
             repository.get_message_bytes(
-                folder=inbox, storage_key=storage_key,
+                folder=inbox,
+                storage_key=storage_key,
             )
 
     def test_retrieval_uses_storage_key_not_rfc5322_id(self) -> None:
@@ -163,7 +176,8 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
             "storage_key must not be the RFC 5322 Message-ID header",
         )
         payload = repository.get_message_bytes(
-            folder=folder, storage_key=storage_key,
+            folder=folder,
+            storage_key=storage_key,
         )
         self.assertIn(rfc5322_id.encode(), payload)
 
@@ -171,10 +185,13 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
         repository = self.make_repository()
         inbox = FolderRef(account_name=self.account_name, folder_name="INBOX")
         storage_key = repository.store_message(
-            folder=inbox, raw_message=sample_message_bytes("stay"),
+            folder=inbox,
+            raw_message=sample_message_bytes("stay"),
         )
         result = repository.move_message_to_folder(
-            folder=inbox, storage_key=storage_key, target_folder="INBOX",
+            folder=inbox,
+            storage_key=storage_key,
+            target_folder="INBOX",
         )
         self.assertEqual(result, storage_key)
         self.assertEqual(len(repository.list_messages(folder=inbox)), 1)
@@ -182,24 +199,33 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
     def test_create_folder_makes_empty_folder_visible(self) -> None:
         repository = self.make_repository()
         repository.create_folder(
-            account_name=self.account_name, folder_name="Projects",
-        )
-        names = [f.folder_name for f in repository.list_folders(
             account_name=self.account_name,
-        )]
+            folder_name="Projects",
+        )
+        names = [
+            f.folder_name
+            for f in repository.list_folders(
+                account_name=self.account_name,
+            )
+        ]
         self.assertIn("Projects", names)
 
     def test_create_folder_is_idempotent(self) -> None:
         repository = self.make_repository()
         repository.create_folder(
-            account_name=self.account_name, folder_name="Archive",
+            account_name=self.account_name,
+            folder_name="Archive",
         )
         repository.create_folder(
-            account_name=self.account_name, folder_name="Archive",
-        )
-        names = [f.folder_name for f in repository.list_folders(
             account_name=self.account_name,
-        )]
+            folder_name="Archive",
+        )
+        names = [
+            f.folder_name
+            for f in repository.list_folders(
+                account_name=self.account_name,
+            )
+        ]
         self.assertEqual(names.count("Archive"), 1)
 
 

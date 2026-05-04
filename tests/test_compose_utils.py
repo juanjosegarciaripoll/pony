@@ -220,9 +220,7 @@ class BuildEmailMessageTest(unittest.TestCase):
         paths: list[Path] = []
         try:
             for i in range(3):
-                with tempfile.NamedTemporaryFile(
-                    suffix=f"_{i}.bin", delete=False
-                ) as f:
+                with tempfile.NamedTemporaryFile(suffix=f"_{i}.bin", delete=False) as f:
                     f.write(b"x")
                     paths.append(Path(f.name))
             msg = self._build(attachment_paths=paths)
@@ -233,7 +231,9 @@ class BuildEmailMessageTest(unittest.TestCase):
 
 
 def _make_account(
-    *, smtp: SmtpConfig | None = None, **kwargs: object,
+    *,
+    smtp: SmtpConfig | None = None,
+    **kwargs: object,
 ) -> AccountConfig:
     base = AccountConfig(
         name="test",
@@ -268,7 +268,9 @@ class SmtpSenderTest(unittest.TestCase):
         mock = _mock_smtp()
         with patch("smtplib.SMTP_SSL", return_value=mock) as smtp_ssl_cls:
             send_message(
-                smtp=smtp, username="alice", password="secret",
+                smtp=smtp,
+                username="alice",
+                password="secret",
                 msg=EmailMessage(),
             )
             smtp_ssl_cls.assert_called_once_with("smtp.example.com", 465)
@@ -280,7 +282,9 @@ class SmtpSenderTest(unittest.TestCase):
         mock = _mock_smtp()
         with patch("smtplib.SMTP", return_value=mock):
             send_message(
-                smtp=smtp, username="alice", password="secret",
+                smtp=smtp,
+                username="alice",
+                password="secret",
                 msg=EmailMessage(),
             )
             mock.ehlo.assert_called()
@@ -296,7 +300,9 @@ class SmtpSenderTest(unittest.TestCase):
             self.assertRaises(SMTPError),
         ):
             send_message(
-                smtp=smtp, username="alice", password="secret",
+                smtp=smtp,
+                username="alice",
+                password="secret",
                 msg=EmailMessage(),
             )
 

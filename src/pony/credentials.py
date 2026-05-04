@@ -44,9 +44,7 @@ class PlaintextCredentialsProvider:
         from .domain import AccountConfig
 
         self._by_name = {
-            a.name: a.password
-            for a in config.accounts
-            if isinstance(a, AccountConfig)
+            a.name: a.password for a in config.accounts if isinstance(a, AccountConfig)
         }
 
     def get_password(self, *, account_name: str) -> str:

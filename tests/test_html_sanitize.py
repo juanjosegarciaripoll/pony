@@ -89,9 +89,7 @@ class HtmlToPreviewTextTest(unittest.TestCase):
         )
 
     def test_style_content_stripped(self) -> None:
-        out = html_to_preview_text(
-            "<style>.x{color:red}</style><p>Hi</p>"
-        )
+        out = html_to_preview_text("<style>.x{color:red}</style><p>Hi</p>")
         self.assertEqual(out, "Hi")
 
     def test_conditional_comment_stripped(self) -> None:
@@ -109,9 +107,7 @@ class HtmlToPreviewTextTest(unittest.TestCase):
         self.assertNotIn("&#8217;", out)
 
     def test_whitespace_collapsed(self) -> None:
-        out = html_to_preview_text(
-            "<p>one</p>   <p>two</p>\n\n<p>three</p>"
-        )
+        out = html_to_preview_text("<p>one</p>   <p>two</p>\n\n<p>three</p>")
         self.assertEqual(out, "one two three")
 
     def test_empty_input(self) -> None:

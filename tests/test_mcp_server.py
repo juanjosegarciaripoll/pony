@@ -32,7 +32,8 @@ class AttachmentToDictTest(unittest.TestCase):
         self.assertEqual(result["content_type"], "application/pdf")
         self.assertEqual(result["size_bytes"], 5)
         self.assertEqual(
-            base64.b64decode(result["data_base64"]), b"%PDF-",
+            base64.b64decode(result["data_base64"]),
+            b"%PDF-",
         )
         # No `text` field for non-text content types — clients must
         # decode data_base64 themselves (or use a suitable reader).
@@ -49,7 +50,8 @@ class AttachmentToDictTest(unittest.TestCase):
         self.assertEqual(result["text"], "hello world")
         # Base64 is still present as the canonical, lossless form.
         self.assertEqual(
-            base64.b64decode(result["data_base64"]), b"hello world",
+            base64.b64decode(result["data_base64"]),
+            b"hello world",
         )
 
     def test_text_attachment_decodes_utf8(self) -> None:

@@ -127,7 +127,8 @@ class CliTestCase(unittest.TestCase):
             raw = html_msg.as_bytes()
 
             mirror = MaildirMirrorRepository(
-                account_name=account.name, root_dir=account.mirror.path,
+                account_name=account.name,
+                root_dir=account.mirror.path,
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
             storage_key = mirror.store_message(folder=folder, raw_message=raw)
@@ -135,11 +136,15 @@ class CliTestCase(unittest.TestCase):
             # pre-fix bug (CSS text leaked into the preview).
             projected = project_rfc822_message(
                 message_ref=MessageRef(
-                    account_name=account.name, folder_name="INBOX", id=0,
+                    account_name=account.name,
+                    folder_name="INBOX",
+                    id=0,
                 ),
-                raw_message=raw, storage_key=storage_key,
+                raw_message=raw,
+                storage_key=storage_key,
             )
             import dataclasses
+
             stale = dataclasses.replace(
                 projected,
                 body_preview=".x{color:red} Real body text",
@@ -187,17 +192,22 @@ class CliTestCase(unittest.TestCase):
             raw = msg.as_bytes()
 
             mirror = MaildirMirrorRepository(
-                account_name=account.name, root_dir=account.mirror.path,
+                account_name=account.name,
+                root_dir=account.mirror.path,
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
             storage_key = mirror.store_message(folder=folder, raw_message=raw)
             projected = project_rfc822_message(
                 message_ref=MessageRef(
-                    account_name=account.name, folder_name="INBOX", id=0,
+                    account_name=account.name,
+                    folder_name="INBOX",
+                    id=0,
                 ),
-                raw_message=raw, storage_key=storage_key,
+                raw_message=raw,
+                storage_key=storage_key,
             )
             import dataclasses
+
             with_sync_state = dataclasses.replace(
                 projected,
                 uid=4242,
@@ -232,7 +242,9 @@ class CliTestCase(unittest.TestCase):
     def test_folder_list_shows_counts_and_sync_status(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:
             message_ref = _seed_one_message(
-                config_path, subject="Folder list probe", body="hello",
+                config_path,
+                subject="Folder list probe",
+                body="hello",
             )
             output = run_cli("--config", str(config_path), "folder", "list")
         self.assertIn("personal:", output)
@@ -245,18 +257,26 @@ class CliTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             with self.assertRaises(SystemExit) as ctx:
                 run_cli(
-                    "--config", str(config_path),
-                    "folder", "list", "nonexistent",
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "list",
+                    "nonexistent",
                 )
             self.assertIn("nonexistent", str(ctx.exception))
 
     def test_message_get_prints_metadata(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:
             message_ref = _seed_one_message(
-                config_path, subject="Metadata probe", body="body-text",
+                config_path,
+                subject="Metadata probe",
+                body="body-text",
             )
             output = run_cli(
-                "--config", str(config_path), "message", "get",
+                "--config",
+                str(config_path),
+                "message",
+                "get",
                 message_ref.account_name,
                 message_ref.folder_name,
                 message_ref.rfc5322_id,
@@ -272,8 +292,13 @@ class CliTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             with self.assertRaises(SystemExit) as ctx:
                 run_cli(
-                    "--config", str(config_path), "message", "get",
-                    "personal", "INBOX", "does-not-exist",
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "get",
+                    "personal",
+                    "INBOX",
+                    "does-not-exist",
                 )
             self.assertIn("not found", str(ctx.exception).lower())
 
@@ -285,7 +310,10 @@ class CliTestCase(unittest.TestCase):
                 body="This is the actual body text.",
             )
             output = run_cli(
-                "--config", str(config_path), "message", "body",
+                "--config",
+                str(config_path),
+                "message",
+                "body",
                 message_ref.account_name,
                 message_ref.folder_name,
                 message_ref.rfc5322_id,
@@ -297,11 +325,17 @@ class CliTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             with self.assertRaises(SystemExit) as ctx:
                 run_cli(
-                    "--config", str(config_path), "message", "body",
-                    "personal", "INBOX", "does-not-exist",
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "body",
+                    "personal",
+                    "INBOX",
+                    "does-not-exist",
                 )
             self.assertIn(
-                "not found", str(ctx.exception).lower(),
+                "not found",
+                str(ctx.exception).lower(),
             )
 
     def test_message_get_lists_attachments_individually(self) -> None:
@@ -311,8 +345,13 @@ class CliTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             ref = _seed_message_with_attachments(config_path)
             output = run_cli(
-                "--config", str(config_path), "message", "get",
-                ref.account_name, ref.folder_name, ref.rfc5322_id,
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
             )
         self.assertIn("Attach.:    yes (1)", output)
         self.assertIn("1. q1-report.pdf", output)
@@ -320,15 +359,25 @@ class CliTestCase(unittest.TestCase):
 
     def test_message_attachment_writes_file_to_cwd(self) -> None:
         import tempfile
-        with isolated_app_env(), temporary_config() as config_path, \
-                tempfile.TemporaryDirectory() as tmpdir:
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            tempfile.TemporaryDirectory() as tmpdir,
+        ):
             ref = _seed_message_with_attachments(config_path)
             prev_cwd = os.getcwd()
             os.chdir(tmpdir)
             try:
                 output = run_cli(
-                    "--config", str(config_path), "message", "attachment",
-                    ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "attachment",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                    "1",
                 )
             finally:
                 os.chdir(prev_cwd)
@@ -339,16 +388,27 @@ class CliTestCase(unittest.TestCase):
 
     def test_message_attachment_refuses_overwrite_without_force(self) -> None:
         import tempfile
-        with isolated_app_env(), temporary_config() as config_path, \
-                tempfile.TemporaryDirectory() as tmpdir:
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            tempfile.TemporaryDirectory() as tmpdir,
+        ):
             ref = _seed_message_with_attachments(config_path)
             out_path = Path(tmpdir) / "out.bin"
             out_path.write_bytes(b"untouched")
             with self.assertRaises(SystemExit) as ctx:
                 run_cli(
-                    "--config", str(config_path), "message", "attachment",
-                    ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
-                    "-o", str(out_path),
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "attachment",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                    "1",
+                    "-o",
+                    str(out_path),
                 )
             self.assertIn("Refusing to overwrite", str(ctx.exception))
             # File was not clobbered.
@@ -356,15 +416,27 @@ class CliTestCase(unittest.TestCase):
 
     def test_message_attachment_force_overwrites(self) -> None:
         import tempfile
-        with isolated_app_env(), temporary_config() as config_path, \
-                tempfile.TemporaryDirectory() as tmpdir:
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            tempfile.TemporaryDirectory() as tmpdir,
+        ):
             ref = _seed_message_with_attachments(config_path)
             out_path = Path(tmpdir) / "out.bin"
             out_path.write_bytes(b"untouched")
             run_cli(
-                "--config", str(config_path), "message", "attachment",
-                ref.account_name, ref.folder_name, ref.rfc5322_id, "1",
-                "-o", str(out_path), "--force",
+                "--config",
+                str(config_path),
+                "message",
+                "attachment",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+                "1",
+                "-o",
+                str(out_path),
+                "--force",
             )
             self.assertTrue(out_path.read_bytes().startswith(b"%PDF"))
 
@@ -373,8 +445,14 @@ class CliTestCase(unittest.TestCase):
             ref = _seed_message_with_attachments(config_path)
             with self.assertRaises(SystemExit) as ctx:
                 run_cli(
-                    "--config", str(config_path), "message", "attachment",
-                    ref.account_name, ref.folder_name, ref.rfc5322_id, "99",
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "attachment",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                    "99",
                 )
             self.assertIn("not found", str(ctx.exception).lower())
 
@@ -383,7 +461,8 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
     """The CLI must explain, prompt (default N), and only reset on y/yes."""
 
     def _seed_legacy_db_and_mirror(
-        self, config_path: Path,
+        self,
+        config_path: Path,
     ) -> tuple[Path, Path]:
         """Create an out-of-date index DB and a mirror directory to delete."""
         import sqlite3
@@ -450,7 +529,10 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
             sys.stdin = io.StringIO("\n")  # empty line → default N
             try:
                 rc = run_cli_ret(
-                    "--config", str(config_path), "search", "anything",
+                    "--config",
+                    str(config_path),
+                    "search",
+                    "anything",
                 )
             finally:
                 sys.stdin = stdin_backup
@@ -470,7 +552,10 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
             sys.stdin = io.StringIO("y\n")
             try:
                 captured, rc = run_cli_capture(
-                    "--config", str(config_path), "search", "anything",
+                    "--config",
+                    str(config_path),
+                    "search",
+                    "anything",
                 )
             finally:
                 sys.stdin = stdin_backup
@@ -490,7 +575,10 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
 
 
 def _seed_one_message(
-    config_path: Path, *, subject: str, body: str,
+    config_path: Path,
+    *,
+    subject: str,
+    body: str,
 ):
     """Seed one real maildir message + matching index row for the personal account.
 
@@ -524,16 +612,20 @@ def _seed_one_message(
     raw = msg.as_bytes()
 
     mirror = MaildirMirrorRepository(
-        account_name=account.name, root_dir=account.mirror.path,
+        account_name=account.name,
+        root_dir=account.mirror.path,
     )
     folder = FolderRef(account_name=account.name, folder_name="INBOX")
     storage_key = mirror.store_message(folder=folder, raw_message=raw)
 
     projected = project_rfc822_message(
         message_ref=MessageRef(
-            account_name=account.name, folder_name="INBOX", id=0,
+            account_name=account.name,
+            folder_name="INBOX",
+            id=0,
         ),
-        raw_message=raw, storage_key=storage_key,
+        raw_message=raw,
+        storage_key=storage_key,
     )
     stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -572,16 +664,20 @@ def _seed_message_with_attachments(config_path: Path):
 
     raw = corpus.multipart_mixed_attachment()
     mirror = MaildirMirrorRepository(
-        account_name=account.name, root_dir=account.mirror.path,
+        account_name=account.name,
+        root_dir=account.mirror.path,
     )
     folder = FolderRef(account_name=account.name, folder_name="INBOX")
     storage_key = mirror.store_message(folder=folder, raw_message=raw)
 
     projected = project_rfc822_message(
         message_ref=MessageRef(
-            account_name=account.name, folder_name="INBOX", id=0,
+            account_name=account.name,
+            folder_name="INBOX",
+            id=0,
         ),
-        raw_message=raw, storage_key=storage_key,
+        raw_message=raw,
+        storage_key=storage_key,
     )
     stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
     index = SqliteIndexRepository(database_path=paths.index_db_file)

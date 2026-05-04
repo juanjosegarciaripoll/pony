@@ -70,8 +70,7 @@ class FakeImapSession:
         # Initialize one past the highest seeded UID so fast-path STATUS
         # compares correctly after an initial sync.
         self._uidnext: dict[str, int] = {
-            name: max(f.keys(), default=0) + 1
-            for name, f in folders.items()
+            name: max(f.keys(), default=0) + 1 for name, f in folders.items()
         }
         # HIGHESTMODSEQ per folder + per-(folder,uid) MODSEQ — advanced
         # on every mutation observable through IMAP (APPEND, STORE,
@@ -107,8 +106,7 @@ class FakeImapSession:
             uidnext=self._uidnext.get(folder_name, 1),
             messages=len(folder),
             highest_modseq=(
-                self._highest_modseq.get(folder_name, 0)
-                if self.condstore else None
+                self._highest_modseq.get(folder_name, 0) if self.condstore else None
             ),
         )
 
@@ -134,7 +132,9 @@ class FakeImapSession:
         return result
 
     def fetch_flags_changed_since(
-        self, folder_name: str, modseq: int,
+        self,
+        folder_name: str,
+        modseq: int,
     ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:
         self.changedsince_count += 1
         folder = self.folders.get(folder_name, {})
@@ -146,12 +146,12 @@ class FakeImapSession:
         return result
 
     def fetch_messages_batch(
-        self, folder_name: str, uids: Sequence[int],
+        self,
+        folder_name: str,
+        uids: Sequence[int],
     ) -> dict[int, bytes]:
         folder = self.folders.get(folder_name, {})
-        return {
-            uid: folder[uid][2] for uid in uids if uid in folder
-        }
+        return {uid: folder[uid][2] for uid in uids if uid in folder}
 
     def fetch_message_bytes(self, folder_name: str, uid: int) -> bytes:
         folder = self.folders.get(folder_name, {})
@@ -185,9 +185,7 @@ class FakeImapSession:
         self.call_log.append(f"append:{folder_name}")
         # Mirror real IMAP: APPEND to a non-existent mailbox is an error.
         if folder_name not in self.folders:
-            raise OSError(
-                f"APPEND target folder does not exist: {folder_name!r}"
-            )
+            raise OSError(f"APPEND target folder does not exist: {folder_name!r}")
         folder = self.folders[folder_name]
         new_uid = max(folder.keys(), default=0) + 1000
         # Parse Message-ID from raw for test assertions.
@@ -199,7 +197,8 @@ class FakeImapSession:
         folder[new_uid] = (mid, flags, raw_message)
         self.extra_flags[(folder_name, new_uid)] = extra_imap_flags
         self._uidnext[folder_name] = max(
-            self._uidnext.get(folder_name, 1), new_uid + 1,
+            self._uidnext.get(folder_name, 1),
+            new_uid + 1,
         )
         self._bump_modseq(folder_name, new_uid)
         # Simulate APPENDUID (RFC 4315) — real servers usually advertise
@@ -219,7 +218,10 @@ class FakeImapSession:
                 self._bump_modseq(folder_name, uid)
 
     def move_message(
-        self, source_folder: str, uid: int, target_folder: str,
+        self,
+        source_folder: str,
+        uid: int,
+        target_folder: str,
     ) -> int | None:
         # Record the call so tests can assert PushMoveOp executed.
         self.call_log.append(f"move:{source_folder}->{target_folder}:{uid}")
@@ -227,9 +229,7 @@ class FakeImapSession:
         # Mirror real IMAP: MOVE to a non-existent mailbox is an error.
         # This turns "forgot to CREATE before MOVE" into a test failure.
         if target_folder not in self.folders:
-            raise OSError(
-                f"MOVE target folder does not exist: {target_folder!r}"
-            )
+            raise OSError(f"MOVE target folder does not exist: {target_folder!r}")
         source = self.folders.get(source_folder, {})
         entry = source.pop(uid, None)
         if entry is None:
@@ -238,7 +238,8 @@ class FakeImapSession:
         new_uid = max(target.keys(), default=0) + 2000
         target[new_uid] = entry
         self._uidnext[target_folder] = max(
-            self._uidnext.get(target_folder, 1), new_uid + 1,
+            self._uidnext.get(target_folder, 1),
+            new_uid + 1,
         )
         self._bump_modseq(source_folder, uid)
         self._bump_modseq(target_folder, new_uid)
@@ -377,7 +378,8 @@ class SyncedMessageRetrievalTestCase(unittest.TestCase):
         # storage_key pulled from the IndexedMessage.  This is what
         # run_rescan, run_message_body, and MCP get_message_body all do.
         payload = mirror.get_message_bytes(
-            folder=folder, storage_key=row.storage_key,
+            folder=folder,
+            storage_key=row.storage_key,
         )
         self.assertEqual(payload, raw)
 
@@ -495,9 +497,7 @@ class FlagReconciliationTestCase(unittest.TestCase):
 
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         rows = index.list_folder_messages(folder=folder)
-        phone = next(
-            r for r in rows if r.message_id == "<phone@example.com>"
-        )
+        phone = next(r for r in rows if r.message_id == "<phone@example.com>")
         self.assertEqual(phone.local_flags, frozenset({MessageFlag.SEEN}))
 
     def test_local_flag_change_pushed_to_server(self) -> None:
@@ -513,7 +513,8 @@ class FlagReconciliationTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 1)
 
         updated = dataclasses.replace(
-            rows[0], local_flags=frozenset({MessageFlag.FLAGGED}),
+            rows[0],
+            local_flags=frozenset({MessageFlag.FLAGGED}),
         )
         index.upsert_message(message=updated)
 
@@ -549,7 +550,8 @@ class FlagReconciliationTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
 
         updated = dataclasses.replace(
-            rows[0], local_flags=frozenset({MessageFlag.FLAGGED}),
+            rows[0],
+            local_flags=frozenset({MessageFlag.FLAGGED}),
         )
         index.upsert_message(message=updated)
 
@@ -610,11 +612,13 @@ class ServerMoveTestCase(unittest.TestCase):
         inbox = FolderRef(account_name="personal", folder_name="INBOX")
         archive = FolderRef(account_name="personal", folder_name="Archive")
         inbox_active = [
-            r for r in index.list_folder_messages(folder=inbox)
+            r
+            for r in index.list_folder_messages(folder=inbox)
             if r.local_status == MessageStatus.ACTIVE
         ]
         archive_active = [
-            r for r in index.list_folder_messages(folder=archive)
+            r
+            for r in index.list_folder_messages(folder=archive)
             if r.local_status == MessageStatus.ACTIVE
         ]
 
@@ -879,9 +883,7 @@ class ReadOnlyFolderTestCase(unittest.TestCase):
         mirror = MaildirMirrorRepository(
             account_name="personal", root_dir=tmp / "mirror"
         )
-        index = SqliteIndexRepository(
-            database_path=tmp / "index.sqlite3"
-        )
+        index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
 
         account = AccountConfig(
@@ -1014,7 +1016,8 @@ class DuplicateMessageIdTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         # Both rows expose the real Message-ID — no synthetics.
         self.assertEqual(
-            {r.message_id for r in rows}, {"<dup@example.com>"},
+            {r.message_id for r in rows},
+            {"<dup@example.com>"},
         )
         # Identities differ on row id and on UID.
         self.assertEqual(len({r.message_ref.id for r in rows}), 2)
@@ -1114,9 +1117,7 @@ class BaseFlagsComparisonTestCase(unittest.TestCase):
         raw = _make_raw_message("Diverge", "<div@example.com>")
         service, index, _, session = _setup(
             server_folders={
-                "INBOX": {
-                    1: ("<div@example.com>", frozenset({MessageFlag.SEEN}), raw)
-                }
+                "INBOX": {1: ("<div@example.com>", frozenset({MessageFlag.SEEN}), raw)}
             }
         )
         service.sync()
@@ -1130,6 +1131,7 @@ class BaseFlagsComparisonTestCase(unittest.TestCase):
         # local_flags also empty → "no local change" relative to base.
         # Keep uid and server_flags intact so the planner can find this row.
         import dataclasses as _dc
+
         index.upsert_message(
             message=_dc.replace(
                 rows[0],
@@ -1162,7 +1164,9 @@ class FetchFailureTestCase(unittest.TestCase):
 
         class _FailOnUid2(FakeImapSession):
             def fetch_messages_batch(
-                self, folder_name: str, uids: Sequence[int],
+                self,
+                folder_name: str,
+                uids: Sequence[int],
             ) -> dict[int, bytes]:
                 # Simulate UID 2 failing — return it with empty bytes.
                 result = super().fetch_messages_batch(folder_name, uids)
@@ -1185,9 +1189,7 @@ class FetchFailureTestCase(unittest.TestCase):
         mirror = MaildirMirrorRepository(
             account_name="personal", root_dir=tmp / "mirror"
         )
-        index_repo = SqliteIndexRepository(
-            database_path=tmp / "index.sqlite3"
-        )
+        index_repo = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index_repo.initialize()
 
         account = AccountConfig(
@@ -1253,9 +1255,7 @@ class ExtraImapFlagsTestCase(unittest.TestCase):
         """When pushing local flag changes, extra server flags are included."""
         raw = _make_raw_message("Custom flags", "<custom@example.com>")
         service, index, _, session = _setup(
-            server_folders={
-                "INBOX": {1: ("<custom@example.com>", frozenset(), raw)}
-            }
+            server_folders={"INBOX": {1: ("<custom@example.com>", frozenset(), raw)}}
         )
         # Set extra flags on the server for this message.
         session.extra_flags[("INBOX", 1)] = frozenset({"$Important", "$Junk"})
@@ -1318,9 +1318,7 @@ class C1ReUploadTestCase(unittest.TestCase):
         """When local flags haven't changed, normal trash behavior applies."""
         raw = _make_raw_message("No edits", "<c1-nomod@example.com>")
         service, index, _, session = _setup(
-            server_folders={
-                "INBOX": {1: ("<c1-nomod@example.com>", frozenset(), raw)}
-            }
+            server_folders={"INBOX": {1: ("<c1-nomod@example.com>", frozenset(), raw)}}
         )
         service.sync()
 
@@ -1354,7 +1352,9 @@ class C2RestoreTestCase(unittest.TestCase):
         # flag reconciliation (C-2 lives in Step 3; the STATUS
         # fast-path cannot detect silent server-side flag changes).
         session.folders["INBOX"][1] = (
-            "<c2@example.com>", frozenset({MessageFlag.SEEN}), raw,
+            "<c2@example.com>",
+            frozenset({MessageFlag.SEEN}),
+            raw,
         )
         raw2 = _make_raw_message("Other", "<other@example.com>")
         session.folders["INBOX"][2] = ("<other@example.com>", frozenset(), raw2)
@@ -1373,9 +1373,7 @@ class C2RestoreTestCase(unittest.TestCase):
         """When server didn't change flags, normal push-delete applies."""
         raw = _make_raw_message("Really delete", "<c2-nochg@example.com>")
         service, index, _, session = _setup(
-            server_folders={
-                "INBOX": {1: ("<c2-nochg@example.com>", frozenset(), raw)}
-            }
+            server_folders={"INBOX": {1: ("<c2-nochg@example.com>", frozenset(), raw)}}
         )
         service.sync()
 
@@ -1404,9 +1402,7 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
             )
             for uid in range(1, 11)
         }
-        service, index, _, session = _setup(
-            server_folders={"INBOX": dict(raws)}
-        )
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
         service.sync()
 
         # Delete 5 of 10 (50%) on the server.
@@ -1427,9 +1423,7 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
             )
             for uid in range(1, 11)
         }
-        service, index, _, session = _setup(
-            server_folders={"INBOX": dict(raws)}
-        )
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
         service.sync()
 
         del session.folders["INBOX"][1]
@@ -1447,9 +1441,7 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
             )
             for uid in range(1, 11)
         }
-        service, index, _, session = _setup(
-            server_folders={"INBOX": dict(raws)}
-        )
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
         service.sync()
 
         for uid in range(1, 6):
@@ -1484,6 +1476,7 @@ class TrashGcTestCase(unittest.TestCase):
         self.assertIn(row.storage_key, mirror.list_messages(folder=folder))
 
         from datetime import timedelta
+
         index.upsert_message(
             message=dataclasses.replace(
                 row,
@@ -1537,9 +1530,7 @@ class MessageIdChangeTestCase(unittest.TestCase):
     def test_flag_pull_works_after_message_id_change(self) -> None:
         raw = _make_raw_message("Reimported", "<old-id@example.com>")
         service, index, _, session = _setup(
-            server_folders={
-                "INBOX": {1: ("<old-id@example.com>", frozenset(), raw)}
-            }
+            server_folders={"INBOX": {1: ("<old-id@example.com>", frozenset(), raw)}}
         )
         service.sync()
 
@@ -1596,9 +1587,14 @@ class CleanupTestCase(unittest.TestCase):
             message=IndexedMessage(
                 message_ref=stale_ref,
                 message_id="<orphan@example.com>",
-                sender="x", recipients="y", cc="", subject="orphan",
-                body_preview="", storage_key="",
-                local_flags=frozenset(), base_flags=frozenset(),
+                sender="x",
+                recipients="y",
+                cc="",
+                subject="orphan",
+                body_preview="",
+                storage_key="",
+                local_flags=frozenset(),
+                base_flags=frozenset(),
                 local_status=MessageStatus.ACTIVE,
                 received_at=datetime.now(tz=UTC),
             )
@@ -1633,7 +1629,6 @@ class CleanupTestCase(unittest.TestCase):
         states = index.list_folder_sync_states(account_name="personal")
         folder_names = {s.folder_name for s in states}
         self.assertNotIn("OldFolder", folder_names)
-
 
     # UTF-7 encoding/decoding tests removed — handled by imapclient.
 
@@ -1705,7 +1700,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=ref)
         row = next(r for r in rows if r.message_id == message_id)
         new_ref = dataclasses.replace(
-            row.message_ref, folder_name=target,
+            row.message_ref,
+            folder_name=target,
         )
         new_row = dataclasses.replace(
             row,
@@ -1743,7 +1739,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         service.sync()
 
         self.assertIn(
-            ("INBOX", 1, "Archive"), session.moves,
+            ("INBOX", 1, "Archive"),
+            session.moves,
             "Expected UID MOVE from INBOX to Archive",
         )
         # Server-side: INBOX now empty, Archive has the message.
@@ -1799,7 +1796,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             target_folder="Archive",
         )
         updated = dataclasses.replace(
-            archive_rows[0], storage_key=new_storage_key,
+            archive_rows[0],
+            storage_key=new_storage_key,
         )
         index.upsert_message(message=updated)
 
@@ -1858,7 +1856,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         new_row = dataclasses.replace(
             row,
             message_ref=dataclasses.replace(
-                row.message_ref, folder_name="Archive",
+                row.message_ref,
+                folder_name="Archive",
             ),
             storage_key=new_storage_key,
             uid=None,
@@ -1875,7 +1874,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
 
         self.assertIn("Archive", session.created_folders)
         self.assertIn(
-            ("INBOX", 1, "Archive"), session.moves,
+            ("INBOX", 1, "Archive"),
+            session.moves,
             "Expected UID MOVE after the CREATE",
         )
         self.assertIn("Archive", session.folders)
@@ -1885,7 +1885,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         create_idx = session.call_log.index("create:Archive")
         move_idx = session.call_log.index("move:INBOX->Archive:1")
         self.assertLess(
-            create_idx, move_idx,
+            create_idx,
+            move_idx,
             f"CREATE must precede MOVE but got {session.call_log!r}",
         )
 
@@ -1898,7 +1899,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         service.sync()  # establish baseline
 
         mirror.create_folder(
-            account_name="personal", folder_name="Projects",
+            account_name="personal",
+            folder_name="Projects",
         )
         service.sync()
 
@@ -1914,7 +1916,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
 
         # Create the folder locally — it's already on the server too.
         mirror.create_folder(
-            account_name="personal", folder_name="Archive",
+            account_name="personal",
+            folder_name="Archive",
         )
         service.sync()
 
@@ -1946,6 +1949,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             MessageRef,
             MessageStatus,
         )
+
         index.insert_message(
             message=IndexedMessage(
                 message_ref=MessageRef(
@@ -1974,16 +1978,15 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         self.assertIn("Archive", session.created_folders)
         self.assertIn("Archive", session.folders)
         self.assertEqual(len(session.folders["Archive"]), 1)
-        (_uid, (mid, _flags, appended)) = next(
-            iter(session.folders["Archive"].items())
-        )
+        (_uid, (mid, _flags, appended)) = next(iter(session.folders["Archive"].items()))
         self.assertEqual(mid, "<local@example.com>")
         self.assertEqual(appended, raw)
         # CREATE must precede APPEND — otherwise the fake raises OSError.
         create_idx = session.call_log.index("create:Archive")
         append_idx = session.call_log.index("append:Archive")
         self.assertLess(
-            create_idx, append_idx,
+            create_idx,
+            append_idx,
             f"CREATE must precede APPEND but got {session.call_log!r}",
         )
 
@@ -1993,7 +1996,8 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         tmp = TMP_ROOT / "sync" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
         mirror = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror",
+            account_name="personal",
+            root_dir=tmp / "mirror",
         )
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
@@ -2009,10 +2013,12 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             folders=FolderConfig(read_only=("INBOX",)),
         )
         config = AppConfig(accounts=(account,))
-        session = FakeImapSession(folders={
-            "INBOX": {1: ("<kept@example.com>", frozenset(), raw)},
-            "Archive": {},
-        })
+        session = FakeImapSession(
+            folders={
+                "INBOX": {1: ("<kept@example.com>", frozenset(), raw)},
+                "Archive": {},
+            }
+        )
 
         class _Creds:
             def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
@@ -2037,9 +2043,12 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             index.delete_message(message_ref=row.message_ref)
             index.upsert_message(
                 message=dataclasses.replace(
-                    row, message_ref=new_ref, uid=None,
+                    row,
+                    message_ref=new_ref,
+                    uid=None,
                     server_flags=frozenset(),
-                    extra_imap_flags=frozenset(), synced_at=None,
+                    extra_imap_flags=frozenset(),
+                    synced_at=None,
                 )
             )
 
@@ -2130,9 +2139,7 @@ class FastPathTestCase(unittest.TestCase):
             MessageRef as _MessageRef,
         )
 
-        service, index, mirror, session = _setup(
-            server_folders={"INBOX": {}}
-        )
+        service, index, mirror, session = _setup(server_folders={"INBOX": {}})
         service.sync()  # baseline: empty INBOX
         self.assertEqual(session.scan_count, 1)
 
@@ -2185,7 +2192,8 @@ class FastPathTestCase(unittest.TestCase):
         [row] = index.list_folder_messages(folder=folder)
         index.upsert_message(
             message=dataclasses.replace(
-                row, local_flags=frozenset({MessageFlag.FLAGGED}),
+                row,
+                local_flags=frozenset({MessageFlag.FLAGGED}),
             )
         )
 
@@ -2193,10 +2201,7 @@ class FastPathTestCase(unittest.TestCase):
         # Fast path: no metadata scan; PushFlagsOp executed.
         self.assertEqual(session.scan_count, 1)
         self.assertTrue(
-            any(
-                MessageFlag.FLAGGED in flags
-                for _uid, flags in session.stored_flags
-            ),
+            any(MessageFlag.FLAGGED in flags for _uid, flags in session.stored_flags),
             f"expected FLAGGED push, got {session.stored_flags!r}",
         )
 
@@ -2288,7 +2293,8 @@ class FastPathTestCase(unittest.TestCase):
         [row] = index.list_folder_messages(folder=folder)
         index.upsert_message(
             message=dataclasses.replace(
-                row, local_flags=frozenset({MessageFlag.FLAGGED}),
+                row,
+                local_flags=frozenset({MessageFlag.FLAGGED}),
             )
         )
 
@@ -2344,7 +2350,8 @@ class FastPathTestCase(unittest.TestCase):
         tmp = TMP_ROOT / "sync-no-condstore" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
         mirror = MaildirMirrorRepository(
-            account_name="personal", root_dir=tmp / "mirror",
+            account_name="personal",
+            root_dir=tmp / "mirror",
         )
         index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
         index.initialize()
