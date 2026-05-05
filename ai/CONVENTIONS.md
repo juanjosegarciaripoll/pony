@@ -11,8 +11,10 @@ uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 uv run mypy src/
 uv run basedpyright src/
-uv run python -m pytest tests/
+uv run pytest
 ```
+
+`pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`; new code must keep branch coverage at or above **85 %**. Current baseline is ~56 % — the threshold will be enforced once coverage reaches it; in the interim, run `uv run pytest --no-cov` to skip the coverage gate.
 
 ## Typing
 
@@ -34,7 +36,7 @@ uv run python -m pytest tests/
 ## Dependencies
 
 Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `mcp`. New deps need approval.
-Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pyinstrument`, `mkdocs-material`, `pytest-asyncio`.
+Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage`, `pyinstrument`, `mkdocs-material`.
 
 ## Config
 
