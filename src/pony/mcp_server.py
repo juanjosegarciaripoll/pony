@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tinymcp import McpServer, run_stdio_standalone, serve_tcp
+from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
 
 from .config import load_config
 from .domain import AccountConfig, AnyAccount, SearchQuery
@@ -484,23 +484,10 @@ async def start_tcp_mcp_server(
     """
     token = secrets.token_hex(32)
     mcp = build_mcp_server(config_path)
-    state_holder: list[McpState] = []
-
-    def on_bound(port: int) -> None:
-        state = McpState(port=port, token=token)
-        write_mcp_state(state_file, state)
-        state_holder.append(state)
-
-    task: asyncio.Task[None] = asyncio.create_task(
-        serve_tcp(mcp, port=0, token=token, on_bound=on_bound),
-        name="mcp-tcp",
-    )
-    for _ in range(100):
-        if state_holder:
-            return task, state_holder[0]
-        await asyncio.sleep(0.01)
-    task.cancel()
-    raise RuntimeError("MCP TCP server failed to bind within 1 s")
+    port, task = await serve_tcp(mcp, port=0, token=token)
+    state = McpState(port=port, token=token)
+    write_mcp_state(state_file, state)
+    return task, state
 
 
 def run_mcp_server(
@@ -519,11 +506,6 @@ async def _run_mcp_server_async(
     config_path: Path | None,
     state_file: Path | None,
 ) -> None:
-    from tinymcp import run_mcp
-
     state = read_mcp_state(state_file) if state_file is not None else None
-    await run_mcp(
-        build_mcp_server(config_path),
-        remote_port=state.port if state is not None else None,
-        remote_token=state.token if state is not None else None,
-    )
+    remote = (LOOPBACK_HOST, state.port, state.token) if state is not None else None
+    await run_mcp(build_mcp_server(config_path), remote=remote)
