@@ -579,7 +579,7 @@ requires-dist = [
     { name = "imapclient", specifier = ">=3.0.0" },
     { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "textual", specifier = ">=8.2.3" },
-    { name = "tinymcp", editable = "../tinymcp" },
+    { name = "tinymcp", git = "https://github.com/juanjosegarciaripoll/tinymcp.git" },
 ]
 
 [package.metadata.requires-dev]
@@ -877,18 +877,7 @@ wheels = [
 [[package]]
 name = "tinymcp"
 version = "0.1.0"
-source = { editable = "../tinymcp" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = ">=1.17" },
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "ruff", specifier = ">=0.6" },
-]
+source = { git = "https://github.com/juanjosegarciaripoll/tinymcp.git#8108d9bf32849f295032def7acfee7deda1cdfc4" }
 
 [[package]]
 name = "typing-extensions"
