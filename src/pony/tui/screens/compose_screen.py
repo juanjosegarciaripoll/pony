@@ -6,7 +6,7 @@ import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from email.utils import getaddresses
+from email.utils import formataddr, getaddresses
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -284,7 +284,7 @@ class ComposeScreen(Screen[bool]):
         suggester = ContactSuggester(self._contacts) if self._contacts else None
 
         from_options: list[tuple[str, str]] = [
-            (f"{a.name} <{a.email_address}>", a.name) for a in self._accounts
+            (self._account_from_label(a), a.name) for a in self._accounts
         ]
         # ── Header block (auto height, one row per field) ──
         with Vertical(id="header-fields"):
@@ -375,7 +375,7 @@ class ComposeScreen(Screen[bool]):
         cc = self._collect_field("cc-container")
         bcc = self._collect_field("bcc-container")
         msg = build_email_message(
-            from_address=account.email_address,
+            from_address=self._account_from_address(account),
             to=to,
             cc=cc,
             bcc=bcc,
@@ -452,7 +452,7 @@ class ComposeScreen(Screen[bool]):
                 account = self._get_account()
                 if account is not None:
                     msg = build_email_message(
-                        from_address=account.email_address,
+                        from_address=self._account_from_address(account),
                         to=self.query_one("#to-input", Input).value.strip(),
                         cc=self._collect_field("cc-container"),
                         bcc=self._collect_field("bcc-container"),
@@ -662,6 +662,21 @@ class ComposeScreen(Screen[bool]):
             self.call_after_refresh(lambda: self._refresh_add_buttons(container))
         else:
             row.query_one(Input).value = ""
+
+    def _account_from_address(self, account: AnyAccount) -> str:
+        if self._contacts is not None:
+            contact = self._contacts.find_contact_by_email(
+                email_address=account.email_address
+            )
+            if contact is not None and contact.display_name:
+                return formataddr((contact.display_name, account.email_address))
+        return account.email_address
+
+    def _account_from_label(self, account: AnyAccount) -> str:
+        from_addr = self._account_from_address(account)
+        if from_addr != account.email_address:
+            return from_addr
+        return f"{account.name} <{account.email_address}>"
 
     def _get_account(self) -> AnyAccount | None:
         sel = self.query_one("#from-select", Select)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
