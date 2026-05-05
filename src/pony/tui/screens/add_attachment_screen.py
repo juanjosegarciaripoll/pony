@@ -27,6 +27,10 @@ class AddAttachmentScreen(Screen[str | None]):
     - ctrl+l            — jump focus to path bar (type a directory and Enter)
     - Esc               — cancel
 
+    The tree is rooted at the user's home directory when possible so that
+    parent folders are always visible and directly navigable.  On open the
+    tree auto-expands to the last-used (or initial) directory.
+
     Typeahead
     ---------
     While the tree has focus, typing printable characters builds a search
@@ -87,7 +91,16 @@ class AddAttachmentScreen(Screen[str | None]):
 
     def __init__(self, start_dir: Path | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._root = (start_dir or _session_dir or Path.cwd()).resolve()
+        initial = (start_dir or _session_dir or Path.cwd()).resolve()
+        home = Path.home()
+        # Root at home so parent directories are navigable, unless the initial
+        # directory is outside home (e.g. a separate drive on Windows).
+        try:
+            initial.relative_to(home)
+            self._root = home
+        except ValueError:
+            self._root = initial
+        self._initial_dir = initial
         self._typeahead: str = ""
         self._typeahead_version: int = 0  # incremented each keystroke to debounce
 
@@ -98,7 +111,7 @@ class AddAttachmentScreen(Screen[str | None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="path-bar"):
             yield Label("Path:", id="path-label")
-            yield Input(str(self._root), id="path-input")
+            yield Input(str(self._initial_dir), id="path-input")
         with Vertical(id="tree-area"):
             yield DirectoryTree(self._root, id="file-tree")
         yield Label(
@@ -108,7 +121,9 @@ class AddAttachmentScreen(Screen[str | None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#file-tree", DirectoryTree).focus()
+        tree = self.query_one("#file-tree", DirectoryTree)
+        tree.focus()
+        self._expand_to_dir(self._initial_dir)
 
     # ------------------------------------------------------------------
     # Tree events
@@ -125,9 +140,48 @@ class AddAttachmentScreen(Screen[str | None]):
     def on_directory_tree_directory_selected(
         self, event: DirectoryTree.DirectorySelected
     ) -> None:
-        """Keep the path bar in sync with the current directory."""
+        """Keep the path bar in sync with the highlighted directory."""
         event.stop()
         self.query_one("#path-input", Input).value = str(event.path)
+
+    # ------------------------------------------------------------------
+    # Auto-expansion
+    # ------------------------------------------------------------------
+
+    def _expand_to_dir(self, target: Path) -> None:
+        """Expand the tree and move the cursor to `target`."""
+        try:
+            parts = list(target.relative_to(self._root).parts)
+        except ValueError:
+            return
+        if not parts:
+            return
+
+        tree = self.query_one("#file-tree", DirectoryTree)
+
+        def step(node: TreeNode[DirEntry], remaining: list[str], retries: int) -> None:
+            if not remaining:
+                tree.move_cursor(node)
+                tree.scroll_to_node(node)
+                return
+            if retries >= 30:
+                return
+
+            part = remaining[0]
+            rest = remaining[1:]
+            for child in node.children:
+                if child.data and child.data.path.name.lower() == part.lower():
+                    if rest:
+                        child.expand()
+                    tree.call_after_refresh(lambda c=child, r=rest: step(c, r, 0))
+                    return
+
+            # Children not yet loaded by the async loader — retry.
+            tree.call_after_refresh(
+                lambda n=node, rem=remaining, ret=retries: step(n, rem, ret + 1)
+            )
+
+        step(tree.root, parts, 0)
 
     # ------------------------------------------------------------------
     # Typeahead
@@ -236,15 +290,16 @@ class AddAttachmentScreen(Screen[str | None]):
         if not target.is_dir():
             self.notify(f"Not a directory: {raw}", severity="error")
             return
+        self._navigate_to(target)
+
+    def _navigate_to(self, target: Path) -> None:
         global _session_dir
         _session_dir = target
         self._root = target
         self.query_one("#path-input", Input).value = str(target)
-        old_tree = self.query_one("#file-tree", DirectoryTree)
-        old_tree.remove()
-        new_tree = DirectoryTree(target, id="file-tree")
-        self.query_one("#tree-area", Vertical).mount(new_tree)
-        new_tree.focus()
+        tree = self.query_one("#file-tree", DirectoryTree)
+        tree.path = target
+        tree.focus()
 
     # ------------------------------------------------------------------
     # Actions
