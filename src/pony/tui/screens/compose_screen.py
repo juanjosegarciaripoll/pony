@@ -259,6 +259,7 @@ class ComposeScreen(Screen[bool]):
         mirrors: dict[str, MirrorRepository],
         initial: ComposeInitial,
         contacts: ContactRepository | None = None,
+        source_draft: IndexedMessage | None = None,
         **kwargs: object,
     ) -> None:
         # ``accounts`` must all satisfy ``account.can_send``; MainScreen
@@ -272,6 +273,7 @@ class ComposeScreen(Screen[bool]):
         self._mirrors = mirrors
         self._initial = initial
         self._contacts = contacts
+        self._source_draft = source_draft
         self._attachment_paths: list[Path] = []
         self._forwarded_message: bytes | None = initial.forwarded_message
         self._prefix_active: bool = False
@@ -426,7 +428,9 @@ class ComposeScreen(Screen[bool]):
 
         # SMTP succeeded — remove the draft and record the sent copy.
         if draft_entry is not None:
-            self._delete_local_message(account, draft_entry)
+            self._delete_local_message(draft_entry)
+        if self._source_draft is not None:
+            self._delete_local_message(self._source_draft)
         self._save_to_folder(
             raw,
             account,
@@ -467,6 +471,8 @@ class ComposeScreen(Screen[bool]):
                         folder_hint="Drafts",
                         override=account.drafts_folder,
                     )
+                    if self._source_draft is not None:
+                        self._delete_local_message(self._source_draft)
             self.dismiss(False)
 
         from .save_draft_screen import SaveDraftScreen
@@ -762,9 +768,9 @@ class ComposeScreen(Screen[bool]):
         )
         return self._index.insert_message(message=projected)
 
-    def _delete_local_message(self, account: AnyAccount, entry: IndexedMessage) -> None:
+    def _delete_local_message(self, entry: IndexedMessage) -> None:
         """Remove a locally stored message from the mirror and the index."""
-        mirror = self._mirrors.get(account.name)
+        mirror = self._mirrors.get(entry.message_ref.account_name)
         if mirror is not None:
             folder_ref = FolderRef(
                 account_name=entry.message_ref.account_name,

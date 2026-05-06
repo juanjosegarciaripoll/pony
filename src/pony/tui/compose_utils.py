@@ -143,6 +143,43 @@ def forward_subject(subject: str) -> str:
     return f"Fwd: {subject}"
 
 
+def parse_draft_fields(raw: bytes) -> dict[str, str]:
+    """Extract editable fields from stored draft bytes.
+
+    Returns a dict with keys: ``to``, ``cc``, ``bcc``, ``subject``, ``body``.
+    The plain-text part is used for the body regardless of whether the draft
+    was composed in Markdown mode (the raw Markdown source is always stored
+    as the text/plain alternative).
+    """
+    import email as _email
+    import email.policy as _policy
+
+    parsed = _email.message_from_bytes(raw, policy=_policy.default)
+
+    def _hdr(name: str) -> str:
+        return str(parsed.get(name, "")).strip()
+
+    body = ""
+    for part in parsed.walk():
+        if (
+            part.get_content_type() == "text/plain"
+            and part.get_content_disposition() != "attachment"
+        ):
+            payload = part.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                charset = part.get_content_charset() or "utf-8"
+                body = payload.decode(charset, errors="replace")
+            break
+
+    return {
+        "to": _hdr("To"),
+        "cc": _hdr("Cc"),
+        "bcc": _hdr("Bcc"),
+        "subject": _hdr("Subject"),
+        "body": body,
+    }
+
+
 def build_email_message(
     *,
     from_address: str,

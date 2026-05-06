@@ -43,6 +43,7 @@ from ..compose_utils import (
     build_reply_body,
     forward_subject,
     new_compose_body,
+    parse_draft_fields,
     reply_subject,
 )
 from ..message_renderer import render_message
@@ -66,6 +67,7 @@ class MainScreen(Screen[None]):
     BINDINGS = [
         Binding("g", "sync", "Get mail"),
         Binding("c", "compose_new", "Compose"),
+        Binding("e", "edit_draft", "Edit draft"),
         Binding("r", "compose_reply", "Reply"),
         Binding("R", "compose_reply_all", "Reply all"),
         Binding("f", "compose_forward", "Forward"),
@@ -490,6 +492,33 @@ class MainScreen(Screen[None]):
         self.query_one(FolderPanel).refresh_folders()
         if self._current_folder_ref is not None:
             self.query_one(MessageListPanel).load_folder(self._current_folder_ref)
+
+    # ------------------------------------------------------------------
+    # Contextual action gating
+    # ------------------------------------------------------------------
+
+    def _in_drafts_folder(self) -> bool:
+        from ...folder_utils import find_folder
+
+        ref = self._current_folder_ref
+        if ref is None:
+            return False
+        folder_name = ref.folder_name
+        account = next(
+            (a for a in self._config.accounts if a.name == ref.account_name), None
+        )
+        if account is not None and account.drafts_folder:
+            return folder_name == account.drafts_folder
+        return find_folder([folder_name], "Drafts") is not None
+
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],
+    ) -> bool | None:
+        if action == "edit_draft":
+            return self._in_drafts_folder()
+        return super().check_action(action, parameters)
 
     # ------------------------------------------------------------------
     # Flag and message actions
@@ -1244,6 +1273,9 @@ class MainScreen(Screen[None]):
     def action_compose_forward(self) -> None:
         self.compose_forward()
 
+    def action_edit_draft(self) -> None:
+        self.compose_from_draft()
+
     def _sendable_accounts(self) -> list[AnyAccount]:
         """Accounts that can send via SMTP (IMAP or local-with-SMTP)."""
         return [a for a in self._config.accounts if a.can_send]
@@ -1454,6 +1486,61 @@ class MainScreen(Screen[None]):
                     forwarded_message=raw,
                 ),
                 contacts=self._contacts,
+            )
+        )
+
+    def compose_from_draft(self) -> None:
+        """Open a draft message for editing in ComposeScreen."""
+        from .compose_screen import ComposeInitial, ComposeScreen
+
+        msg = self.get_current_message()
+        if msg is None:
+            return
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Composing requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return
+        mirror = self._mirrors.get(msg.message_ref.account_name)
+        if mirror is None:
+            return
+        try:
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify("Could not load draft.", severity="error")  # pyright: ignore[reportUnknownMemberType]
+            return
+        fields = parse_draft_fields(raw)
+        account = next(
+            (a for a in accounts if a.name == msg.message_ref.account_name),
+            accounts[0],
+        )
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ComposeScreen(
+                self._config,
+                accounts,
+                self._index,
+                self._mirrors,
+                ComposeInitial(
+                    account_name=account.name,
+                    to=fields["to"],
+                    cc=fields["cc"],
+                    bcc=fields["bcc"],
+                    subject=fields["subject"],
+                    body=fields["body"],
+                    markdown_mode=(
+                        account.markdown_compose or self._config.markdown_compose
+                    ),
+                ),
+                contacts=self._contacts,
+                source_draft=msg,
             )
         )
 
