@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -18,6 +17,7 @@ from ..protocols import (
     MirrorRepository,
 )
 from .screens.main_screen import MainScreen
+from .terminal import pop_terminal_title, push_terminal_title, set_terminal_title
 
 
 class PonyApp(App[None]):
@@ -70,6 +70,8 @@ class PonyApp(App[None]):
         return iter([])
 
     async def on_mount(self) -> None:
+        push_terminal_title()
+        set_terminal_title("Pony Express")
         self.push_screen(
             MainScreen(
                 self._config,
@@ -98,6 +100,7 @@ class PonyApp(App[None]):
             await asyncio.gather(self._mcp_tcp_task, return_exceptions=True)
         if self._mcp_state_file is not None:
             clear_mcp_state(self._mcp_state_file)
+        pop_terminal_title()
 
 
 class ComposeApp(App[None]):
@@ -143,6 +146,8 @@ class ComposeApp(App[None]):
         self._markdown_mode = markdown_mode
 
     def on_mount(self) -> None:
+        push_terminal_title()
+        set_terminal_title("Pony Express — Compose")
         from .screens.compose_screen import ComposeInitial, ComposeScreen
 
         def _on_done(sent: bool | None) -> None:
@@ -176,6 +181,9 @@ class ComposeApp(App[None]):
             _on_done,
         )
 
+    def on_unmount(self) -> None:
+        pop_terminal_title()
+
 
 class ContactsApp(App[None]):
     """Minimal Textual app for the standalone contacts browser.
@@ -195,9 +203,14 @@ class ContactsApp(App[None]):
         self._contacts = contacts
 
     def on_mount(self) -> None:
+        push_terminal_title()
+        set_terminal_title("Pony Express — Contacts")
         from .screens.contact_browser_screen import ContactBrowserScreen
 
         self.push_screen(ContactBrowserScreen(self._contacts))
+
+    def on_unmount(self) -> None:
+        pop_terminal_title()
 
     def on_screen_resume(self) -> None:
         # Exit when the browser screen is dismissed.

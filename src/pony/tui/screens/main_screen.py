@@ -46,6 +46,7 @@ from ..compose_utils import (
     reply_subject,
 )
 from ..message_renderer import render_message
+from ..terminal import set_terminal_title
 from ..widgets.folder_panel import FolderPanel
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
@@ -168,6 +169,9 @@ class MainScreen(Screen[None]):
     ) -> None:
         event.stop()
         self._current_folder_ref = event.folder_ref
+        context = f"{event.folder_ref.account_name}/{event.folder_ref.folder_name}"
+        self.app.sub_title = context
+        set_terminal_title(f"Pony Express — {context}")
         view = self.query_one(MessageViewPanel)
         view.clear()
         view.display = False
