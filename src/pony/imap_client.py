@@ -70,6 +70,9 @@ _IMAP_TO_LOCAL: dict[bytes, MessageFlag] = {
     b"\\Draft": MessageFlag.DRAFT,
 }
 
+# RFC 3501 §2.3.2: \Recent is server-set; clients MUST NOT include it in STORE.
+_SERVER_ONLY_FLAGS: frozenset[bytes] = frozenset({b"\\Recent"})
+
 _LOCAL_TO_IMAP: dict[MessageFlag, bytes] = {v: k for k, v in _IMAP_TO_LOCAL.items()}
 
 
@@ -80,6 +83,8 @@ def _parse_imap_flags(
     known: set[MessageFlag] = set()
     extra: set[str] = set()
     for flag in flags:
+        if flag in _SERVER_ONLY_FLAGS:
+            continue
         local = _IMAP_TO_LOCAL.get(flag)
         if local is not None:
             known.add(local)
