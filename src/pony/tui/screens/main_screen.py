@@ -97,6 +97,7 @@ class MainScreen(Screen[None]):
         width: 25%;
         height: 100%;
         border: solid $primary;
+        background: $background;
     }
 
     FolderPanel:focus,
@@ -113,6 +114,7 @@ class MainScreen(Screen[None]):
     MessageListPanel {
         height: 1fr;
         border: solid $primary;
+        background: $background;
     }
 
     MessageViewPanel {
