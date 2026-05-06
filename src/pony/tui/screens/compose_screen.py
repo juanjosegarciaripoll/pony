@@ -565,16 +565,9 @@ class ComposeScreen(Screen[bool]):
             parts.append(f"ctrl+x e → {Path(editor).name}")
         parts.append("Markdown ON" if self._markdown_mode else "Markdown OFF")
         self.query_one("#body-area", TextArea).border_title = "  ".join(parts)
-        from rich.text import Text
-
-        t = Text()
-        if self._markdown_mode:
-            t.append("[MD] ", style="bold green")
-        t.append("^S", style="bold yellow")
-        t.append(" Send  ")
-        t.append("Esc", style="bold yellow")
-        t.append(" Cancel")
-        self.query_one("#compose-footer", Static).update(t)
+        md = "[b $success][MD] [/b $success]" if self._markdown_mode else ""
+        keys = "[b $warning]^S[/b $warning] Send  [b $warning]Esc[/b $warning] Cancel"
+        self.query_one("#compose-footer", Static).update(f"{md}{keys}")
 
     def _do_edit_external(self) -> None:
         """Write body to a temp file, open the configured editor, read back."""

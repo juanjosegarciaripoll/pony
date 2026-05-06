@@ -99,7 +99,8 @@ class MainScreen(Screen[None]):
         border: solid $primary;
     }
 
-    FolderPanel:focus {
+    FolderPanel:focus,
+    MessageListPanel:focus {
         background-tint: transparent;
         border-title-color: $accent;
     }
@@ -112,11 +113,6 @@ class MainScreen(Screen[None]):
     MessageListPanel {
         height: 1fr;
         border: solid $primary;
-    }
-
-    MessageListPanel:focus {
-        background-tint: transparent;
-        border-title-color: $accent;
     }
 
     MessageViewPanel {
