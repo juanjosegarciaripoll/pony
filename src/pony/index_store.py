@@ -1429,17 +1429,17 @@ def _build_fts_match(query: SearchQuery) -> str:
     """
     parts: list[str] = []
     if query.from_address:
-        parts.append(f"sender:{_fts5_query(query.from_address)}")
+        parts.append(f"sender:{_fts5_query(query.from_address, prefix=True)}")
     if query.to_address:
-        parts.append(f"recipients:{_fts5_query(query.to_address)}")
+        parts.append(f"recipients:{_fts5_query(query.to_address, prefix=True)}")
     if query.cc_address:
-        parts.append(f"cc:{_fts5_query(query.cc_address)}")
+        parts.append(f"cc:{_fts5_query(query.cc_address, prefix=True)}")
     if query.subject:
-        parts.append(f"subject:{_fts5_query(query.subject)}")
+        parts.append(f"subject:{_fts5_query(query.subject, prefix=True)}")
     if query.body:
-        parts.append(f"body_preview:{_fts5_query(query.body)}")
+        parts.append(f"body_preview:{_fts5_query(query.body, prefix=True)}")
     if query.text:
-        phrase = _fts5_query(query.text)
+        phrase = _fts5_query(query.text, prefix=True)
         parts.append(f"(subject:{phrase} OR body_preview:{phrase})")
     return " AND ".join(parts)
 

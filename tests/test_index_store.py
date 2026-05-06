@@ -166,7 +166,7 @@ class SearchTestCase(unittest.TestCase):
 
     def test_subject_filter(self) -> None:
         hits = self.repo.search(
-            query=SearchQuery(subject="Re:"), account_name="personal"
+            query=SearchQuery(subject="Re: Q"), account_name="personal"
         )
         ids = {h.message_id for h in hits}
         self.assertEqual(ids, {"m-2"})
