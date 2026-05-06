@@ -456,6 +456,31 @@ class CliTestCase(unittest.TestCase):
                 )
             self.assertIn("not found", str(ctx.exception).lower())
 
+    def test_list_themes_prints_known_names(self) -> None:
+        output = run_cli("--list-themes")
+        lines = [line for line in output.splitlines() if line.strip()]
+        self.assertIn("textual-dark", lines)
+        self.assertIn("textual-light", lines)
+        self.assertEqual(lines, sorted(lines))
+
+    def test_theme_flag_parsed(self) -> None:
+        from pony.cli import build_parser
+
+        args = build_parser().parse_args(["--theme", "nord", "tui"])
+        self.assertEqual(args.theme, "nord")
+
+    def test_unknown_theme_rejected(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            output, rc = run_cli_capture(
+                "--config",
+                str(config_path),
+                "--theme",
+                "does-not-exist",
+                "tui",
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("does-not-exist", output)
+
 
 class SchemaMismatchRecoveryTests(unittest.TestCase):
     """The CLI must explain, prompt (default N), and only reset on y/yes."""

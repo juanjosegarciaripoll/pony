@@ -312,6 +312,20 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(sample_config(), base_dir=base_dir)
         self.assertIsNone(config.downloads_path)
 
+    def test_theme_parsed(self) -> None:
+        data = sample_config()
+        data["theme"] = "nord"
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        self.assertEqual(config.theme, "nord")
+
+    def test_theme_defaults_to_none(self) -> None:
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        self.assertIsNone(config.theme)
+
     def test_archive_folder_parsed(self) -> None:
         from pony.domain import AccountConfig
 

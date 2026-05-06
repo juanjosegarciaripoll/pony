@@ -88,6 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable debug logging to stderr.",
     )
+    parser.add_argument(
+        "--theme",
+        metavar="THEME",
+        help="Textual theme name (overrides config). See --list-themes for names.",
+    )
+    parser.add_argument(
+        "--list-themes",
+        action="store_true",
+        help="Print available Textual theme names and exit.",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -367,6 +377,9 @@ def _dispatch(
 ) -> int:
     """Route *args* to the matching subcommand handler."""
 
+    if args.list_themes:
+        return run_list_themes()
+
     if args.command is None:
         args.command = "tui"
         args.account = None
@@ -410,7 +423,12 @@ def _dispatch(
             return run_config_show(paths=paths, config_path=args.config)
         return run_config_edit(paths=paths, config_path=args.config)
     if args.command == "tui":
-        return run_tui(paths=paths, config_path=args.config, account=args.account)
+        return run_tui(
+            paths=paths,
+            config_path=args.config,
+            account=args.account,
+            theme=args.theme,
+        )
     if args.command == "compose":
         return run_compose(
             paths=paths,
@@ -422,6 +440,7 @@ def _dispatch(
             subject=args.subject,
             body=args.body,
             markdown_mode=args.markdown_mode,
+            theme=args.theme,
         )
     if args.command == "account" and args.account_command == "test":
         return run_account_test(
@@ -1959,6 +1978,32 @@ def _run_reset_account(
     return 0
 
 
+def run_list_themes() -> int:
+    """Print the names of all Textual themes available in this installation."""
+    from textual.app import App
+
+    app: App[None] = App()
+    for name in sorted(app.available_themes):
+        print(name)
+    return 0
+
+
+def _resolve_theme(
+    cli_theme: str | None, config_theme: str | None
+) -> tuple[str | None, int | None]:
+    """Return (effective_theme, None) or (None, error_code) on unknown name."""
+    effective = cli_theme if cli_theme is not None else config_theme
+    if effective is not None:
+        from textual.app import App as _TextualApp
+
+        available = _TextualApp().available_themes
+        if effective not in available:
+            names = ", ".join(sorted(available))
+            print(f"error: unknown theme {effective!r}. Available: {names}")
+            return None, 1
+    return effective, None
+
+
 def _install_tui_log_handler(log_file: Path) -> None:
     """Wire up the TUI's rotating log handler.
 
@@ -1987,7 +2032,13 @@ def _install_tui_log_handler(log_file: Path) -> None:
     logging.getLogger("imapclient").setLevel(logging.INFO)
 
 
-def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -> int:  # noqa: ARG001
+def run_tui(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,  # noqa: ARG001
+    theme: str | None = None,
+) -> int:
     """Launch the interactive terminal UI."""
     import logging
 
@@ -2035,6 +2086,10 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
     if config.bbdb_path:
         _bbdb_auto_sync(config.bbdb_path, index, paths)
 
+    effective_theme, err = _resolve_theme(theme, config.theme)
+    if err is not None:
+        return err
+
     from .tui import PonyApp
 
     app = PonyApp(
@@ -2044,6 +2099,7 @@ def run_tui(*, paths: AppPaths, config_path: Path | None, account: str | None) -
         credentials=credentials,
         contacts=index,
         config_path=config_path,
+        theme_name=effective_theme,
     )
     app.run()
     return 0
@@ -2060,6 +2116,7 @@ def run_compose(
     subject: str = "",
     body: str = "",
     markdown_mode: bool | None = None,
+    theme: str | None = None,
 ) -> int:
     """Launch the composer directly for writing a new message."""
     paths.ensure_runtime_dirs()
@@ -2107,6 +2164,10 @@ def run_compose(
 
     mirrors = {acc.name: _make_mirror(acc) for acc in config.accounts}
 
+    effective_theme, err = _resolve_theme(theme, config.theme)
+    if err is not None:
+        return err
+
     from .tui import ComposeApp
     from .tui.compose_utils import new_compose_body
 
@@ -2132,6 +2193,7 @@ def run_compose(
         subject=subject,
         body=effective_body,
         markdown_mode=effective_markdown,
+        theme_name=effective_theme,
     )
     app.run()
     return 0

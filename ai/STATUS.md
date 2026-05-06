@@ -14,6 +14,7 @@ All v1 capabilities implemented and tested:
 - MCP server (stdio + Streamable HTTP), read-only.
 - PyInstaller standalone builds with platform installers.
 - TUI flow tests: 12 Pilot-driven tests in `tests/test_tui_flows.py`.
+- Textual theme selection via `theme` in `config.toml`, `--theme` CLI flag, and `--list-themes`.
 
 ## Queue
 

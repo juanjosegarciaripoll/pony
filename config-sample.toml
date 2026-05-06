@@ -27,6 +27,11 @@
 #                      (O / S keys) land.  Created on demand.  Same path
 #                      expansion rules as bbdb_path.  Default: ~/Downloads.
 #                      Example: downloads_path = "~/mail-attachments"
+# - theme:             Textual theme name for the TUI colour scheme.  Omit to
+#                      use the Textual default ("textual-dark").  Run
+#                      "pony --list-themes" to see all available names.
+#                      The --theme CLI flag overrides this setting.
+#                      Example: theme = "nord"
 #
 # Per-account optional composer options:
 # - sent_folder:   Name of the folder where sent messages are saved.

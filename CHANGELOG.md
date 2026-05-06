@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+
+- **Textual theme selection**: set `theme = "nord"` (or any Textual theme name)
+  in `config.toml` to change the TUI colour scheme.  The `--theme NAME` CLI flag
+  overrides the config value for a single session, and `--list-themes` prints all
+  available theme names.  Applies to both the main TUI and the `pony compose`
+  standalone composer.
+
 ### Changed
 
 - **Shared sync-plan formatting**: the plan categorisation and

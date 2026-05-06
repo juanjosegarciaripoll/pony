@@ -53,6 +53,7 @@ class PonyApp(App[None]):
         credentials: CredentialsProvider,
         contacts: ContactRepository | None = None,
         config_path: Path | None = None,
+        theme_name: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -64,6 +65,8 @@ class PonyApp(App[None]):
         self._config_path = config_path
         self._mcp_tcp_task: asyncio.Task[None] | None = None
         self._mcp_state_file: Path | None = None
+        if theme_name is not None:
+            self.theme = theme_name
 
     def compose(self) -> ComposeResult:
         # Screens are pushed via on_mount; compose yields nothing at app level.
@@ -130,6 +133,7 @@ class ComposeApp(App[None]):
         subject: str = "",
         body: str = "",
         markdown_mode: bool = False,
+        theme_name: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -144,6 +148,8 @@ class ComposeApp(App[None]):
         self._subject = subject
         self._body = body
         self._markdown_mode = markdown_mode
+        if theme_name is not None:
+            self.theme = theme_name
 
     def on_mount(self) -> None:
         push_terminal_title()

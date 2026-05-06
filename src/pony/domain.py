@@ -194,6 +194,8 @@ class AppConfig:
     # Target directory for attachments opened/saved from the TUI.  When
     # None, resolves to ``~/Downloads`` at use time.
     downloads_path: Path | None = None
+    # Textual theme name.  None means use Textual's built-in default.
+    theme: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

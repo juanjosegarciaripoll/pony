@@ -111,6 +111,7 @@ def _parse_app_config(raw: object) -> AppConfig:
     bbdb_path = _expand_path(bbdb_raw) if bbdb_raw else None
     downloads_raw = _optional_string(data, "downloads_path")
     downloads_path = _expand_path(downloads_raw) if downloads_raw else None
+    theme = _optional_string(data, "theme")
     return AppConfig(
         accounts=accounts,
         use_utf8=use_utf8,
@@ -118,6 +119,7 @@ def _parse_app_config(raw: object) -> AppConfig:
         markdown_compose=markdown_compose,
         bbdb_path=bbdb_path,
         downloads_path=downloads_path,
+        theme=theme,
     )
 
 
