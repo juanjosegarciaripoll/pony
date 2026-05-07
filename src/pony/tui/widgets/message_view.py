@@ -235,6 +235,6 @@ class MessageViewPanel(VerticalScroll):
 
         lines.append("─" * 60)
         lines.append("")
-        lines.append(r.body)
+        lines.append(markup_escape(r.body))
 
         return "\n".join(lines)
