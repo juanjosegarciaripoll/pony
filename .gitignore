@@ -34,3 +34,6 @@ site/
 
 # AI assistant state
 .claude/
+
+# testing files
+coverage
