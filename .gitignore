@@ -37,3 +37,4 @@ site/
 
 # testing files
 coverage
+.coverage
