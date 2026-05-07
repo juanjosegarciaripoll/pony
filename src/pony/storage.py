@@ -352,7 +352,16 @@ class MboxMirrorRepository(MirrorRepository):
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
-        return tuple(sorted(str(key) for key in mbox.keys()))  # noqa: SIM118
+        # mbox.keys() calls iteritems() which calls get_message() for every
+        # entry.  get_message() decodes the "From " envelope line as ASCII and
+        # raises UnicodeDecodeError on non-ASCII mail.  _toc maps int keys to
+        # byte-offset pairs; read it directly to avoid per-message I/O.
+        # _toc is None until _generate_toc() is called (it's lazy — triggered
+        # by _lookup() on first message access).  Force it here so empty
+        # mailboxes return [] rather than crashing.
+        if mbox._toc is None:  # type: ignore[attr-defined]
+            mbox._generate_toc()  # type: ignore[attr-defined]
+        return tuple(sorted(str(k) for k in mbox._toc))  # type: ignore[attr-defined]
 
     def get_message_bytes(
         self,
@@ -363,11 +372,7 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        # typeshed declares get(str), but mbox uses int keys at runtime.
-        message: mailbox.mboxMessage | None = mbox.get(key)  # type: ignore[call-overload]
-        if message is None:
-            raise KeyError(f"message not found: {storage_key}")
-        return message.as_bytes()
+        return _mbox_get_bytes(mbox, key, storage_key)
 
     def set_flags(
         self,
@@ -379,10 +384,7 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        message: mailbox.mboxMessage | None = mbox.get(key)  # type: ignore[call-overload]
-        if message is None:
-            raise KeyError(f"message not found: {storage_key}")
-        updated = mailbox.mboxMessage(message)
+        updated = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
         mbox.flush()
@@ -415,9 +417,7 @@ class MboxMirrorRepository(MirrorRepository):
             return storage_key
         src = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        message: mailbox.mboxMessage | None = src.get(key)  # type: ignore[call-overload]
-        if message is None:
-            raise KeyError(f"message not found: {storage_key}")
+        message = _mbox_get_message(src, key, storage_key)
         dest = self._open_mbox(folder_name=target_folder)
         new_key = str(dest.add(mailbox.mboxMessage(message)))
         dest.flush()
@@ -461,6 +461,52 @@ class MboxMirrorRepository(MirrorRepository):
 
     def _require_folder(self, folder: FolderRef) -> None:
         self._require_account(folder.account_name)
+
+
+# ---------------------------------------------------------------------------
+# mbox helpers
+# ---------------------------------------------------------------------------
+
+
+def _mbox_get_bytes(mbox: mailbox.mbox, key: int, storage_key: str) -> bytes:
+    """Return the raw RFC 5322 bytes for *key* without touching the From line.
+
+    ``mbox.get()`` decodes the "From " envelope line as pure ASCII, which
+    raises ``UnicodeDecodeError`` on any non-ASCII byte in that line.
+    ``get_file()`` returns a binary view of the message body (From line
+    excluded when *from_* is False, the default) and never triggers that
+    decode.
+    """
+    try:
+        f = mbox.get_file(key)  # type: ignore[arg-type]  # typeshed: str; runtime: int
+    except KeyError:
+        raise KeyError(f"message not found: {storage_key}") from None
+    return f.read()
+
+
+def _mbox_get_message(
+    mbox: mailbox.mbox, key: int, storage_key: str
+) -> mailbox.mboxMessage:
+    """Return an mboxMessage for *key* without crashing on non-ASCII From lines.
+
+    ``mbox.get()`` calls ``set_from(...decode('ASCII'))`` on the envelope line,
+    which raises ``UnicodeDecodeError`` for non-ASCII mail.  This helper reads
+    the raw bytes via ``_toc`` / ``_file`` and decodes the From line with
+    ``errors='replace'`` so all mail is readable.
+    """
+    try:
+        toc: dict[int, tuple[int, int]] = mbox._toc  # type: ignore[attr-defined]
+        start, stop = toc[key]
+    except KeyError:
+        raise KeyError(f"message not found: {storage_key}") from None
+    mbox._file.seek(start)  # type: ignore[attr-defined]
+    raw = mbox._file.read(stop - start)  # type: ignore[attr-defined]
+    from_line, sep, body = raw.partition(b"\n")
+    parsed = BytesParser(policy=policy.compat32).parsebytes(body if sep else raw)
+    msg = mailbox.mboxMessage(parsed)
+    if from_line.startswith(b"From "):
+        msg.set_from(from_line[5:].decode("ascii", errors="replace"))
+    return msg
 
 
 # ---------------------------------------------------------------------------
