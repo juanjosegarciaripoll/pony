@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .domain import FolderRef, MessageRef
+from .domain import FolderRef, IndexedMessage, MessageRef
 from .message_projection import project_rfc822_message
 from .protocols import IndexRepository, MirrorRepository
 
@@ -76,10 +77,19 @@ def _ingest_one(
 
 @dataclass(frozen=True, slots=True)
 class RescanResult:
-    """Summary returned by :func:`rescan_local_account`."""
+    """Summary returned by :func:`rescan_local_account`.
+
+    ``added`` and ``removed`` count index rows reconciled against disk.
+    ``reprojected_scanned`` counts overlap rows whose projection was
+    recomputed when ``reproject_existing=True``; ``reprojected`` counts
+    those whose projection actually differed and were upserted.  Both
+    stay at 0 in the default delta-only mode.
+    """
 
     added: int
     removed: int
+    reprojected_scanned: int = 0
+    reprojected: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +97,7 @@ class _FolderPlan:
     folder: FolderRef
     new_keys: tuple[str, ...]
     gone: tuple[tuple[str, MessageRef], ...]
+    existing: tuple[IndexedMessage, ...]
     current_mtime_ns: int
 
 
@@ -105,6 +116,8 @@ def rescan_local_account(
     on_folder_scan: Callable[[str], None] | None = None,
     on_plan: Callable[[RescanResult], None] | None = None,
     progress: RescanProgress | None = None,
+    reproject_existing: bool = False,
+    force_reproject: bool = False,
 ) -> RescanResult:
     """Delta-scan a local account's mirror against the index.
 
@@ -125,6 +138,14 @@ def rescan_local_account(
     scanned folders are updated to the current mtime.  Callers pass an
     empty dict on first run and persist it between runs for the fast
     path to kick in.
+
+    When ``reproject_existing`` is true, rows whose ``storage_key`` is
+    present in both the index and the mirror are also re-projected from
+    their on-disk bytes; the merged row (preserving sync state — uid,
+    flags, status) is upserted when its projection fields differ from
+    the stored row, or unconditionally when ``force_reproject`` is also
+    true.  This makes ``rescan_local_account`` usable as the engine for
+    ``pony rescan`` after a projection-logic change.
 
     Callbacks:
 
@@ -152,14 +173,30 @@ def rescan_local_account(
         if on_folder_scan is not None:
             on_folder_scan(folder.folder_name)
         disk_keys = set(mirror_repository.list_messages(folder=folder))
-        indexed = index_repository.list_folder_storage_keys(folder=folder)
-        new_keys = tuple(sorted(disk_keys - set(indexed)))
-        gone = tuple((key, indexed[key]) for key in sorted(set(indexed) - disk_keys))
+        if reproject_existing:
+            stored_messages = index_repository.list_folder_messages(folder=folder)
+            by_key: dict[str, IndexedMessage] = {
+                m.storage_key: m for m in stored_messages if m.storage_key
+            }
+            indexed_keys = set(by_key)
+            new_keys = tuple(sorted(disk_keys - indexed_keys))
+            gone = tuple(
+                (k, by_key[k].message_ref) for k in sorted(indexed_keys - disk_keys)
+            )
+            existing = tuple(by_key[k] for k in sorted(disk_keys & indexed_keys))
+        else:
+            indexed = index_repository.list_folder_storage_keys(folder=folder)
+            new_keys = tuple(sorted(disk_keys - set(indexed)))
+            gone = tuple(
+                (key, indexed[key]) for key in sorted(set(indexed) - disk_keys)
+            )
+            existing = ()
         plans.append(
             _FolderPlan(
                 folder=folder,
                 new_keys=new_keys,
                 gone=gone,
+                existing=existing,
                 current_mtime_ns=current_mtime,
             )
         )
@@ -167,6 +204,7 @@ def rescan_local_account(
     planned = RescanResult(
         added=sum(len(p.new_keys) for p in plans),
         removed=sum(len(p.gone) for p in plans),
+        reprojected_scanned=sum(len(p.existing) for p in plans),
     )
 
     # Even when no changes were found, folders we *did* walk need their
@@ -176,14 +214,15 @@ def rescan_local_account(
             if plan.current_mtime_ns > 0:
                 scan_state[plan.folder.folder_name] = plan.current_mtime_ns
 
-    if planned.added == 0 and planned.removed == 0:
+    if planned.added == 0 and planned.removed == 0 and planned.reprojected_scanned == 0:
         return planned
 
     if on_plan is not None:
         on_plan(planned)
 
-    total = planned.added + planned.removed
+    total = planned.added + planned.removed + planned.reprojected_scanned
     done = 0
+    reprojected = 0
     with index_repository.connection():
         for plan in plans:
             for key in plan.new_keys:
@@ -201,5 +240,43 @@ def rescan_local_account(
                 done += 1
                 if progress is not None:
                     progress(plan.folder.folder_name, done, total)
+            for stored in plan.existing:
+                raw = mirror_repository.get_message_bytes(
+                    folder=plan.folder,
+                    storage_key=stored.storage_key,
+                )
+                fresh = project_rfc822_message(
+                    message_ref=stored.message_ref,
+                    raw_message=raw,
+                    storage_key=stored.storage_key,
+                )
+                if force_reproject or not _projection_matches(stored, fresh):
+                    merged = dataclasses.replace(
+                        stored,
+                        sender=fresh.sender,
+                        recipients=fresh.recipients,
+                        cc=fresh.cc,
+                        subject=fresh.subject,
+                        body_preview=fresh.body_preview,
+                        has_attachments=fresh.has_attachments,
+                        received_at=fresh.received_at,
+                    )
+                    index_repository.update_message(message=merged)
+                    reprojected += 1
+                done += 1
+                if progress is not None:
+                    progress(plan.folder.folder_name, done, total)
 
-    return planned
+    return dataclasses.replace(planned, reprojected=reprojected)
+
+
+def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
+    return (
+        stored.sender == fresh.sender
+        and stored.recipients == fresh.recipients
+        and stored.cc == fresh.cc
+        and stored.subject == fresh.subject
+        and stored.body_preview == fresh.body_preview
+        and stored.has_attachments == fresh.has_attachments
+        and stored.received_at == fresh.received_at
+    )

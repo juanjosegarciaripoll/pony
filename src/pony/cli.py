@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import logging
 import shutil
 import sqlite3
@@ -37,7 +36,6 @@ from .index_store import (
     SqliteIndexRepository,
     load_contacts_for_backup,
 )
-from .message_projection import project_rfc822_message
 from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .services import CheckStatus, ServiceStatus, build_service_status
@@ -1180,13 +1178,17 @@ def run_rescan(
 ) -> int:
     """Re-project indexed messages from the local mirror.
 
-    Refreshes cached projection fields (sender, recipients, subject,
-    body_preview, has_attachments, received_at) without re-downloading
-    from IMAP.  Preserves sync state (flags, uid, status).
+    Routes through :func:`storage_indexing.rescan_local_account` so the
+    folder-mtime fast path (cold archives skip re-walking entirely) and
+    the disk/index reconciliation (orphan rows pruned, externally-added
+    files indexed) come along for free.  Preserves sync state — uid,
+    flags, status — by merging only projection fields onto the stored
+    row.
 
-    When ``force`` is true, every row is upserted even if the new
-    projection matches the stored one — useful after a projection-logic
-    change that silently corrects past data.
+    When ``force`` is true, the per-folder mtime cache is bypassed and
+    every overlap row is upserted even when the projection is unchanged
+    — useful after a projection-logic change that silently corrects
+    past data.
     """
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -1199,58 +1201,42 @@ def run_rescan(
         if not accounts:
             raise SystemExit(f"No account named {account!r} in config.")
 
-    total = 0
-    changed = 0
-    missing = 0
+    scan_state_path = paths.data_dir / "local_scan_state.json"
+    scan_state_by_account = _load_scan_state(scan_state_path)
+
+    total_scanned = 0
+    total_updated = 0
+    total_added = 0
+    total_removed = 0
     for acc in accounts:
         mirror = _build_mirror(acc)
         print(f"Rescanning {acc.name}...")
-        for folder in mirror.list_folders(account_name=acc.name):
-            messages = index.list_folder_messages(folder=folder)
-            folder_total = len(messages)
-            folder_changed = 0
-            with index.connection():
-                for i, stored in enumerate(messages, start=1):
-                    total += 1
-                    try:
-                        raw = mirror.get_message_bytes(
-                            folder=folder,
-                            storage_key=stored.storage_key,
-                        )
-                    except (KeyError, FileNotFoundError):
-                        missing += 1
-                        _rescan_progress(folder.folder_name, i, folder_total)
-                        continue
-                    fresh = project_rfc822_message(
-                        message_ref=stored.message_ref,
-                        raw_message=raw,
-                        storage_key=stored.storage_key,
-                    )
-                    if force or not _projection_matches(stored, fresh):
-                        merged = dataclasses.replace(
-                            stored,
-                            sender=fresh.sender,
-                            recipients=fresh.recipients,
-                            cc=fresh.cc,
-                            subject=fresh.subject,
-                            body_preview=fresh.body_preview,
-                            has_attachments=fresh.has_attachments,
-                            received_at=fresh.received_at,
-                        )
-                        index.upsert_message(message=merged)
-                        folder_changed += 1
-                    _rescan_progress(folder.folder_name, i, folder_total)
-            changed += folder_changed
-            # Final line overwrites the progress ticker and terminates with \n.
-            print(
-                f"\r  {folder.folder_name}: "
-                f"{folder_changed} updated ({folder_total} scanned)" + " " * 20
-            )
+        if force:
+            scan_state_by_account[acc.name] = {}
+        state = scan_state_by_account.setdefault(acc.name, {})
 
-    print(
-        f"Rescan complete: {changed}/{total} message(s) updated"
-        + (f", {missing} missing from mirror." if missing else ".")
-    )
+        result = rescan_local_account(
+            mirror_repository=mirror,
+            index_repository=index,
+            account_name=acc.name,
+            scan_state=state,
+            reproject_existing=True,
+            force_reproject=force,
+            progress=_rescan_progress,
+        )
+        total_scanned += result.reprojected_scanned
+        total_updated += result.reprojected
+        total_added += result.added
+        total_removed += result.removed
+
+    _save_scan_state(scan_state_path, scan_state_by_account)
+
+    summary_parts = [f"{total_updated}/{total_scanned} message(s) updated"]
+    if total_added:
+        summary_parts.append(f"{total_added} added")
+    if total_removed:
+        summary_parts.append(f"{total_removed} removed")
+    print("Rescan complete: " + ", ".join(summary_parts) + ".")
     return 0
 
 
@@ -1258,18 +1244,11 @@ def _rescan_progress(folder_name: str, done: int, total: int) -> None:
     """Overwrite-in-place progress ticker; throttled to avoid stdout flooding."""
     if done != total and done % 20 != 0:
         return
-    print(f"\r  {folder_name}: {done}/{total}", end="", flush=True)
-
-
-def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
-    return (
-        stored.sender == fresh.sender
-        and stored.recipients == fresh.recipients
-        and stored.cc == fresh.cc
-        and stored.subject == fresh.subject
-        and stored.body_preview == fresh.body_preview
-        and stored.has_attachments == fresh.has_attachments
-        and stored.received_at == fresh.received_at
+    end = "\n" if done == total else ""
+    print(
+        f"\r  {folder_name}: {done}/{total}" + " " * 20,
+        end=end,
+        flush=True,
     )
 
 
