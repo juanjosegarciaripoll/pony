@@ -111,9 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
         "fields like body_preview without re-downloading).",
     )
     rescan_parser.add_argument(
-        "account",
-        nargs="?",
-        help="Only rescan one account.",
+        "--account",
+        help="Only rescan one account (matches both IMAP-backed and "
+        "local-mirror accounts).",
     )
     rescan_parser.add_argument(
         "--force",
@@ -1185,6 +1185,10 @@ def run_rescan(
     flags, status — by merging only projection fields onto the stored
     row.
 
+    Operates on every configured account regardless of type — the
+    typical caller is a ``LocalAccountConfig`` (mbox/Maildir archive)
+    where projection drift can't be repaired by a normal sync.
+
     When ``force`` is true, the per-folder mtime cache is bypassed and
     every overlap row is upserted even when the projection is unchanged
     — useful after a projection-logic change that silently corrects
@@ -1195,7 +1199,7 @@ def run_rescan(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
 
-    accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
+    accounts = list(config.accounts)
     if account:
         accounts = [a for a in accounts if a.name == account]
         if not accounts:
@@ -1252,7 +1256,7 @@ def _rescan_progress(folder_name: str, done: int, total: int) -> None:
     )
 
 
-def _build_mirror(acc: AccountConfig) -> MirrorRepository:
+def _build_mirror(acc: AnyAccount) -> MirrorRepository:
     if acc.mirror.format == "maildir":
         return MaildirMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
     return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)

@@ -287,7 +287,13 @@ class CliTestCase(unittest.TestCase):
     def test_rescan_unknown_account_errors(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:
             with self.assertRaises(SystemExit) as ctx:
-                run_cli("--config", str(config_path), "rescan", "nonexistent")
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "rescan",
+                    "--account",
+                    "nonexistent",
+                )
             self.assertIn("nonexistent", str(ctx.exception))
 
     def test_folder_list_shows_counts_and_sync_status(self) -> None:
