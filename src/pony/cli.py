@@ -1209,36 +1209,37 @@ def run_rescan(
             messages = index.list_folder_messages(folder=folder)
             folder_total = len(messages)
             folder_changed = 0
-            for i, stored in enumerate(messages, start=1):
-                total += 1
-                try:
-                    raw = mirror.get_message_bytes(
-                        folder=folder,
+            with index.connection():
+                for i, stored in enumerate(messages, start=1):
+                    total += 1
+                    try:
+                        raw = mirror.get_message_bytes(
+                            folder=folder,
+                            storage_key=stored.storage_key,
+                        )
+                    except (KeyError, FileNotFoundError):
+                        missing += 1
+                        _rescan_progress(folder.folder_name, i, folder_total)
+                        continue
+                    fresh = project_rfc822_message(
+                        message_ref=stored.message_ref,
+                        raw_message=raw,
                         storage_key=stored.storage_key,
                     )
-                except (KeyError, FileNotFoundError):
-                    missing += 1
+                    if force or not _projection_matches(stored, fresh):
+                        merged = dataclasses.replace(
+                            stored,
+                            sender=fresh.sender,
+                            recipients=fresh.recipients,
+                            cc=fresh.cc,
+                            subject=fresh.subject,
+                            body_preview=fresh.body_preview,
+                            has_attachments=fresh.has_attachments,
+                            received_at=fresh.received_at,
+                        )
+                        index.upsert_message(message=merged)
+                        folder_changed += 1
                     _rescan_progress(folder.folder_name, i, folder_total)
-                    continue
-                fresh = project_rfc822_message(
-                    message_ref=stored.message_ref,
-                    raw_message=raw,
-                    storage_key=stored.storage_key,
-                )
-                if force or not _projection_matches(stored, fresh):
-                    merged = dataclasses.replace(
-                        stored,
-                        sender=fresh.sender,
-                        recipients=fresh.recipients,
-                        cc=fresh.cc,
-                        subject=fresh.subject,
-                        body_preview=fresh.body_preview,
-                        has_attachments=fresh.has_attachments,
-                        received_at=fresh.received_at,
-                    )
-                    index.upsert_message(message=merged)
-                    folder_changed += 1
-                _rescan_progress(folder.folder_name, i, folder_total)
             changed += folder_changed
             # Final line overwrites the progress ticker and terminates with \n.
             print(
