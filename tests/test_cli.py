@@ -233,6 +233,57 @@ class CliTestCase(unittest.TestCase):
             self.assertIn("plain body", refreshed.body_preview)
             self.assertNotEqual(refreshed.body_preview, "stale preview")
 
+    def test_rescan_force_upserts_unchanged_rows(self) -> None:
+        """`pony rescan --force` upserts every row even when projection matches."""
+        from email.message import EmailMessage
+
+        from pony.config import load_config
+        from pony.domain import FolderRef, MessageRef
+        from pony.index_store import SqliteIndexRepository
+        from pony.message_projection import project_rfc822_message
+        from pony.paths import AppPaths
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+
+            msg = EmailMessage()
+            msg["From"] = "sender@example.com"
+            msg["To"] = account.email_address
+            msg["Subject"] = "Already up to date"
+            msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+            msg["Message-ID"] = f"<force-{uuid4().hex}@example.com>"
+            msg.set_content("body")
+            raw = msg.as_bytes()
+
+            mirror = MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            )
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+            storage_key = mirror.store_message(folder=folder, raw_message=raw)
+            projected = project_rfc822_message(
+                message_ref=MessageRef(
+                    account_name=account.name,
+                    folder_name="INBOX",
+                    id=0,
+                ),
+                raw_message=raw,
+                storage_key=storage_key,
+            )
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            index.insert_message(message=projected)
+
+            output = run_cli("--config", str(config_path), "rescan")
+            self.assertIn("0/1", output)
+
+            output = run_cli("--config", str(config_path), "rescan", "--force")
+            self.assertIn("1/1", output)
+
     def test_rescan_unknown_account_errors(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:
             with self.assertRaises(SystemExit) as ctx:

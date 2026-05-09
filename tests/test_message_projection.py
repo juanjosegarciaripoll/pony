@@ -218,6 +218,27 @@ class MissingMessageIdProjectionTest(unittest.TestCase):
         self.assertIn("message-id", msg.body_preview)
 
 
+class EmptySubjectProjectionTest(unittest.TestCase):
+    """``Subject:`` with no value must not slurp the next header line."""
+
+    def test_empty_subject_does_not_capture_following_header(self) -> None:
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Subject:\r\n"
+            b"Date: Sun, 10 Apr 2016 12:48:34 +0200\r\n"
+            b"Message-ID: <abc@example.com>\r\n"
+            b"\r\n"
+            b"body text\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.subject, "")
+        self.assertEqual(
+            msg.received_at,
+            datetime(2016, 4, 10, 10, 48, 34, tzinfo=UTC),
+        )
+
+
 class InlineImageProjectionTest(unittest.TestCase):
     """Inline CID image must NOT be counted as an attachment."""
 

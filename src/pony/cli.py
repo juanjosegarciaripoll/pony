@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Only rescan one account.",
     )
+    rescan_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-upsert every indexed message even when the projection "
+        "appears unchanged.",
+    )
 
     sync_parser = subparsers.add_parser("sync", help="Run mail synchronization.")
     sync_parser.add_argument("account", nargs="?", help="Only sync one account.")
@@ -400,6 +406,7 @@ def _dispatch(
             paths=paths,
             config_path=args.config,
             account=args.account,
+            force=args.force,
         )
     if args.command == "search":
         return run_search(paths=paths, config_path=args.config, query=args.query)
@@ -719,6 +726,17 @@ def run_sync(
     header = f"Sync plan: {summary}" if summary else "Sync plan"
     print(f"{header}\n{format_plan_detail(plan)}")
 
+    confirm_folders = plan.folders_needing_confirmation()
+    if confirm_folders:
+        print(
+            "\nWARNING: one or more folders show large server-side deletions"
+            " (>20% of known messages). This usually means the server"
+            " expunged old mail, but it can also indicate a misconfigured"
+            " account. Review the lines marked [CONFIRM: ...] above."
+            ' Answering "y" will apply ALL deletions, including those'
+            " folders."
+        )
+
     if not yes:
         if not sys.stdin.isatty():
             # Some Windows shells (notably MinTTY / git-bash) present
@@ -753,7 +771,9 @@ def run_sync(
 
     # Pass 2: execute
     print()  # newline after any \r progress
-    result = service.execute(plan, progress=_cli_progress)
+    result = service.execute(
+        plan, confirmed_folders=confirm_folders, progress=_cli_progress
+    )
     print()  # newline after any \r progress
 
     for account_result in result.accounts:
@@ -1156,12 +1176,17 @@ def run_rescan(
     paths: AppPaths,
     config_path: Path | None,
     account: str | None,
+    force: bool = False,
 ) -> int:
     """Re-project indexed messages from the local mirror.
 
     Refreshes cached projection fields (sender, recipients, subject,
     body_preview, has_attachments, received_at) without re-downloading
     from IMAP.  Preserves sync state (flags, uid, status).
+
+    When ``force`` is true, every row is upserted even if the new
+    projection matches the stored one — useful after a projection-logic
+    change that silently corrects past data.
     """
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -1200,7 +1225,7 @@ def run_rescan(
                     raw_message=raw,
                     storage_key=stored.storage_key,
                 )
-                if not _projection_matches(stored, fresh):
+                if force or not _projection_matches(stored, fresh):
                     merged = dataclasses.replace(
                         stored,
                         sender=fresh.sender,

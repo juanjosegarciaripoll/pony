@@ -21,8 +21,11 @@ from .html_sanitize import html_to_preview_text
 _HEADER_BODY_RE = re.compile(rb"\r?\n\r?\n", re.MULTILINE)
 
 # Header extraction: handles continuation lines (leading whitespace).
+# Use ``[ \t]*`` (not ``\s*``) after the colon so an empty header value
+# like ``Subject:\r\n`` does not slurp the next line — otherwise ``Subject``
+# would capture the following ``Date:`` line as its value.
 _HEADER_RE = re.compile(
-    rb"^([\w-]+):\s*(.*(?:\r?\n[ \t]+.*)*)",
+    rb"^([\w-]+):[ \t]*(.*(?:\r?\n[ \t]+.*)*)",
     re.MULTILINE | re.IGNORECASE,
 )
 
