@@ -6,7 +6,7 @@ import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from email.utils import formataddr, getaddresses
+from email.utils import getaddresses
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -37,7 +37,7 @@ from ...message_projection import project_rfc822_message
 from ...protocols import ContactRepository, IndexRepository, MirrorRepository
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
-from ..compose_utils import build_email_message
+from ..compose_utils import build_email_message, format_display_address
 
 _log = logging.getLogger(__name__)
 
@@ -668,7 +668,9 @@ class ComposeScreen(Screen[bool]):
                 email_address=account.email_address
             )
             if contact is not None and contact.display_name:
-                return formataddr((contact.display_name, account.email_address))
+                return format_display_address(
+                    contact.display_name, account.email_address
+                )
         return account.email_address
 
     def _account_from_label(self, account: AnyAccount) -> str:
