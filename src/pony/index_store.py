@@ -7,7 +7,7 @@ import dataclasses
 import json
 import sqlite3
 import threading
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
@@ -694,6 +694,34 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (account_name,),
             ).fetchall()
         return {str(r[0]): int(r[1]) for r in rows}
+
+    def list_folder_storage_keys(
+        self, *, folder: FolderRef
+    ) -> Mapping[str, MessageRef]:
+        """Return ``{storage_key: message_ref}`` for every row in *folder*.
+
+        Lean projection used by the local-mirror rescan: it only needs
+        the storage_key set (to diff against disk) plus a MessageRef for
+        each gone row (to delete it).  Pulling 23 columns and parsing
+        flags/datetimes for every row was the dominant cost on cold
+        startup of large archives.  Empty storage_keys (pending-append
+        rows) are filtered in SQL.
+        """
+        with self._use() as conn:
+            rows = conn.execute(
+                "SELECT id, storage_key FROM messages "
+                "WHERE account_name = ? AND folder_name = ? "
+                "AND storage_key != ''",
+                (folder.account_name, folder.folder_name),
+            ).fetchall()
+        return {
+            str(r[1]): MessageRef(
+                account_name=folder.account_name,
+                folder_name=folder.folder_name,
+                id=int(str(r[0])),
+            )
+            for r in rows
+        }
 
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
         """Return indexed messages for a folder ordered by received date."""

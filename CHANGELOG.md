@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+
+- **Cold-start local rescan skips full-row hydration**: when
+  ``rescan_local_account`` couldn't short-circuit a folder via the
+  mtime cache (first run after install, deleted ``local_scan_state.json``,
+  or any folder whose mtime advanced) it called ``list_folder_messages``
+  just to read each row's ``storage_key``, materialising the full
+  23-column ``IndexedMessage`` (datetime parses, three flag-set
+  constructions, etc.) for every indexed row.  Added a lean
+  ``IndexRepository.list_folder_storage_keys`` that returns
+  ``{storage_key: MessageRef}`` from a two-column ``SELECT`` (with the
+  empty-storage_key filter pushed into SQL) and switched the rescan to
+  use it.  Schema unchanged.
+
+### Changed
+
+- **Mass-deletion confirmation no longer silently skipped**: when sync
+  detects a folder with >20% server-side deletions, the CLI and TUI now
+  show a `[CONFIRM: would delete N of M (Z%)]` line per folder and a
+  warning paragraph explaining the situation.  Confirming the plan
+  ("y" in CLI, "Y" in TUI, or `--yes`) applies all deletions including
+  those flagged folders, instead of silently dropping them.
+
 ### Added
 
 - **Textual theme selection**: set `theme = "nord"` (or any Textual theme name)

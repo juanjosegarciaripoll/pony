@@ -152,15 +152,9 @@ def rescan_local_account(
         if on_folder_scan is not None:
             on_folder_scan(folder.folder_name)
         disk_keys = set(mirror_repository.list_messages(folder=folder))
-        indexed = {
-            m.storage_key: m
-            for m in index_repository.list_folder_messages(folder=folder)
-            if m.storage_key
-        }
+        indexed = index_repository.list_folder_storage_keys(folder=folder)
         new_keys = tuple(sorted(disk_keys - set(indexed)))
-        gone = tuple(
-            (key, indexed[key].message_ref) for key in sorted(set(indexed) - disk_keys)
-        )
+        gone = tuple((key, indexed[key]) for key in sorted(set(indexed) - disk_keys))
         plans.append(
             _FolderPlan(
                 folder=folder,

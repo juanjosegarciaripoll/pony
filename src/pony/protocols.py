@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import Protocol
 
 from .domain import (
@@ -222,6 +222,18 @@ class IndexRepository(Protocol):
 
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
         """Return indexed messages from one folder."""
+        ...
+
+    def list_folder_storage_keys(
+        self, *, folder: FolderRef
+    ) -> Mapping[str, MessageRef]:
+        """Return ``{storage_key: message_ref}`` for every row in *folder*.
+
+        Lean alternative to :meth:`list_folder_messages` for the
+        local-mirror rescan, which only needs the storage_key set and a
+        MessageRef per row.  Empty storage_keys (pending-append rows)
+        are filtered out.
+        """
         ...
 
     def list_folder_message_summaries(

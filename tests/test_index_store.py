@@ -68,6 +68,20 @@ class UpsertAndListTestCase(unittest.TestCase):
         other = FolderRef(account_name="personal", folder_name="Sent")
         self.assertEqual(repo.list_folder_messages(folder=other), ())
 
+    def test_list_folder_storage_keys_returns_dict(self) -> None:
+        repo = _fresh_repo()
+        a = repo.insert_message(message=_make_message("m-1", storage_key="k-1"))
+        b = repo.insert_message(message=_make_message("m-2", storage_key="k-2"))
+        # Pending-append row (empty storage_key) must be filtered out.
+        repo.insert_message(message=_make_message("m-3", storage_key=""))
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        keys = repo.list_folder_storage_keys(folder=folder)
+
+        self.assertEqual(set(keys), {"k-1", "k-2"})
+        self.assertEqual(keys["k-1"], a.message_ref)
+        self.assertEqual(keys["k-2"], b.message_ref)
+
     def test_list_folder_messages_isolates_folders(self) -> None:
         repo = _fresh_repo()
         repo.upsert_message(
