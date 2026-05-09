@@ -258,6 +258,8 @@ class FolderSyncPlan:
     highest_uid: int
     ops: tuple[SyncOp, ...]
     needs_confirmation: bool = False
+    pending_delete_count: int = 0
+    pending_delete_total: int = 0
     is_new: bool = False
     scan_ms: int = 0
     highest_modseq: int = 0
@@ -291,6 +293,15 @@ class SyncPlan:
             for f in a.folders
             for op in f.ops
             if isinstance(op, op_type)
+        )
+
+    def folders_needing_confirmation(self) -> frozenset[str]:
+        """Folder names whose mass-deletion safety halt requires user OK."""
+        return frozenset(
+            f.folder_name
+            for a in self.accounts
+            for f in a.folders
+            if f.needs_confirmation
         )
 
 
@@ -378,7 +389,16 @@ def format_plan_detail(plan: SyncPlan) -> str:
         for folder in acct.folders:
             counts = _categorize_ops(folder.ops)
             parts = _format_op_counts(counts)
-            confirm = " [needs confirmation]" if folder.needs_confirmation else ""
+            if folder.needs_confirmation and folder.pending_delete_total:
+                pct = folder.pending_delete_count / folder.pending_delete_total * 100
+                confirm = (
+                    f" [CONFIRM: would delete {folder.pending_delete_count}"
+                    f" of {folder.pending_delete_total} ({pct:.0f}%)]"
+                )
+            elif folder.needs_confirmation:
+                confirm = " [needs confirmation]"
+            else:
+                confirm = ""
             if parts:
                 lines.append(f"    {folder.folder_name}: " + ", ".join(parts) + confirm)
             elif folder.is_new:
@@ -1140,6 +1160,8 @@ class ImapSyncService:
             highest_uid=max(remote_uids) if remote_uids else 0,
             ops=tuple(ops),
             needs_confirmation=needs_confirmation,
+            pending_delete_count=delete_count,
+            pending_delete_total=total_known,
         )
 
     def _plan_new_folder(

@@ -348,8 +348,12 @@ class MainScreen(Screen[None]):
         def _progress(info: ProgressInfo) -> None:
             self.app.call_from_thread(self._sync_progress, info)  # pyright: ignore[reportUnknownMemberType]
 
+        confirmed = plan.folders_needing_confirmation()
+
         def _run() -> SyncResult:
-            return service.execute(plan, progress=_progress)
+            return service.execute(
+                plan, confirmed_folders=confirmed, progress=_progress
+            )
 
         self.run_worker(_run, name="sync-exec", thread=True)
 

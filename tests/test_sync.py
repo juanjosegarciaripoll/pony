@@ -1453,6 +1453,73 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
         # Folder should be in skipped.
         self.assertIn("INBOX", result.accounts[0].skipped_folders)
 
+    def test_plan_records_pending_delete_stats(self) -> None:
+        """Flagged folder records delete count + total for UI rendering."""
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<stat{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<stat{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, _, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+
+        for uid in range(1, 6):
+            del session.folders["INBOX"][uid]
+
+        plan = service.plan()
+        folder_plan = plan.accounts[0].folders[0]
+        self.assertEqual(folder_plan.pending_delete_count, 5)
+        self.assertEqual(folder_plan.pending_delete_total, 10)
+        self.assertEqual(plan.folders_needing_confirmation(), frozenset({"INBOX"}))
+
+    def test_format_plan_detail_shows_confirm_stats(self) -> None:
+        """format_plan_detail emits an explicit [CONFIRM: N of M (Z%)] suffix."""
+        from pony.sync import format_plan_detail
+
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<fmt{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<fmt{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, _, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+        for uid in range(1, 6):
+            del session.folders["INBOX"][uid]
+        plan = service.plan()
+        text = format_plan_detail(plan)
+        self.assertIn("[CONFIRM: would delete 5 of 10 (50%)]", text)
+
+    def test_confirmed_folder_executes_deletes(self) -> None:
+        """Passing the flagged folder via confirmed_folders applies deletes."""
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<conf{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<conf{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+        for uid in range(1, 6):
+            del session.folders["INBOX"][uid]
+
+        plan = service.plan()
+        result = service.execute(
+            plan, confirmed_folders=plan.folders_needing_confirmation()
+        )
+        self.assertNotIn("INBOX", result.accounts[0].skipped_folders)
+
+        # After re-planning the folder should no longer need confirmation.
+        plan2 = service.plan()
+        self.assertEqual(plan2.folders_needing_confirmation(), frozenset())
+
 
 class TrashGcTestCase(unittest.TestCase):
     """4d: trash GC purges expired trashed messages."""

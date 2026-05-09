@@ -48,6 +48,11 @@ class SyncConfirmScreen(DialogScreen):
         margin-bottom: 1;
     }
 
+    #confirm-warning {
+        color: $warning;
+        margin-bottom: 1;
+    }
+
     #progress-bar {
         height: auto;
         margin-bottom: 1;
@@ -94,9 +99,12 @@ class SyncConfirmScreen(DialogScreen):
                 skipped = self._skipped_text()
                 if skipped:
                     yield Static(skipped, id="skipped")
+                warning = self._confirm_warning_text()
+                if warning:
+                    yield Static(warning, id="confirm-warning")
                 with Horizontal(id="buttons"):
                     yield Button(
-                        "Proceed [Y]",
+                        self._proceed_label(),
                         id="proceed",
                         variant="success",
                     )
@@ -123,13 +131,34 @@ class SyncConfirmScreen(DialogScreen):
                 Static(summary, id="summary"),
                 before=self.query_one("#detail"),
             )
+        warning = self._confirm_warning_text()
+        if warning:
+            dialog.mount(Static(warning, id="confirm-warning"))
         buttons = Horizontal(
-            Button("Proceed [Y]", id="proceed", variant="success"),
+            Button(self._proceed_label(), id="proceed", variant="success"),
             Button("Cancel [N]", id="cancel", variant="error"),
             id="buttons",
         )
         dialog.mount(buttons)
         self.query_one("#proceed", Button).focus()
+
+    def _confirm_warning_text(self) -> str:
+        if self._plan is None:
+            return ""
+        flagged = self._plan.folders_needing_confirmation()
+        if not flagged:
+            return ""
+        return (
+            "WARNING: one or more folders show large server-side deletions"
+            " (>20% of known messages). Review the lines marked"
+            " [CONFIRM: ...] above. Pressing Y will apply ALL deletions,"
+            " including those folders."
+        )
+
+    def _proceed_label(self) -> str:
+        if self._plan is not None and self._plan.folders_needing_confirmation():
+            return "Proceed (incl. flagged) [Y]"
+        return "Proceed [Y]"
 
     def _skipped_text(self) -> str:
         if self._plan is None:
