@@ -35,7 +35,7 @@ uv run pytest
 
 ## Dependencies
 
-Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `mcp`. New deps need approval.
+Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `tinymcp`. New deps need approval.
 Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage`, `pyinstrument`, `mkdocs-material`.
 
 ## Config
