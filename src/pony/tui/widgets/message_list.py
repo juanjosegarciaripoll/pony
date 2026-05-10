@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
 from rich.text import Text
+from textual import work
 from textual.message import Message
 from textual.widgets import DataTable
 from textual.widgets._data_table import ColumnKey
+from textual.worker import Worker
 
 from ...domain import (
     FolderMessageSummary,
@@ -69,6 +72,8 @@ class MessageListPanel(DataTable[Text | str]):
     class SearchExited(Message):
         """Posted when the user exits search-results mode."""
 
+    _LOAD_BATCH = 200
+
     def __init__(self, index: IndexRepository, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._index = index
@@ -77,6 +82,13 @@ class MessageListPanel(DataTable[Text | str]):
         self._in_search: bool = False
         self._row_col_key: ColumnKey | None = None
         self._from_width_cached: int = 0
+        # Keys whose row has actually been added to the DataTable.
+        # Populated incrementally by the streaming load worker.
+        self._loaded_keys: set[str] = set()
+        # The current streaming-load worker. Actions that must operate
+        # on the *complete* row set (cursor-last, mark-all-read) await
+        # ``wait_for_load_complete()`` before running.
+        self._load_worker: Worker[None] | None = None
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
@@ -114,8 +126,14 @@ class MessageListPanel(DataTable[Text | str]):
 
     def _update_row(self, summary: FolderMessageSummary) -> None:
         assert self._row_col_key is not None
+        key = str(summary.message_ref.id)
+        # The streaming loader may not have inserted this row yet; the
+        # eventual insert will pick up the latest summary because
+        # ``_summaries`` is the source of cell content via ``_cell_for``.
+        if key not in self._loaded_keys:
+            return
         self.update_cell(
-            row_key=str(summary.message_ref.id),
+            row_key=key,
             column_key=self._row_col_key,
             value=self._cell_for(summary),
         )
@@ -125,19 +143,18 @@ class MessageListPanel(DataTable[Text | str]):
 
         The SQL path pre-filters to ``local_status='active'`` and
         pre-sorts by ``received_at DESC`` so no Python-side filter or
-        sort is needed.
+        sort is needed. Row insertion into the underlying ``DataTable``
+        is streamed in batches by a worker so the UI thread isn't
+        blocked on large folders.
         """
         self._in_search = False
         self._marked.clear()
         self.border_title = "Messages"
         self.clear()
+        self._loaded_keys.clear()
         summaries = list(self._index.list_folder_message_summaries(folder=folder_ref))
         self._summaries = summaries
-        for summary in summaries:
-            self.add_row(
-                self._cell_for(summary),
-                key=str(summary.message_ref.id),
-            )
+        self._load_worker = self._stream_rows(summaries)
 
     def load_search_results(
         self, messages: list[IndexedMessage], query_raw: str
@@ -151,17 +168,32 @@ class MessageListPanel(DataTable[Text | str]):
         self._marked.clear()
         self.border_title = f"Search: {query_raw}  [q=exit]"
         self.clear()
+        self._loaded_keys.clear()
         msgs = list(messages)
         msgs.sort(key=lambda m: m.received_at, reverse=True)
         summaries = [_summary_from_indexed(m) for m in msgs]
         self._summaries = summaries
-        for summary in summaries:
-            self.add_row(
-                self._cell_for(summary),
-                key=str(summary.message_ref.id),
-            )
+        self._load_worker = self._stream_rows(summaries)
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
+
+    @work(exclusive=True, group="message-list-load")
+    async def _stream_rows(self, summaries: list[FolderMessageSummary]) -> None:
+        """Insert rows in batches, yielding to the event loop between them.
+
+        ``exclusive=True`` ensures a second ``load_folder`` call cancels
+        the in-flight load before this one starts adding rows for the
+        previous folder.
+        """
+        for i in range(0, len(summaries), self._LOAD_BATCH):
+            chunk = summaries[i : i + self._LOAD_BATCH]
+            for summary in chunk:
+                key = str(summary.message_ref.id)
+                self.add_row(self._cell_for(summary), key=key)
+                self._loaded_keys.add(key)
+            # Yield to the event loop so input, render, and the
+            # message-selected auto-preview can interleave with loading.
+            await asyncio.sleep(0)
 
     def _summary_for_row_key(self, row_key: object) -> FolderMessageSummary | None:
         from textual.widgets._data_table import RowKey
@@ -192,9 +224,19 @@ class MessageListPanel(DataTable[Text | str]):
         if self._summaries:
             self.move_cursor(row=0)
 
-    def action_cursor_last(self) -> None:
+    async def action_cursor_last(self) -> None:
+        # "Last" means the actual last message, not the last currently
+        # streamed; wait for the load to finish before moving.
+        await self.wait_for_load_complete()
         if self._summaries:
             self.move_cursor(row=len(self._summaries) - 1)
+
+    async def wait_for_load_complete(self) -> None:
+        """Await completion of the in-flight folder-load worker, if any."""
+        worker = self._load_worker
+        if worker is None or worker.is_finished:
+            return
+        await worker.wait()
 
     def move_cursor_to_next_unread(self) -> FolderMessageSummary | None:
         """Move to the first unread message after the current row.
