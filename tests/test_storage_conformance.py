@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mailbox
 import unittest
 from email.message import EmailMessage
 from uuid import uuid4
@@ -10,7 +11,7 @@ from conftest import TMP_ROOT
 
 from pony.domain import FolderRef, MessageFlag
 from pony.protocols import MirrorRepository
-from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
+from pony.storage import MaildirMirrorRepository, MboxMirrorRepository, _build_mbox_toc
 
 
 def _rfc5322_message_bytes(subject: str, message_id: str) -> bytes:
@@ -256,3 +257,63 @@ def sample_message_bytes(subject: str) -> bytes:
     message["Date"] = "Fri, 10 Apr 2026 10:00:00 +0000"
     message.set_content("sample body")
     return message.as_bytes()
+
+
+class BuildMboxTocTestCase(unittest.TestCase):
+    """``_build_mbox_toc`` must match ``mailbox.mbox._generate_toc`` exactly.
+
+    The TUI's first-message preview path assigns the result directly to
+    ``mbox._toc`` (and friends), so any divergence in start/stop offsets
+    would corrupt every read.
+    """
+
+    def _build_fixture(
+        self, subjects: list[str]
+    ) -> tuple[dict[int, tuple[int, int]], int, int]:
+        root = TMP_ROOT / "storage" / "mbox-toc" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "fixture.mbox"
+        mb = mailbox.mbox(str(path), create=True)
+        for subject in subjects:
+            mb.add(mailbox.mboxMessage(sample_message_bytes(subject)))
+        mb.flush()
+        mb.close()
+
+        # Stdlib reference: open fresh, force toc.
+        ref = mailbox.mbox(str(path), create=False)
+        ref._generate_toc()  # type: ignore[attr-defined]
+        ref_toc = dict(ref._toc)  # type: ignore[attr-defined]
+        ref_next: int = ref._next_key  # type: ignore[attr-defined]
+        ref_filelen: int = ref._file_length  # type: ignore[attr-defined]
+        ref.close()
+
+        toc, next_key, file_length = _build_mbox_toc(path)
+        self.assertEqual(toc, ref_toc)
+        self.assertEqual(next_key, ref_next)
+        self.assertEqual(file_length, ref_filelen)
+        return toc, next_key, file_length
+
+    def test_empty_mbox(self) -> None:
+        toc, next_key, file_length = self._build_fixture([])
+        self.assertEqual(toc, {})
+        self.assertEqual(next_key, 0)
+        self.assertEqual(file_length, 0)
+
+    def test_single_message(self) -> None:
+        toc, next_key, _ = self._build_fixture(["only"])
+        self.assertEqual(set(toc), {0})
+        self.assertEqual(next_key, 1)
+
+    def test_multiple_messages(self) -> None:
+        toc, next_key, _ = self._build_fixture(
+            ["first", "second", "third", "fourth", "fifth"]
+        )
+        self.assertEqual(set(toc), {0, 1, 2, 3, 4})
+        self.assertEqual(next_key, 5)
+        # Offsets must be strictly monotonic and disjoint.
+        prev_stop = -1
+        for k in sorted(toc):
+            start, stop = toc[k]
+            self.assertGreaterEqual(start, prev_stop)
+            self.assertLess(start, stop)
+            prev_stop = stop

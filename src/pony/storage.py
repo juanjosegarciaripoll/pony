@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 import mailbox
+import mmap
 import os
 import re
 import socket
@@ -448,7 +449,19 @@ class MboxMirrorRepository(MirrorRepository):
         # that pass int keys carry a targeted type: ignore comment.
         if folder_name not in self._open_handles:
             path = self._folder_file(folder_name)
-            self._open_handles[folder_name] = mailbox.mbox(path, create=True)
+            mbox = mailbox.mbox(path, create=True)
+            # Pre-populate the TOC via the mmap-based scanner.  The
+            # stdlib's lazy ``_generate_toc`` is a per-line readline+
+            # tell loop that takes 10+ s on multi-GB mboxes (TUI
+            # froze on first folder open; see MBOX_REFACTOR_PLAN.md
+            # finding #6).  ``_build_mbox_toc`` does the same scan in
+            # C via mmap, ~10x faster, byte-for-byte identical output
+            # (asserted by ``BuildMboxTocTestCase``).
+            toc, next_key, file_length = _build_mbox_toc(path)
+            mbox._toc = toc  # type: ignore[attr-defined]
+            mbox._next_key = next_key  # type: ignore[attr-defined]
+            mbox._file_length = file_length  # type: ignore[attr-defined]
+            self._open_handles[folder_name] = mbox
         return self._open_handles[folder_name]
 
     def _folder_file(self, folder_name: str) -> Path:
@@ -466,6 +479,85 @@ class MboxMirrorRepository(MirrorRepository):
 # ---------------------------------------------------------------------------
 # mbox helpers
 # ---------------------------------------------------------------------------
+
+
+# Line separator used by ``mailbox.mbox`` when deciding whether the line
+# preceding a "From " envelope counts as "blank" — this controls the
+# trailing-linesep trim in the per-message stop offset.  The stdlib uses
+# ``os.linesep``; matching it keeps our TOC byte-identical to
+# ``_generate_toc`` output.
+_MBOX_LINESEP = os.linesep.encode("ascii")
+
+
+def _build_mbox_toc(
+    path: Path,
+) -> tuple[dict[int, tuple[int, int]], int, int]:
+    """Build an mbox TOC by mmap + bytes-scanning for ``From `` separators.
+
+    Returns ``(toc, next_key, file_length)`` matching the semantics of
+    ``mailbox.mbox._generate_toc`` so the result can be assigned to
+    ``mbox._toc`` / ``mbox._next_key`` / ``mbox._file_length`` directly.
+
+    The stdlib implementation calls ``readline`` + ``tell`` on a buffered
+    file object once per line, which on a multi-GB mbox dominates the
+    cost (the ``tell`` syscall alone accounted for ~40 % of the time in
+    a Pilot-driven profile of Old/Archives-2015).  Here we do a single
+    C-level ``mmap.find`` pass for ``\\nFrom `` boundaries and resolve
+    line lengths and ``last_was_empty`` from raw byte slices.
+    """
+    size = path.stat().st_size
+    if size == 0:
+        return {}, 0, 0
+
+    linesep = _MBOX_LINESEP
+    linesep_len = len(linesep)
+    double_linesep = linesep + linesep
+    double_len = 2 * linesep_len
+
+    with open(path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        from_positions: list[int] = []
+        if size >= 5 and mm[0:5] == b"From ":
+            from_positions.append(0)
+        cursor = 0
+        while True:
+            j = mm.find(b"\nFrom ", cursor)
+            if j < 0:
+                break
+            from_positions.append(j + 1)
+            cursor = j + 1
+
+        starts: list[int] = []
+        stops: list[int] = []
+        for idx, pos in enumerate(from_positions):
+            if idx > 0:
+                # ``last_was_empty`` is True iff the line immediately
+                # preceding this "From " line was exactly ``linesep``.
+                # That requires the previous-previous line to also have
+                # ended with linesep — i.e. bytes [pos - 2L : pos] are
+                # ``linesep + linesep``.
+                if pos >= double_len and mm[pos - double_len : pos] == double_linesep:
+                    stops.append(pos - linesep_len)
+                else:
+                    stops.append(pos)
+            # ``starts`` points AT the "From " envelope line, matching
+            # ``mailbox.mbox._generate_toc`` (``mbox.get_file(key,
+            # from_=False)`` skips the line internally).
+            starts.append(pos)
+
+        # Stop for the final message (EOF).  Same blank-line check, but
+        # against the file tail instead of a "From " boundary.
+        if from_positions:
+            if size >= double_len and mm[size - double_len : size] == double_linesep:
+                stops.append(size - linesep_len)
+            else:
+                stops.append(size)
+    finally:
+        mm.close()
+
+    toc = dict(enumerate(zip(starts, stops, strict=True)))
+    return toc, len(toc), size
 
 
 def _mbox_get_bytes(mbox: mailbox.mbox, key: int, storage_key: str) -> bytes:
