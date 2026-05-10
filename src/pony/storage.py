@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
+import logging
 import mailbox
 import mmap
 import os
 import re
 import socket
+import struct
 import sys
 import time
 from email import policy
@@ -17,6 +19,8 @@ from pathlib import Path
 
 from .domain import FolderRef, MessageFlag
 from .protocols import MirrorRepository
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Maildir backend
@@ -348,6 +352,7 @@ class MboxMirrorRepository(MirrorRepository):
         message = mailbox.mboxMessage(parsed)
         key = str(mbox.add(message))
         mbox.flush()
+        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
         return key
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
@@ -389,6 +394,7 @@ class MboxMirrorRepository(MirrorRepository):
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
         mbox.flush()
+        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
 
     def delete_message(
         self,
@@ -401,6 +407,7 @@ class MboxMirrorRepository(MirrorRepository):
         key = int(storage_key)
         del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         mbox.flush()
+        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
 
     def move_message_to_folder(
         self,
@@ -422,8 +429,10 @@ class MboxMirrorRepository(MirrorRepository):
         dest = self._open_mbox(folder_name=target_folder)
         new_key = str(dest.add(mailbox.mboxMessage(message)))
         dest.flush()
+        _persist_toc_sidecar(self._folder_file(target_folder), dest)
         del src[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         src.flush()
+        _persist_toc_sidecar(self._folder_file(folder.folder_name), src)
         return new_key
 
     def create_folder(self, *, account_name: str, folder_name: str) -> None:
@@ -433,6 +442,7 @@ class MboxMirrorRepository(MirrorRepository):
         # an empty file on disk even with no messages added.
         mbox = self._open_mbox(folder_name=folder_name)
         mbox.flush()
+        _persist_toc_sidecar(self._folder_file(folder_name), mbox)
 
     def folder_mtime_ns(self, *, folder: FolderRef) -> int:
         """mbox files are a single flat file per folder — stat it."""
@@ -450,17 +460,21 @@ class MboxMirrorRepository(MirrorRepository):
         if folder_name not in self._open_handles:
             path = self._folder_file(folder_name)
             mbox = mailbox.mbox(path, create=True)
-            # Pre-populate the TOC via the mmap-based scanner.  The
-            # stdlib's lazy ``_generate_toc`` is a per-line readline+
-            # tell loop that takes 10+ s on multi-GB mboxes (TUI
-            # froze on first folder open; see MBOX_REFACTOR_PLAN.md
-            # finding #6).  ``_build_mbox_toc`` does the same scan in
-            # C via mmap, ~10x faster, byte-for-byte identical output
-            # (asserted by ``BuildMboxTocTestCase``).
-            toc, next_key, file_length = _build_mbox_toc(path)
+            # Pre-populate the TOC.  Try the on-disk sidecar first;
+            # fall back to a fresh mmap scan if the sidecar is missing
+            # or stale (file size / mtime mismatch).  Either way we
+            # avoid stdlib's lazy ``_generate_toc`` — see
+            # MBOX_REFACTOR_PLAN.md finding #6.
+            cached = _load_toc_sidecar(path)
+            if cached is None:
+                toc, next_key, file_length = _build_mbox_toc(path)
+            else:
+                toc, next_key, file_length = cached
             mbox._toc = toc  # type: ignore[attr-defined]
             mbox._next_key = next_key  # type: ignore[attr-defined]
             mbox._file_length = file_length  # type: ignore[attr-defined]
+            if cached is None:
+                _persist_toc_sidecar(path, mbox)
             self._open_handles[folder_name] = mbox
         return self._open_handles[folder_name]
 
@@ -558,6 +572,95 @@ def _build_mbox_toc(
 
     toc = dict(enumerate(zip(starts, stops, strict=True)))
     return toc, len(toc), size
+
+
+# Sidecar TOC cache.  Layout:
+#   header: 4-byte magic | 1-byte version | 3-byte pad | u64 size
+#           | u64 mtime_ns | u64 count                       (32 B)
+#   body:   count * (u64 start, u64 stop)                    (16 B per msg)
+# Keys are implied by index (mbox.flush() always renumbers to 0..count-1
+# after rewriting, so the persisted dict is contiguous).
+_TOC_SIDECAR_MAGIC = b"PMTC"
+_TOC_SIDECAR_VERSION = 1
+_TOC_SIDECAR_HEADER = struct.Struct("<4sBxxxQQQ")
+_TOC_SIDECAR_ENTRY = struct.Struct("<QQ")
+
+
+def _toc_sidecar_path(mbox_path: Path) -> Path:
+    return mbox_path.with_suffix(mbox_path.suffix + ".toc")
+
+
+def _load_toc_sidecar(
+    mbox_path: Path,
+) -> tuple[dict[int, tuple[int, int]], int, int] | None:
+    """Return ``(toc, next_key, file_length)`` from the sidecar, or None.
+
+    Returns None when the sidecar is missing, malformed, or stale (the
+    cached ``(size, mtime_ns)`` no longer matches the mbox file).  In
+    every "None" case the caller must fall back to ``_build_mbox_toc``.
+    """
+    sidecar = _toc_sidecar_path(mbox_path)
+    try:
+        st = mbox_path.stat()
+    except OSError:
+        return None
+    try:
+        with open(sidecar, "rb") as fh:
+            header = fh.read(_TOC_SIDECAR_HEADER.size)
+            if len(header) != _TOC_SIDECAR_HEADER.size:
+                return None
+            magic, version, size, mtime_ns, count = _TOC_SIDECAR_HEADER.unpack(header)
+            if magic != _TOC_SIDECAR_MAGIC or version != _TOC_SIDECAR_VERSION:
+                return None
+            if size != st.st_size or mtime_ns != st.st_mtime_ns:
+                return None
+            body = fh.read(_TOC_SIDECAR_ENTRY.size * count)
+            if len(body) != _TOC_SIDECAR_ENTRY.size * count:
+                return None
+    except OSError:
+        return None
+
+    toc: dict[int, tuple[int, int]] = {}
+    stride = _TOC_SIDECAR_ENTRY.size
+    for i in range(count):
+        start, stop = _TOC_SIDECAR_ENTRY.unpack_from(body, i * stride)
+        toc[i] = (start, stop)
+    return toc, count, size
+
+
+def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
+    """Write the in-memory ``mbox._toc`` to the sidecar atomically.
+
+    Called after every ``mbox.flush()`` so the persisted TOC tracks the
+    file as it changes.  Failures are logged and swallowed: a missing
+    or stale sidecar costs a fresh ``_build_mbox_toc`` on next open
+    (~1 s/GB), never a correctness issue.
+    """
+    toc: dict[int, tuple[int, int]] = mbox._toc or {}  # type: ignore[attr-defined]
+    sidecar = _toc_sidecar_path(mbox_path)
+    try:
+        st = mbox_path.stat()
+    except OSError as exc:
+        _logger.warning("toc sidecar: stat failed for %s: %s", mbox_path, exc)
+        return
+    try:
+        tmp = sidecar.with_suffix(sidecar.suffix + ".tmp")
+        with open(tmp, "wb") as fh:
+            fh.write(
+                _TOC_SIDECAR_HEADER.pack(
+                    _TOC_SIDECAR_MAGIC,
+                    _TOC_SIDECAR_VERSION,
+                    st.st_size,
+                    st.st_mtime_ns,
+                    len(toc),
+                )
+            )
+            for key in sorted(toc):
+                start, stop = toc[key]
+                fh.write(_TOC_SIDECAR_ENTRY.pack(start, stop))
+        os.replace(tmp, sidecar)
+    except OSError as exc:
+        _logger.warning("toc sidecar: write failed for %s: %s", sidecar, exc)
 
 
 def _mbox_get_bytes(mbox: mailbox.mbox, key: int, storage_key: str) -> bytes:
