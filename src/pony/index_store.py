@@ -414,6 +414,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 ON messages (account_name, folder_name)
                 """
             )
+            # Covers the folder list view: equality on (account_name,
+            # folder_name) plus ORDER BY received_at DESC without a
+            # separate sort step.  See list_folder_message_summaries.
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_messages_folder_received
+                ON messages (account_name, folder_name, received_at DESC)
+                """
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS ix_messages_message_id

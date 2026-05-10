@@ -15,19 +15,24 @@ from ...domain import (
     FolderRef,
     IndexedMessage,
     MessageFlag,
-    MessageStatus,
 )
 from ...protocols import IndexRepository
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 
+# Width of the date cell. Widest format produced by ``_format_date`` is
+# ``YYYY-MM-DD`` (10 chars).
+_DATE_WIDTH = 10
 
-class MessageListPanel(DataTable[Text]):
-    """Tabular list of messages for the currently selected folder.
 
-    Columns: status marker, date, from, subject.  Read messages are
-    dimmed, trashed messages are struck through.  The marker column
-    shows ``!`` for flagged, ``+`` for messages with attachments,
-    ``*`` for marked, or blank.  Posts
+class MessageListPanel(DataTable[Text | str]):
+    """Single-column list of messages for the currently selected folder.
+
+    The whole row is rendered as one pre-formatted line:
+    ``<icon> <date> <from> <subject>`` with fixed-width icon, date, and
+    from fields.  Seen rows are returned as plain ``str`` and inherit
+    the widget's ``text-style: dim`` from CSS — the cheap path, since
+    read messages dominate.  Unseen rows allocate one ``Text`` styled
+    ``not dim`` so they render at full brightness.  Posts
     ``MessageListPanel.MessageSelected`` when a row is activated.
 
     The panel holds ``FolderMessageSummary`` rows — a narrow
@@ -36,6 +41,15 @@ class MessageListPanel(DataTable[Text]):
     the full ``IndexedMessage`` (e.g. to rewrite it via ``upsert_message``
     in a flag/status action, or to render a reply body) re-fetch it
     from the index using ``summary.message_ref``.
+    """
+
+    DEFAULT_CSS = """
+    MessageListPanel {
+        text-style: dim;
+    }
+    MessageListPanel > .datatable--header {
+        text-style: not dim;
+    }
     """
 
     BORDER_TITLE = "Messages"
@@ -61,66 +75,49 @@ class MessageListPanel(DataTable[Text]):
         self._summaries: list[FolderMessageSummary] = []
         self._marked: set[str] = set()  # str(message_ref.id)
         self._in_search: bool = False
-        self._icons_col_key: ColumnKey | None = None
-        self._date_col_key: ColumnKey | None = None
-        self._from_col_key: ColumnKey | None = None
-        self._subject_col_key: ColumnKey | None = None
+        self._row_col_key: ColumnKey | None = None
+        self._from_width_cached: int = 0
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self._icons_col_key = self.add_column(" ", width=1, key="icons")
-        self._date_col_key = self.add_column("Date")
-        self._from_col_key = self.add_column("From", width=self._from_width())
-        self._subject_col_key = self.add_column("Subject")
+        self._from_width_cached = self._from_width()
+        self._row_col_key = self.add_column(self._header_text(), key="row")
 
     def _from_width(self) -> int:
-        """Fixed width for the From column — capped at 25% of table width."""
+        """Fixed width for the From field — capped at 25% of table width."""
         return max(10, min(40, max(20, self.size.width) // 4))
 
-    def _cells_for(
-        self,
-        summary: FolderMessageSummary,
-    ) -> tuple[Text, Text, Text, Text]:
-        style = _row_style(summary)
-        icon = (
-            "*"
-            if str(summary.message_ref.id) in self._marked
-            else _icon_column(summary)
+    def _header_text(self) -> str:
+        from_w = self._from_width_cached
+        return f"  {'Date':<{_DATE_WIDTH}} {'From':<{from_w}} Subject"
+
+    def _icon_for(self, summary: FolderMessageSummary) -> str:
+        if self._marked and str(summary.message_ref.id) in self._marked:
+            return "*"
+        return _icon_column(summary)
+
+    def _cell_for(self, summary: FolderMessageSummary) -> Text | str:
+        from_w = self._from_width_cached
+        icon = self._icon_for(summary)
+        date = _format_date(summary.received_at)
+        sender = summary.sender
+        subject = summary.subject or "(no subject)"
+        line = (
+            f"{icon} "
+            f"{date:<{_DATE_WIDTH}.{_DATE_WIDTH}} "
+            f"{sender:<{from_w}.{from_w}} "
+            f"{subject}"
         )
-        return (
-            Text(icon, style=style),
-            Text(_format_date(summary.received_at), style=style),
-            Text(summary.sender, style=style),
-            Text(summary.subject or "(no subject)", style=style),
-        )
+        if MessageFlag.SEEN in summary.local_flags:
+            return line
+        return Text(line, style="not dim")
 
     def _update_row(self, summary: FolderMessageSummary) -> None:
-        assert self._icons_col_key is not None
-        assert self._date_col_key is not None
-        assert self._from_col_key is not None
-        assert self._subject_col_key is not None
-        key = str(summary.message_ref.id)
-        icons, date, sender, subject = self._cells_for(summary)
+        assert self._row_col_key is not None
         self.update_cell(
-            row_key=key,
-            column_key=self._icons_col_key,
-            value=icons,
-        )
-        self.update_cell(
-            row_key=key,
-            column_key=self._date_col_key,
-            value=date,
-        )
-        self.update_cell(
-            row_key=key,
-            column_key=self._from_col_key,
-            value=sender,
-            update_width=True,
-        )
-        self.update_cell(
-            row_key=key,
-            column_key=self._subject_col_key,
-            value=subject,
+            row_key=str(summary.message_ref.id),
+            column_key=self._row_col_key,
+            value=self._cell_for(summary),
         )
 
     def load_folder(self, folder_ref: FolderRef) -> None:
@@ -138,7 +135,7 @@ class MessageListPanel(DataTable[Text]):
         self._summaries = summaries
         for summary in summaries:
             self.add_row(
-                *self._cells_for(summary),
+                self._cell_for(summary),
                 key=str(summary.message_ref.id),
             )
 
@@ -160,7 +157,7 @@ class MessageListPanel(DataTable[Text]):
         self._summaries = summaries
         for summary in summaries:
             self.add_row(
-                *self._cells_for(summary),
+                self._cell_for(summary),
                 key=str(summary.message_ref.id),
             )
         if not msgs:
@@ -250,15 +247,21 @@ class MessageListPanel(DataTable[Text]):
         self.post_message(self.SearchExited())
 
     def on_resize(self) -> None:
-        """Adjust the From column width to track 25% of the new terminal width."""
-        if self._from_col_key is None:
+        """Re-format header and rows when the From-field width changes.
+
+        Each row is a single pre-formatted string, so a width change
+        means re-rendering every cell to keep columns aligned.
+        """
+        if self._row_col_key is None:
             return
         new_width = self._from_width()
-        col = self.columns[self._from_col_key]
-        if col.width == new_width:
+        if new_width == self._from_width_cached:
             return
-        col.width = new_width
-        self.refresh()
+        self._from_width_cached = new_width
+        col = self.columns[self._row_col_key]
+        col.label = Text(self._header_text())
+        for summary in self._summaries:
+            self._update_row(summary)
 
     def move_cursor_by(self, delta: int) -> FolderMessageSummary | None:
         """Move the row cursor by *delta* (±1) and return the new summary."""
@@ -352,19 +355,6 @@ def _icon_column(summary: FolderMessageSummary) -> str:
     if summary.has_attachments:
         return "+"
     return " "
-
-
-def _row_style(summary: FolderMessageSummary) -> str:
-    """Rich style string applied to every cell in the row.
-
-    Read messages are dimmed; trashed messages are struck through.
-    """
-    parts: list[str] = []
-    if MessageFlag.SEEN in summary.local_flags:
-        parts.append("dim")
-    if summary.local_status == MessageStatus.TRASHED:
-        parts.append("strike")
-    return " ".join(parts)
 
 
 def _format_date(dt: datetime) -> str:
