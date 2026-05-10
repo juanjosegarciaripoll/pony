@@ -63,6 +63,8 @@ does nothing.
 | ++p++ | Move to previous folder |
 | ++shift+n++ | Jump to next account's INBOX |
 | ++shift+p++ | Jump to previous account's INBOX |
+| ++shift+g++ | Goto-folder dialog: fuzzy-search every account/folder pair |
+| ++f1++ | Show the keybinding cheatsheet (centered modal) |
 
 ### Message list
 
@@ -119,11 +121,11 @@ server on the next sync.
 !!! info "New folder"
     `N` opens a one-line input for a folder name. The folder is created
     immediately in the account's local mirror (Maildir directory or mbox
-    file). The next sync compares local mirror folders against server
-    folders and issues `IMAP CREATE` for any folder that exists only
-    locally — so the freshly-created folder appears on the server too.
-    Local-only accounts do not have a server side, so the action is
-    disabled for them.
+    file). For IMAP accounts the next sync compares local mirror folders
+    against server folders and issues `IMAP CREATE` for any folder that
+    exists only locally, so the freshly-created folder appears on the
+    server too. For local accounts the folder is created locally only —
+    there is nothing to push.
 
 ---
 

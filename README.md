@@ -11,9 +11,9 @@ Outgoing mail is sent over SMTP with optional Markdown rendering to
 
 ## Warning
 
-This is a vibe-coded project created with the assistance of various AI
-agents. There is no guarantee about this code working. It may wipe out your
-entire hard disk or do even worse things. Use at your own risk.
+This is an experimental personal project. There is no guarantee about
+this code working. It may wipe out your entire hard disk or do even
+worse things. Use at your own risk.
 
 ## Documentation
 

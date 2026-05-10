@@ -25,33 +25,45 @@ src/pony/
   paths.py             # application directory resolution
   storage.py           # Maildir and mbox mirror repositories
   index_store.py       # SQLite metadata index repository
-  storage_indexing.py  # mirror-to-index projection pipeline
+  storage_indexing.py  # mirror-to-index projection (rescan_local_account)
   message_projection.py# RFC 5322 parsing and metadata projection
-  sync.py              # IMAP sync engine (plan/execute)
+  message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
+  html_sanitize.py     # shared HTML→text helpers (preview + renderer)
+  sync.py              # IMAP sync engine (plan/execute) + plan formatters
   imap_client.py       # ImapSession wrapper around imaplib
   smtp_sender.py       # SMTP submission
   bbdb.py              # BBDB v3 reader/writer
   services.py          # doctor diagnostics, mirror integrity
   fixture_flow.py      # deterministic fixture ingest flow
+  mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp
+    bindings.py        # shared mark/motion Binding tuples
     compose_utils.py   # reply/forward quoting helpers
     message_renderer.py# RFC 5322 -> plain text / browser HTML
     search_parser.py   # query language parser
+    terminal.py        # OSC sequences for window-title push/pop/set
     screens/
-      main_screen.py          # three-pane mail reader
-      compose_screen.py       # email composer
-      sync_confirm_screen.py  # sync plan confirmation
-      search_dialog_screen.py # search query input
+      main_screen.py             # three-pane mail reader
+      compose_screen.py          # email composer
+      sync_confirm_screen.py     # sync plan confirmation
+      search_dialog_screen.py    # search query input
       contact_browser_screen.py  # contacts list
       contact_detail_screen.py   # contact detail view
       contact_edit_screen.py     # contact editor
-      confirm_screen.py       # generic yes/no dialog
-      save_draft_screen.py    # draft save confirmation
-      add_attachment_screen.py # file picker
+      confirm_screen.py          # generic yes/no dialog
+      dialog_screen.py           # base class for modal yes/no dialogs
+      floating_input_screen.py   # base class for bottom floating-input bars
+      save_draft_screen.py       # draft save confirmation
+      add_attachment_screen.py   # file picker
+      attachment_picker_screen.py# pick previously-attached files by number
+      goto_folder_screen.py      # G — fuzzy jump to folder
+      new_folder_screen.py       # N — create new folder
+      pick_folder_screen.py      # modal (account, folder) target picker
+      help_screen.py             # F1 — keybinding cheatsheet
     widgets/
       folder_panel.py        # collapsible folder tree
-      message_list.py        # sortable message table
+      message_list.py        # async-streamed message table
       message_view.py        # scrollable message reader
       contact_suggester.py   # autocomplete dropdown
 ```
@@ -172,6 +184,7 @@ config.toml
 | `imapclient` | IMAP protocol |
 | `textual` | Terminal UI framework |
 | `markdown-it-py` | CommonMark rendering for compose |
+| `tinymcp` | MCP server primitives (stdio JSON-RPC + TCP bridge) |
 
 Dev tools: `ruff` (lint/format), `mypy` + `basedpyright` (type checking),
 `pytest` (tests), `mkdocs-material` (documentation).

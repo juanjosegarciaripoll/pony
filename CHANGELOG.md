@@ -226,8 +226,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
       cwd, or to `-o PATH`, or to stdout via `--stdout`.  Refuses to
       clobber an existing file unless `-f/--force` is passed.
     - MCP `get_message` now carries the same `attachments` array as
-      `get_message_body` (when the mirror holds the bytes) so AI
-      agents can discover what's available without pulling the full
+      `get_message_body` (when the mirror holds the bytes) so MCP
+      clients can discover what's available without pulling the full
       body.
     - New MCP `get_attachment(account, folder, message_id, index)`
       tool returns `{filename, content_type, size_bytes, data_base64,
@@ -370,7 +370,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Embedded MCP server**: add `[mcp]` to `config.toml` to have the MCP
   HTTP server start automatically in a background thread when `pony tui`
   launches. A TUI notification shows the URL on startup. Recommended for
-  users who keep the TUI open and want simultaneous AI assistant access
+  users who keep the TUI open and want simultaneous MCP client access
   without managing a separate process.
 - **`pony rescan [account]`** CLI command: re-project every indexed
   message from local mirror bytes. Refreshes cached fields (sender,
@@ -413,13 +413,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`pony docs` command**: open the documentation without leaving the
   terminal.
 - **MCP server** (`pony mcp-server`): exposes read-only mail operations as
-  MCP tools for use with Claude Desktop, Claude Code, and any network MCP
-  client. Tools: `search_messages`, `list_folders`, `list_messages`,
-  `get_message`, `get_message_body`, `search_contacts`, `get_sync_status`.
-  Runs over stdio by default (local use, Claude Desktop); pass `--port N`
-  for Streamable HTTP (Docker / remote deployments). HTTP mode is
-  compatible with running `pony tui` in a separate process. New runtime
-  dependency: `mcp>=1.0`.
+  MCP tools for use with any local or networked MCP client. Tools:
+  `search_messages`, `list_folders`, `list_messages`, `get_message`,
+  `get_message_body`, `search_contacts`, `get_sync_status`. Runs over
+  stdio by default (local use); pass `--port N` for Streamable HTTP
+  (Docker / remote deployments). HTTP mode is compatible with running
+  `pony tui` in a separate process. New runtime dependency: `mcp>=1.0`.
 - **`scripts/build.py`**: cross-platform local build script. Run with
   `uv run python scripts/build.py [--installer] [--skip-tests]
   [--skip-docs]`. Artifacts land in `artifacts/`.

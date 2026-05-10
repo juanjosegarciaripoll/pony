@@ -4,248 +4,75 @@ title: MCP Server
 
 # MCP Server
 
-Pony Express includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/)
-(MCP) server.  MCP is an open standard that lets AI assistants call tools
-provided by external applications.  By running `pony mcp-server`, you give an
-AI assistant — such as Claude — the ability to search, list, and read your
-local mail and contacts directly, without you having to copy-paste content into
-the chat window.
+Pony Express ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/)
+server. MCP is an open JSON-RPC standard that lets external programs call
+tools exposed by another application; running `pony mcp` makes Pony's
+read-only mail and contact tools available to any MCP-speaking client.
 
-The server exposes **read-only** tools only.  It never modifies your mail,
-flags, contacts, or index.  It works entirely against the local mirror and
-SQLite index that `pony sync` keeps up to date; no IMAP connection is made
-while the MCP server is running.
+The server is **read-only**. It never modifies mail, flags, contacts, or the
+index. It works entirely against the local mirror and SQLite index that
+`pony sync` maintains; no IMAP connection is opened while the MCP server is
+running.
 
-## Modes at a glance
+## Architecture
 
-There are three ways to run the MCP server, depending on whether you also use
-the TUI and whether the AI client is on the same machine:
+There is a single command — `pony mcp` — and a single transport — stdio
+(newline-delimited JSON-RPC 2.0). The behaviour switches automatically
+depending on whether `pony tui` is already running:
 
-| Mode | How to start | Transport | Can run with TUI? |
-|---|---|---|---|
-| **Embedded** (auto-start) | Add `[mcp]` to `config.toml` | HTTP | Yes — same process |
-| **Standalone stdio** | `pony mcp-server` | stdio | No — conflicts with TUI |
-| **Standalone HTTP** | `pony mcp-server --port N` | HTTP | Yes — separate process |
-
-### Embedded mode — MCP starts with the TUI
-
-This is the recommended setup if you normally work with `pony tui` open.
-Add an `[mcp]` section to your `config.toml`:
-
-```toml
-[mcp]
-host = "127.0.0.1"
-port = 8765
-```
-
-When you run `pony tui`, the MCP HTTP server starts automatically in a
-background thread.  A notification appears in the TUI showing the URL.
-The server stops when you quit the TUI.
-
-**What this means in practice:**
-
-- You use `pony tui` as normal — reading, writing, syncing mail.
-- At the same time, Claude (or any other MCP client) can call the Pony tools
-  to search and read your mail on your behalf.
-- No second terminal needed; no separate process to manage.
-- The MCP server is read-only, so it never interferes with what the TUI writes.
-
-!!! note "Why HTTP and not stdio in embedded mode?"
-    stdio transport takes over the process's standard input and output —
-    the same channels the TUI uses to draw its interface.  The embedded server
-    therefore always uses HTTP, which works over a network socket and has no
-    conflict with the TUI.
-
-Register the embedded server with Claude Code once, then forget about it:
-
-```bash
-claude mcp add --transport http pony http://127.0.0.1:8765/mcp
-```
-
----
-
-### Standalone stdio — for Claude Desktop and Claude Code without the TUI
-
-Use this when you do **not** run `pony tui` at the same time (for example,
-you only use Pony via the CLI or `pony sync`).  The AI client starts Pony as a
-child process and communicates over stdin/stdout.
-
-```bash
-pony mcp-server          # listens on stdio
-```
-
-Because stdio transport occupies the terminal, **you cannot run `pony tui` in
-the same session**.  If you want both the TUI and MCP access at the same time,
-use embedded mode or standalone HTTP instead.
-
----
-
-### Standalone HTTP — always-on or remote server
-
-Use this when you want the MCP server to run independently of both the TUI and
-any particular AI client session — for example in Docker, on a remote machine,
-or if you want it always running in the background.
-
-```bash
-pony mcp-server --port 8765              # localhost only
-pony mcp-server --host 0.0.0.0 --port 8765   # all interfaces
-```
-
-This mode **can** run alongside `pony tui` — they are separate processes that
-share the SQLite database read-only, so there are no write conflicts.
-
----
-
-## Setup: Claude Desktop (stdio)
-
-Claude Desktop reads a JSON configuration file and starts each MCP server
-as a child process when needed.
-
-**Configuration file location:**
-
-| Platform | Path |
+| Situation | What `pony mcp` does |
 |---|---|
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| TUI is **not** running | Opens its own SQLite handle and serves tools directly over stdio. |
+| TUI **is** running | Reads the auth token from the TUI's state file, opens a TCP socket to the loopback server the TUI is hosting, and proxies stdin/stdout ↔ TCP. |
 
-Open (or create) that file and add a `mcpServers` section:
+The bridge mode exists because SQLite refuses concurrent writers from
+different processes. When the TUI is running it owns the database and
+exposes the MCP tools over a per-session TCP server bound to `127.0.0.1`
+behind a one-time random token written to a state file under the data
+directory. A second `pony mcp` invocation never opens its own SQLite
+handle in that case — it simply forwards JSON-RPC frames to the running
+TUI and back. When the TUI exits, the state file is removed and the next
+`pony mcp` falls back to stdio-direct mode.
+
+There is no HTTP transport and no separate `--port` flag. MCP clients
+always speak stdio to `pony mcp`; the bridge is invisible to them.
+
+## Setup
+
+Most MCP clients launch the server as a child process and talk to it over
+stdio. The exact configuration file varies by client; the command line is
+always the same:
+
+```
+pony mcp
+```
+
+If `pony` is not on `PATH` (for example you run it via `uv tool`), use the
+absolute path to the executable, e.g. `~/.local/bin/pony` on Linux/macOS or
+`%LOCALAPPDATA%\uv\tools\pony\Scripts\pony.exe` on Windows.
+
+A typical client config entry looks like:
 
 ```json
 {
   "mcpServers": {
     "pony": {
       "command": "pony",
-      "args": ["mcp-server"]
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-If `pony` is not on your `PATH` (e.g. you run it via `uv`), use the full path
-to the executable:
-
-```json
-{
-  "mcpServers": {
-    "pony": {
-      "command": "/home/you/.local/bin/pony",
-      "args": ["mcp-server"]
-    }
-  }
-}
-```
-
-Restart Claude Desktop after saving.  The Pony Express tools will appear in
-the tools panel.
-
----
-
-## Setup: Claude Code (stdio)
-
-From the terminal, run:
-
-```bash
-claude mcp add pony -- pony mcp-server
-```
-
-This registers Pony as a project-scoped MCP server for the current working
-directory.  To register it globally (available in every project):
-
-```bash
-claude mcp add --scope user pony -- pony mcp-server
-```
-
-Verify it was added:
-
-```bash
-claude mcp list
-```
-
----
-
-## Setup: Claude Code (HTTP)
-
-If you have Pony running as an HTTP server (e.g. in Docker or on another
-machine), register it by URL:
-
-```bash
-claude mcp add --transport http pony http://localhost:8765/mcp
-```
-
-Replace `localhost:8765` with the actual host and port where the server is
-reachable.  For a remote server:
-
-```bash
-claude mcp add --transport http pony http://my-server.example.com:8765/mcp
-```
-
----
-
-## Setup: Claude Desktop (HTTP)
-
-For a network-accessible server, use the `streamable-http` type in
-`claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "pony": {
-      "type": "streamable-http",
-      "url": "http://localhost:8765/mcp"
-    }
-  }
-}
-```
-
----
-
-## Starting the HTTP server
-
-Start the server on localhost (accessible only from the same machine):
-
-```bash
-pony mcp-server --port 8765
-```
-
-Bind to all network interfaces (required for Docker or remote access):
-
-```bash
-pony mcp-server --host 0.0.0.0 --port 8765
-```
-
-The MCP endpoint is available at `http://<host>:<port>/mcp`.
-
-### Docker example
-
-```dockerfile
-FROM python:3.13-slim
-RUN pip install pony
-COPY config.toml /root/.config/pony/config.toml
-EXPOSE 8765
-CMD ["pony", "mcp-server", "--host", "0.0.0.0", "--port", "8765"]
-```
-
-```bash
-docker build -t pony-mcp .
-docker run \
-  -p 8765:8765 \
-  -v /path/to/mirrors:/mirrors \
-  -v /path/to/index:/root/.local/share/pony \
-  pony-mcp
-```
-
-Mount the same mirror and index directories that `pony sync` writes to so
-the container sees your up-to-date mail.
-
----
+After saving the config, restart the client. Pony's tools should then
+appear in its tool list.
 
 ## Available tools
 
 ### `search_messages`
 
-Full-text search across the local index.  Returns message metadata (sender,
-subject, date, preview) but not the full body — use `get_message_body` for
-that.
+Full-text search across the local index. Returns message metadata (sender,
+subject, date, preview); use `get_message_body` for the full body.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -265,17 +92,9 @@ returned up to `limit`.
 
 ### `list_folders`
 
-Return all accounts and their folders in one call.  Each entry in the result
-contains an account name and a sorted list of folder names belonging to it.
-Use this to discover what accounts and folders exist before calling
-`list_messages`.
-
-```json
-[
-  {"account": "work",     "folders": ["Archive", "INBOX", "Sent"]},
-  {"account": "personal", "folders": ["INBOX", "Sent", "Trash"]}
-]
-```
+Return all accounts and their folders. Each folder entry includes
+`message_count`, `highest_uid`, and `synced_at` so a client can decide
+whether the local index is fresh enough to query.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -285,7 +104,7 @@ Use this to discover what accounts and folders exist before calling
 
 ### `list_messages`
 
-List messages in a specific folder.  Returns the same metadata as
+List messages in a specific folder. Returns the same metadata shape as
 `search_messages` (no body text).
 
 | Parameter | Type | Default | Description |
@@ -299,8 +118,9 @@ List messages in a specific folder.  Returns the same metadata as
 ### `get_message`
 
 Retrieve the index metadata for a single message identified by its
-`message_id`.  Does not fetch the body from the mirror — use
-`get_message_body` for that.
+`Message-ID`. Includes the same `attachments` array as `get_message_body`
+when the mirror holds the bytes, so a client can discover what's available
+without pulling the full body.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -308,16 +128,15 @@ Retrieve the index metadata for a single message identified by its
 | `folder` | string | Folder name |
 | `message_id` | string | The `Message-ID` header value |
 
-Returns `null` if the message is not found in the index.
+Returns `null` if the message is not in the index.
 
 ---
 
 ### `get_message_body`
 
-Read the full plain-text body of a message from the local mirror.  HTML-only
-messages are automatically converted to plain text (style and script blocks
-stripped).  Attachment metadata (filename, type, size) is included but
-attachment content is not.
+Read the full plain-text body of a message from the local mirror. HTML-only
+messages are converted to plain text (style and script blocks stripped).
+Attachment metadata is included; attachment bytes are not.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -326,15 +145,31 @@ attachment content is not.
 | `message_id` | string | The `Message-ID` header value |
 
 Returns a dict with keys: `subject`, `from`, `to`, `cc`, `date`, `body`
-(plain text string), `attachments` (list of `{index, filename, content_type,
-size_bytes}`).  Returns `null` if the message is not in the local mirror.
+(plain text string), `attachments` (list of `{index, filename,
+content_type, size_bytes}`). Returns `null` if the message is not in the
+local mirror.
+
+---
+
+### `get_attachment`
+
+Return one attachment's bytes. `data_base64` is always present
+(transport-safe). For text attachments a decoded `text` field is included
+as a convenience.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `account` | string | Account name |
+| `folder` | string | Folder name |
+| `message_id` | string | The `Message-ID` header value |
+| `index` | int | Attachment index from `get_message_body` |
 
 ---
 
 ### `search_contacts`
 
-Search the contacts store by name or email address prefix.  The search is
-prefix-based and case-insensitive.
+Search the contacts store by name or email-address prefix. Case-insensitive,
+prefix-based, ranked by message count.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -351,20 +186,3 @@ Useful for checking how fresh the local index is before doing a search.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `account` | string | all | Restrict to one account name |
-
----
-
-## Example prompts
-
-Once connected, you can ask an AI assistant things like:
-
-- *"Search my email for messages from alice@example.com about the budget"*
-- *"What are the most recent unread messages in my INBOX?"*
-- *"Read the message from Bob with subject 'Q3 report' and give me a summary"*
-- *"List all my mail folders and tell me which ones have recent messages"*
-- *"Find all messages with attachments received in the last week"*
-- *"When did I last sync my Work account, and how many folders does it have?"*
-- *"Search my contacts for anyone at example.com"*
-
-The AI will call the appropriate tools automatically and present the results
-as part of its response.

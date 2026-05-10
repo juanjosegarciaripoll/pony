@@ -209,10 +209,14 @@ Attachments:
 ## Sending
 
 Pony sends immediately over SMTP when you press ++ctrl+s++ (or ++ctrl+x++
-then ++s++). The account's `smtp_host`, `smtp_port`, and `smtp_ssl` settings
-are used. After a successful send, the message is saved to the sent folder
-(auto-discovered by fuzzy name match, or the explicit `sent_folder` config
-value).
+then ++s++). The account's `[accounts.<name>.smtp]` subtable (`host`,
+`port`, `ssl`) controls the transport. After a successful send, the message
+is saved to the sent folder (auto-discovered by fuzzy name match, or the
+explicit `sent_folder` config value).
+
+Local accounts can also send when they carry their own `[accounts.smtp]`
+subtable plus `username` / `credentials_source` — they show up in the
+From: dropdown alongside IMAP accounts.
 
 If sending fails, a notification appears with the error. You can then choose
 to save the message as a draft.

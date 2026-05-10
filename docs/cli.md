@@ -14,6 +14,9 @@ These flags can be used with any command.
 |---|---|
 | `--config <path>` | Use a specific config file instead of the default location |
 | `--debug` | Enable verbose debug logging to stderr |
+| `--theme NAME` | Override the configured Textual theme for this session |
+| `--list-themes` | Print every available Textual theme name and exit |
+| `--version` | Print the Pony Express version and exit |
 
 ---
 
@@ -227,17 +230,40 @@ for a full re-sync. **This is destructive.** The command asks for confirmation
 unless `--yes` is given. Works even without a valid config file.
 
 ```
-pony reset [--yes]
+pony reset [--account NAME] [--yes]
 ```
 
 | Flag | Description |
 |---|---|
+| `--account NAME` | Reset only this account: drop its index rows and mirror directory; credentials and other accounts are untouched |
 | `--yes` | Skip the confirmation prompt |
 
 !!! warning
-    All locally mirrored mail and the SQLite index are deleted. If the messages
-    still exist on the server they will be re-fetched on the next sync. If you
-    have unsent drafts or messages deleted from the server, they will be lost.
+    Without `--account`, all locally mirrored mail and the SQLite index are
+    deleted. If the messages still exist on the server they will be re-fetched
+    on the next sync. Unsent drafts and messages deleted from the server are
+    lost.
+
+---
+
+## `pony rescan`
+
+Re-project every indexed message from local mirror bytes — refreshes cached
+fields (sender, recipients, subject, body preview, attachment flag,
+received-at) without re-downloading from IMAP. Folder sync state is
+preserved.
+
+```
+pony rescan [--account NAME] [--force]
+```
+
+| Flag | Description |
+|---|---|
+| `--account NAME` | Only rescan one account (matches both IMAP-backed and local-mirror accounts) |
+| `--force` | Re-upsert every indexed message even when the projection appears unchanged |
+
+Useful after a Pony upgrade that changes how messages are projected, or when
+a mirror has been touched out-of-band.
 
 ---
 
@@ -261,12 +287,24 @@ credentials) and appends the account to `config.toml`. Server hostnames are
 guessed from the email domain.
 
 ```
-pony account add
+pony account add [name]
 ```
 
 !!! tip "First-run detection"
     If you run `pony tui` or `pony sync` without a config file, Pony offers
     to launch this wizard automatically.
+
+---
+
+## `pony account test`
+
+Connect to an account's IMAP server and verify the credentials work. Prints
+the server greeting on success or the IMAP error on failure. Read-only —
+no mail is fetched.
+
+```
+pony account test <name>
+```
 
 ---
 
@@ -377,3 +415,94 @@ pony fixture-ingest
 ```
 
 See the [Contacts](contacts.md) page for more details.
+
+---
+
+## `pony folder list`
+
+List every indexed folder for one account (or all accounts) with message
+counts and the last-sync timestamp.
+
+```
+pony folder list [account]
+```
+
+---
+
+## `pony message get`
+
+Print the index metadata for a single message identified by its
+`Message-ID`. When the mirror holds the bytes the output also lists every
+attachment as `[index]  filename  content-type  size`.
+
+```
+pony message get <account> <folder> <message-id>
+```
+
+---
+
+## `pony message body`
+
+Print the full plain-text body of a message. HTML-only messages are
+converted to plain text (style and script blocks stripped).
+
+```
+pony message body <account> <folder> <message-id>
+```
+
+---
+
+## `pony message attachment`
+
+Extract one attachment from a message by its 1-based index (as shown by
+`pony message get`).
+
+```
+pony message attachment <account> <folder> <message-id> <index>
+                       [-o PATH | --stdout] [-f]
+```
+
+| Flag | Description |
+|---|---|
+| `-o PATH` | Write to PATH (default: the attachment's own filename in the working directory) |
+| `--stdout` | Write raw bytes to stdout; no file is created |
+| `-f` / `--force` | Overwrite an existing output file |
+
+---
+
+## `pony config show`
+
+Print the parsed config to stdout (also accessible via `pony config edit`'s
+companion command).
+
+```
+pony config show
+```
+
+---
+
+## `pony mcp`
+
+Run the Model Context Protocol server. Behaviour switches automatically:
+when `pony tui` is running, `pony mcp` reads the per-session token from
+the TUI's state file and bridges stdio↔TCP to the running TUI; otherwise
+it serves stdio directly with its own SQLite handle. Read-only.
+
+```
+pony mcp
+```
+
+See the [MCP Server](mcp-server.md) page for client setup and the tool
+reference.
+
+---
+
+## `pony docs`
+
+Open the Pony Express documentation in the default browser. Uses the docs
+bundled inside the binary when available; otherwise falls back to the
+online site.
+
+```
+pony docs
+```

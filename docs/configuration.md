@@ -4,9 +4,10 @@ title: Configuration
 
 # Configuration
 
-Pony Express is configured through a single TOML file. The file is created
-automatically on first run if it does not exist. Use `pony account add` to
-print an annotated template you can paste into it.
+Pony Express is configured through a single TOML file. Use `pony account add`
+to print an annotated template you can paste into it, or `pony config edit`
+to open the file in `$EDITOR` (it's created from the bundled sample if it
+does not exist yet).
 
 ## File location
 
@@ -21,33 +22,53 @@ any command to use a specific file.
 
 ---
 
-## Annotated example
-
-The following config defines two IMAP accounts and one local read-only account.
-All credential values are illustrative.
+## Schema version
 
 ```toml
+config_version = 2
+```
+
+`config_version` is **required** at the top of the file. Pony refuses to
+load a config that omits it or carries a different value, rather than
+silently migrating. The current supported version is `2`. The bump from v1
+moved the SMTP keys out of the flat namespace and into a per-account
+`[accounts.<name>.smtp]` subtable.
+
+---
+
+## Annotated example
+
+The following config defines two IMAP accounts and two local accounts
+(one read-only, one with SMTP).
+
+```toml
+config_version = 2
+
 # -- Global options --------------------------------------------------------
 
 # Show Unicode symbols in the TUI (attachment clip, flag star, etc.).
-# Set to false for terminals that render Unicode unreliably.
 use_utf8 = true
 
-# Path to an external editor launched with ctrl+x e in the composer.
-# Must be an executable on PATH or an absolute path.  If omitted or not
-# found, the built-in inline editor is used.
+# External editor launched with ctrl+x e in the composer.  If omitted or
+# not executable, the built-in inline editor is used.
 editor = "/usr/bin/nvim"
 
-# Global default for Markdown composition mode.  When true, every new message
-# opens in Markdown mode.  Override per-account with markdown_compose below.
-# Toggle per-message with ctrl+x m inside the composer.
+# Global default for Markdown composition mode.  Override per-account
+# below; toggle per-message with ctrl+x m.
 markdown_compose = false
 
-# Path to a BBDB v3 file for automatic contact sync.
-# On each `pony sync`, Pony imports from this file if it has changed since
-# the last import, then exports to <data_dir>/contacts.bbdb.
+# BBDB v3 file for Emacs interop.  Imported on each `pony sync` if its
+# mtime advanced since the last import; exported to <data_dir>/contacts.bbdb.
 # Supports ~, $VAR, and %VAR% expansion.
 # bbdb_path = "~/.emacs.d/bbdb"
+
+# Where the TUI's "open" / "save" attachment keys land.  Created on demand.
+# Default: ~/Downloads.
+# downloads_path = "~/mail-attachments"
+
+# Textual theme for the TUI colour scheme.  Run `pony --list-themes` for
+# names.  The --theme CLI flag overrides this for a single session.
+# theme = "nord"
 
 
 # -- First account: personal Gmail ----------------------------------------
@@ -56,37 +77,29 @@ markdown_compose = false
 name          = "Personal"
 email_address = "jane@example.com"
 imap_host     = "imap.gmail.com"
-smtp_host     = "smtp.gmail.com"
 username      = "jane@example.com"
-
-# Use an app password generated in your Google account security settings.
-# Store it as an OS-encrypted blob so it never appears in plain text on disk.
 credentials_source = "encrypted"
-
-# Signature appended below the cursor when replying or forwarding.
+archive_folder = "Archive"
+markdown_compose = true
 signature = """
 Jane Smith
 jane@example.com"""
 
-# Compose new messages in Markdown by default for this account.
-markdown_compose = true
+[accounts.smtp]
+host = "smtp.gmail.com"
+# port and ssl default to 465 / true.
 
 [accounts.mirror]
-path   = "mirrors/personal"   # relative to Pony's data directory
+path   = "mirrors/personal"     # relative to Pony's data directory
 format = "maildir"
 trash_retention_days = 30
 
-# Folder sync policy:
-#   include   - if non-empty, only these folders are synced
-#   exclude   - never synced, even if matched by include
-#   read_only - synced server->local only; local changes are never pushed back
-# All values are Python re.fullmatch() patterns.
 [accounts.folders]
 exclude   = ["\\[Gmail\\]/Spam", "\\[Gmail\\]/Trash"]
 read_only = ["\\[Gmail\\]/Sent Mail", "\\[Gmail\\]/All Mail"]
 
 
-# -- Second account: corporate IMAP ---------------------------------------
+# -- Second account: corporate IMAP, STARTTLS on 587 ----------------------
 
 [[accounts]]
 name          = "Work"
@@ -94,19 +107,18 @@ email_address = "jane.smith@corp.example.com"
 imap_host     = "mail.corp.example.com"
 imap_port     = 993
 imap_ssl      = true
-smtp_host     = "smtp.corp.example.com"
-smtp_port     = 587
-smtp_ssl      = false          # STARTTLS on port 587
 username      = "jsmith"
-
-# Run an external command and read the password from its stdout.
-# Useful with pass, 1Password CLI, macOS Keychain, etc.
 credentials_source = "command"
 password_command   = ["pass", "show", "corp/imap"]
 
-sent_folder    = "Sent Items"   # override auto-discovery
+sent_folder    = "Sent Items"
 drafts_folder  = "Drafts"
-archive_folder = "Archive"      # target for the A key in the TUI
+archive_folder = "Archive"
+
+[accounts.smtp]
+host = "smtp.corp.example.com"
+port = 587
+ssl  = false      # STARTTLS
 
 [accounts.mirror]
 path   = "mirrors/work"
@@ -119,7 +131,7 @@ exclude   = ["Junk E-mail", "Deleted Items"]
 read_only = ["Sent Items"]
 
 
-# -- Local account: read-only archive -------------------------------------
+# -- Local read-only archive ---------------------------------------------
 
 [[accounts]]
 account_type  = "local"
@@ -130,6 +142,25 @@ email_address = "jane@example.com"
 path   = "mirrors/archive"
 format = "maildir"
 trash_retention_days = 90
+
+
+# -- Local account with SMTP (read mail from disk, send via relay) -------
+
+[[accounts]]
+account_type       = "local"
+name               = "Spool"
+email_address      = "jane@example.com"
+username           = "jane@example.com"
+credentials_source = "plaintext"
+password           = "change-me"
+
+[accounts.smtp]
+host = "smtp.example.com"
+
+[accounts.mirror]
+path   = "mirrors/spool"
+format = "mbox"
+trash_retention_days = 30
 ```
 
 ---
@@ -138,102 +169,113 @@ trash_retention_days = 90
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `use_utf8` | bool | `false` | Enable Unicode symbols in the TUI |
-| `editor` | string | *(none)* | Path to external editor for the composer |
-| `markdown_compose` | bool | `false` | Global default for Markdown composition mode |
-| `bbdb_path` | string | *(none)* | Path to a BBDB v3 file for automatic contact sync on `pony sync`. Supports `~`, `$VAR`, and `%VAR%` expansion |
+| `config_version` | int | — | **Required.** Must be `2`. |
+| `use_utf8` | bool | `false` | Enable Unicode symbols in the TUI. |
+| `editor` | string | *(none)* | External editor for the composer (`ctrl+x e`). |
+| `markdown_compose` | bool | `false` | Global default for Markdown composition mode. |
+| `bbdb_path` | string | *(none)* | BBDB v3 file imported/exported on each sync. Supports `~`, `$VAR`, `%VAR%`. |
+| `downloads_path` | string | `~/Downloads` | Directory for the TUI's open/save attachment keys. |
+| `theme` | string | *(textual default)* | Textual theme name. `--theme` overrides per-session. |
 
 ---
 
 ## IMAP account fields
 
-These fields apply to accounts with `account_type = "imap"` (the default when
-`account_type` is omitted).
+These apply when `account_type = "imap"` (the default if `account_type` is
+omitted).
 
 ### Identity
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Unique account identifier used in the TUI and CLI |
-| `email_address` | string | yes | Address shown in From: when composing |
-| `username` | string | yes | Login username for IMAP and SMTP (often the email address) |
+| `name` | string | yes | Unique account identifier shown in the TUI and CLI. |
+| `email_address` | string | yes | Address used in the From: header. |
+| `username` | string | yes | Login username for IMAP and SMTP (often the email address). |
 
 ### IMAP connection
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `imap_host` | string | -- | IMAP server hostname |
-| `imap_port` | int | `993` (SSL) / `143` | IMAP port |
-| `imap_ssl` | bool | `true` | Use TLS for IMAP; `false` enables STARTTLS |
+| `imap_host` | string | — | IMAP server hostname. |
+| `imap_port` | int | `993` (SSL) / `143` | IMAP port. |
+| `imap_ssl` | bool | `true` | Use TLS for IMAP; `false` enables STARTTLS. |
 
-### SMTP connection
+### SMTP connection — `[accounts.smtp]` subtable
+
+Required for IMAP accounts; optional for local accounts (omit to make a
+local account read-only).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `smtp_host` | string | -- | SMTP server hostname |
-| `smtp_port` | int | `465` (SSL) / `587` | SMTP port |
-| `smtp_ssl` | bool | `true` | Use TLS for SMTP; `false` enables STARTTLS on the given port |
+| `host` | string | — | SMTP server hostname. |
+| `port` | int | `465` (SSL) / `587` | SMTP port. |
+| `ssl`  | bool | `true` | Implicit TLS when `true`, STARTTLS when `false`. |
 
 ### Credentials
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `credentials_source` | string | -- | One of `"plaintext"`, `"env"`, `"command"`, `"encrypted"` |
-| `password` | string | *(none)* | Password in plain text -- only with `credentials_source = "plaintext"` |
-| `password_command` | list of strings | *(none)* | Command whose stdout is the password -- only with `credentials_source = "command"` |
+| `credentials_source` | string | — | One of `"plaintext"`, `"env"`, `"command"`, `"encrypted"`. |
+| `password` | string | *(none)* | Password — only with `credentials_source = "plaintext"`. |
+| `password_command` | list of strings | *(none)* | Command whose stdout is the password — only with `credentials_source = "command"`. |
 
-See [Credential backends](#credential-backends) below for details.
+See [Credential backends](#credential-backends) below.
 
 ### Composer
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `sent_folder` | string | *(auto)* | Exact folder name where sent messages are saved; auto-discovered by fuzzy match if omitted |
-| `drafts_folder` | string | *(auto)* | Exact folder name for saved drafts; auto-discovered if omitted |
-| `archive_folder` | string | *(none)* | Target for the `A` key in the TUI. Omit to disable archiving. Must not be in `folders.exclude` or `folders.read_only`. Pony creates it on the server on first archive if it does not already exist. |
-| `markdown_compose` | bool | `false` | Default Markdown mode for this account; overrides the global setting |
-| `signature` | string | *(none)* | Text appended below the cursor in replies and forwards |
+| `sent_folder` | string | *(auto)* | Exact folder name where sent messages are stored; auto-discovered by fuzzy match if omitted. |
+| `drafts_folder` | string | *(auto)* | Exact folder name for saved drafts. |
+| `archive_folder` | string | *(none)* | Target for the `A` key in the TUI. Omit to disable archiving. Must not be excluded or read-only. Created on the server on first archive if it doesn't exist. |
+| `markdown_compose` | bool | inherits global | Default Markdown mode for this account. |
+| `signature` | string | *(none)* | Text appended below the cursor on replies and forwards. |
 
 ---
 
 ## Local account fields
 
-Local accounts point at a Maildir or mbox tree managed by an external tool
-(offlineimap, getmail, procmail, ...). Pony never connects to any server for
-them; sync is skipped entirely. Browsing, searching, and composing all work
-normally, but sending requires picking an IMAP account in the From: field.
+Local accounts point at a Maildir or mbox tree managed by something else
+(`offlineimap`, `getmail`, `procmail`…). Pony never connects to an IMAP
+server for them; sync is a no-op. Browsing, searching, harvesting contacts,
+and folder creation all work normally.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `account_type` | string | yes | Must be `"local"` |
-| `name` | string | yes | Unique account identifier |
-| `email_address` | string | yes | Address shown in From: when composing |
-| `sent_folder` | string | *(none)* | Override sent-folder name |
-| `drafts_folder` | string | *(none)* | Override drafts-folder name |
-| `markdown_compose` | bool | `false` | Default Markdown mode |
-| `signature` | string | *(none)* | Signature text |
+| `account_type` | string | yes | Must be `"local"`. |
+| `name` | string | yes | Unique account identifier. |
+| `email_address` | string | yes | Address used in the From: header. |
+| `sent_folder` / `drafts_folder` | string | no | Folder-name overrides. |
+| `markdown_compose` | bool | no | Default Markdown mode. |
+| `signature` | string | no | Signature text. |
+
+A local account becomes send-capable by adding an `[accounts.smtp]`
+subtable plus `username` / `credentials_source` / `password` /
+`password_command` fields. Only send-capable accounts appear in the
+composer's From: dropdown.
 
 ---
 
-## Mirror configuration (`[accounts.mirror]`)
+## Mirror configuration — `[accounts.mirror]`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `path` | string | -- | Directory for local mail storage. Env vars (`~`, `$VAR`, `%VAR%`) expanded. Relative paths resolve against Pony's data directory; use absolute for custom locations |
-| `format` | string | -- | `"maildir"` or `"mbox"` |
-| `trash_retention_days` | int | `30` | Days to keep trashed messages before permanent deletion |
+| `path` | string | — | Local mail directory. Env vars (`~`, `$VAR`, `%VAR%`) expanded. Relative paths resolve against Pony's data directory; use absolute for custom locations. |
+| `format` | string | — | `"maildir"` or `"mbox"`. |
+| `trash_retention_days` | int | `30` | Days to keep trashed messages before permanent deletion. |
 
 **Maildir** stores one file per message in `cur/`, `new/`, and `tmp/`
-subdirectories. It is robust under concurrent access and works well with
+subdirectories. Robust under concurrent access, plays well with
 rsync-based backups.
 
-**mbox** stores all messages in a single file per folder. It is compact but
-does not tolerate concurrent writers. Prefer Maildir unless you have an
-existing mbox archive to point at.
+**mbox** stores all messages in a single file per folder. Compact, but
+does not tolerate concurrent writers. Pony maintains a TOC sidecar so
+re-opens are fast. Prefer Maildir unless you have an existing mbox
+archive to point at.
 
 ---
 
-## Folder sync policy (`[accounts.folders]`)
+## Folder sync policy — `[accounts.folders]`
 
 All three keys accept lists of **Python `re.fullmatch()` patterns**. A plain
 name like `"INBOX"` matches exactly; `"Archive/.*"` matches any subfolder of
@@ -242,18 +284,17 @@ Archive; `".*"` matches everything. In TOML, backslashes must be doubled
 
 | Key | Default | Description |
 |---|---|---|
-| `include` | `[]` (all) | If non-empty, only folders matching a pattern are synced |
-| `exclude` | `[]` | Folders never synced, even if matched by `include` |
-| `read_only` | `[]` | Synced server-to-local only; local flag changes and deletions are never pushed back |
+| `include` | `[]` (all) | If non-empty, only matching folders are synced. |
+| `exclude` | `[]` | Folders never synced, even if matched by `include`. |
+| `read_only` | `[]` | Synced server-to-local only; local flag changes and deletions are never pushed back. |
 
-**Precedence:** `exclude` beats `include` beats `read_only`. A folder in both
-`include` and `read_only` is synced read-only. A folder in both `read_only`
-and `exclude` is not synced at all.
+**Precedence:** `exclude` beats `include` beats `read_only`. A folder in
+both `include` and `read_only` is synced read-only. A folder in both
+`read_only` and `exclude` is not synced at all.
 
 **Auto-include of read_only:** When `include` is non-empty, folders in
-`read_only` are automatically included unless also matched by `exclude`. This
-means you can set `include = ["INBOX"]` and still have Sent synced read-only
-without listing it in `include`.
+`read_only` are still synced unless also matched by `exclude` — so
+`include = ["INBOX"]` will still pull `Sent Mail` if it's in `read_only`.
 
 ### Common patterns
 
@@ -278,8 +319,8 @@ include = ["INBOX", "Projects", "Projects/.*"]
 
 ### `plaintext`
 
-The password is stored as a string in `config.toml`. Convenient for testing
-but leaves the password readable on disk.
+Password stored as a string in `config.toml`. Convenient for testing;
+leaves the password readable on disk.
 
 ```toml
 credentials_source = "plaintext"
@@ -288,22 +329,22 @@ password           = "s3cret"
 
 ### `env`
 
-The password is read from an environment variable at runtime. The variable
-name is derived from the account `name`: uppercased with spaces replaced by
+Password read from an environment variable at runtime. The variable name
+is derived from the account `name`: uppercased, spaces replaced with
 underscores, prefixed with `PONY_PASSWORD_`.
 
 ```toml
 credentials_source = "env"
 ```
 
-For an account named `"Personal"`, set `PONY_PASSWORD_PERSONAL` before
-running Pony. For `"Work Email"`, set `PONY_PASSWORD_WORK_EMAIL`.
+For an account named `"Personal"`, set `PONY_PASSWORD_PERSONAL`. For
+`"Work Email"`, set `PONY_PASSWORD_WORK_EMAIL`.
 
 ### `command`
 
-An external command is run and its stdout (stripped of trailing whitespace) is
-used as the password. The command is passed directly to the OS -- no shell
-interpolation occurs.
+An external command is run and its stdout (trailing whitespace stripped)
+is used as the password. The command is executed directly — no shell
+interpolation.
 
 ```toml
 credentials_source = "command"
@@ -311,19 +352,19 @@ password_command   = ["pass", "show", "mail/personal"]
 ```
 
 Compatible with [pass](https://www.passwordstore.org/), the 1Password CLI
-(`op read`), macOS Keychain via `security find-generic-password`, and similar
-tools.
+(`op read`), macOS Keychain via `security find-generic-password`, and
+similar tools.
 
 ### `encrypted`
 
-The password is encrypted and stored as a blob in the SQLite index database.
-The encryption key is derived from machine-specific information (OS username
-and machine ID), so the blob is usable only on the machine where it was
-created.
+Password is encrypted and stored as a blob in the SQLite index. The
+encryption key is derived from machine-specific information (OS username
+and machine ID), so the blob is usable only on the machine that created
+it.
 
-On Windows the encryption uses **DPAPI** (`CryptProtectData`). On
-Linux/macOS it uses **PBKDF2-HMAC-SHA256** key derivation with a
-SHAKE-256 keystream cipher.
+- **Windows:** DPAPI (`CryptProtectData`).
+- **Linux/macOS:** PBKDF2-HMAC-SHA256 key derivation with a SHAKE-256
+  keystream.
 
 ```toml
 credentials_source = "encrypted"
@@ -335,8 +376,7 @@ The first time Pony tries to connect it prompts interactively:
 Password for Personal:
 ```
 
-The result is stored and reused for all subsequent runs. To re-prompt (e.g.
-after a password change), run:
+The result is stored and reused. To re-prompt (after a password change):
 
 ```
 pony account set-password Personal
