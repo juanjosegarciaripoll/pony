@@ -1596,7 +1596,14 @@ class MainScreen(Screen[None]):
         saved: list[str] = []
         missing: list[int] = []
         for idx in indices:
-            name = self.save_attachment(idx, dest)
+            try:
+                name = self.save_attachment(idx, dest)
+            except OSError as exc:
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Could not save attachment {idx}: {exc}",
+                    severity="error",
+                )
+                continue
             if name:
                 saved.append(name)
             else:
@@ -1616,9 +1623,22 @@ class MainScreen(Screen[None]):
         dest.mkdir(parents=True, exist_ok=True)
         missing: list[int] = []
         for idx in indices:
-            name = self.save_attachment(idx, dest)
+            try:
+                name = self.save_attachment(idx, dest)
+            except OSError as exc:
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Could not save attachment {idx}: {exc}",
+                    severity="error",
+                )
+                continue
             if name:
-                self._launch_file(dest / name)
+                try:
+                    self._launch_file(dest / name)
+                except OSError as exc:
+                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                        f"Could not open {name}: {exc}",
+                        severity="error",
+                    )
             else:
                 missing.append(idx)
         if missing:

@@ -29,6 +29,21 @@ from ..message_renderer import (
 _log = logging.getLogger(__name__)
 
 
+def _unique_path(dest_dir: Path, filename: str) -> Path:
+    """Return dest_dir/filename, appending -N before the extension if it exists."""
+    candidate = dest_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    n = 1
+    while True:
+        candidate = dest_dir / f"{stem}-{n}{suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 class MessageViewPanel(VerticalScroll):
     """Scrollable message reader: header block, attachment list, body text.
 
@@ -155,15 +170,20 @@ class MessageViewPanel(VerticalScroll):
         return len(self._rendered.attachments)
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
-        """Save attachment *index* (1-based) to *dest_dir*."""
+        """Save attachment *index* (1-based) to *dest_dir*.
+
+        Returns the saved filename (may differ from the original if a file
+        with that name already existed).  Returns *None* when the index is
+        out of range.  Raises ``OSError`` on write failure.
+        """
         if self._rendered is None:
             return None
         payload = extract_attachment(self._rendered.raw_bytes, index)
         if payload is None:
             return None
-        dest = dest_dir / payload.filename
+        dest = _unique_path(dest_dir, payload.filename)
         dest.write_bytes(payload.data)
-        return payload.filename
+        return dest.name
 
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
         """Save all attachments to *dest_dir*."""
