@@ -140,7 +140,8 @@ class MessageViewPanel(VerticalScroll):
             )
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", summary.message_ref)
-            self._set_content(f"(could not load message: {type(exc).__name__}: {exc})")
+            msg = f"(could not load message: {type(exc).__name__}: {exc})"
+            self._set_content(markup_escape(msg))
             return
         self._rendered = render_message(raw)
         self._set_content(self._build_markup(self._rendered))
@@ -238,8 +239,8 @@ class MessageViewPanel(VerticalScroll):
             line = self._addr_field(label, header)
             if line is not None:
                 lines.append(line)
-        lines.append(f"Date:    {r.date}")
-        lines.append(f"Subject: {r.subject}")
+        lines.append(f"Date:    {markup_escape(r.date)}")
+        lines.append(f"Subject: {markup_escape(r.subject)}")
 
         if r.attachments:
             lines.append("")
@@ -249,7 +250,7 @@ class MessageViewPanel(VerticalScroll):
                 link = f"[@click=\"screen.open_attachment('{att.index}')\"]"
                 lines.append(
                     f"  [{att.index}] {link}{name}[/]"
-                    f"  {att.content_type}"
+                    f"  {markup_escape(att.content_type)}"
                     f"  ({fmt_size(att.size_bytes)})"
                 )
 
