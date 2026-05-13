@@ -38,9 +38,24 @@ def _escape(text: str) -> str:
     return text.replace("[", "\\[")
 
 
+_FORMAT_RICH = {
+    "B1": "[bold]",
+    "B0": "[/bold]",
+    "I1": "[italic]",
+    "I0": "[/italic]",
+    "U1": "[underline]",
+    "U0": "[/underline]",
+    "S1": "[strike]",
+    "S0": "[/strike]",
+}
+
+
 def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
-    """Convert a body string containing ``\\x00LINK:{idx}\\x00`` sentinels into
-    Rich markup with clickable ``[🌐 ↗]`` or ``[✉ ]`` tokens."""
+    """Convert a styled body string into Rich markup.
+
+    Handles ``\\x00LINK:{idx}\\x00`` (clickable link tokens) and
+    ``\\x00B1\\x00`` / ``\\x00B0\\x00`` etc. (bold/italic/underline/strike).
+    """
     segments = body.split("\x00")
     parts: list[str] = []
     for seg in segments:
@@ -54,6 +69,8 @@ def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
                 parts.append(f"[@click=\"screen.activate_link('{idx}')\"]\\[🌐 ↗][/]")
             else:
                 parts.append(f"[@click=\"screen.compose_link('{idx}')\"]\\[✉ ][/]")
+        elif seg in _FORMAT_RICH:
+            parts.append(_FORMAT_RICH[seg])
         else:
             parts.append(_escape(seg))
     return "".join(parts)
@@ -294,6 +311,6 @@ class MessageViewPanel(VerticalScroll):
 
         lines.append("─" * 60)
         lines.append("")
-        lines.append(_render_body(r.body, r.links))
+        lines.append(_render_body(r.styled_body or r.body, r.links))
 
         return "\n".join(lines)

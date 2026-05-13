@@ -41,6 +41,10 @@ _PLAIN_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Inline-format sentinel IDs used in styled_body.  One letter (B=bold, I=italic,
+# U=underline, S=strikethrough) + digit 1 (open) or 0 (close).
+_FORMAT_IDS = frozenset(("B1", "B0", "I1", "I0", "U1", "U0", "S1", "S0"))
+
 
 @dataclass(frozen=True, slots=True)
 class AttachmentInfo:
@@ -71,10 +75,11 @@ class RenderedMessage:
     to: str
     cc: str
     date: str
-    body: str  # plain text; inline links replaced by \x00LINK:{idx}\x00 sentinels
+    body: str  # plain text: URLs as text, no NUL characters — for CLI / MCP / quoting
     attachments: tuple[AttachmentInfo, ...]
     raw_bytes: bytes  # kept for W (open in browser)
     links: tuple[tuple[str, str], ...] = ()  # (kind, target): kind="web"|"mail"
+    styled_body: str = ""  # body with \x00LINK:N\x00 + format sentinels for TUI
 
 
 def render_message(raw_bytes: bytes) -> RenderedMessage:
@@ -88,7 +93,7 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
     cc = _header(msg, "Cc")
     date = _header(msg, "Date")
 
-    body, links, attachments = _extract_body_and_attachments(msg)
+    body, styled_body, links, attachments = _extract_body_and_attachments(msg)
 
     return RenderedMessage(
         subject=subject,
@@ -100,6 +105,7 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
         attachments=tuple(attachments),
         raw_bytes=raw_bytes,
         links=tuple(links),
+        styled_body=styled_body,
     )
 
 
@@ -113,9 +119,33 @@ def _header(msg: EmailMessage, name: str) -> str:
     return str(value).strip()
 
 
+def _sentinels_to_plain(text: str, links: list[tuple[str, str]]) -> str:
+    """Expand NUL sentinels to plain-text equivalents.
+
+    ``\\x00LINK:N\\x00`` → the link target URL or e-mail address.
+    ``\\x00B1\\x00`` / ``\\x00B0\\x00`` etc. (format sentinels) → removed.
+    The result contains no NUL characters and is safe for CLI, MCP, and quoting.
+    """
+    segments = text.split("\x00")
+    parts: list[str] = []
+    for seg in segments:
+        if seg.startswith("LINK:"):
+            try:
+                idx = int(seg[5:])
+                _kind, target = links[idx]
+                parts.append(target)
+            except (ValueError, IndexError):
+                pass
+        elif seg in _FORMAT_IDS:
+            pass  # format sentinel — omit from plain output
+        else:
+            parts.append(seg)
+    return "".join(parts)
+
+
 def _extract_body_and_attachments(
     msg: EmailMessage,
-) -> tuple[str, list[tuple[str, str]], list[AttachmentInfo]]:
+) -> tuple[str, str, list[tuple[str, str]], list[AttachmentInfo]]:
     """Walk the MIME tree and collect the best plain-text body + attachments.
 
     ``message/rfc822`` parts (attached emails) are rendered as a header
@@ -200,14 +230,16 @@ def _extract_body_and_attachments(
 
     links: list[tuple[str, str]] = []
     if body_parts:
-        body = _inject_plaintext_links("\n".join(body_parts), links)
+        styled_body = _inject_plaintext_links("\n".join(body_parts), links)
+        body = _sentinels_to_plain(styled_body, links)
     elif html_parts:
-        body, links = _strip_html("\n".join(html_parts))
-        body = _inject_plaintext_links(body, links)
+        styled_raw, links = _strip_html("\n".join(html_parts))
+        styled_body = _inject_plaintext_links(styled_raw, links)
+        body = _sentinels_to_plain(styled_body, links)
     else:
-        body = "(no readable content)"
+        body = styled_body = "(no readable content)"
 
-    return body, links, attachments
+    return body, styled_body, links, attachments
 
 
 class _HTMLStripper(HTMLParser):
@@ -230,6 +262,18 @@ class _HTMLStripper(HTMLParser):
     _END_ONLY_TAGS = frozenset(("li", "tr"))
     _BLOCK_TAGS = _PARA_TAGS | _BR_TAGS | _END_ONLY_TAGS
 
+    # Inline formatting tags → sentinel letter used in \x00{letter}{1|0}\x00.
+    _FORMAT_TAG_MAP: dict[str, str] = {
+        "b": "B",
+        "strong": "B",
+        "i": "I",
+        "em": "I",
+        "u": "U",
+        "s": "S",
+        "del": "S",
+        "strike": "S",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self._lines: list[str] = []
@@ -239,6 +283,7 @@ class _HTMLStripper(HTMLParser):
         self._anchor_kind = ""
         self._anchor_target = ""
         self._anchor_text: list[str] = []
+        self._format_depth: dict[str, int] = {"B": 0, "I": 0, "U": 0, "S": 0}
 
     def handle_data(self, data: str) -> None:
         # Normalize whitespace like a browser: collapse runs (incl. newlines from
@@ -269,6 +314,12 @@ class _HTMLStripper(HTMLParser):
                 self._anchor_kind = "mail"
                 self._anchor_target = addr
                 self._anchor_text = []
+        fmt = self._FORMAT_TAG_MAP.get(tag)
+        if fmt and not self._in_anchor:
+            depth = self._format_depth[fmt]
+            self._format_depth[fmt] = depth + 1
+            if depth == 0:
+                self._current.append(f"\x00{fmt}1\x00")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._PARA_TAGS:
@@ -293,14 +344,25 @@ class _HTMLStripper(HTMLParser):
             self._anchor_kind = ""
             self._anchor_target = ""
             self._anchor_text = []
+        fmt = self._FORMAT_TAG_MAP.get(tag)
+        if fmt and not self._in_anchor:
+            depth = self._format_depth[fmt]
+            if depth > 0:
+                self._format_depth[fmt] = depth - 1
+                if depth == 1:
+                    self._current.append(f"\x00{fmt}0\x00")
 
-    def _flush(self, *, paragraph: bool = False, add_blank_if_empty: bool = False) -> None:
+    def _flush(
+        self, *, paragraph: bool = False, add_blank_if_empty: bool = False
+    ) -> None:
         text = "".join(self._current).strip()
         if text:
             self._lines.append(text)
             if paragraph:
                 self._lines.append("")
-        elif (add_blank_if_empty or paragraph) and self._lines and self._lines[-1] != "":
+        elif (
+            (add_blank_if_empty or paragraph) and self._lines and self._lines[-1] != ""
+        ):
             # Empty boundary after non-empty content → blank separator.
             # <br/><br/> produces this via add_blank_if_empty; paragraph-tag
             # boundaries (</ul>, </div> etc.) produce it via paragraph=True.

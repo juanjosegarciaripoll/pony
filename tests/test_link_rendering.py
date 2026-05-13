@@ -40,41 +40,56 @@ class HTMLAnchorExtractionTest(unittest.TestCase):
         html = "<p>Click <a href='https://example.com'>here</a> for info.</p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("web", "https://example.com"),))
-        self.assertIn("here", r.body)
-        self.assertIn("\x00LINK:0\x00", r.body)
-        # Anchor text should precede the sentinel
-        pos_text = r.body.index("here")
-        pos_sentinel = r.body.index("\x00LINK:0\x00")
+        # styled_body has the sentinel; body has plain URL text
+        self.assertIn("here", r.styled_body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        pos_text = r.styled_body.index("here")
+        pos_sentinel = r.styled_body.index("\x00LINK:0\x00")
         self.assertLess(pos_text, pos_sentinel)
+        # body is NUL-free and contains the URL as plain text
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("here", r.body)
+        self.assertIn("https://example.com", r.body)
 
     def test_url_as_anchor_text_replaced(self) -> None:
         html = "<p><a href='https://example.com'>https://example.com</a></p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("web", "https://example.com"),))
-        # URL text should be replaced, only sentinel present
-        self.assertNotIn("https://example.com", r.body)
-        self.assertIn("\x00LINK:0\x00", r.body)
+        # styled_body: URL replaced by sentinel
+        self.assertNotIn("https://example.com", r.styled_body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        # body: URL expanded back as plain text
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("https://example.com", r.body)
 
     def test_empty_anchor_text(self) -> None:
         html = "<p><a href='https://x.org'></a></p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("web", "https://x.org"),))
-        self.assertIn("\x00LINK:0\x00", r.body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("https://x.org", r.body)
 
     def test_mailto_anchor_human_text(self) -> None:
         html = "<p>Mail <a href='mailto:foo@bar.com'>Foo</a>.</p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("mail", "foo@bar.com"),))
+        self.assertIn("Foo", r.styled_body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        self.assertNotIn("\x00", r.body)
         self.assertIn("Foo", r.body)
-        self.assertIn("\x00LINK:0\x00", r.body)
+        self.assertIn("foo@bar.com", r.body)
 
     def test_mailto_anchor_address_as_text(self) -> None:
         html = "<p><a href='mailto:foo@bar.com'>foo@bar.com</a></p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("mail", "foo@bar.com"),))
-        # Anchor text equals the target address — treated as redundant, sentinel only
-        self.assertNotIn("foo@bar.com", r.body)
-        self.assertIn("\x00LINK:0\x00", r.body)
+        # styled_body: redundant anchor text replaced by sentinel
+        self.assertNotIn("foo@bar.com", r.styled_body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        # body: address expanded as plain text
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("foo@bar.com", r.body)
 
     def test_multiple_links(self) -> None:
         html = "<p><a href='https://a.com'>A</a> and <a href='https://b.com'>B</a></p>"
@@ -156,12 +171,15 @@ class RenderMessageLinksTest(unittest.TestCase):
         body = "Go to https://docs.example.com for details."
         r = render_message(_plain_msg(body))
         self.assertEqual(r.links, (("web", "https://docs.example.com"),))
-        self.assertIn("\x00LINK:0\x00", r.body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("https://docs.example.com", r.body)
 
     def test_plain_text_no_links(self) -> None:
         r = render_message(_plain_msg("Just text, no links."))
         self.assertEqual(r.links, ())
         self.assertNotIn("\x00", r.body)
+        self.assertNotIn("\x00", r.styled_body)
 
     def test_html_only_message(self) -> None:
         html = "<p><a href='https://x.com'>X</a></p>"
@@ -172,7 +190,9 @@ class RenderMessageLinksTest(unittest.TestCase):
 class RenderBodyMarkupTest(unittest.TestCase):
     """Verify that _render_body produces valid Textual markup in edge cases."""
 
-    def _assert_valid_markup(self, body: str, links: tuple[tuple[str, str], ...]) -> str:
+    def _assert_valid_markup(
+        self, body: str, links: tuple[tuple[str, str], ...]
+    ) -> str:
         markup = _render_body(body, links)
         # _to_content raises MarkupError if the markup is unbalanced
         _to_content(markup)
@@ -216,3 +236,86 @@ class RenderBodyMarkupTest(unittest.TestCase):
         content = str(_to_content(markup))
         self.assertIn("[1]", content)
         self.assertIn("[SPAM]", content)
+
+    def test_bold_sentinel(self) -> None:
+        body = "\x00B1\x00important\x00B0\x00"
+        markup = self._assert_valid_markup(body, ())
+        self.assertIn("[bold]", markup)
+        self.assertIn("[/bold]", markup)
+        self.assertIn("important", markup)
+
+    def test_italic_sentinel(self) -> None:
+        body = "\x00I1\x00emphasis\x00I0\x00"
+        markup = self._assert_valid_markup(body, ())
+        self.assertIn("[italic]", markup)
+        self.assertIn("[/italic]", markup)
+
+    def test_underline_sentinel(self) -> None:
+        body = "\x00U1\x00underlined\x00U0\x00"
+        markup = self._assert_valid_markup(body, ())
+        self.assertIn("[underline]", markup)
+        self.assertIn("[/underline]", markup)
+
+    def test_strikethrough_sentinel(self) -> None:
+        body = "\x00S1\x00deleted\x00S0\x00"
+        markup = self._assert_valid_markup(body, ())
+        self.assertIn("[strike]", markup)
+        self.assertIn("[/strike]", markup)
+
+    def test_bold_with_link(self) -> None:
+        body = "\x00B1\x00Visit \x00LINK:0\x00 now\x00B0\x00"
+        markup = self._assert_valid_markup(body, (("web", "https://x.com"),))
+        self.assertIn("[bold]", markup)
+        self.assertIn("activate_link", markup)
+        self.assertIn("[/bold]", markup)
+
+
+class HTMLFormattingTest(unittest.TestCase):
+    """Verify that HTML bold/italic/underline produce sentinels in styled_body."""
+
+    def test_bold_tag(self) -> None:
+        r = render_message(_html_msg("<p>Hello <b>world</b>!</p>"))
+        self.assertIn("\x00B1\x00", r.styled_body)
+        self.assertIn("\x00B0\x00", r.styled_body)
+        self.assertIn("world", r.styled_body)
+        self.assertNotIn("\x00", r.body)
+        self.assertIn("world", r.body)
+
+    def test_strong_tag(self) -> None:
+        r = render_message(_html_msg("<p><strong>Important</strong></p>"))
+        self.assertIn("\x00B1\x00", r.styled_body)
+        self.assertIn("\x00B0\x00", r.styled_body)
+
+    def test_italic_tag(self) -> None:
+        r = render_message(_html_msg("<p><i>slanted</i></p>"))
+        self.assertIn("\x00I1\x00", r.styled_body)
+        self.assertIn("\x00I0\x00", r.styled_body)
+
+    def test_em_tag(self) -> None:
+        r = render_message(_html_msg("<p><em>emphasis</em></p>"))
+        self.assertIn("\x00I1\x00", r.styled_body)
+
+    def test_underline_tag(self) -> None:
+        r = render_message(_html_msg("<p><u>underlined</u></p>"))
+        self.assertIn("\x00U1\x00", r.styled_body)
+        self.assertIn("\x00U0\x00", r.styled_body)
+
+    def test_strikethrough_tag(self) -> None:
+        r = render_message(_html_msg("<p><s>old</s></p>"))
+        self.assertIn("\x00S1\x00", r.styled_body)
+        self.assertIn("\x00S0\x00", r.styled_body)
+
+    def test_del_tag(self) -> None:
+        r = render_message(_html_msg("<p><del>removed</del></p>"))
+        self.assertIn("\x00S1\x00", r.styled_body)
+
+    def test_nested_bold_italic(self) -> None:
+        r = render_message(_html_msg("<p><b><i>both</i></b></p>"))
+        self.assertIn("\x00B1\x00", r.styled_body)
+        self.assertIn("\x00I1\x00", r.styled_body)
+        self.assertIn("both", r.styled_body)
+
+    def test_no_format_sentinels_in_plain_text_message(self) -> None:
+        r = render_message(_plain_msg("Hello, **not** markdown."))
+        self.assertNotIn("\x00", r.body)
+        self.assertNotIn("\x00B", r.styled_body)
