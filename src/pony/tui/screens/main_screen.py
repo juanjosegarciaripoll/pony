@@ -235,6 +235,20 @@ class MainScreen(Screen[None]):
         display, addr = pair
         self.compose_new(to=f"{display} <{addr}>" if display else addr)
 
+    def action_activate_link(self, idx: str) -> None:
+        pair = self.query_one(MessageViewPanel).body_link(int(idx))
+        if pair is None or pair[0] != "web":
+            return
+        from .link_action_screen import LinkActionScreen
+
+        self.app.push_screen(LinkActionScreen(pair[1]))  # pyright: ignore[reportUnknownMemberType]
+
+    def action_compose_link(self, idx: str) -> None:
+        pair = self.query_one(MessageViewPanel).body_link(int(idx))
+        if pair is None or pair[0] != "mail":
+            return
+        self.compose_new(to=pair[1])
+
     def action_harvest_contact(self, idx: str) -> None:
         if self._contacts is None:
             return

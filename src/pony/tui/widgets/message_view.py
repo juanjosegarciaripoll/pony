@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from email.utils import getaddresses
 from pathlib import Path
 
-from rich.markup import escape as markup_escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
@@ -27,6 +26,37 @@ from ..message_renderer import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def _escape(text: str) -> str:
+    """Escape text for Textual markup.
+
+    Rich 14.x ``markup.escape`` only escapes ``[`` when followed by a
+    tag-like pattern, but Textual's tokenizer treats *any* bare ``[`` as an
+    open-tag opener.  A plain ``replace`` is the safe choice here.
+    """
+    return text.replace("[", "\\[")
+
+
+def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
+    """Convert a body string containing ``\\x00LINK:{idx}\\x00`` sentinels into
+    Rich markup with clickable ``[🌐 ↗]`` or ``[✉ ]`` tokens."""
+    segments = body.split("\x00")
+    parts: list[str] = []
+    for seg in segments:
+        if seg.startswith("LINK:"):
+            try:
+                idx = int(seg[5:])
+                kind, _ = links[idx]
+            except (ValueError, IndexError):
+                continue
+            if kind == "web":
+                parts.append(f"[@click=\"screen.activate_link('{idx}')\"]\\[🌐 ↗][/]")
+            else:
+                parts.append(f"[@click=\"screen.compose_link('{idx}')\"]\\[✉ ][/]")
+        else:
+            parts.append(_escape(seg))
+    return "".join(parts)
 
 
 def _unique_path(dest_dir: Path, filename: str) -> Path:
@@ -141,7 +171,7 @@ class MessageViewPanel(VerticalScroll):
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", summary.message_ref)
             msg = f"(could not load message: {type(exc).__name__}: {exc})"
-            self._set_content(markup_escape(msg))
+            self._set_content(_escape(msg))
             return
         self._rendered = render_message(raw)
         self._set_content(self._build_markup(self._rendered))
@@ -204,6 +234,13 @@ class MessageViewPanel(VerticalScroll):
         except (AttributeError, IndexError):
             return None
 
+    def body_link(self, idx: int) -> tuple[str, str] | None:
+        """Return the (kind, target) pair at *idx*, or None if out of range."""
+        try:
+            return self._body_links[idx]
+        except (AttributeError, IndexError):
+            return None
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -220,7 +257,7 @@ class MessageViewPanel(VerticalScroll):
             display = raw_display.strip().strip("\"'")
             idx = len(self._header_addresses)
             self._header_addresses.append((display, addr))
-            shown = markup_escape(f"{display} <{addr}>" if display else addr)
+            shown = _escape(f"{display} <{addr}>" if display else addr)
             parts.append(
                 f"[@click=\"screen.compose_address('{idx}')\"]{shown}[/]"
                 f"[@click=\"screen.harvest_contact('{idx}')\"] (+)[/]"
@@ -229,6 +266,7 @@ class MessageViewPanel(VerticalScroll):
 
     def _build_markup(self, r: RenderedMessage) -> str:
         self._header_addresses: list[tuple[str, str]] = []
+        self._body_links = r.links
         lines: list[str] = []
 
         for label, header in (
@@ -239,23 +277,23 @@ class MessageViewPanel(VerticalScroll):
             line = self._addr_field(label, header)
             if line is not None:
                 lines.append(line)
-        lines.append(f"Date:    {markup_escape(r.date)}")
-        lines.append(f"Subject: {markup_escape(r.subject)}")
+        lines.append(f"Date:    {_escape(r.date)}")
+        lines.append(f"Subject: {_escape(r.subject)}")
 
         if r.attachments:
             lines.append("")
             lines.append("Attachments:")
             for att in r.attachments:
-                name = markup_escape(att.filename)
+                name = _escape(att.filename)
                 link = f"[@click=\"screen.open_attachment('{att.index}')\"]"
                 lines.append(
                     f"  [{att.index}] {link}{name}[/]"
-                    f"  {markup_escape(att.content_type)}"
+                    f"  {_escape(att.content_type)}"
                     f"  ({fmt_size(att.size_bytes)})"
                 )
 
         lines.append("─" * 60)
         lines.append("")
-        lines.append(markup_escape(r.body))
+        lines.append(_render_body(r.body, r.links))
 
         return "\n".join(lines)

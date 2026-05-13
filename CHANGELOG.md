@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+
+- **Clickable links in message body**: web links (`http://`, `https://`) in the
+  body are now rendered as a ``[link↗]`` token; clicking it opens a dialog
+  (Open / Copy / Cancel).  ``mailto:`` links render as ``[✉]`` and open
+  Pony's composer directly with the recipient prefilled.  Both HTML anchor
+  tags and bare / angle-bracketed URLs in plain-text bodies are detected.
+
 ### Fixed
 
 - **Cold-start local rescan skips full-row hydration**: when

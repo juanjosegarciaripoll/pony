@@ -44,6 +44,7 @@ src/pony/
       contact_edit_screen.py     # contact editor form
       confirm_screen.py          # yes/no dialog
       dialog_screen.py           # base class for modal yes/no dialogs
+      link_action_screen.py      # Open / Copy / Cancel dialog for body links
       floating_input_screen.py   # base class for bottom floating-input bars
       save_draft_screen.py       # draft save confirmation
       add_attachment_screen.py   # file picker (DirectoryTree + typeahead)

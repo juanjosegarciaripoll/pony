@@ -25,6 +25,19 @@ _STYLE_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Detects whether a string looks like a URL (used to decide if anchor text is
+# human-readable or just the URL itself duplicated as link text).
+_IS_URL_RE = re.compile(r"^https?://|^mailto:", re.IGNORECASE)
+
+# Matches plain-text link patterns in order of specificity to avoid overlap.
+_PLAIN_LINK_RE = re.compile(
+    r"<(https?://[^>\s]+)>"  # <https://…>  angle-bracketed web URL
+    r"|<(mailto:[^>\s]+)>"  # <mailto:…>   angle-bracketed address
+    r"|(https?://[^\s<>\"')\]]+)"  # bare web URL
+    r"|(mailto:[^\s<>\"')\]]+)",  # bare mailto:
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AttachmentInfo:
@@ -55,9 +68,10 @@ class RenderedMessage:
     to: str
     cc: str
     date: str
-    body: str  # plain text, always
+    body: str  # plain text; inline links replaced by \x00LINK:{idx}\x00 sentinels
     attachments: tuple[AttachmentInfo, ...]
     raw_bytes: bytes  # kept for W (open in browser)
+    links: tuple[tuple[str, str], ...] = ()  # (kind, target): kind="web"|"mail"
 
 
 def render_message(raw_bytes: bytes) -> RenderedMessage:
@@ -71,7 +85,7 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
     cc = _header(msg, "Cc")
     date = _header(msg, "Date")
 
-    body, attachments = _extract_body_and_attachments(msg)
+    body, links, attachments = _extract_body_and_attachments(msg)
 
     return RenderedMessage(
         subject=subject,
@@ -82,6 +96,7 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
         body=body,
         attachments=tuple(attachments),
         raw_bytes=raw_bytes,
+        links=tuple(links),
     )
 
 
@@ -97,7 +112,7 @@ def _header(msg: EmailMessage, name: str) -> str:
 
 def _extract_body_and_attachments(
     msg: EmailMessage,
-) -> tuple[str, list[AttachmentInfo]]:
+) -> tuple[str, list[tuple[str, str]], list[AttachmentInfo]]:
     """Walk the MIME tree and collect the best plain-text body + attachments.
 
     ``message/rfc822`` parts (attached emails) are rendered as a header
@@ -180,34 +195,83 @@ def _extract_body_and_attachments(
                 charset = part.get_content_charset() or "utf-8"
                 html_parts.append(payload.decode(charset, errors="replace"))
 
+    links: list[tuple[str, str]] = []
     if body_parts:
-        body = "\n".join(body_parts)
+        body = _inject_plaintext_links("\n".join(body_parts), links)
     elif html_parts:
-        body = _strip_html("\n".join(html_parts))
+        body, links = _strip_html("\n".join(html_parts))
+        body = _inject_plaintext_links(body, links)
     else:
         body = "(no readable content)"
 
-    return body, attachments
+    return body, links, attachments
 
 
 class _HTMLStripper(HTMLParser):
-    """Minimal tag stripper that preserves line structure."""
+    """Minimal tag stripper that preserves line structure.
+
+    Anchor tags are intercepted: ``<a href="URL">text</a>`` is replaced by
+    either ``text \x00LINK:{n}\x00`` (when the anchor text is human-readable)
+    or ``\x00LINK:{n}\x00`` alone (when it is empty or duplicates the URL).
+    Collected links are available via ``links()``.
+    """
+
+    _BLOCK_TAGS = frozenset(("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"))
 
     def __init__(self) -> None:
         super().__init__()
         self._lines: list[str] = []
         self._current: list[str] = []
+        self._links: list[tuple[str, str]] = []
+        self._in_anchor = False
+        self._anchor_kind = ""
+        self._anchor_target = ""
+        self._anchor_text: list[str] = []
 
     def handle_data(self, data: str) -> None:
-        self._current.append(data)
+        if self._in_anchor:
+            self._anchor_text.append(data)
+        else:
+            self._current.append(data)
 
-    def handle_starttag(self, tag: str, attrs: object) -> None:  # noqa: ARG002
-        if tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._BLOCK_TAGS:
             self._flush()
+        if tag == "a":
+            attr_dict = dict(attrs)
+            href = (attr_dict.get("href") or "").strip()
+            if href.startswith(("http://", "https://")):
+                self._in_anchor = True
+                self._anchor_kind = "web"
+                self._anchor_target = href
+                self._anchor_text = []
+            elif href.lower().startswith("mailto:"):
+                addr = href[7:].split("?")[0].strip()
+                self._in_anchor = True
+                self._anchor_kind = "mail"
+                self._anchor_target = addr
+                self._anchor_text = []
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("p", "div", "tr", "li", "h1", "h2", "h3", "h4"):
+        if tag in self._BLOCK_TAGS:
             self._flush()
+        if tag == "a" and self._in_anchor:
+            anchor_text = "".join(self._anchor_text).strip()
+            idx = len(self._links)
+            self._links.append((self._anchor_kind, self._anchor_target))
+            sentinel = f"\x00LINK:{idx}\x00"
+            is_url = (
+                bool(_IS_URL_RE.match(anchor_text))
+                or anchor_text == self._anchor_target
+            )
+            if anchor_text and not is_url:
+                self._current.append(f"{anchor_text} {sentinel}")
+            else:
+                self._current.append(sentinel)
+            self._in_anchor = False
+            self._anchor_kind = ""
+            self._anchor_target = ""
+            self._anchor_text = []
 
     def _flush(self) -> None:
         text = "".join(self._current).strip()
@@ -218,6 +282,9 @@ class _HTMLStripper(HTMLParser):
     def result(self) -> str:
         self._flush()
         return "\n".join(self._lines)
+
+    def links(self) -> list[tuple[str, str]]:
+        return list(self._links)
 
 
 def build_browser_html(raw_bytes: bytes) -> str:
@@ -479,7 +546,32 @@ def fmt_size(n: int) -> str:
     return f"{n:.1f} GB"
 
 
-def _strip_html(html: str) -> str:
+def _strip_html(html: str) -> tuple[str, list[tuple[str, str]]]:
     stripper = _HTMLStripper()
     stripper.feed(strip_invisible_blocks(html))
-    return stripper.result()
+    return stripper.result(), stripper.links()
+
+
+def _inject_plaintext_links(text: str, links: list[tuple[str, str]]) -> str:
+    """Replace bare and angle-bracketed URLs in *text* with sentinels.
+
+    Each detected URL is appended to *links* (mutated in-place) and replaced
+    with ``\\x00LINK:{idx}\\x00`` so the view layer can render a clickable token.
+    Already-injected sentinels (from HTML stripping) are untouched because NUL
+    never appears in URL text.
+    """
+
+    def _replace(m: re.Match[str]) -> str:
+        if m.group(1) is not None:  # <https://...>
+            kind, target = "web", m.group(1)
+        elif m.group(2) is not None:  # <mailto:...>
+            kind, target = "mail", m.group(2)[7:].split("?")[0].strip()
+        elif m.group(3) is not None:  # bare https://...
+            kind, target = "web", m.group(3)
+        else:  # bare mailto:...
+            kind, target = "mail", (m.group(4) or "")[7:].split("?")[0].strip()
+        idx = len(links)
+        links.append((kind, target))
+        return f"\x00LINK:{idx}\x00"
+
+    return _PLAIN_LINK_RE.sub(_replace, text)
