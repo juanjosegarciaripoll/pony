@@ -29,6 +29,9 @@ _STYLE_BLOCK_RE = re.compile(
 # human-readable or just the URL itself duplicated as link text).
 _IS_URL_RE = re.compile(r"^https?://|^mailto:", re.IGNORECASE)
 
+# Collapses runs of whitespace to a single space (HTML text normalization).
+_WHITESPACE_RE = re.compile(r"\s+")
+
 # Matches plain-text link patterns in order of specificity to avoid overlap.
 _PLAIN_LINK_RE = re.compile(
     r"<(https?://[^>\s]+)>"  # <https://…>  angle-bracketed web URL
@@ -216,7 +219,16 @@ class _HTMLStripper(HTMLParser):
     Collected links are available via ``links()``.
     """
 
-    _BLOCK_TAGS = frozenset(("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"))
+    # Paragraph-level: flush with blank separator on both start and end tags.
+    _PARA_TAGS = frozenset(("p", "div", "h1", "h2", "h3", "h4", "ul", "ol", "table"))
+    # Void/self-closing line break: flush only on start tag.
+    # HTMLParser fires handle_endtag for <br /> too; we intentionally ignore it
+    # so that a single <br> does not produce a spurious blank separator.
+    _BR_TAGS = frozenset(("br",))
+    # Container items: flush only on end tag so that adjacent <li>/<tr> tags
+    # separated by whitespace do not insert blank lines between items.
+    _END_ONLY_TAGS = frozenset(("li", "tr"))
+    _BLOCK_TAGS = _PARA_TAGS | _BR_TAGS | _END_ONLY_TAGS
 
     def __init__(self) -> None:
         super().__init__()
@@ -229,14 +241,20 @@ class _HTMLStripper(HTMLParser):
         self._anchor_text: list[str] = []
 
     def handle_data(self, data: str) -> None:
+        # Normalize whitespace like a browser: collapse runs (incl. newlines from
+        # HTML source line-wrapping) to a single space.
+        normalized = _WHITESPACE_RE.sub(" ", data)
         if self._in_anchor:
-            self._anchor_text.append(data)
+            self._anchor_text.append(normalized)
         else:
-            self._current.append(data)
+            self._current.append(normalized)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self._BLOCK_TAGS:
-            self._flush()
+        if tag in self._PARA_TAGS:
+            self._flush(paragraph=True)
+        elif tag in self._BR_TAGS:
+            self._flush(add_blank_if_empty=True)
+        # _END_ONLY_TAGS: no flush on start tag
         if tag == "a":
             attr_dict = dict(attrs)
             href = (attr_dict.get("href") or "").strip()
@@ -253,8 +271,11 @@ class _HTMLStripper(HTMLParser):
                 self._anchor_text = []
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in self._BLOCK_TAGS:
+        if tag in self._PARA_TAGS:
+            self._flush(paragraph=True)
+        elif tag in self._END_ONLY_TAGS:
             self._flush()
+        # _BR_TAGS: no flush on end tag
         if tag == "a" and self._in_anchor:
             anchor_text = "".join(self._anchor_text).strip()
             idx = len(self._links)
@@ -273,14 +294,24 @@ class _HTMLStripper(HTMLParser):
             self._anchor_target = ""
             self._anchor_text = []
 
-    def _flush(self) -> None:
+    def _flush(self, *, paragraph: bool = False, add_blank_if_empty: bool = False) -> None:
         text = "".join(self._current).strip()
         if text:
             self._lines.append(text)
+            if paragraph:
+                self._lines.append("")
+        elif (add_blank_if_empty or paragraph) and self._lines and self._lines[-1] != "":
+            # Empty boundary after non-empty content → blank separator.
+            # <br/><br/> produces this via add_blank_if_empty; paragraph-tag
+            # boundaries (</ul>, </div> etc.) produce it via paragraph=True.
+            self._lines.append("")
         self._current.clear()
 
     def result(self) -> str:
         self._flush()
+        # Strip any trailing blank separator lines added by paragraph flushes.
+        while self._lines and not self._lines[-1]:
+            self._lines.pop()
         return "\n".join(self._lines)
 
     def links(self) -> list[tuple[str, str]]:
