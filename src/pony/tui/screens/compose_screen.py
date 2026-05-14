@@ -426,11 +426,22 @@ class ComposeScreen(Screen[bool]):
             _log.error("SMTP send failed: %s", exc)
             return
 
-        # SMTP succeeded — remove the draft and record the sent copy.
+        # SMTP succeeded — remove the pre-send draft and record the sent copy.
+        # The source draft (if any) is cleaned up by the caller's dismiss callback.
         if draft_entry is not None:
-            self._delete_local_message(draft_entry)
-        if self._source_draft is not None:
-            self._delete_local_message(self._source_draft)
+            mirror = self._mirrors.get(draft_entry.message_ref.account_name)
+            if mirror is not None:
+                try:
+                    mirror.delete_message(
+                        folder=FolderRef(
+                            account_name=draft_entry.message_ref.account_name,
+                            folder_name=draft_entry.message_ref.folder_name,
+                        ),
+                        storage_key=draft_entry.storage_key,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("Could not delete pre-send draft from mirror: %s", exc)
+            self._index.delete_message(message_ref=draft_entry.message_ref)
         self._save_to_folder(
             raw,
             account,
@@ -471,8 +482,6 @@ class ComposeScreen(Screen[bool]):
                         folder_hint="Drafts",
                         override=account.drafts_folder,
                     )
-                    if self._source_draft is not None:
-                        self._delete_local_message(self._source_draft)
             self.dismiss(False)
 
         from .save_draft_screen import SaveDraftScreen
@@ -765,16 +774,3 @@ class ComposeScreen(Screen[bool]):
         )
         return self._index.insert_message(message=projected)
 
-    def _delete_local_message(self, entry: IndexedMessage) -> None:
-        """Remove a locally stored message from the mirror and the index."""
-        mirror = self._mirrors.get(entry.message_ref.account_name)
-        if mirror is not None:
-            folder_ref = FolderRef(
-                account_name=entry.message_ref.account_name,
-                folder_name=entry.message_ref.folder_name,
-            )
-            try:
-                mirror.delete_message(folder=folder_ref, storage_key=entry.storage_key)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("Could not delete draft from mirror: %s", exc)
-        self._index.delete_message(message_ref=entry.message_ref)

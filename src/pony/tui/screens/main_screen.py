@@ -1544,8 +1544,25 @@ class MainScreen(Screen[None]):
         )
 
         def _on_draft_done(result: bool | None) -> None:
-            if result is not None:
-                self._reload_folder(folder_ref)
+            if result is None:
+                return
+            # The draft was either saved (False) or sent (True) — retire the
+            # original.  IMAP messages are marked TRASHED so the sync planner
+            # expunges them on the server; local-only messages are deleted
+            # outright since there is nothing to relay to the server.
+            if msg.uid is not None:
+                self._index.update_message(
+                    message=dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
+                )
+            else:
+                mirror = self._mirrors.get(msg.message_ref.account_name)
+                if mirror is not None:
+                    with contextlib.suppress(Exception):
+                        mirror.delete_message(
+                            folder=folder_ref, storage_key=msg.storage_key
+                        )
+                self._index.delete_message(message_ref=msg.message_ref)
+            self._reload_folder(folder_ref)
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
