@@ -34,6 +34,9 @@
 #                      Example: theme = "nord"
 #
 # Per-account optional composer options:
+# - full_name:     Display name used in the From: header when composing.
+#                  Example: full_name = "Jane Smith" → From: Jane Smith <jane@example.com>
+#                  If omitted, only the bare email address appears in From:.
 # - sent_folder:   Name of the folder where sent messages are saved.
 #                  If omitted, the folder closest to "Sent" is auto-discovered.
 # - drafts_folder: Name of the folder where draft messages are saved on cancel.

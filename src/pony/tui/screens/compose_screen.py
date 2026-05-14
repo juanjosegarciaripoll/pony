@@ -663,6 +663,8 @@ class ComposeScreen(Screen[bool]):
             row.query_one(Input).value = ""
 
     def _account_from_address(self, account: AnyAccount) -> str:
+        if account.full_name:
+            return format_display_address(account.full_name, account.email_address)
         if self._contacts is not None:
             contact = self._contacts.find_contact_by_email(
                 email_address=account.email_address

@@ -116,6 +116,8 @@ class AccountConfig:
     markdown_compose: bool = False
     # Composer: signature text appended after quoted content (None = no signature)
     signature: str | None = None
+    # Composer: display name used in the From: header (e.g. "Jane Smith")
+    full_name: str | None = None
 
     @property
     def can_send(self) -> bool:
@@ -149,6 +151,7 @@ class LocalAccountConfig:
     drafts_folder: str | None = None
     markdown_compose: bool = False
     signature: str | None = None
+    full_name: str | None = None
     # Optional SMTP block + credentials for sending.  ``smtp`` is the
     # wire-level connection; ``username`` / ``credentials_source`` /
     # ``password`` / ``password_command`` provide authentication (same

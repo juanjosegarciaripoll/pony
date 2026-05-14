@@ -161,6 +161,7 @@ def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
         drafts_folder=_optional_string(data, "drafts_folder"),
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
+        full_name=_optional_string(data, "full_name"),
         smtp=smtp,
         username=username,
         credentials_source=creds,
@@ -201,6 +202,7 @@ def _parse_imap_account(raw: object) -> AccountConfig:
         archive_folder=_optional_string(data, "archive_folder"),
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
+        full_name=_optional_string(data, "full_name"),
     )
 
 
