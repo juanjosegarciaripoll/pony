@@ -14,7 +14,17 @@ _QUOTE_BOUNDARY_RE = re.compile(
     r"(?m)^(On .+ wrote:|---------- Forwarded message ----------)$"
 )
 
+_BLOCKQUOTE_LINE_RE = re.compile(r"(?m)^(>.*)")
+
 _ADDR_SPECIAL_RE = re.compile(r'[",;:<>\[\]()\\]')
+
+
+def _add_blockquote_hardbreaks(text: str) -> str:
+    """Append two spaces to blockquote lines so markdown-it emits <br> between them.
+
+    Without this, consecutive '> ' lines render as a single merged paragraph.
+    """
+    return _BLOCKQUOTE_LINE_RE.sub(lambda m: m.group(1).rstrip() + "  ", text)
 
 
 def format_display_address(name: str, addr: str) -> str:
@@ -233,7 +243,7 @@ def build_email_message(
 
         html_sections: list[str] = []
         if user_part.strip():
-            html_sections.append(md.render(user_part))
+            html_sections.append(md.render(_add_blockquote_hardbreaks(user_part)))
         if quoted_part.strip():
             escaped = _html_mod.escape(quoted_part)
             html_sections.append(

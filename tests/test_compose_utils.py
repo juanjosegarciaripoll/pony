@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
 from pony.smtp_sender import SMTPError, send_message
 from pony.tui.compose_utils import (
+    _add_blockquote_hardbreaks,
     build_email_message,
     build_forward_body,
     build_reply_all_recipients,
@@ -228,6 +229,69 @@ class BuildEmailMessageTest(unittest.TestCase):
         finally:
             for p in paths:
                 p.unlink(missing_ok=True)
+
+
+class AddBlockquoteHardbreaksTest(unittest.TestCase):
+    def test_adds_two_spaces_to_blockquote_lines(self) -> None:
+        result = _add_blockquote_hardbreaks("> line1\n> line2\n> line3")
+        assert result == "> line1  \n> line2  \n> line3  "
+
+    def test_leaves_non_blockquote_lines_unchanged(self) -> None:
+        result = _add_blockquote_hardbreaks("normal\n> quoted\nnormal again")
+        assert result == "normal\n> quoted  \nnormal again"
+
+    def test_strips_existing_trailing_spaces_before_adding(self) -> None:
+        result = _add_blockquote_hardbreaks("> line   ")
+        assert result == "> line  "
+
+    def test_empty_string(self) -> None:
+        assert _add_blockquote_hardbreaks("") == ""
+
+
+class MarkdownModeTest(unittest.TestCase):
+    def _html_part(self, body: str) -> str:
+        msg = build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="",
+            subject="Test",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+        )
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True)
+                assert isinstance(payload, bytes)
+                return payload.decode("utf-8")
+        return ""
+
+    def test_blockquote_lines_have_breaks_in_html(self) -> None:
+        body = "> line one\n> line two\n> line three"
+        html = self._html_part(body)
+        assert "<br" in html
+
+    def test_plain_part_preserves_blockquote_lines(self) -> None:
+        body = "> line one\n> line two\n> line three"
+        msg = build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="",
+            subject="Test",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+        )
+        plain = msg.get_body(preferencelist=("plain",))
+        assert plain is not None
+        content = plain.get_payload(decode=True)
+        assert isinstance(content, bytes)
+        text = content.decode("utf-8")
+        assert "> line one" in text
+        assert "> line two" in text
+        assert "> line three" in text
 
 
 def _make_account(
