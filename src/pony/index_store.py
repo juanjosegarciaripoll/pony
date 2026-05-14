@@ -1776,15 +1776,19 @@ def _build_contact(
 def _split_display_name(display_name: str) -> tuple[str, str]:
     """Split a display name into (first_name, last_name).
 
-    Heuristic: the last whitespace-delimited token is the last name;
-    everything before it is the first name.
+    Heuristic: 1-word → first only; 2-word → one first + one last;
+    3-word → one first + two last; 4-word → two first + two last.
+    This handles compound family names common in Spanish/Latin naming.
     """
     parts = display_name.strip().split()
     if not parts:
         return ("", "")
     if len(parts) == 1:
         return (parts[0], "")
-    return (" ".join(parts[:-1]), parts[-1])
+    if len(parts) == 2:
+        return (parts[0], parts[1])
+    last_count = 2
+    return (" ".join(parts[:-last_count]), " ".join(parts[-last_count:]))
 
 
 def _harvest_message_contacts(

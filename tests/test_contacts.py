@@ -277,6 +277,26 @@ class HarvestContactsTests(unittest.TestCase):
         assert found is not None
         self.assertEqual(found.first_name, "Alice")
 
+    def test_harvest_three_word_name(self) -> None:
+        repo = _make_repo()
+        msg = _make_indexed_message("Juan Garcia Ripoll <juan@example.com>")
+        repo.harvest_contacts([msg])
+        found = repo.find_contact_by_email(email_address="juan@example.com")
+        assert found is not None
+        self.assertEqual(found.first_name, "Juan")
+        self.assertEqual(found.last_name, "Garcia Ripoll")
+
+    def test_harvest_four_word_name(self) -> None:
+        repo = _make_repo()
+        msg = _make_indexed_message(
+            "Juan Jose Garcia Ripoll <juan@example.com>"
+        )
+        repo.harvest_contacts([msg])
+        found = repo.find_contact_by_email(email_address="juan@example.com")
+        assert found is not None
+        self.assertEqual(found.first_name, "Juan Jose")
+        self.assertEqual(found.last_name, "Garcia Ripoll")
+
 
 # ---------------------------------------------------------------------------
 # Delete and merge
