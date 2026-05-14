@@ -1538,6 +1538,15 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+        folder_ref = FolderRef(
+            account_name=msg.message_ref.account_name,
+            folder_name=msg.message_ref.folder_name,
+        )
+
+        def _on_draft_done(result: bool | None) -> None:
+            if result is not None:
+                self._reload_folder(folder_ref)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1557,7 +1566,8 @@ class MainScreen(Screen[None]):
                 ),
                 contacts=self._contacts,
                 source_draft=msg,
-            )
+            ),
+            _on_draft_done,
         )
 
     # ------------------------------------------------------------------
