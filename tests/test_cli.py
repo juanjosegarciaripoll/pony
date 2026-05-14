@@ -90,8 +90,8 @@ class CliTestCase(unittest.TestCase):
     def test_doctor_creates_runtime_directories(self) -> None:
         with isolated_app_env() as env_root:
             run_cli("doctor")
-            self.assertTrue((env_root / "config" / "pony").exists())
-            self.assertTrue((env_root / "data" / "pony").exists())
+            self.assertTrue((env_root / "config").exists())
+            self.assertTrue((env_root / "data").exists())
             self.assertTrue((env_root / "state" / "pony" / "logs").exists())
             self.assertTrue((env_root / "cache" / "pony").exists())
 
@@ -647,7 +647,7 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
             self.assertFalse(mirror.exists(), "mirror must be deleted after yes")
 
             # The backup BBDB file must contain the one legacy contact.
-            backups = list((env_root / "data" / "pony").glob("contacts-backup-*.bbdb"))
+            backups = list((env_root / "data").glob("contacts-backup-*.bbdb"))
             self.assertEqual(len(backups), 1, captured)
             loaded = read_bbdb(backups[0])
             self.assertEqual(len(loaded), 1)
