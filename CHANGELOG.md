@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+
+- **Composer keybindings**: replaced the `Ctrl+X` chord prefix with direct
+  `Alt+letter` shortcuts — `Alt+S` send, `Alt+A` attach, `Alt+E` external
+  editor, `Alt+M` toggle Markdown.  `Ctrl+X`, `Ctrl+C`, and `Ctrl+V` now
+  work as cut / copy / paste again in the body and address fields.
+
 ### Added
 
 - **Clickable links in message body**: web links (`http://`, `https://`) in the

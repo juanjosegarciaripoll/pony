@@ -117,9 +117,9 @@ class ComposeInitial:
 class ComposeScreen(Screen[bool]):
     """Full-screen email composer.
 
-    Ctrl+S sends the message.  Escape prompts to save a draft.
-    Ctrl+E opens the body in the configured external editor.
-    Ctrl+A adds a file attachment.
+    Ctrl+S or Alt+S sends the message.  Escape prompts to save a draft.
+    Alt+E opens the body in the configured external editor.
+    Alt+A adds a file attachment.  Alt+M toggles Markdown mode.
     """
 
     BORDER_TITLE = "Compose"
@@ -240,15 +240,16 @@ class ComposeScreen(Screen[bool]):
 
     """
 
-    # ctrl+x is the prefix key for all composer-specific actions.
-    # It avoids conflicts with Textual's built-in TextArea shortcuts
-    # (ctrl+a = select-all, ctrl+e = cursor-to-EOL, etc.).
-    # ctrl+s and escape are kept as direct shortcuts for send/cancel since
-    # neither is claimed by Textual widgets.
+    # Composer-specific actions use Alt+letter so that standard text-editing
+    # shortcuts (Ctrl+X cut, Ctrl+C copy, Ctrl+V paste, Ctrl+Z undo, …) keep
+    # working inside the body TextArea and address Input fields.
     BINDINGS = [
         Binding("ctrl+s", "send", "Send", priority=True),
+        Binding("alt+s", "send", "Send", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
-        Binding("ctrl+x", "prefix", "ctrl+x …", show=False, priority=True),
+        Binding("alt+a", "add_attachment", "Attach", priority=True),
+        Binding("alt+e", "edit_external", "Editor", priority=True),
+        Binding("alt+m", "toggle_markdown", "Markdown", priority=True),
     ]
 
     def __init__(
@@ -276,8 +277,6 @@ class ComposeScreen(Screen[bool]):
         self._source_draft = source_draft
         self._attachment_paths: list[Path] = []
         self._forwarded_message: bytes | None = initial.forwarded_message
-        self._prefix_active: bool = False
-        self._focus_before_prefix: object = None
         self._markdown_mode: bool = initial.markdown_mode
 
     def compose(self) -> ComposeResult:
@@ -488,50 +487,6 @@ class ComposeScreen(Screen[bool]):
 
         self.app.push_screen(SaveDraftScreen(), _on_save)  # pyright: ignore[reportUnknownMemberType]
 
-    def action_prefix(self) -> None:
-        """Activate the ctrl+x prefix.
-
-        Steals focus from the current input widget so the next keypress is
-        delivered directly to the screen (no widget to consume it first).
-        """
-        self._prefix_active = True
-        self._focus_before_prefix = self.focused
-        self.set_focus(None)
-        self.notify(
-            "ctrl+x — s=send  a=attach  e=editor  m=markdown  c=cancel", timeout=3
-        )
-
-    def on_key(self, event: object) -> None:
-        """Handle the second key of a ctrl+x chord."""
-        from textual.events import Key
-
-        if not isinstance(event, Key):
-            return
-        if not self._prefix_active:
-            return
-        self._prefix_active = False
-        # Restore focus to whichever field the user was in.
-        from textual.widget import Widget
-
-        if isinstance(self._focus_before_prefix, Widget):
-            self.set_focus(self._focus_before_prefix)
-        self._focus_before_prefix = None
-        event.prevent_default()
-        event.stop()
-        key = event.key
-        if key == "s":
-            self.action_send()
-        elif key == "a":
-            self._do_add_attachment()
-        elif key == "e":
-            self._do_edit_external()
-        elif key == "m":
-            self._toggle_markdown()
-        elif key == "c":
-            self.action_cancel()
-        else:
-            self.notify(f"ctrl+x {key} — unknown command", severity="warning")
-
     def _harvest_outgoing(self, to: str, cc: str) -> None:
         """Upsert To and Cc addresses into the contacts store after a send."""
         if self._contacts is None:
@@ -561,7 +516,7 @@ class ComposeScreen(Screen[bool]):
                 )
             )
 
-    def _toggle_markdown(self) -> None:
+    def action_toggle_markdown(self) -> None:
         self._markdown_mode = not self._markdown_mode
         self._refresh_body_title()
         state = "ON" if self._markdown_mode else "OFF"
@@ -571,14 +526,19 @@ class ComposeScreen(Screen[bool]):
         editor = self._config.editor
         parts: list[str] = []
         if editor and Path(editor).is_file():
-            parts.append(f"ctrl+x e → {Path(editor).name}")
+            parts.append(f"Alt+E → {Path(editor).name}")
         parts.append("Markdown ON" if self._markdown_mode else "Markdown OFF")
         self.query_one("#body-area", TextArea).border_title = "  ".join(parts)
         md = "[b $success][MD] [/b $success]" if self._markdown_mode else ""
-        keys = "[b $warning]^S[/b $warning] Send  [b $warning]Esc[/b $warning] Cancel"
+        k = "[b $warning]"
+        e = "[/b $warning]"
+        keys = (
+            f"{k}^S{e} Send  {k}Esc{e} Cancel  "
+            f"{k}Alt+A{e} Attach  {k}Alt+E{e} Editor  {k}Alt+M{e} Markdown"
+        )
         self.query_one("#compose-footer", Static).update(f"{md}{keys}")
 
-    def _do_edit_external(self) -> None:
+    def action_edit_external(self) -> None:
         """Write body to a temp file, open the configured editor, read back."""
         editor = self._config.editor
         if not editor or not Path(editor).is_file():
@@ -601,7 +561,7 @@ class ComposeScreen(Screen[bool]):
         tmppath.unlink(missing_ok=True)
         body_area.load_text(new_text)
 
-    def _do_add_attachment(self) -> None:
+    def action_add_attachment(self) -> None:
         """Push the file-picker screen."""
         from .add_attachment_screen import AddAttachmentScreen
 
@@ -702,11 +662,11 @@ class ComposeScreen(Screen[bool]):
 
     def _refresh_attachments_bar(self) -> None:
         if not self._attachment_paths:
-            text = "Attachments: (none)  [ctrl+x a  or drop files here]"
+            text = "Attachments: (none)  [Alt+A or drop files here]"
         else:
             names = "  ".join(p.name for p in self._attachment_paths)
             count = len(self._attachment_paths)
-            text = f"Attachments ({count}): {names}  [ctrl+x a to add more]"
+            text = f"Attachments ({count}): {names}  [Alt+A to add more]"
         self.query_one("#attachments-bar", AttachmentsBar).update(text)
 
     def _save_to_folder(
@@ -773,4 +733,3 @@ class ComposeScreen(Screen[bool]):
             storage_key=storage_key,
         )
         return self._index.insert_message(message=projected)
-
