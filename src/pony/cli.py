@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import logging
 import shutil
 import sqlite3
@@ -27,6 +28,8 @@ from .domain import (
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
+    MessageFlag,
+    MessageStatus,
     SearchQuery,
 )
 from .fixture_flow import run_fixture_ingest
@@ -290,6 +293,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only list folders for one account.",
     )
 
+    folder_dedup = folder_subparsers.add_parser(
+        "dedup",
+        help="Find and eliminate duplicate messages in a folder (same Message-ID).",
+    )
+    folder_dedup.add_argument("account", help="Account name.")
+    folder_dedup.add_argument("folder", help="Folder name.")
+    folder_dedup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Mark duplicates TRASHED; without this flag the command is a dry-run.",
+    )
+
     message_parser = subparsers.add_parser(
         "message",
         help="Inspect individual messages.",
@@ -494,6 +509,16 @@ def _dispatch(
             paths=paths,
             config_path=args.config,
             account=args.account,
+        )
+    if args.command == "folder" and args.folder_command == "dedup":
+        dedup_account = args.account
+        assert dedup_account is not None
+        return run_dedup_folder(
+            paths=paths,
+            config_path=args.config,
+            account=dedup_account,
+            folder=args.folder,
+            apply=args.apply,
         )
 
     if args.command == "message":
@@ -1306,6 +1331,108 @@ def run_folder_list(
             print(
                 f"  {ref.folder_name:<{name_width}}  {count:>6} messages{sync_suffix}"
             )
+    return 0
+
+
+def run_dedup_folder(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    apply: bool,
+) -> int:
+    """Find and eliminate duplicate messages in one folder.
+
+    Two messages are duplicates when they share the same ``Message-ID``
+    header.  Among each duplicate group the copy with the most informative
+    flag set is kept; the rest are marked TRASHED so the next
+    ``pony sync`` expunges them from the server via ``PushDeleteOp``.
+
+    Without ``--apply`` this is a dry-run: the plan is printed but
+    nothing is written.
+    """
+    from datetime import UTC, datetime
+
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
+    if not any(a.name == account for a in accounts):
+        raise SystemExit(f"No account named {account!r} in config.")
+
+    folder_ref = FolderRef(account_name=account, folder_name=folder)
+    messages = index.list_folder_messages(folder=folder_ref)
+
+    # Collect only ACTIVE rows that have a UID and a non-empty Message-ID.
+    # Rows without a UID are local-only drafts not yet pushed; TRASHED /
+    # PENDING_MOVE rows are already in flux.
+    groups: dict[str, list[IndexedMessage]] = {}
+    for msg in messages:
+        if not msg.message_id:
+            continue
+        if msg.local_status != MessageStatus.ACTIVE:
+            continue
+        if msg.uid is None:
+            continue
+        groups.setdefault(msg.message_id, []).append(msg)
+
+    dup_groups = {mid: rows for mid, rows in groups.items() if len(rows) > 1}
+
+    if not dup_groups:
+        print(f"No duplicates found in {account}/{folder}.")
+        return 0
+
+    def _sort_key(msg: IndexedMessage) -> tuple[int, int, int, datetime, int]:
+        useful = msg.local_flags - {MessageFlag.DELETED}
+        return (
+            -len(useful),
+            -int(MessageFlag.ANSWERED in useful),
+            -int(MessageFlag.FLAGGED in useful),
+            msg.received_at,
+            msg.message_ref.id,
+        )
+
+    all_losers: list[IndexedMessage] = []
+    for mid, rows in sorted(dup_groups.items()):
+        sorted_rows = sorted(rows, key=_sort_key)
+        winner = sorted_rows[0]
+        group_losers = sorted_rows[1:]
+        all_losers.extend(group_losers)
+
+        flag_str = ",".join(sorted(f.value for f in winner.local_flags)) or "(none)"
+        loser_uids = ", ".join(str(m.uid) for m in group_losers)
+        print(
+            f"  {mid}\n"
+            f"    keep uid={winner.uid} flags=[{flag_str}]\n"
+            f"    trash uid(s): {loser_uids}"
+        )
+
+    n_losers = len(all_losers)
+    n_groups = len(dup_groups)
+
+    if not apply:
+        print(f"\nWould trash {n_losers} row(s) in {n_groups} group(s).")
+        print("Rerun with --apply to write changes.")
+        return 0
+
+    now = datetime.now(tz=UTC)
+    with index.connection():
+        for msg in all_losers:
+            index.upsert_message(
+                message=dataclasses.replace(
+                    msg,
+                    local_status=MessageStatus.TRASHED,
+                    trashed_at=now,
+                )
+            )
+
+    print(
+        f"\nTrashed {n_losers} row(s) in {n_groups} group(s)."
+        "  Run `pony sync` to propagate deletions to the server."
+    )
     return 0
 
 

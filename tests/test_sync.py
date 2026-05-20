@@ -2460,3 +2460,51 @@ class FastPathTestCase(unittest.TestCase):
         folder = FolderRef(account_name="personal", folder_name="INBOX")
         [row] = index.list_folder_messages(folder=folder)
         self.assertNotIn(MessageFlag.SEEN, row.local_flags)
+
+
+class DedupSyncPropagationTestCase(unittest.TestCase):
+    """Marking a duplicate TRASHED causes sync to expunge it from the server."""
+
+    def test_dedup_trash_propagates_via_push_delete(self) -> None:
+        """A row trashed by the dedup tool is expunged on the next sync.
+
+        This verifies the full pipeline:
+          1. Two server UIDs with the same Message-ID are downloaded.
+          2. One is marked TRASHED locally (simulating ``pony folder dedup --apply``).
+          3. The next sync emits STORE +FLAGS \\Deleted + EXPUNGE for that UID.
+        """
+        raw = _make_raw_message("Dup body", "<dedup-prop@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("<dedup-prop@example.com>", frozenset(), raw),
+                    2: ("<dedup-prop@example.com>", frozenset(), raw),
+                }
+            }
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=folder)
+        self.assertEqual(len(rows), 2)
+
+        # Simulate the dedup tool: mark UID 2 as TRASHED.
+        loser = next(r for r in rows if r.uid == 2)
+        from datetime import UTC, datetime
+
+        index.upsert_message(
+            message=dataclasses.replace(
+                loser,
+                local_status=MessageStatus.TRASHED,
+                trashed_at=datetime.now(tz=UTC),
+            )
+        )
+
+        # Second sync should expunge UID 2.
+        service.sync()
+
+        self.assertIn(2, session.deleted_uids, "sync must mark UID 2 deleted")
+        surviving = index.list_folder_messages(folder=folder)
+        uids = {r.uid for r in surviving if r.uid is not None}
+        self.assertNotIn(2, uids, "UID 2 row must be gone from the index")
+        self.assertIn(1, uids, "UID 1 must survive")

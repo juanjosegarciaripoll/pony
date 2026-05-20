@@ -721,6 +721,83 @@ def _seed_one_message(
     )
 
 
+def _seed_dup_messages(
+    config_path: Path,
+    *,
+    message_id: str,
+    flags_list: list[frozenset],
+    folder_name: str = "INBOX",
+) -> list[_SeedHandle]:
+    """Seed multiple index rows that share one ``Message-ID``.
+
+    Each entry in *flags_list* produces one row, assigned UIDs 1, 2, …
+    in order.  All rows are ACTIVE with their assigned flags.
+    """
+    import dataclasses
+    from email.message import EmailMessage
+
+    from pony.config import load_config
+    from pony.domain import FolderRef, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    msg = EmailMessage()
+    msg["From"] = "sender@example.com"
+    msg["To"] = account.email_address
+    msg["Subject"] = "Duplicate test"
+    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg["Message-ID"] = message_id
+    msg.set_content("duplicate body")
+    raw = msg.as_bytes()
+
+    mirror = MaildirMirrorRepository(
+        account_name=account.name,
+        root_dir=account.mirror.path,
+    )
+    folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    handles: list[_SeedHandle] = []
+    for i, flags in enumerate(flags_list):
+        storage_key = mirror.store_message(folder=folder_ref, raw_message=raw)
+        projected = project_rfc822_message(
+            message_ref=MessageRef(
+                account_name=account.name,
+                folder_name=folder_name,
+                id=0,
+            ),
+            raw_message=raw,
+            storage_key=storage_key,
+        )
+        stored = dataclasses.replace(
+            projected,
+            message_id=message_id,
+            uid=i + 1,
+            local_flags=flags,
+            base_flags=flags,
+            server_flags=flags,
+            local_status=MessageStatus.ACTIVE,
+        )
+        saved = index.insert_message(message=stored)
+        handles.append(
+            _SeedHandle(
+                account_name=saved.message_ref.account_name,
+                folder_name=saved.message_ref.folder_name,
+                id=saved.message_ref.id,
+                rfc5322_id=saved.message_id,
+            )
+        )
+    return handles
+
+
 def _seed_message_with_attachments(config_path: Path):
     """Seed a real maildir message using the multipart+attachment fixture.
 
@@ -841,6 +918,246 @@ def isolated_app_env() -> Iterator[Path]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+class DedupFolderTestCase(unittest.TestCase):
+    """Tests for ``pony folder dedup``."""
+
+    def test_dry_run_reports_without_writing(self) -> None:
+        """Dry-run prints groups but leaves all rows ACTIVE."""
+        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<dup@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
+                ],
+            )
+
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+            )
+
+            self.assertIn("<dup@test.example>", output)
+            self.assertIn("Would trash 2 row(s)", output)
+            self.assertNotIn("Run `pony sync`", output)
+
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+            self.assertEqual(len(active), 3, "dry-run must not trash anything")
+
+    def test_apply_trashes_losers_keeps_most_flags(self) -> None:
+        """``--apply`` trashes copies with fewer flags; winner stays ACTIVE."""
+        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<dup2@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+                "--apply",
+            )
+
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+
+            active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+            trashed = [r for r in rows if r.local_status == MessageStatus.TRASHED]
+
+            self.assertEqual(len(active), 1)
+            self.assertEqual(len(trashed), 1)
+            # Winner has the richer flag set
+            self.assertIn(MessageFlag.ANSWERED, active[0].local_flags)
+            # Loser still carries its uid so sync emits PushDeleteOp
+            self.assertIsNotNone(trashed[0].uid)
+
+    def test_tiebreaker_answered_beats_flagged(self) -> None:
+        """With equal flag counts, ANSWERED wins over FLAGGED."""
+        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            # Both have two flags; ANSWERED should win the tiebreaker.
+            _seed_dup_messages(
+                config_path,
+                message_id="<tie@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+                "--apply",
+            )
+
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+            self.assertEqual(len(active), 1)
+            self.assertIn(MessageFlag.ANSWERED, active[0].local_flags)
+
+    def test_trashed_rows_in_group_are_skipped(self) -> None:
+        """A pre-existing TRASHED row is neither picked as winner nor re-touched."""
+        import dataclasses
+
+        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            handles = _seed_dup_messages(
+                config_path,
+                message_id="<mixed@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+            # Manually mark the winner TRASHED before the dedup run.
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            winner_handle = handles[1]  # the ANSWERED one
+            all_rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            winner_row = next(
+                r for r in all_rows if r.message_ref.id == winner_handle.id
+            )
+            index.upsert_message(
+                message=dataclasses.replace(
+                    winner_row, local_status=MessageStatus.TRASHED
+                )
+            )
+
+            # With the ANSWERED copy already TRASHED, only the SEEN copy is
+            # ACTIVE; it's alone in its group — no duplicates.
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+                "--apply",
+            )
+            self.assertIn("No duplicates found", output)
+
+    def test_empty_message_id_rows_not_grouped(self) -> None:
+        """Rows with an empty Message-ID are never treated as duplicates."""
+        import dataclasses
+
+        from pony.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            handles = _seed_dup_messages(
+                config_path,
+                message_id="<real@test.example>",
+                flags_list=[frozenset({MessageFlag.SEEN}), frozenset()],
+            )
+            # Blank out the message_id on both rows.
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            for handle in handles:
+                rows = index.list_folder_messages(
+                    folder=FolderRef(
+                        account_name=handle.account_name,
+                        folder_name=handle.folder_name,
+                    )
+                )
+                row = next(r for r in rows if r.message_ref.id == handle.id)
+                index.upsert_message(message=dataclasses.replace(row, message_id=""))
+
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+                "--apply",
+            )
+            self.assertIn("No duplicates found", output)
+
+            rows_after = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            self.assertEqual(
+                sum(1 for r in rows_after if r.local_status == MessageStatus.ACTIVE),
+                2,
+            )
+
+    def test_no_duplicates_prints_clean_message(self) -> None:
+        """A folder with no duplicates prints an informational message."""
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Unique message", body="body")
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "folder",
+                "dedup",
+                "personal",
+                "INBOX",
+            )
+        self.assertIn("No duplicates found", output)
+
+    def test_unknown_account_errors(self) -> None:
+        """Non-existent account exits with an error message."""
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "ghost",
+                    "INBOX",
+                )
+            self.assertIn("ghost", str(ctx.exception))
 
 
 def sample_config_toml() -> str:
