@@ -1890,12 +1890,28 @@ class ImapSyncService:
                 message=dataclasses.replace(
                     row,
                     uid=new_uid,
+                    local_status=MessageStatus.ACTIVE,
+                    source_folder=None,
+                    source_uid=None,
                     base_flags=row.local_flags,
                     server_flags=row.local_flags,
                     synced_at=now,
                 )
             )
-        # Without APPENDUID, leave uid=NULL; next sync's per-folder
+        elif row.local_status == MessageStatus.PENDING_MOVE:
+            # Server didn't return APPENDUID but the APPEND succeeded.
+            # Clear PENDING_MOVE so the row isn't re-uploaded every sync.
+            # The server's copy will surface as a FetchNewOp next sync
+            # and create a second local row — accepted on non-UIDPLUS servers.
+            self._index.update_message(
+                message=dataclasses.replace(
+                    row,
+                    local_status=MessageStatus.ACTIVE,
+                    source_folder=None,
+                    source_uid=None,
+                )
+            )
+        # ACTIVE uid=NULL rows without APPENDUID: next sync's per-folder
         # diff will see the new server UID and emit a FetchNewOp.  To
         # avoid duplicate ingestion, the next sync would create a
         # second row — accepted trade-off for non-UIDPLUS servers.
