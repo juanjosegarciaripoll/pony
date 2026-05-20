@@ -12,14 +12,14 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import Screen
 from textual.widgets import Footer, Label, Tree
 
 from ...domain import AppConfig, FolderRef
 from ...protocols import MirrorRepository
+from .dialog_screen import DialogScreen
 
 
-class PickFolderScreen(Screen["FolderRef | None"]):
+class PickFolderScreen(DialogScreen):
     """Full-screen folder picker.
 
     Dismisses with the selected :class:`FolderRef` on ``enter`` / click,
@@ -33,20 +33,9 @@ class PickFolderScreen(Screen["FolderRef | None"]):
     ]
 
     CSS = """
-    PickFolderScreen {
-        align: center middle;
-    }
-
     #dialog {
         width: 60%;
         height: 70%;
-        border: solid $primary;
-        padding: 1 2;
-    }
-
-    #title {
-        text-style: bold;
-        margin-bottom: 1;
     }
 
     Tree {
@@ -116,4 +105,4 @@ class PickFolderScreen(Screen["FolderRef | None"]):
         event.stop()
         if event.node.data is None:
             return
-        self.dismiss(event.node.data)
+        self.dismiss(event.node.data)  # type: ignore[arg-type]

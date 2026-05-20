@@ -109,6 +109,39 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
     )
 
 
+def render_message_markdown(rendered: RenderedMessage) -> str:
+    """Format a :class:`RenderedMessage` as a Markdown document for saving.
+
+    The header block uses ``**Field:** value`` notation.  The body comes
+    from :func:`render_message` (plain text, HTML stripped via the existing
+    ``_HTMLStripper`` pipeline — no extra dependency).  Attachments are
+    listed in a fenced section at the end.
+    """
+    lines: list[str] = []
+    if rendered.from_:
+        lines.append(f"**From:** {rendered.from_}")
+    if rendered.to:
+        lines.append(f"**To:** {rendered.to}")
+    if rendered.cc:
+        lines.append(f"**Cc:** {rendered.cc}")
+    if rendered.subject:
+        lines.append(f"**Subject:** {rendered.subject}")
+    if rendered.date:
+        lines.append(f"**Date:** {rendered.date}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(rendered.body)
+    if rendered.attachments:
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("## Attachments")
+        for att in rendered.attachments:
+            lines.append(f"- {att.filename} ({att.content_type}, {att.size_bytes:,} B)")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------

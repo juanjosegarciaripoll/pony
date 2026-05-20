@@ -44,7 +44,7 @@ class LinkActionScreen(DialogScreen):
             yield Label("Link", id="title")
             yield Static(self._url, id="body")
             with Horizontal(id="buttons"):
-                yield Button("Open [O]", id="open", variant="primary")
+                yield Button("Open [O]", id="open", variant="success")
                 yield Button("Copy [C]", id="copy")
                 yield Button("Cancel [Esc]", id="cancel")
 
@@ -69,5 +69,3 @@ class LinkActionScreen(DialogScreen):
         self.notify("Link copied")
         self.dismiss(False)
 
-    def action_cancel(self) -> None:
-        self.dismiss(False)

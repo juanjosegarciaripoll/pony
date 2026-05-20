@@ -47,6 +47,8 @@ src/pony/
       link_action_screen.py      # Open / Copy / Cancel dialog for body links
       floating_input_screen.py   # base class for bottom floating-input bars
       save_draft_screen.py       # draft save confirmation
+      save_message_screen.py     # s — save body+attachments item-picker modal
+      save_folder_picker_screen.py # s — directory picker for saving files
       add_attachment_screen.py   # file picker (DirectoryTree + typeahead)
       attachment_picker_screen.py# pick previously-attached files by number
       goto_folder_screen.py      # G — fuzzy jump to folder

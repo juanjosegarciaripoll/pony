@@ -65,6 +65,10 @@ class DialogScreen(Screen[bool]):
             with contextlib.suppress(Exception):
                 self.query_one(f"#{self.DEFAULT_BUTTON_ID}", Button).focus()
 
+    def action_cancel(self) -> None:
+        """Dismiss the dialog with False (negative / no-op result)."""
+        self.dismiss(False)
+
     def mark_busy(self, button_id: str, busy_label: str = "Working…") -> None:
         """Disable all buttons and relabel the activated one.
 

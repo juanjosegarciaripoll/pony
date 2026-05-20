@@ -108,11 +108,7 @@ class SyncConfirmScreen(DialogScreen):
                         id="proceed",
                         variant="success",
                     )
-                    yield Button(
-                        "Cancel [N]",
-                        id="cancel",
-                        variant="error",
-                    )
+                    yield Button("Cancel [N]", id="cancel")
         yield Footer()
 
     def show_plan(self, plan: SyncPlan) -> None:

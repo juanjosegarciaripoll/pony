@@ -46,7 +46,7 @@ class ConfirmScreen(DialogScreen):
             yield Label(self._title, id="title")
             yield Static(self._body, id="body")
             with Horizontal(id="buttons"):
-                yield Button("Yes [Y]", id="yes", variant="error")
+                yield Button("Yes [Y]", id="yes", variant="success")
                 yield Button("No [N]", id="no")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -54,6 +54,3 @@ class ConfirmScreen(DialogScreen):
 
     def action_confirm(self) -> None:
         self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)

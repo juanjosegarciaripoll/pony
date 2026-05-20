@@ -80,6 +80,7 @@ class MainScreen(Screen[None]):
         Binding("Y", "copy", "Copy"),
         Binding("M", "move", "Move"),
         Binding("N", "new_folder", "New folder"),
+        Binding("s", "save_message", "Save", show=False),
         Binding("O", "attachments_open", "Open att.", show=False),
         Binding("S", "attachments_save", "Save att.", show=False),
         Binding("/", "search", "Search", show=False),
@@ -855,7 +856,7 @@ class MainScreen(Screen[None]):
                 return
             self._copy_to_folder(messages, source_ref, target)
 
-        self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(screen, _on_dismiss)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
 
     def _copy_to_folder(
         self,
@@ -984,7 +985,7 @@ class MainScreen(Screen[None]):
                 return
             self._move_to_folder(messages, source_ref, target)
 
-        self.app.push_screen(screen, _on_dismiss)  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(screen, _on_dismiss)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
 
     def _find_account(self, account_name: str) -> AccountConfig | None:
         """Return the IMAP AccountConfig for *account_name*, or None.
@@ -1687,6 +1688,70 @@ class MainScreen(Screen[None]):
                 f"Attachment(s) not found: {', '.join(str(i) for i in missing)}",
                 severity="warning",
             )
+
+    def action_save_message(self) -> None:
+        """Save the current message (body as Markdown + attachments) to disk.
+
+        Opens the item-picker modal first; after the user confirms, opens
+        the folder-picker.  Files are written only when both dialogs are
+        confirmed.
+        """
+        from ..message_renderer import extract_attachment, render_message_markdown
+        from .save_folder_picker_screen import SaveFolderPickerScreen
+        from .save_message_screen import SaveItem, SaveMessageScreen
+
+        msg = self.get_current_message()
+        if msg is None:
+            return
+        mirror = self._mirrors[msg.message_ref.account_name]
+        try:
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Could not read message from mirror.", severity="error"
+            )
+            return
+        rendered = render_message(raw)
+
+        pending_items: list[SaveItem] = []
+
+        def _on_folder(dest: Path | None) -> None:
+            if dest is None:
+                return
+            saved = failed = 0
+            for item in pending_items:
+                try:
+                    if item.kind == "body":
+                        md = render_message_markdown(rendered)
+                        (dest / item.filename).write_text(md, encoding="utf-8")
+                    else:
+                        idx = int(item.kind.split(":")[1])
+                        payload = extract_attachment(raw, idx)
+                        if payload:
+                            (dest / item.filename).write_bytes(payload.data)
+                    saved += 1
+                except Exception:  # noqa: BLE001
+                    failed += 1
+            note = f"Saved {saved} file(s) to {dest}"
+            if failed:
+                note += f" ({failed} failed)"
+            self.app.notify(note)  # pyright: ignore[reportUnknownMemberType]
+
+        def _on_items(items: list[SaveItem] | None) -> None:
+            if not items:
+                return
+            pending_items.extend(items)
+            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+                SaveFolderPickerScreen(), _on_folder
+            )
+
+        self.app.push_screen(SaveMessageScreen(rendered), _on_items)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         return self.query_one(MessageViewPanel).save_attachment(index, dest_dir)
