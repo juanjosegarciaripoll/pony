@@ -108,7 +108,7 @@ class MessageListPanel(DataTable[Text | str]):
             return "*"
         return _icon_column(summary)
 
-    def _cell_for(self, summary: FolderMessageSummary) -> Text | str:
+    def _cell_for(self, summary: FolderMessageSummary) -> Text:
         from_w = self._from_width_cached
         icon = self._icon_for(summary)
         date = _format_date(summary.received_at)
@@ -121,7 +121,7 @@ class MessageListPanel(DataTable[Text | str]):
             f"{subject}"
         )
         if MessageFlag.SEEN in summary.local_flags:
-            return line
+            return Text(line, style="dim")
         return Text(line, style="not dim")
 
     def _update_row(self, summary: FolderMessageSummary) -> None:
