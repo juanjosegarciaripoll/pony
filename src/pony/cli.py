@@ -29,6 +29,7 @@ from .domain import (
     IndexedMessage,
     LocalAccountConfig,
     MessageFlag,
+    MessageRef,
     MessageStatus,
     SearchQuery,
 )
@@ -305,6 +306,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mark duplicates TRASHED; without this flag the command is a dry-run.",
     )
 
+    folder_mirror = folder_subparsers.add_parser(
+        "mirror",
+        help="Copy all messages from one folder into another, replacing its contents.",
+    )
+    folder_mirror.add_argument("src_account", help="Source account name.")
+    folder_mirror.add_argument("src_folder", help="Source folder name.")
+    folder_mirror.add_argument("dst_account", help="Destination account name.")
+    folder_mirror.add_argument("dst_folder", help="Destination folder name.")
+
     message_parser = subparsers.add_parser(
         "message",
         help="Inspect individual messages.",
@@ -519,6 +529,15 @@ def _dispatch(
             account=dedup_account,
             folder=args.folder,
             apply=args.apply,
+        )
+    if args.command == "folder" and args.folder_command == "mirror":
+        return run_mirror_folder(
+            paths=paths,
+            config_path=args.config,
+            src_account=args.src_account,
+            src_folder=args.src_folder,
+            dst_account=args.dst_account,
+            dst_folder=args.dst_folder,
         )
 
     if args.command == "message":
@@ -1433,6 +1452,122 @@ def run_dedup_folder(
         f"\nTrashed {n_losers} row(s) in {n_groups} group(s)."
         "  Run `pony sync` to propagate deletions to the server."
     )
+    return 0
+
+
+def run_mirror_folder(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    src_account: str,
+    src_folder: str,
+    dst_account: str,
+    dst_folder: str,
+) -> int:
+    """Copy every ACTIVE message from one local folder to another.
+
+    The destination folder is cleared before copying.  New rows are
+    written with ``uid=NULL`` so the next ``pony sync`` uploads them to
+    the destination account's IMAP server via ``PushAppendOp``.
+    """
+    from .message_projection import project_rfc822_message
+
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    all_accounts: dict[str, AnyAccount] = {a.name: a for a in config.accounts}
+    if src_account not in all_accounts:
+        raise SystemExit(f"No account named {src_account!r} in config.")
+    if dst_account not in all_accounts:
+        raise SystemExit(f"No account named {dst_account!r} in config.")
+
+    src_mirror = _build_mirror(all_accounts[src_account])
+    dst_mirror = _build_mirror(all_accounts[dst_account])
+
+    src_ref = FolderRef(account_name=src_account, folder_name=src_folder)
+    dst_ref = FolderRef(account_name=dst_account, folder_name=dst_folder)
+
+    # Collect source messages that exist locally.
+    src_messages = [
+        m
+        for m in index.list_folder_messages(folder=src_ref)
+        if m.local_status == MessageStatus.ACTIVE and m.storage_key
+    ]
+    if not src_messages:
+        raise SystemExit(
+            f"No locally available messages in {src_account}/{src_folder}.\n"
+            "Run `pony sync` first to download the source folder."
+        )
+
+    # Check destination for existing content and ask to confirm overwrite.
+    dst_messages = [
+        m
+        for m in index.list_folder_messages(folder=dst_ref)
+        if m.local_status != MessageStatus.TRASHED
+    ]
+    if dst_messages:
+        print(
+            f"Destination {dst_account}/{dst_folder} already contains "
+            f"{len(dst_messages)} message(s)."
+        )
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "Aborted: destination is not empty (non-interactive mode)."
+            )
+        answer = input("Overwrite? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+        print(f"Clearing {len(dst_messages)} existing message(s)...")
+        for msg in dst_messages:
+            if msg.storage_key:
+                try:
+                    dst_mirror.delete_message(
+                        folder=dst_ref, storage_key=msg.storage_key
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning(
+                        "Could not delete mirror file %s: %s", msg.storage_key, exc
+                    )
+            index.delete_message(message_ref=msg.message_ref)
+
+    dst_mirror.create_folder(account_name=dst_account, folder_name=dst_folder)
+
+    print(
+        f"Copying {len(src_messages)} message(s) "
+        f"from {src_account}/{src_folder} to {dst_account}/{dst_folder}..."
+    )
+    copied = 0
+    skipped = 0
+    with index.connection():
+        for msg in src_messages:
+            try:
+                raw = src_mirror.get_message_bytes(
+                    folder=src_ref, storage_key=msg.storage_key
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  Warning: skipping {msg.storage_key} — {exc}")
+                skipped += 1
+                continue
+            dst_key = dst_mirror.store_message(folder=dst_ref, raw_message=raw)
+            projected = project_rfc822_message(
+                message_ref=MessageRef(
+                    account_name=dst_account, folder_name=dst_folder, id=0
+                ),
+                raw_message=raw,
+                storage_key=dst_key,
+            )
+            index.insert_message(message=projected)
+            copied += 1
+
+    print(f"Copied {copied} message(s).")
+    if skipped:
+        print(f"Skipped {skipped} message(s) whose mirror file was unreadable.")
+    if copied:
+        print(f"Run `pony sync` to upload the copied messages to {dst_account}.")
     return 0
 
 

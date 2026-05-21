@@ -348,8 +348,9 @@ class MboxTocSidecarTestCase(unittest.TestCase):
         return path, repo, folder
 
     def test_roundtrip_after_open(self) -> None:
-        """Opening a folder writes a sidecar that loads to the same TOC."""
-        path, _repo, _ = self._make_mbox_with_messages(["a", "b", "c"])
+        """Closing the repo writes a sidecar that loads to the same TOC."""
+        path, repo, _ = self._make_mbox_with_messages(["a", "b", "c"])
+        repo._close_all()
         sidecar = _toc_sidecar_path(path)
         self.assertTrue(sidecar.exists())
         loaded = _load_toc_sidecar(path)
@@ -380,10 +381,10 @@ class MboxTocSidecarTestCase(unittest.TestCase):
         self.assertIsNone(_load_toc_sidecar(path))
 
     def test_sidecar_refreshes_on_mutation(self) -> None:
-        """After set_flags / delete / store, the sidecar tracks the file."""
+        """After mutations, closing the repo writes a sidecar that tracks the file."""
         path, repo, folder = self._make_mbox_with_messages(["a", "b", "c"])
-        # store_message already wrote a sidecar via _open_mbox; now mutate.
         repo.delete_message(folder=folder, storage_key="1")
+        repo._close_all()
         loaded = _load_toc_sidecar(path)
         self.assertIsNotNone(loaded)
         toc_after, next_key_after, _ = loaded  # type: ignore[misc]

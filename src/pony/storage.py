@@ -315,16 +315,17 @@ class MboxMirrorRepository(MirrorRepository):
         atexit.register(self._close_all)
 
     def _close_all(self) -> None:
-        """Flush and close every open mbox handle."""
+        """Flush, persist the TOC sidecar, and close every open mbox handle."""
         if self._open_handles:
             print(
                 "Flushing mail storage — do not interrupt…",
                 file=sys.stderr,
                 flush=True,
             )
-        for mbox in self._open_handles.values():
+        for folder_name, mbox in self._open_handles.items():
             try:
                 mbox.flush()
+                _persist_toc_sidecar(self._folder_file(folder_name), mbox)
                 mbox.close()
             except Exception:  # noqa: BLE001
                 pass
@@ -352,7 +353,6 @@ class MboxMirrorRepository(MirrorRepository):
         message = mailbox.mboxMessage(parsed)
         key = str(mbox.add(message))
         mbox.flush()
-        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
         return key
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
@@ -394,7 +394,6 @@ class MboxMirrorRepository(MirrorRepository):
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
         mbox.flush()
-        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
 
     def delete_message(
         self,
@@ -407,7 +406,6 @@ class MboxMirrorRepository(MirrorRepository):
         key = int(storage_key)
         del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         mbox.flush()
-        _persist_toc_sidecar(self._folder_file(folder.folder_name), mbox)
 
     def move_message_to_folder(
         self,
@@ -429,10 +427,8 @@ class MboxMirrorRepository(MirrorRepository):
         dest = self._open_mbox(folder_name=target_folder)
         new_key = str(dest.add(mailbox.mboxMessage(message)))
         dest.flush()
-        _persist_toc_sidecar(self._folder_file(target_folder), dest)
         del src[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
         src.flush()
-        _persist_toc_sidecar(self._folder_file(folder.folder_name), src)
         return new_key
 
     def create_folder(self, *, account_name: str, folder_name: str) -> None:
@@ -442,7 +438,6 @@ class MboxMirrorRepository(MirrorRepository):
         # an empty file on disk even with no messages added.
         mbox = self._open_mbox(folder_name=folder_name)
         mbox.flush()
-        _persist_toc_sidecar(self._folder_file(folder_name), mbox)
 
     def folder_mtime_ns(self, *, folder: FolderRef) -> int:
         """mbox files are a single flat file per folder — stat it."""
@@ -635,6 +630,12 @@ def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
     file as it changes.  Failures are logged and swallowed: a missing
     or stale sidecar costs a fresh ``_build_mbox_toc`` on next open
     (~1 s/GB), never a correctness issue.
+
+    The sidecar is a read-back performance cache, not a data store, so
+    partial writes are harmless — a corrupt or missing sidecar simply
+    causes a full mbox scan on the next open.  We write directly to the
+    final path to avoid the tmp-rename dance that Windows/OneDrive sync
+    agents can block with transient locks.
     """
     toc: dict[int, tuple[int, int]] = mbox._toc or {}  # type: ignore[attr-defined]
     sidecar = _toc_sidecar_path(mbox_path)
@@ -643,22 +644,22 @@ def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
     except OSError as exc:
         _logger.warning("toc sidecar: stat failed for %s: %s", mbox_path, exc)
         return
+
+    entries = b"".join(
+        _TOC_SIDECAR_ENTRY.pack(s, e) for s, e in (toc[k] for k in sorted(toc))
+    )
+    data = (
+        _TOC_SIDECAR_HEADER.pack(
+            _TOC_SIDECAR_MAGIC,
+            _TOC_SIDECAR_VERSION,
+            st.st_size,
+            st.st_mtime_ns,
+            len(toc),
+        )
+        + entries
+    )
     try:
-        tmp = sidecar.with_suffix(sidecar.suffix + ".tmp")
-        with open(tmp, "wb") as fh:
-            fh.write(
-                _TOC_SIDECAR_HEADER.pack(
-                    _TOC_SIDECAR_MAGIC,
-                    _TOC_SIDECAR_VERSION,
-                    st.st_size,
-                    st.st_mtime_ns,
-                    len(toc),
-                )
-            )
-            for key in sorted(toc):
-                start, stop = toc[key]
-                fh.write(_TOC_SIDECAR_ENTRY.pack(start, stop))
-        os.replace(tmp, sidecar)
+        sidecar.write_bytes(data)
     except OSError as exc:
         _logger.warning("toc sidecar: write failed for %s: %s", sidecar, exc)
 
