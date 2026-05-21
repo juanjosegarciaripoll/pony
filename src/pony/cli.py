@@ -1536,8 +1536,9 @@ def run_mirror_folder(
 
     dst_mirror.create_folder(account_name=dst_account, folder_name=dst_folder)
 
+    total = len(src_messages)
     print(
-        f"Copying {len(src_messages)} message(s) "
+        f"Copying {total} message(s) "
         f"from {src_account}/{src_folder} to {dst_account}/{dst_folder}..."
     )
     copied = 0
@@ -1549,7 +1550,7 @@ def run_mirror_folder(
                     folder=src_ref, storage_key=msg.storage_key
                 )
             except Exception as exc:  # noqa: BLE001
-                print(f"  Warning: skipping {msg.storage_key} — {exc}")
+                print(f"\n  Warning: skipping {msg.storage_key} — {exc}")
                 skipped += 1
                 continue
             dst_key = dst_mirror.store_message(folder=dst_ref, raw_message=raw)
@@ -1562,8 +1563,11 @@ def run_mirror_folder(
             )
             index.insert_message(message=projected)
             copied += 1
+            done = copied + skipped
+            if done == total or done % 20 == 0:
+                end = "\n" if done == total else ""
+                print(f"\r  {done}/{total}", end=end, flush=True)
 
-    print(f"Copied {copied} message(s).")
     if skipped:
         print(f"Skipped {skipped} message(s) whose mirror file was unreadable.")
     if copied:
