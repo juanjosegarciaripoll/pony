@@ -42,13 +42,24 @@ from ..compose_utils import build_email_message, format_display_address
 _log = logging.getLogger(__name__)
 
 
-class AttachmentsBar(Static):
-    can_focus = True
+class AttachmentsBar(Vertical):
+    """Container holding one _AttachRow per attachment and a persistent + button."""
+
+    can_focus = False
 
     class FilesDropped(Message):
         def __init__(self, paths: list[Path]) -> None:
             super().__init__()
             self.paths = paths
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="attach-add-row", classes="attach-row"):
+            yield Label(
+                "(no attachments)",
+                id="attach-empty-label",
+                classes="attach-name",
+            )
+            yield Button("+", classes="attach-add-btn")
 
     def on_paste(self, event: Paste) -> None:
         from urllib.parse import unquote
@@ -69,6 +80,24 @@ class AttachmentsBar(Static):
         if candidates:
             event.stop()
             self.post_message(self.FilesDropped(candidates))
+
+
+class _AttachRow(Horizontal):
+    """One attachment row: [filename 1fr] [× remove]."""
+
+    DEFAULT_CSS = ""
+
+    def __init__(self, path: Path, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._path = path
+
+    @property
+    def attachment_path(self) -> Path:
+        return self._path
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._path.name, classes="attach-name")
+        yield Button("×", classes="attach-remove-btn")
 
 
 def _split_addresses(addresses: str) -> list[str]:
@@ -173,14 +202,36 @@ class ComposeScreen(Screen[bool]):
     }
 
     #attachments-bar {
+        height: auto;
+        width: 1fr;
+    }
+
+    .attach-row {
         height: 1;
+    }
+
+    .attach-name {
+        width: 1fr;
+        color: $text-muted;
         padding: 0 1;
+    }
+
+    .attach-remove-btn {
+        width: 3;
+        height: 1;
+        min-width: 3;
+        border: none;
+        background: $boost;
         color: $text-muted;
     }
 
-    #attachments-bar:focus {
-        color: $text;
-        background: $accent 20%;
+    .attach-add-btn {
+        width: auto;
+        height: 1;
+        border: none;
+        background: $boost;
+        color: $accent;
+        padding: 0 1;
     }
 
     /* ── Dynamic address rows (Cc / Bcc) ────────────────── */
@@ -323,7 +374,9 @@ class ComposeScreen(Screen[bool]):
                     id="subject-input",
                     classes="field-input",
                 )
-            yield AttachmentsBar("", id="attachments-bar")
+            with Horizontal(classes="addr-group"):
+                yield Label("Attach:", classes="field-label")
+                yield AttachmentsBar(id="attachments-bar")
         # ── Body fills remaining screen space ──
         yield TextArea(self._initial.body, id="body-area")
         yield Static("", id="compose-footer")
@@ -354,6 +407,18 @@ class ComposeScreen(Screen[bool]):
             event.stop()
         elif "addr-remove-btn" in btn.classes:
             self._remove_addr_row(btn)
+            event.stop()
+        elif "attach-add-btn" in btn.classes:
+            self.action_add_attachment()
+            event.stop()
+        elif "attach-remove-btn" in btn.classes:
+            row = btn.parent
+            if isinstance(row, _AttachRow):
+                import contextlib
+
+                with contextlib.suppress(ValueError):
+                    self._attachment_paths.remove(row.attachment_path)
+                self._refresh_attachments_bar()
             event.stop()
 
     # ------------------------------------------------------------------
@@ -565,15 +630,25 @@ class ComposeScreen(Screen[bool]):
         """Push the file-picker screen."""
         from .add_attachment_screen import AddAttachmentScreen
 
+        # If the + button triggered this, redirect focus away from it afterwards
+        # so Textual's button-focus style doesn't linger.
+        focused = self.focused
+        restore_to = (
+            self.query_one("#body-area", TextArea)
+            if isinstance(focused, Button)
+            else focused
+        )
+
         def _on_path(path_str: str | None) -> None:
-            if not path_str:
-                return
-            p = Path(path_str)
-            if not p.is_file():
-                self.notify(f"Not a file: {path_str}", severity="error")
-                return
-            self._attachment_paths.append(p)
-            self._refresh_attachments_bar()
+            if path_str:
+                p = Path(path_str)
+                if not p.is_file():
+                    self.notify(f"Not a file: {path_str}", severity="error")
+                else:
+                    self._attachment_paths.append(p)
+                    self._refresh_attachments_bar()
+            if restore_to is not None:
+                self.call_after_refresh(restore_to.focus)
 
         self.app.push_screen(AddAttachmentScreen(), _on_path)  # pyright: ignore[reportUnknownMemberType]
 
@@ -661,13 +736,22 @@ class ComposeScreen(Screen[bool]):
         return None
 
     def _refresh_attachments_bar(self) -> None:
-        if not self._attachment_paths:
-            text = "Attachments: (none)  [Alt+A or drop files here]"
-        else:
-            names = "  ".join(p.name for p in self._attachment_paths)
-            count = len(self._attachment_paths)
-            text = f"Attachments ({count}): {names}  [Alt+A to add more]"
-        self.query_one("#attachments-bar", AttachmentsBar).update(text)
+        bar = self.query_one("#attachments-bar", AttachmentsBar)
+        for row in list(bar.query(_AttachRow)):
+            row.remove()
+        has_paths = bool(self._attachment_paths)
+        hint = "(no attachments)" if not has_paths else ""
+        bar.query_one("#attach-empty-label", Label).update(hint)
+        paths = list(self._attachment_paths)
+
+        def _mount() -> None:
+            if paths:
+                bar.mount(
+                    *[_AttachRow(p, classes="attach-row") for p in paths],
+                    before="#attach-add-row",
+                )
+
+        self.call_after_refresh(_mount)
 
     def _save_to_folder(
         self,
