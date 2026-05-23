@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
-import logging
 import mailbox
 import mmap
 import os
 import re
 import socket
-import struct
 import sys
 import time
 from email import policy
@@ -19,8 +17,6 @@ from pathlib import Path
 
 from .domain import FolderRef, MessageFlag
 from .protocols import MirrorRepository
-
-_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Maildir backend
@@ -129,6 +125,7 @@ class MaildirMirrorRepository(MirrorRepository):
         *,
         folder: FolderRef,
         storage_key: str,
+        message_id: str = "",  # noqa: ARG002
     ) -> bytes:
         self._require_folder(folder)
         path = self._find_message_file(
@@ -315,17 +312,15 @@ class MboxMirrorRepository(MirrorRepository):
         atexit.register(self._close_all)
 
     def _close_all(self) -> None:
-        """Flush, persist the TOC sidecar, and close every open mbox handle."""
         if self._open_handles:
             print(
                 "Flushing mail storage — do not interrupt…",
                 file=sys.stderr,
                 flush=True,
             )
-        for folder_name, mbox in self._open_handles.items():
+        for _folder_name, mbox in self._open_handles.items():
             try:
                 mbox.flush()
-                _persist_toc_sidecar(self._folder_file(folder_name), mbox)
                 mbox.close()
             except Exception:  # noqa: BLE001
                 pass
@@ -374,8 +369,16 @@ class MboxMirrorRepository(MirrorRepository):
         *,
         folder: FolderRef,
         storage_key: str,
+        message_id: str = "",
     ) -> bytes:
         self._require_folder(folder)
+        # Fast path: if a Message-ID is provided and the mbox is not already
+        # open (no cached TOC), search directly via mmap to avoid a full scan.
+        if message_id and folder.folder_name not in self._open_handles:
+            path = self._folder_file(folder.folder_name)
+            result = _mbox_find_message_by_id(path, message_id)
+            if result is not None:
+                return result
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
         return _mbox_get_bytes(mbox, key, storage_key)
@@ -455,21 +458,13 @@ class MboxMirrorRepository(MirrorRepository):
         if folder_name not in self._open_handles:
             path = self._folder_file(folder_name)
             mbox = mailbox.mbox(path, create=True)
-            # Pre-populate the TOC.  Try the on-disk sidecar first;
-            # fall back to a fresh mmap scan if the sidecar is missing
-            # or stale (file size / mtime mismatch).  Either way we
-            # avoid stdlib's lazy ``_generate_toc`` — see
-            # MBOX_REFACTOR_PLAN.md finding #6.
-            cached = _load_toc_sidecar(path)
-            if cached is None:
-                toc, next_key, file_length = _build_mbox_toc(path)
-            else:
-                toc, next_key, file_length = cached
+            # Pre-populate the TOC via mmap scan to avoid stdlib's lazy
+            # ``_generate_toc`` (readline + tell per line — see
+            # MBOX_REFACTOR_PLAN.md finding #6).
+            toc, next_key, file_length = _build_mbox_toc(path)
             mbox._toc = toc  # type: ignore[attr-defined]
             mbox._next_key = next_key  # type: ignore[attr-defined]
             mbox._file_length = file_length  # type: ignore[attr-defined]
-            if cached is None:
-                _persist_toc_sidecar(path, mbox)
             self._open_handles[folder_name] = mbox
         return self._open_handles[folder_name]
 
@@ -569,102 +564,58 @@ def _build_mbox_toc(
     return toc, len(toc), size
 
 
-# Sidecar TOC cache.  Layout:
-#   header: 4-byte magic | 1-byte version | 3-byte pad | u64 size
-#           | u64 count                                       (24 B)
-#   body:   count * (u64 start, u64 stop)                    (16 B per msg)
-# Keys are implied by index (mbox.flush() always renumbers to 0..count-1
-# after rewriting, so the persisted dict is contiguous).
-# Freshness is checked via filesystem mtime (sidecar >= mbox), not a stored
-# mtime field — version 2 drops the mtime_ns header word.
-_TOC_SIDECAR_MAGIC = b"PMTC"
-_TOC_SIDECAR_VERSION = 2
-_TOC_SIDECAR_HEADER = struct.Struct("<4sBxxxQQ")
-_TOC_SIDECAR_ENTRY = struct.Struct("<QQ")
+def _mbox_find_message_by_id(path: Path, message_id: str) -> bytes | None:
+    """Return raw RFC 5322 bytes for *message_id* via direct mmap search.
 
-
-def _toc_sidecar_path(mbox_path: Path) -> Path:
-    return mbox_path.with_suffix(mbox_path.suffix + ".toc")
-
-
-def _load_toc_sidecar(
-    mbox_path: Path,
-) -> tuple[dict[int, tuple[int, int]], int, int] | None:
-    """Return ``(toc, next_key, file_length)`` from the sidecar, or None.
-
-    Returns None when the sidecar is missing, malformed, or stale.  The
-    sidecar is considered fresh when its own mtime is >= the mbox mtime —
-    i.e. it was (re-)generated at least as recently as the mbox was modified.
-    In every "None" case the caller must fall back to ``_build_mbox_toc``.
+    Avoids a full TOC scan when only one specific message is needed.
+    Returns None if not found; the caller should fall back to integer-key lookup.
     """
-    sidecar = _toc_sidecar_path(mbox_path)
     try:
-        st = mbox_path.stat()
-        sidecar_st = sidecar.stat()
+        size = path.stat().st_size
     except OSError:
         return None
-    if sidecar_st.st_mtime_ns < st.st_mtime_ns:
-        return None
-    try:
-        with open(sidecar, "rb") as fh:
-            header = fh.read(_TOC_SIDECAR_HEADER.size)
-            if len(header) != _TOC_SIDECAR_HEADER.size:
-                return None
-            magic, version, size, count = _TOC_SIDECAR_HEADER.unpack(header)
-            if magic != _TOC_SIDECAR_MAGIC or version != _TOC_SIDECAR_VERSION:
-                return None
-            body = fh.read(_TOC_SIDECAR_ENTRY.size * count)
-            if len(body) != _TOC_SIDECAR_ENTRY.size * count:
-                return None
-    except OSError:
+    if size == 0:
         return None
 
-    toc: dict[int, tuple[int, int]] = {}
-    stride = _TOC_SIDECAR_ENTRY.size
-    for i in range(count):
-        start, stop = _TOC_SIDECAR_ENTRY.unpack_from(body, i * stride)
-        toc[i] = (start, stop)
-    return toc, count, size
+    needle = b"\nMessage-ID: " + message_id.encode()
+    linesep = _MBOX_LINESEP
+    linesep_len = len(linesep)
+    double_linesep = linesep + linesep
+    double_len = 2 * linesep_len
 
-
-def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
-    """Write the in-memory ``mbox._toc`` to the sidecar atomically.
-
-    Called after every ``mbox.flush()`` so the persisted TOC tracks the
-    file as it changes.  Failures are logged and swallowed: a missing
-    or stale sidecar costs a fresh ``_build_mbox_toc`` on next open
-    (~1 s/GB), never a correctness issue.
-
-    The sidecar is a read-back performance cache, not a data store, so
-    partial writes are harmless — a corrupt or missing sidecar simply
-    causes a full mbox scan on the next open.  We write directly to the
-    final path to avoid the tmp-rename dance that Windows/OneDrive sync
-    agents can block with transient locks.
-    """
-    toc: dict[int, tuple[int, int]] = mbox._toc or {}  # type: ignore[attr-defined]
-    sidecar = _toc_sidecar_path(mbox_path)
+    with open(path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
     try:
-        file_size = mbox_path.stat().st_size
-    except OSError as exc:
-        _logger.warning("toc sidecar: stat failed for %s: %s", mbox_path, exc)
-        return
+        hit = mm.find(needle)
+        if hit < 0:
+            return None
 
-    entries = b"".join(
-        _TOC_SIDECAR_ENTRY.pack(s, e) for s, e in (toc[k] for k in sorted(toc))
-    )
-    data = (
-        _TOC_SIDECAR_HEADER.pack(
-            _TOC_SIDECAR_MAGIC,
-            _TOC_SIDECAR_VERSION,
-            file_size,
-            len(toc),
-        )
-        + entries
-    )
-    try:
-        sidecar.write_bytes(data)
-    except OSError as exc:
-        _logger.warning("toc sidecar: write failed for %s: %s", sidecar, exc)
+        # Walk backward to the nearest "From " envelope line.
+        from_nl = mm.rfind(b"\nFrom ", 0, hit + 1)
+        msg_start = 0 if from_nl < 0 else from_nl + 1
+
+        # Walk forward to the next "From " boundary for the stop offset,
+        # applying the same blank-line trim as _build_mbox_toc.
+        next_nl = mm.find(b"\nFrom ", hit + 1)
+        if next_nl < 0:
+            if size >= double_len and mm[size - double_len : size] == double_linesep:
+                msg_stop = size - linesep_len
+            else:
+                msg_stop = size
+        else:
+            next_pos = next_nl + 1
+            has_blank = next_pos >= double_len and (
+                mm[next_pos - double_len : next_pos] == double_linesep
+            )
+            msg_stop = next_pos - linesep_len if has_blank else next_pos
+
+        # Skip the "From " envelope line; return RFC 5322 headers + body only.
+        from_end = mm.find(b"\n", msg_start, msg_stop)
+        if from_end < 0:
+            return None
+        return bytes(mm[from_end + 1 : msg_stop])
+    finally:
+        mm.close()
 
 
 def _mbox_get_bytes(mbox: mailbox.mbox, key: int, storage_key: str) -> bytes:

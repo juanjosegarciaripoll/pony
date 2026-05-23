@@ -5,7 +5,6 @@ from __future__ import annotations
 import mailbox
 import unittest
 from email.message import EmailMessage
-from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -16,9 +15,6 @@ from pony.storage import (
     MaildirMirrorRepository,
     MboxMirrorRepository,
     _build_mbox_toc,
-    _load_toc_sidecar,
-    _persist_toc_sidecar,
-    _toc_sidecar_path,
 )
 
 
@@ -325,86 +321,3 @@ class BuildMboxTocTestCase(unittest.TestCase):
             self.assertGreaterEqual(start, prev_stop)
             self.assertLess(start, stop)
             prev_stop = stop
-
-
-class MboxTocSidecarTestCase(unittest.TestCase):
-    """Lifecycle tests for the on-disk TOC cache.
-
-    Exercises the read-after-write contract (round-trip), the staleness
-    check (size/mtime mismatch invalidates), and the mutation hooks
-    (post-flush sidecar is consistent with the file on disk).
-    """
-
-    def _make_mbox_with_messages(
-        self, subjects: list[str]
-    ) -> tuple[Path, MboxMirrorRepository, FolderRef]:
-        root = TMP_ROOT / "storage" / "mbox-sidecar" / uuid4().hex
-        root.mkdir(parents=True, exist_ok=True)
-        repo = MboxMirrorRepository(account_name="test", root_dir=root)
-        folder = FolderRef(account_name="test", folder_name="INBOX")
-        for subject in subjects:
-            repo.store_message(folder=folder, raw_message=sample_message_bytes(subject))
-        path = root / "INBOX.mbox"
-        return path, repo, folder
-
-    def test_roundtrip_after_open(self) -> None:
-        """Closing the repo writes a sidecar that loads to the same TOC."""
-        path, repo, _ = self._make_mbox_with_messages(["a", "b", "c"])
-        repo._close_all()
-        sidecar = _toc_sidecar_path(path)
-        self.assertTrue(sidecar.exists())
-        loaded = _load_toc_sidecar(path)
-        self.assertIsNotNone(loaded)
-        toc, next_key, file_length = loaded  # type: ignore[misc]
-        ref_toc, ref_next, ref_flen = _build_mbox_toc(path)
-        self.assertEqual(toc, ref_toc)
-        self.assertEqual(next_key, ref_next)
-        self.assertEqual(file_length, ref_flen)
-
-    def test_stale_sidecar_rejected(self) -> None:
-        """A sidecar whose (size, mtime_ns) doesn't match returns None."""
-        path, _, _ = self._make_mbox_with_messages(["a", "b"])
-        # Mutate the file out-of-band to force a mismatch.
-        with open(path, "ab") as fh:
-            fh.write(b"\nFrom corruption@example.com Mon Jan  1 00:00:00 2026\n\n")
-        self.assertIsNone(_load_toc_sidecar(path))
-
-    def test_missing_sidecar_returns_none(self) -> None:
-        path, _, _ = self._make_mbox_with_messages(["a"])
-        _toc_sidecar_path(path).unlink()
-        self.assertIsNone(_load_toc_sidecar(path))
-
-    def test_corrupt_sidecar_returns_none(self) -> None:
-        path, _, _ = self._make_mbox_with_messages(["a"])
-        sidecar = _toc_sidecar_path(path)
-        sidecar.write_bytes(b"garbage")
-        self.assertIsNone(_load_toc_sidecar(path))
-
-    def test_sidecar_refreshes_on_mutation(self) -> None:
-        """After mutations, closing the repo writes a sidecar that tracks the file."""
-        path, repo, folder = self._make_mbox_with_messages(["a", "b", "c"])
-        repo.delete_message(folder=folder, storage_key="1")
-        repo._close_all()
-        loaded = _load_toc_sidecar(path)
-        self.assertIsNotNone(loaded)
-        toc_after, next_key_after, _ = loaded  # type: ignore[misc]
-        ref_toc, ref_next, _ = _build_mbox_toc(path)
-        self.assertEqual(toc_after, ref_toc)
-        self.assertEqual(next_key_after, ref_next)
-        self.assertEqual(set(toc_after), {0, 1})
-
-    def test_persist_handles_unwritable_directory(self) -> None:
-        """Persist swallows OSError from write failures (best-effort cache)."""
-        path, _, _ = self._make_mbox_with_messages(["a"])
-        # Build a fake mbox-like object to hand to _persist_toc_sidecar
-        # against a path whose parent doesn't exist — the call should
-        # log + return without raising.
-        bogus = path.parent / "nope" / "INBOX.mbox"
-        # We need a real mbox handle to read _toc; reuse the one from setup.
-        import mailbox as _mailbox
-
-        mbox = _mailbox.mbox(str(path), create=False)
-        try:
-            _persist_toc_sidecar(bogus, mbox)
-        finally:
-            mbox.close()

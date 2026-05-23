@@ -184,6 +184,7 @@ class MessageViewPanel(VerticalScroll):
                     folder_name=summary.message_ref.folder_name,
                 ),
                 storage_key=summary.storage_key,
+                message_id=summary.message_id,
             )
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", summary.message_ref)

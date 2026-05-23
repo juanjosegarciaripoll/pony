@@ -55,6 +55,7 @@ class MirrorRepository(Protocol):
         *,
         folder: FolderRef,
         storage_key: str,
+        message_id: str = "",
     ) -> bytes:
         """Return raw RFC 5322 message bytes."""
         ...
