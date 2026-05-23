@@ -2787,7 +2787,9 @@ def _remove_account_from_config(config_file: Path, name: str) -> None:
             skip = False
         if not skip:
             out.append(line)
-    config_file.write_text("".join(out), encoding="utf-8")
+    tmp = config_file.with_suffix(config_file.suffix + ".tmp")
+    tmp.write_text("".join(out), encoding="utf-8")
+    tmp.replace(config_file)
 
 
 def _prompt(message: str, default: str = "") -> str:

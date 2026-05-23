@@ -35,6 +35,7 @@ class MaildirMirrorRepository(MirrorRepository):
         self._ensured_dirs: set[str] = set()
         self._write_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._write_futures: list[concurrent.futures.Future[int]] = []
+        atexit.register(self._shutdown)
 
     def list_folders(self, *, account_name: str) -> tuple[FolderRef, ...]:
         self._require_account(account_name)
@@ -114,6 +115,19 @@ class MaildirMirrorRepository(MirrorRepository):
         done, _ = concurrent.futures.wait(futures)
         for f in done:
             f.result()  # raises if the write failed
+
+    def _shutdown(self) -> None:
+        """Wait for pending writes and release the thread pool."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self.flush_writes()
+        if self._write_pool is not None:
+            self._write_pool.shutdown(wait=True)
+            self._write_pool = None
+
+    def __del__(self) -> None:
+        self._shutdown()
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
@@ -318,12 +332,16 @@ class MboxMirrorRepository(MirrorRepository):
                 file=sys.stderr,
                 flush=True,
             )
-        for _folder_name, mbox in self._open_handles.items():
+        for folder_name, mbox in self._open_handles.items():
             try:
                 mbox.flush()
                 mbox.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"Warning: could not flush {folder_name}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         self._open_handles.clear()
 
     def __del__(self) -> None:
