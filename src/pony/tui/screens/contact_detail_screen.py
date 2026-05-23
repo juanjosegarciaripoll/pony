@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.markup import escape as _markup_escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
@@ -63,27 +64,33 @@ class ContactDetailScreen(Screen[bool]):
         c = self._contact
         widgets: list[Static] = []
 
-        name = c.display_name or "(no name)"
+        name = _markup_escape(c.display_name or "(no name)")
         widgets.append(Static(f"[bold]{name}[/bold]", classes="detail-value"))
 
         if c.affix:
             widgets.append(Static("Affix", classes="detail-label"))
-            widgets.append(Static(", ".join(c.affix), classes="detail-value"))
+            widgets.append(
+                Static(_markup_escape(", ".join(c.affix)), classes="detail-value")
+            )
 
         if c.aliases:
             widgets.append(Static("Aliases", classes="detail-label"))
             widgets.append(
-                Static(", ".join(c.aliases), classes="detail-value"),
+                Static(_markup_escape(", ".join(c.aliases)), classes="detail-value"),
             )
 
         if c.organization:
             widgets.append(Static("Organization", classes="detail-label"))
-            widgets.append(Static(c.organization, classes="detail-value"))
+            widgets.append(
+                Static(_markup_escape(c.organization), classes="detail-value")
+            )
 
         widgets.append(Static("Email addresses", classes="detail-label"))
         if c.emails:
             for email in c.emails:
-                widgets.append(Static(f"  {email}", classes="detail-value"))
+                widgets.append(
+                    Static(f"  {_markup_escape(email)}", classes="detail-value")
+                )
         else:
             widgets.append(Static("  (none)", classes="detail-value"))
 
@@ -104,7 +111,7 @@ class ContactDetailScreen(Screen[bool]):
 
         if c.notes:
             widgets.append(Static("Notes", classes="detail-label"))
-            widgets.append(Static(c.notes, classes="detail-value"))
+            widgets.append(Static(_markup_escape(c.notes), classes="detail-value"))
 
         widgets.append(Static("Timestamps", classes="detail-label"))
         widgets.append(
