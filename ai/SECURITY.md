@@ -12,11 +12,21 @@ server.  Goal: compromise the local machine.
 
 | # | Finding | Severity | File(s) | Status |
 |---|---------|----------|---------|--------|
-| 1 | **Path traversal via `Content-Disposition` filename** — a `filename="../../.bashrc"` attachment pre-populated the Save dialog with the raw value; `(dest / item.filename).write_bytes()` would write outside the chosen directory. | HIGH | `tui/screens/save_message_screen.py`, `tui/screens/main_screen.py` | Fixed |
-| 2 | **Path traversal via Subject-derived `.eml` filename** — nested `message/rfc822` attachments used the raw Subject header as a filename stem, allowing the same traversal. | HIGH | `tui/message_renderer.py` | Fixed |
-| 3 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` used as a body filename stem. | MEDIUM | `tui/screens/save_message_screen.py` | Fixed |
+| 1 | **Path traversal via `Content-Disposition` filename (Save dialog path)** — `filename="../../.bashrc"` pre-populated the Save dialog; `(dest / item.filename).write_bytes()` could write outside the chosen directory. | HIGH | `tui/screens/save_message_screen.py`, `tui/screens/main_screen.py` | Fixed |
+| 2 | **Path traversal via `Content-Disposition` filename (direct-save path)** — `save_attachment()` → `_unique_path(dest_dir, payload.filename)` used the raw filename directly, bypassing the dialog-level fix. | HIGH | `tui/widgets/message_view.py` | Fixed |
+| 3 | **Path traversal via Subject-derived `.eml` filename** — nested `message/rfc822` attachments used the raw Subject header as a filename stem. | HIGH | `tui/message_renderer.py` | Fixed |
+| 4 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` as a body filename stem. | MEDIUM | `tui/screens/save_message_screen.py` | Fixed |
+| 5 | **Terminal escape injection via email headers** — `_escape()` escaped `[` for Rich markup but did not strip `\x1b` or other C0 control characters.  A Subject or From header containing ANSI escape sequences could corrupt terminal state (clear screen, move cursor, change colours) when the message was displayed. | MEDIUM | `tui/widgets/message_view.py` | Fixed |
 
 ### Mitigations applied
+
+**`tui/widgets/message_view.py`**
+
+- `_escape()` now strips all C0/C1 control characters (except tab, LF, CR)
+  before the Rich `[` escaping step, preventing terminal escape injection.
+- `_unique_path()` now strips directory components via `Path(filename).name`
+  and removes remaining control characters before constructing the output path,
+  closing the direct-save path traversal.
 
 **`tui/screens/save_message_screen.py`**
 
@@ -46,5 +56,7 @@ server.  Goal: compromise the local machine.
 |---|---|
 | XSS via HTML event handlers (`onclick`, `onload`, …) | Pony Express renders email in a Textual terminal UI — there is no JavaScript runtime.  HTML is converted to plain text before display. |
 | SQL injection | All queries in `index_store.py` use `?` parameterized placeholders.  FTS5 user queries are double-quote escaped. |
+| Rich markup injection via link sentinels | Link indices are validated as integers; `kind` is assigned internally, never from email content. |
+| ReDoS in `_PLAIN_LINK_RE` | The regex has no nested quantifiers or overlapping alternation — backtracking is linear. |
 | `os.startfile()` shell injection | `os.startfile` takes a `Path` object, not a shell string.  No command injection is possible; double-extension attacks remain a user-education issue. |
 | RFC 2047 unknown-charset decode | Falls back to `latin-1`, which may corrupt text but cannot execute code. |

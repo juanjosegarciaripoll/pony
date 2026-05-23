@@ -34,7 +34,12 @@ def _escape(text: str) -> str:
     Rich 14.x ``markup.escape`` only escapes ``[`` when followed by a
     tag-like pattern, but Textual's tokenizer treats *any* bare ``[`` as an
     open-tag opener.  A plain ``replace`` is the safe choice here.
+
+    Control characters (especially ESC / \\x1b) are stripped so that a
+    malicious email header cannot inject terminal escape sequences into
+    the output stream.  Tab, newline and carriage-return are kept.
     """
+    text = "".join(ch for ch in text if ch >= " " or ch in "\t\n\r")
     return text.replace("[", "\\[")
 
 
@@ -78,11 +83,14 @@ def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
 
 def _unique_path(dest_dir: Path, filename: str) -> Path:
     """Return dest_dir/filename, appending -N before the extension if it exists."""
-    candidate = dest_dir / filename
+    # Strip path traversal components and control chars from an untrusted filename.
+    safe = Path(filename).name
+    safe = "".join(ch for ch in safe if ch >= " ") or "attachment"
+    candidate = dest_dir / safe
     if not candidate.exists():
         return candidate
-    stem = Path(filename).stem
-    suffix = Path(filename).suffix
+    stem = Path(safe).stem
+    suffix = Path(safe).suffix
     n = 1
     while True:
         candidate = dest_dir / f"{stem}-{n}{suffix}"

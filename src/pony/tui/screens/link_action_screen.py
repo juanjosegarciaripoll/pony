@@ -68,4 +68,3 @@ class LinkActionScreen(DialogScreen):
         self.app.copy_to_clipboard(self._url)  # pyright: ignore[reportUnknownMemberType]
         self.notify("Link copied")
         self.dismiss(False)
-

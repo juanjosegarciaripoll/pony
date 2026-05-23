@@ -50,8 +50,12 @@ class AppPaths:
             or (home / ".cache"),
         )
 
-        config_dir = config_root if os.environ.get("PONY_CONFIG_DIR") else config_root / app_name
-        data_dir = data_root if os.environ.get("PONY_DATA_DIR") else data_root / app_name
+        config_dir = (
+            config_root if os.environ.get("PONY_CONFIG_DIR") else config_root / app_name
+        )
+        data_dir = (
+            data_root if os.environ.get("PONY_DATA_DIR") else data_root / app_name
+        )
         state_dir = state_root / app_name
 
         return cls(
