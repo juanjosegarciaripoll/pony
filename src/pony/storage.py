@@ -571,13 +571,15 @@ def _build_mbox_toc(
 
 # Sidecar TOC cache.  Layout:
 #   header: 4-byte magic | 1-byte version | 3-byte pad | u64 size
-#           | u64 mtime_ns | u64 count                       (32 B)
+#           | u64 count                                       (24 B)
 #   body:   count * (u64 start, u64 stop)                    (16 B per msg)
 # Keys are implied by index (mbox.flush() always renumbers to 0..count-1
 # after rewriting, so the persisted dict is contiguous).
+# Freshness is checked via filesystem mtime (sidecar >= mbox), not a stored
+# mtime field — version 2 drops the mtime_ns header word.
 _TOC_SIDECAR_MAGIC = b"PMTC"
-_TOC_SIDECAR_VERSION = 1
-_TOC_SIDECAR_HEADER = struct.Struct("<4sBxxxQQQ")
+_TOC_SIDECAR_VERSION = 2
+_TOC_SIDECAR_HEADER = struct.Struct("<4sBxxxQQ")
 _TOC_SIDECAR_ENTRY = struct.Struct("<QQ")
 
 
@@ -590,24 +592,26 @@ def _load_toc_sidecar(
 ) -> tuple[dict[int, tuple[int, int]], int, int] | None:
     """Return ``(toc, next_key, file_length)`` from the sidecar, or None.
 
-    Returns None when the sidecar is missing, malformed, or stale (the
-    cached ``(size, mtime_ns)`` no longer matches the mbox file).  In
-    every "None" case the caller must fall back to ``_build_mbox_toc``.
+    Returns None when the sidecar is missing, malformed, or stale.  The
+    sidecar is considered fresh when its own mtime is >= the mbox mtime —
+    i.e. it was (re-)generated at least as recently as the mbox was modified.
+    In every "None" case the caller must fall back to ``_build_mbox_toc``.
     """
     sidecar = _toc_sidecar_path(mbox_path)
     try:
         st = mbox_path.stat()
+        sidecar_st = sidecar.stat()
     except OSError:
+        return None
+    if sidecar_st.st_mtime_ns < st.st_mtime_ns:
         return None
     try:
         with open(sidecar, "rb") as fh:
             header = fh.read(_TOC_SIDECAR_HEADER.size)
             if len(header) != _TOC_SIDECAR_HEADER.size:
                 return None
-            magic, version, size, mtime_ns, count = _TOC_SIDECAR_HEADER.unpack(header)
+            magic, version, size, count = _TOC_SIDECAR_HEADER.unpack(header)
             if magic != _TOC_SIDECAR_MAGIC or version != _TOC_SIDECAR_VERSION:
-                return None
-            if size != st.st_size or mtime_ns != st.st_mtime_ns:
                 return None
             body = fh.read(_TOC_SIDECAR_ENTRY.size * count)
             if len(body) != _TOC_SIDECAR_ENTRY.size * count:
@@ -640,7 +644,7 @@ def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
     toc: dict[int, tuple[int, int]] = mbox._toc or {}  # type: ignore[attr-defined]
     sidecar = _toc_sidecar_path(mbox_path)
     try:
-        st = mbox_path.stat()
+        file_size = mbox_path.stat().st_size
     except OSError as exc:
         _logger.warning("toc sidecar: stat failed for %s: %s", mbox_path, exc)
         return
@@ -652,8 +656,7 @@ def _persist_toc_sidecar(mbox_path: Path, mbox: mailbox.mbox) -> None:
         _TOC_SIDECAR_HEADER.pack(
             _TOC_SIDECAR_MAGIC,
             _TOC_SIDECAR_VERSION,
-            st.st_size,
-            st.st_mtime_ns,
+            file_size,
             len(toc),
         )
         + entries
