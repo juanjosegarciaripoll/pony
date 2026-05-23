@@ -260,7 +260,9 @@ def _extract_body_and_attachments(
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = part.get_content_charset() or "utf-8"
-                body_parts.append(payload.decode(charset, errors="replace"))
+                body_parts.append(
+                    payload.decode(charset, errors="replace").replace("\x00", "")
+                )
 
         elif content_type == "text/html" and not body_parts and not in_nested:
             # Only collect HTML if we have no plain text yet and we're
@@ -329,8 +331,9 @@ class _HTMLStripper(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         # Normalize whitespace like a browser: collapse runs (incl. newlines from
-        # HTML source line-wrapping) to a single space.
-        normalized = _WHITESPACE_RE.sub(" ", data)
+        # HTML source line-wrapping) to a single space.  Strip NUL bytes so that
+        # &#0; entities cannot inject internal format sentinels.
+        normalized = _WHITESPACE_RE.sub(" ", data).replace("\x00", "")
         if self._in_anchor:
             self._anchor_text.append(normalized)
         else:
