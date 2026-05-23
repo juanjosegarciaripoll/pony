@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -20,10 +21,26 @@ _SLUG_MAX = 50
 _SAFE_FILENAME_RE = re.compile(r"[^\w\-.]")
 
 
+def _sanitize_attachment_filename(filename: str) -> str:
+    """Strip path components and dangerous chars from an untrusted filename."""
+    # Drop any directory component supplied by the sender.
+    name = Path(filename).name
+    # Belt-and-suspenders: replace separators that survive cross-platform extraction.
+    name = name.replace("/", "_").replace("\\", "_")
+    # Drop control characters (NUL, etc.).
+    name = re.sub(r"[\x00-\x1f]", "", name)
+    # Avoid bare dot-only names that act as directory references.
+    if name in ("", ".", ".."):
+        name = "attachment"
+    return name[:255]
+
+
 def _subject_slug(subject: str) -> str:
     """Convert a subject line into a safe filename component."""
     slug = subject.lower().replace(" ", "-")
     slug = _SAFE_FILENAME_RE.sub("", slug)
+    # Collapse multi-dot sequences so `..` cannot act as a parent-dir reference.
+    slug = re.sub(r"\.{2,}", ".", slug)
     return slug[:_SLUG_MAX] or "message"
 
 
@@ -45,8 +62,9 @@ def _proposed_body_filename(rendered: RenderedMessage) -> str:
 
 
 def _proposed_attachment_filename(filename: str, index: int) -> str:
-    """Return the attachment's own filename, or a numeric fallback."""
-    return filename if filename else f"attachment-{index}"
+    """Return a sanitized attachment filename, or a numeric fallback."""
+    safe = _sanitize_attachment_filename(filename) if filename else ""
+    return safe if safe else f"attachment-{index}"
 
 
 @dataclass(frozen=True)

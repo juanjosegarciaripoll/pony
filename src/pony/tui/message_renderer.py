@@ -45,6 +45,15 @@ _PLAIN_LINK_RE = re.compile(
 # U=underline, S=strikethrough) + digit 1 (open) or 0 (close).
 _FORMAT_IDS = frozenset(("B1", "B0", "I1", "I0", "U1", "U0", "S1", "S0"))
 
+# Characters that are forbidden in cross-platform filenames.
+_UNSAFE_FILENAME_CHARS_RE = re.compile(r'[/\\<>:"|?*\x00-\x1f]')
+
+
+def _safe_filename_stem(text: str, fallback: str = "message") -> str:
+    """Sanitize *text* for use as a filename stem (no extension, no path)."""
+    stem = _UNSAFE_FILENAME_CHARS_RE.sub("_", text).strip(". ")
+    return stem[:80] if stem else fallback
+
 
 @dataclass(frozen=True, slots=True)
 class AttachmentInfo:
@@ -219,7 +228,7 @@ def _extract_body_and_attachments(
                 attachments.append(
                     AttachmentInfo(
                         index=attach_index,
-                        filename=f"{subj}.eml",
+                        filename=f"{_safe_filename_stem(subj)}.eml",
                         content_type="message/rfc822",
                         size_bytes=len(raw),
                     )
@@ -465,7 +474,7 @@ def build_browser_html(raw_bytes: bytes) -> str:
                 attachments.append(
                     AttachmentInfo(
                         index=attach_index,
-                        filename=f"{subj}.eml",
+                        filename=f"{_safe_filename_stem(subj)}.eml",
                         content_type="message/rfc822",
                         size_bytes=len(raw_inner),
                     )
@@ -639,7 +648,7 @@ def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None
                     data = inner.as_bytes()
                     subj = _header(inner, "Subject") or "(no subject)"
                     return AttachmentPayload(
-                        filename=f"{subj}.eml",
+                        filename=f"{_safe_filename_stem(subj)}.eml",
                         content_type="message/rfc822",
                         size_bytes=len(data),
                         data=data,

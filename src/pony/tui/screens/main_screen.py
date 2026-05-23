@@ -1724,17 +1724,22 @@ class MainScreen(Screen[None]):
         def _on_folder(dest: Path | None) -> None:
             if dest is None:
                 return
+            dest_resolved = dest.resolve()
             saved = failed = 0
             for item in pending_items:
                 try:
+                    out = (dest / item.filename).resolve()
+                    if not out.is_relative_to(dest_resolved):
+                        failed += 1
+                        continue
                     if item.kind == "body":
                         md = render_message_markdown(rendered)
-                        (dest / item.filename).write_text(md, encoding="utf-8")
+                        out.write_text(md, encoding="utf-8")
                     else:
                         idx = int(item.kind.split(":")[1])
                         payload = extract_attachment(raw, idx)
                         if payload:
-                            (dest / item.filename).write_bytes(payload.data)
+                            out.write_bytes(payload.data)
                     saved += 1
                 except Exception:  # noqa: BLE001
                     failed += 1
