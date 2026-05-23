@@ -1378,8 +1378,7 @@ def run_dedup_folder(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
 
-    accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
-    if not any(a.name == account for a in accounts):
+    if not any(a.name == account for a in config.accounts):
         raise SystemExit(f"No account named {account!r} in config.")
 
     folder_ref = FolderRef(account_name=account, folder_name=folder)
