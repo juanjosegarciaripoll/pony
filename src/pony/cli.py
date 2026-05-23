@@ -1383,26 +1383,6 @@ def run_dedup_folder(
         raise SystemExit(f"No account named {account!r} in config.")
 
     folder_ref = FolderRef(account_name=account, folder_name=folder)
-    messages = index.list_folder_messages(folder=folder_ref)
-
-    # Collect only ACTIVE rows that have a UID and a non-empty Message-ID.
-    # Rows without a UID are local-only drafts not yet pushed; TRASHED /
-    # PENDING_MOVE rows are already in flux.
-    groups: dict[str, list[IndexedMessage]] = {}
-    for msg in messages:
-        if not msg.message_id:
-            continue
-        if msg.local_status != MessageStatus.ACTIVE:
-            continue
-        if msg.uid is None:
-            continue
-        groups.setdefault(msg.message_id, []).append(msg)
-
-    dup_groups = {mid: rows for mid, rows in groups.items() if len(rows) > 1}
-
-    if not dup_groups:
-        print(f"No duplicates found in {account}/{folder}.")
-        return 0
 
     def _sort_key(msg: IndexedMessage) -> tuple[int, int, int, datetime, int]:
         useful = msg.local_flags - {MessageFlag.DELETED}
@@ -1414,31 +1394,55 @@ def run_dedup_folder(
             msg.message_ref.id,
         )
 
-    all_losers: list[IndexedMessage] = []
-    for mid, rows in sorted(dup_groups.items()):
-        sorted_rows = sorted(rows, key=_sort_key)
-        winner = sorted_rows[0]
-        group_losers = sorted_rows[1:]
-        all_losers.extend(group_losers)
-
-        flag_str = ",".join(sorted(f.value for f in winner.local_flags)) or "(none)"
-        loser_uids = ", ".join(str(m.uid) for m in group_losers)
-        print(
-            f"  {mid}\n"
-            f"    keep uid={winner.uid} flags=[{flag_str}]\n"
-            f"    trash uid(s): {loser_uids}"
-        )
-
-    n_losers = len(all_losers)
-    n_groups = len(dup_groups)
-
-    if not apply:
-        print(f"\nWould trash {n_losers} row(s) in {n_groups} group(s).")
-        print("Rerun with --apply to write changes.")
-        return 0
-
     now = datetime.now(tz=UTC)
     with index.connection():
+        # Read and write inside the same connection so the snapshot is
+        # consistent: a concurrent sync cannot alter flags between the
+        # read and the upsert.
+        messages = index.list_folder_messages(folder=folder_ref)
+
+        # Collect only ACTIVE rows that have a UID and a non-empty Message-ID.
+        # Rows without a UID are local-only drafts not yet pushed; TRASHED /
+        # PENDING_MOVE rows are already in flux.
+        groups: dict[str, list[IndexedMessage]] = {}
+        for msg in messages:
+            if not msg.message_id:
+                continue
+            if msg.local_status != MessageStatus.ACTIVE:
+                continue
+            if msg.uid is None:
+                continue
+            groups.setdefault(msg.message_id, []).append(msg)
+
+        dup_groups = {mid: rows for mid, rows in groups.items() if len(rows) > 1}
+
+        if not dup_groups:
+            print(f"No duplicates found in {account}/{folder}.")
+            return 0
+
+        all_losers: list[IndexedMessage] = []
+        for mid, rows in sorted(dup_groups.items()):
+            sorted_rows = sorted(rows, key=_sort_key)
+            winner = sorted_rows[0]
+            group_losers = sorted_rows[1:]
+            all_losers.extend(group_losers)
+
+            flag_str = ",".join(sorted(f.value for f in winner.local_flags)) or "(none)"
+            loser_uids = ", ".join(str(m.uid) for m in group_losers)
+            print(
+                f"  {mid}\n"
+                f"    keep uid={winner.uid} flags=[{flag_str}]\n"
+                f"    trash uid(s): {loser_uids}"
+            )
+
+        n_losers = len(all_losers)
+        n_groups = len(dup_groups)
+
+        if not apply:
+            print(f"\nWould trash {n_losers} row(s) in {n_groups} group(s).")
+            print("Rerun with --apply to write changes.")
+            return 0
+
         for msg in all_losers:
             index.upsert_message(
                 message=dataclasses.replace(

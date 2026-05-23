@@ -426,7 +426,17 @@ class MboxMirrorRepository(MirrorRepository):
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
         del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
-        mbox.flush()
+        # Flush is deferred: call flush_writes() to commit pending deletes.
+        # _close_all() also flushes all handles on process exit.
+
+    def flush_writes(self) -> None:
+        """Flush any pending mbox changes to disk.
+
+        Called by the sync engine after it finishes processing a folder so
+        that N deletions trigger a single file rewrite rather than N.
+        """
+        for mbox in self._open_handles.values():
+            mbox.flush()
 
     def move_message_to_folder(
         self,
