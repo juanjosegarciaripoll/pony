@@ -17,6 +17,8 @@ server.  Goal: compromise the local machine.
 | 3 | **Path traversal via Subject-derived `.eml` filename** — nested `message/rfc822` attachments used the raw Subject header as a filename stem. | HIGH | `tui/message_renderer.py` | Fixed |
 | 4 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` as a body filename stem. | MEDIUM | `tui/screens/save_message_screen.py` | Fixed |
 | 5 | **Terminal escape injection via email headers** — `_escape()` escaped `[` for Rich markup but did not strip `\x1b` or other C0 control characters.  A Subject or From header containing ANSI escape sequences could corrupt terminal state (clear screen, move cursor, change colours) when the message was displayed. | MEDIUM | `tui/widgets/message_view.py` | Fixed |
+| 6 | **Textual markup injection via contact fields** — `ContactDetailScreen` passed `display_name`, `affix`, `aliases`, `organization`, email addresses and `notes` directly to `Static()` without escaping.  A crafted `From` display name harvested into the contacts database could inject `[link=…]` or other Rich markup tags, creating false clickable links in the contact detail view. | HIGH | `tui/screens/contact_detail_screen.py` | Fixed |
+| 7 | **NUL-byte injection of format sentinels** — The renderer uses `\x00` as an internal delimiter for format tokens (`\x00B1\x00` = bold-open, etc.).  A `text/plain` body with embedded NUL bytes (valid in base64/QP-encoded parts) or an HTML body using `&#0;` entities (converted by `HTMLParser`'s default `convert_charrefs=True`) could inject fake bold/italic/underline/strike formatting into the TUI display. | LOW | `tui/message_renderer.py` | Fixed |
 
 ### Mitigations applied
 
@@ -40,6 +42,15 @@ server.  Goal: compromise the local machine.
 - New `_safe_filename_stem()` and `_UNSAFE_FILENAME_CHARS_RE`: replaces
   forbidden path characters and strips leading/trailing dots and spaces.
 - All three `f"{subj}.eml"` constructions now use `_safe_filename_stem(subj)`.
+- `text/plain` payloads now have NUL bytes stripped after decoding (finding #7).
+- `_HTMLStripper.handle_data` strips NUL bytes after whitespace normalisation,
+  blocking the `&#0;` entity injection path (finding #7).
+
+**`tui/screens/contact_detail_screen.py`**
+
+- All contact fields (`display_name`, `affix`, `aliases`, `organization`,
+  email addresses, `notes`) are passed through `rich.markup.escape` before
+  being placed in `Static()` widgets (finding #6).
 
 **`tui/screens/main_screen.py`**
 
