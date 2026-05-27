@@ -139,8 +139,8 @@ class ComposeInitial:
     bcc: str = ""
     subject: str = ""
     body: str = ""
+    attachment_paths: tuple[Path, ...] = ()
     markdown_mode: bool = False
-    forwarded_message: bytes | None = None
 
 
 class ComposeScreen(Screen[bool]):
@@ -326,8 +326,7 @@ class ComposeScreen(Screen[bool]):
         self._initial = initial
         self._contacts = contacts
         self._source_draft = source_draft
-        self._attachment_paths: list[Path] = []
-        self._forwarded_message: bytes | None = initial.forwarded_message
+        self._attachment_paths: list[Path] = list(initial.attachment_paths)
         self._markdown_mode: bool = initial.markdown_mode
 
     def compose(self) -> ComposeResult:
@@ -449,7 +448,6 @@ class ComposeScreen(Screen[bool]):
             body=self.query_one("#body-area", TextArea).text,
             attachment_paths=self._attachment_paths,
             markdown_mode=self._markdown_mode,
-            forwarded_message=self._forwarded_message,
         )
 
         # The dropdown only shows ``can_send`` accounts (see

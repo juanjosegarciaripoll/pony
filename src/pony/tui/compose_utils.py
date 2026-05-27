@@ -11,7 +11,7 @@ from pathlib import Path
 from .message_renderer import RenderedMessage
 
 _QUOTE_BOUNDARY_RE = re.compile(
-    r"(?m)^(On .+ wrote:|---------- Forwarded message ----------)$"
+    r"(?m)^(On .+ wrote:|---------- Forwarded message ----------|---- Forwarded ----)$"
 )
 
 _BLOCKQUOTE_LINE_RE = re.compile(r"(?m)^(>.*)")
@@ -200,7 +200,6 @@ def build_email_message(
     body: str,
     attachment_paths: list[Path],
     markdown_mode: bool = False,
-    forwarded_message: bytes | None = None,
 ) -> EmailMessage:
     """Build a ready-to-send :class:`EmailMessage`.
 
@@ -245,7 +244,7 @@ def build_email_message(
         if user_part.strip():
             html_sections.append(md.render(_add_blockquote_hardbreaks(user_part)))
         if quoted_part.strip():
-            escaped = _html_mod.escape(quoted_part)
+            escaped = _html_mod.escape(quoted_part).replace("\n", "<br>\n")
             html_sections.append(
                 '<blockquote style="white-space:pre-wrap;'
                 'border-left:2px solid #ccc;margin:0;padding-left:1em">'
@@ -272,12 +271,5 @@ def build_email_message(
             subtype=subtype,
             filename=path.name,
         )
-
-    if forwarded_message is not None:
-        import email.policy
-        from email import message_from_bytes as _parse
-
-        original = _parse(forwarded_message, policy=email.policy.default)
-        msg.add_attachment(original)
 
     return msg

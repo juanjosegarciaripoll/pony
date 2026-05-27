@@ -8,6 +8,7 @@ import dataclasses
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -1487,6 +1488,14 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+        with tempfile.NamedTemporaryFile(
+            prefix="forwarded-message-",
+            suffix=".eml",
+            delete=False,
+        ) as f:
+            f.write(raw)
+            forwarded_path = Path(f.name)
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
@@ -1497,10 +1506,10 @@ class MainScreen(Screen[None]):
                     account_name=account.name,
                     subject=forward_subject(rendered.subject),
                     body=build_forward_body(rendered, signature=account.signature),
+                    attachment_paths=(forwarded_path,),
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
-                    forwarded_message=raw,
                 ),
                 contacts=self._contacts,
             )

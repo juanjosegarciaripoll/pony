@@ -10,6 +10,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import corpus
+
 from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
 from pony.smtp_sender import SMTPError, send_message
 from pony.tui.compose_utils import (
@@ -230,6 +232,20 @@ class BuildEmailMessageTest(unittest.TestCase):
             for p in paths:
                 p.unlink(missing_ok=True)
 
+    def test_eml_file_attachment_uses_message_rfc822_type(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as f:
+            f.write(corpus.multipart_mixed_attachment())
+            tmp = Path(f.name)
+        try:
+            msg = self._build(attachment_paths=[tmp])
+        finally:
+            tmp.unlink(missing_ok=True)
+
+        attachments = list(msg.iter_attachments())
+        assert len(attachments) == 1
+        assert attachments[0].get_content_type() == "message/rfc822"
+        assert attachments[0].get_filename() == tmp.name
+
 
 class AddBlockquoteHardbreaksTest(unittest.TestCase):
     def test_adds_two_spaces_to_blockquote_lines(self) -> None:
@@ -292,6 +308,21 @@ class MarkdownModeTest(unittest.TestCase):
         assert "> line one" in text
         assert "> line two" in text
         assert "> line three" in text
+
+    def test_forwarded_headers_have_html_line_breaks(self) -> None:
+        body = build_forward_body(_rendered(body="Forwarded body."))
+        html = self._html_part(body)
+
+        assert "---------- Forwarded message ----------<br" in html
+        assert "From: Alice &lt;alice@example.com&gt;<br" in html
+        assert "Subject: Hello<br" in html
+
+    def test_short_forward_separator_is_not_rendered_as_markdown(self) -> None:
+        body = "\n---- Forwarded ----\nFrom: Alice\nDate: Today\n\nBody"
+        html = self._html_part(body)
+
+        assert "---- Forwarded ----<br" in html
+        assert "From: Alice<br" in html
 
 
 def _make_account(

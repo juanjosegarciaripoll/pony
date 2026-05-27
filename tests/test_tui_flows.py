@@ -17,7 +17,7 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-from corpus import html_only, plain_text
+from corpus import html_only, multipart_mixed_attachment, plain_text
 from tui_helpers import (
     build_compose_app,
     build_pony_app,
@@ -173,6 +173,93 @@ async def test_compose_send_requires_to(monkeypatch: pytest.MonkeyPatch) -> None
         assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
 
     assert send_mock.call_count == 0
+
+
+async def test_forward_sends_original_message_as_removable_eml_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forwarding exposes the source message as a normal removable .eml."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="forward-attachments",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = Mock()
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        send_mock,
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.pause()
+
+        from textual.widgets import Input, Label
+
+        assert isinstance(app.screen, ComposeScreen)
+        attachment_labels = [
+            str(label.render())
+            for label in app.screen.query(Label)
+            if "attach-name" in label.classes
+        ]
+        assert any(label.endswith(".eml") for label in attachment_labels)
+
+        app.screen.query_one("#to-input", Input).value = "bob@example.com"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert send_mock.call_count == 1
+    sent = send_mock.call_args.kwargs["msg"]
+    forwarded = next(
+        part
+        for part in sent.iter_attachments()
+        if part.get_content_type() == "message/rfc822"
+    )
+    assert forwarded.get_filename().endswith(".eml")
+    data = forwarded.get_payload(decode=True)
+    assert isinstance(data, bytes)
+    assert b"q1-report.pdf" in data
+
+
+async def test_forward_eml_attachment_can_be_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="forward-remove-eml",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = Mock()
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        send_mock,
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.pause()
+
+        from textual.widgets import Input
+
+        assert isinstance(app.screen, ComposeScreen)
+        await pilot.click(".attach-remove-btn")
+        await pilot.pause()
+        app.screen.query_one("#to-input", Input).value = "bob@example.com"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert send_mock.call_count == 1
+    sent = send_mock.call_args.kwargs["msg"]
+    assert not any(
+        part.get_content_type() == "message/rfc822"
+        for part in sent.iter_attachments()
+    )
 
 
 async def test_open_in_browser_calls_webbrowser(
