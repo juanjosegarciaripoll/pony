@@ -3,6 +3,15 @@
 import io
 import sys
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import patch
+
+
+@contextmanager
+def _patched_stdout(value: object) -> Iterator[None]:
+    with patch.object(sys, "__stdout__", value):
+        yield
 
 
 class _FakeTTY(io.StringIO):
@@ -20,35 +29,23 @@ class TestSetTerminalTitle(unittest.TestCase):
         from pony.tui.terminal import set_terminal_title
 
         buf = _FakeTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             set_terminal_title("hi")
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "\x1b]2;hi\x07")
 
     def test_no_write_when_not_tty(self) -> None:
         from pony.tui.terminal import set_terminal_title
 
         buf = _FakeNonTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             set_terminal_title("hi")
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "")
 
     def test_no_write_when_stdout_is_none(self) -> None:
         from pony.tui.terminal import set_terminal_title
 
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = None  # type: ignore[assignment]
+        with _patched_stdout(None):
             set_terminal_title("hi")  # must not raise
-        finally:
-            sys.__stdout__ = orig
 
 
 class TestPushPopTerminalTitle(unittest.TestCase):
@@ -56,46 +53,30 @@ class TestPushPopTerminalTitle(unittest.TestCase):
         from pony.tui.terminal import push_terminal_title
 
         buf = _FakeTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             push_terminal_title()
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "\x1b[22;2t")
 
     def test_pop_emits_restore_sequence(self) -> None:
         from pony.tui.terminal import pop_terminal_title
 
         buf = _FakeTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             pop_terminal_title()
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "\x1b[23;2t")
 
     def test_push_no_write_when_not_tty(self) -> None:
         from pony.tui.terminal import push_terminal_title
 
         buf = _FakeNonTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             push_terminal_title()
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "")
 
     def test_pop_no_write_when_not_tty(self) -> None:
         from pony.tui.terminal import pop_terminal_title
 
         buf = _FakeNonTTY()
-        orig = sys.__stdout__
-        try:
-            sys.__stdout__ = buf  # type: ignore[assignment]
+        with _patched_stdout(buf):
             pop_terminal_title()
-        finally:
-            sys.__stdout__ = orig
         self.assertEqual(buf.getvalue(), "")

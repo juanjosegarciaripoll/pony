@@ -84,7 +84,9 @@ def _bench_one(path: Path) -> None:
 
 
 def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
     root = _resolve_mbox_root()
     files = sorted(root.glob("*.mbox"), key=lambda p: p.stat().st_size)
     print(f"account: {ACCOUNT}")

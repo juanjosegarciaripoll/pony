@@ -1773,7 +1773,7 @@ class MainScreen(Screen[None]):
                 SaveFolderPickerScreen(), _on_folder
             )
 
-        self.app.push_screen(SaveMessageScreen(rendered), _on_items)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(SaveMessageScreen(rendered), _on_items)  # pyright: ignore[reportUnknownMemberType]
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         return self.query_one(MessageViewPanel).save_attachment(index, dest_dir)

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+from typing import Generic, TypeVar
 
 from textual.screen import Screen
 from textual.widgets import Button
 
+_DialogResult = TypeVar("_DialogResult", default=bool)
 
-class DialogScreen(Screen[bool]):
+
+class DialogScreen(Screen[_DialogResult], Generic[_DialogResult]):
     """Shared styling for modal dialogs that dismiss with True or False.
 
     Subclasses compose a ``Vertical(id="dialog")`` containing a ``Label(id=
@@ -67,7 +70,7 @@ class DialogScreen(Screen[bool]):
 
     def action_cancel(self) -> None:
         """Dismiss the dialog with False (negative / no-op result)."""
-        self.dismiss(False)
+        self.dismiss(False)  # type: ignore[arg-type]
 
     def mark_busy(self, button_id: str, busy_label: str = "Working…") -> None:
         """Disable all buttons and relabel the activated one.

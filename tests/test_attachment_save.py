@@ -30,16 +30,25 @@ class UniquePathTest(unittest.TestCase):
 
     def test_one_collision_appends_dash_1(self) -> None:
         (self.tmp / "report.pdf").write_bytes(b"x")
-        self.assertEqual(_unique_path(self.tmp, "report.pdf"), self.tmp / "report-1.pdf")
+        self.assertEqual(
+            _unique_path(self.tmp, "report.pdf"),
+            self.tmp / "report-1.pdf",
+        )
 
     def test_multiple_collisions_increment(self) -> None:
         for name in ("report.pdf", "report-1.pdf", "report-2.pdf"):
             (self.tmp / name).write_bytes(b"x")
-        self.assertEqual(_unique_path(self.tmp, "report.pdf"), self.tmp / "report-3.pdf")
+        self.assertEqual(
+            _unique_path(self.tmp, "report.pdf"),
+            self.tmp / "report-3.pdf",
+        )
 
     def test_no_extension(self) -> None:
         (self.tmp / "attachment").write_bytes(b"x")
-        self.assertEqual(_unique_path(self.tmp, "attachment"), self.tmp / "attachment-1")
+        self.assertEqual(
+            _unique_path(self.tmp, "attachment"),
+            self.tmp / "attachment-1",
+        )
 
     def test_double_extension_suffixes_before_last(self) -> None:
         (self.tmp / "archive.tar.gz").write_bytes(b"x")
@@ -48,7 +57,7 @@ class UniquePathTest(unittest.TestCase):
 
 
 class SaveAttachmentTest(unittest.TestCase):
-    """``MessageViewPanel.save_attachment`` collision avoidance and error propagation."""
+    """``MessageViewPanel.save_attachment`` collision and error handling."""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
@@ -86,11 +95,11 @@ class SaveAttachmentTest(unittest.TestCase):
         mock_path = MagicMock(spec=Path)
         mock_path.name = "q1-report.pdf"
         mock_path.write_bytes.side_effect = OSError("disk full")
-        with patch(
-            "pony.tui.widgets.message_view._unique_path", return_value=mock_path
+        with (
+            patch("pony.tui.widgets.message_view._unique_path", return_value=mock_path),
+            self.assertRaises(OSError, msg="disk full"),
         ):
-            with self.assertRaises(OSError, msg="disk full"):
-                self._save(1)
+            self._save(1)
 
 
 if __name__ == "__main__":

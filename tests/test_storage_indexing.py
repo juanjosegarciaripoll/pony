@@ -214,7 +214,11 @@ class ScanStateFastPathTestCase(unittest.TestCase):
 
         orig_list = storage_mod.MaildirMirrorRepository.list_messages
 
-        def _boom(self, *, folder):  # noqa: ANN001, ARG001
+        def _boom(
+            _self: MaildirMirrorRepository,
+            *,
+            folder: FolderRef,
+        ) -> tuple[str, ...]:
             raise AssertionError(
                 f"list_messages called on unchanged folder {folder.folder_name!r}",
             )

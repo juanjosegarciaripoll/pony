@@ -15,6 +15,7 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 
 from pony.cli import main
+from pony.domain import MessageFlag
 
 
 @dataclass(frozen=True)
@@ -661,7 +662,7 @@ def _seed_one_message(
     *,
     subject: str,
     body: str,
-):
+) -> _SeedHandle:
     """Seed one real maildir message + matching index row for the personal account.
 
     Returns the ``MessageRef`` whose ``message_id`` is the RFC 5322
@@ -672,7 +673,7 @@ def _seed_one_message(
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import FolderRef, MessageRef, MessageStatus
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
     from pony.paths import AppPaths
@@ -680,6 +681,7 @@ def _seed_one_message(
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
 
@@ -725,7 +727,7 @@ def _seed_dup_messages(
     config_path: Path,
     *,
     message_id: str,
-    flags_list: list[frozenset],
+    flags_list: list[frozenset[MessageFlag]],
     folder_name: str = "INBOX",
 ) -> list[_SeedHandle]:
     """Seed multiple index rows that share one ``Message-ID``.
@@ -737,7 +739,7 @@ def _seed_dup_messages(
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import FolderRef, MessageRef, MessageStatus
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
     from pony.paths import AppPaths
@@ -745,6 +747,7 @@ def _seed_dup_messages(
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
 
@@ -798,7 +801,7 @@ def _seed_dup_messages(
     return handles
 
 
-def _seed_message_with_attachments(config_path: Path):
+def _seed_message_with_attachments(config_path: Path) -> _SeedHandle:
     """Seed a real maildir message using the multipart+attachment fixture.
 
     Returns the ``MessageRef`` whose ``rfc5322_id`` is the Message-ID
@@ -810,7 +813,7 @@ def _seed_message_with_attachments(config_path: Path):
     import corpus
 
     from pony.config import load_config
-    from pony.domain import FolderRef, MessageRef, MessageStatus
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
     from pony.paths import AppPaths
@@ -818,6 +821,7 @@ def _seed_message_with_attachments(config_path: Path):
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
 

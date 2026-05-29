@@ -80,7 +80,7 @@ class SaveItem:
     filename: str
 
 
-class SaveMessageScreen(DialogScreen):
+class SaveMessageScreen(DialogScreen[list[SaveItem] | None]):
     """Checklist modal: pick the email body and/or attachments to save.
 
     Dismissed with ``None`` on Cancel, or a (possibly empty) list of
@@ -180,7 +180,7 @@ class SaveMessageScreen(DialogScreen):
                         items.append(
                             SaveItem(kind=f"attachment:{att.index}", filename=filename)
                         )
-            self.dismiss(items)  # type: ignore[arg-type]
+            self.dismiss(items)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

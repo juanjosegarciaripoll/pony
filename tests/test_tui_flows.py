@@ -612,7 +612,7 @@ async def test_sync_nothing_to_sync_no_cancel_notification(
         notifications.append(msg)
         original_notify(msg, **kw)  # type: ignore[arg-type]
 
-    app.notify = _capture  # type: ignore[method-assign]
+    app.notify = _capture  # type: ignore[assignment,method-assign]
 
     async with app.run_test() as pilot:
         await pilot.pause()
