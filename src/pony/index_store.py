@@ -968,7 +968,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             rows = conn.execute(
                 """
                 SELECT id, message_id, local_status, uid, storage_key,
-                       local_flags, extra_imap_flags,
+                       local_flags, extra_imap_flags, trashed_at,
                        source_folder, source_uid
                 FROM messages
                 WHERE account_name = ? AND folder_name = ?
@@ -1007,8 +1007,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 extra_imap_flags=(
                     frozenset(str(r[6]).split(",")) - {""} if r[6] else frozenset()
                 ),
-                source_folder=str(r[7]) if r[7] is not None else None,
-                source_uid=int(str(r[8])) if r[8] is not None else None,
+                trashed_at=(
+                    datetime.fromisoformat(str(r[7])).astimezone(UTC)
+                    if r[7] is not None
+                    else None
+                ),
+                source_folder=str(r[8]) if r[8] is not None else None,
+                source_uid=int(str(r[9])) if r[9] is not None else None,
             )
             for r in rows
         )
@@ -1029,26 +1034,43 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (account_name, folder_name),
             ).fetchall()
         return tuple(
-            SlowPathRow(
-                message_ref=MessageRef(
-                    account_name=account_name,
-                    folder_name=folder_name,
-                    id=int(str(r[0])),
-                ),
-                message_id=str(r[1]),
-                local_status=MessageStatus(str(r[2])),
-                uid=int(str(r[3])) if r[3] is not None else None,
-                storage_key=str(r[4]),
-                local_flags=_flags_from_csv(str(r[5])),
-                base_flags=_flags_from_csv(str(r[6])),
-                extra_imap_flags=(
-                    frozenset(str(r[7]).split(",")) - {""} if r[7] else frozenset()
-                ),
-                source_folder=str(r[8]) if r[8] is not None else None,
-                source_uid=int(str(r[9])) if r[9] is not None else None,
-            )
-            for r in rows
+            _slow_path_row_from_projection(account_name, folder_name, r) for r in rows
         )
+
+    def list_folder_slow_path_rows_by_uid(
+        self,
+        *,
+        account_name: str,
+        folder_name: str,
+        uids: Sequence[int],
+    ) -> Sequence[SlowPathRow]:
+        """Return slow-path rows for a specific UID set."""
+        if not uids:
+            return ()
+        result: list[SlowPathRow] = []
+        ordered_uids = tuple(dict.fromkeys(int(uid) for uid in uids))
+        # Keep comfortably under SQLite's default 999-parameter limit:
+        # account, folder, then up to 900 UIDs.
+        for start in range(0, len(ordered_uids), 900):
+            chunk = ordered_uids[start : start + 900]
+            placeholders = ", ".join("?" for _ in chunk)
+            with self._use() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT id, message_id, local_status, uid, storage_key,
+                           local_flags, base_flags, extra_imap_flags,
+                           source_folder, source_uid
+                    FROM messages
+                    WHERE account_name = ? AND folder_name = ?
+                      AND uid IN ({placeholders})
+                    """,  # noqa: S608
+                    (account_name, folder_name, *chunk),
+                ).fetchall()
+            result.extend(
+                _slow_path_row_from_projection(account_name, folder_name, r)
+                for r in rows
+            )
+        return tuple(result)
 
     def list_folder_base_flags(
         self, *, account_name: str, folder_name: str
@@ -1092,6 +1114,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 DELETE FROM messages
                 WHERE account_name = ? AND folder_name = ?
                   AND local_status = ?
+                  AND uid IS NOT NULL
                 """,
                 (account_name, folder_name, MessageStatus.ACTIVE.value),
             )
@@ -1718,6 +1741,31 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
         synced_at=synced_at,
         source_folder=str(row[21]) if row[21] is not None else None,
         source_uid=int(str(row[22])) if row[22] is not None else None,
+    )
+
+
+def _slow_path_row_from_projection(
+    account_name: str,
+    folder_name: str,
+    row: sqlite3.Row,
+) -> SlowPathRow:
+    return SlowPathRow(
+        message_ref=MessageRef(
+            account_name=account_name,
+            folder_name=folder_name,
+            id=int(str(row[0])),
+        ),
+        message_id=str(row[1]),
+        local_status=MessageStatus(str(row[2])),
+        uid=int(str(row[3])) if row[3] is not None else None,
+        storage_key=str(row[4]),
+        local_flags=_flags_from_csv(str(row[5])),
+        base_flags=_flags_from_csv(str(row[6])),
+        extra_imap_flags=(
+            frozenset(str(row[7]).split(",")) - {""} if row[7] else frozenset()
+        ),
+        source_folder=str(row[8]) if row[8] is not None else None,
+        source_uid=int(str(row[9])) if row[9] is not None else None,
     )
 
 

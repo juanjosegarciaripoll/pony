@@ -6,8 +6,7 @@ Sync is a two-pass process:
 
 1. **Plan** (``ImapSyncService.plan``) — connect, run cheap STATUS or
    full FETCH metadata, compute a :class:`SyncPlan` of typed ops.  No
-   writes to the local mirror or index (except clearing stale UIDs on
-   UIDVALIDITY reset).
+   writes are made to the local mirror or index.
 
 2. **Execute** (``ImapSyncService.execute``) — apply each op,
    updating the local mirror, index, and per-folder watermarks.
@@ -89,8 +88,11 @@ class FolderSyncResult:
     flag_pushes_to_server: int = 0
     flag_conflicts_merged: int = 0
     deleted_on_server: int = 0
+    expunged_on_server: int = 0
     moved_to_server: int = 0
     appended_to_server: int = 0
+    reuploaded_to_server: int = 0
+    purged_local: int = 0
     scan_ms: int = 0
     fetch_ms: int = 0
     ingest_ms: int = 0
@@ -103,8 +105,11 @@ class FolderSyncResult:
             or self.flag_pushes_to_server
             or self.flag_conflicts_merged
             or self.deleted_on_server
+            or self.expunged_on_server
             or self.moved_to_server
             or self.appended_to_server
+            or self.reuploaded_to_server
+            or self.purged_local
         )
 
 
@@ -229,6 +234,11 @@ class RestoreOp:
     message_ref: MessageRef
 
 
+@dataclass(frozen=True, slots=True)
+class UidValidityResetOp:
+    """Drop stale UID-bearing rows before ingesting a new UID epoch."""
+
+
 type SyncOp = (
     FetchNewOp
     | ServerDeleteOp
@@ -241,6 +251,7 @@ type SyncOp = (
     | PurgeLocalOp
     | ReUploadOp
     | RestoreOp
+    | UidValidityResetOp
 )
 
 
@@ -321,6 +332,7 @@ _OP_LABELS: tuple[tuple[str, str], ...] = (
     ("restore", "{n} locally-trashed message(s) to restore"),
     ("reupload", "{n} message(s) to re-upload"),
     ("purge", "{n} local-only row(s) to drop"),
+    ("uidvalidity_reset", "{n} UIDVALIDITY reset(s)"),
 )
 
 
@@ -345,6 +357,8 @@ def _categorize_ops(ops: tuple[SyncOp, ...]) -> dict[str, int]:
             key = "merge_flags"
         elif isinstance(op, RestoreOp):
             key = "restore"
+        elif isinstance(op, UidValidityResetOp):
+            key = "uidvalidity_reset"
         elif isinstance(op, ReUploadOp):
             key = "reupload"
         elif isinstance(op, PurgeLocalOp):
@@ -660,6 +674,7 @@ class ImapSyncService:
         slow_path: dict[str, tuple[dict[int, str], dict[int, FlagSet]]] = {}
         observed_uidnext: dict[str, int] = {}
         observed_modseq: dict[str, int] = {}
+        uidvalidity_reset_folders: set[str] = set()
         scan_ms: dict[str, int] = {}
         skipped: list[str] = []
 
@@ -691,6 +706,8 @@ class ImapSyncService:
             observed_uidnext[folder_name] = quick.uidnext
             if quick.highest_modseq is not None:
                 observed_modseq[folder_name] = quick.highest_modseq
+            if stored is not None and quick.uid_validity != stored.uid_validity:
+                uidvalidity_reset_folders.add(folder_name)
 
             uid_set_stable = (
                 stored is not None
@@ -781,17 +798,27 @@ class ImapSyncService:
         # ``PushAppendOp`` — the move was interrupted (or the source
         # was purged by another client) so APPEND is the only way to
         # land the local copy on the server.
+        target_folders = tuple(dict.fromkeys((*server_folders, *creates)))
+        pending_move_sources = self._pushable_pending_move_sources(
+            account=account,
+            target_folders=target_folders,
+            uidvalidity_reset_folders=frozenset(uidvalidity_reset_folders),
+        )
+        pending_move_source_folders = set(pending_move_sources)
+
         remote_uids_by_folder: dict[str, set[int]] = {}
         for fn in fast_path:
-            remote_uids_by_folder[fn] = self._index.list_folder_uids(
-                account_name=account.name,
-                folder_name=fn,
-            )
+            if fn in pending_move_source_folders:
+                remote_uids_by_folder[fn] = self._index.list_folder_uids(
+                    account_name=account.name,
+                    folder_name=fn,
+                )
         for fn in medium_path:
-            remote_uids_by_folder[fn] = self._index.list_folder_uids(
-                account_name=account.name,
-                folder_name=fn,
-            )
+            if fn in pending_move_source_folders:
+                remote_uids_by_folder[fn] = self._index.list_folder_uids(
+                    account_name=account.name,
+                    folder_name=fn,
+                )
         for fn, (uid_to_mid, _) in slow_path.items():
             remote_uids_by_folder[fn] = set(uid_to_mid.keys())
 
@@ -808,6 +835,9 @@ class ImapSyncService:
                         stored=fast_path[folder_name],
                         read_only=folder_policy.is_read_only(folder_name),
                         remote_uids_by_folder=remote_uids_by_folder,
+                        uidvalidity_reset_folders=frozenset(
+                            uidvalidity_reset_folders
+                        ),
                     )
                 elif folder_name in medium_path:
                     stored, changed = medium_path[folder_name]
@@ -818,6 +848,9 @@ class ImapSyncService:
                         changed_flags=changed,
                         read_only=folder_policy.is_read_only(folder_name),
                         remote_uids_by_folder=remote_uids_by_folder,
+                        uidvalidity_reset_folders=frozenset(
+                            uidvalidity_reset_folders
+                        ),
                     )
                 else:
                     uid_to_mid, uid_to_flags = slow_path[folder_name]
@@ -829,6 +862,13 @@ class ImapSyncService:
                         uid_to_flags=uid_to_flags,
                         read_only=folder_policy.is_read_only(folder_name),
                         remote_uids_by_folder=remote_uids_by_folder,
+                        pending_move_source_uids=pending_move_sources.get(
+                            folder_name,
+                            frozenset(),
+                        ),
+                        uidvalidity_reset_folders=frozenset(
+                            uidvalidity_reset_folders
+                        ),
                     )
                 plan = dataclasses.replace(
                     plan,
@@ -857,6 +897,7 @@ class ImapSyncService:
                     account=account,
                     folder_name=folder_name,
                     remote_uids_by_folder=remote_uids_by_folder,
+                    uidvalidity_reset_folders=frozenset(uidvalidity_reset_folders),
                 )
             )
 
@@ -894,6 +935,36 @@ class ImapSyncService:
             except (OSError, EOFError):
                 return None
 
+    def _pushable_pending_move_sources(
+        self,
+        *,
+        account: AccountConfig,
+        target_folders: collections.abc.Sequence[str],
+        uidvalidity_reset_folders: frozenset[str],
+    ) -> dict[str, frozenset[int]]:
+        """Return source UIDs represented by pushable PENDING_MOVE rows."""
+        result: dict[str, set[int]] = {}
+        for target_folder in target_folders:
+            if account.folders.is_read_only(target_folder):
+                continue
+            for row in self._index.list_folder_push_candidates(
+                account_name=account.name,
+                folder_name=target_folder,
+            ):
+                if (
+                    row.local_status != MessageStatus.PENDING_MOVE
+                    or row.source_folder is None
+                    or row.source_uid is None
+                ):
+                    continue
+                if (
+                    account.folders.is_read_only(row.source_folder)
+                    or row.source_folder in uidvalidity_reset_folders
+                ):
+                    continue
+                result.setdefault(row.source_folder, set()).add(row.source_uid)
+        return {folder: frozenset(uids) for folder, uids in result.items()}
+
     # ------------------------------------------------------------------
     # Per-folder planners
     # ------------------------------------------------------------------
@@ -906,6 +977,7 @@ class ImapSyncService:
         stored: FolderSyncState,
         read_only: bool,
         remote_uids_by_folder: dict[str, set[int]],
+        uidvalidity_reset_folders: frozenset[str],
     ) -> FolderSyncPlan:
         """Push-only plan: no FETCH, no fresh UID/flag info from server."""
         ops = self._pending_push_ops(
@@ -913,6 +985,7 @@ class ImapSyncService:
             folder_name=folder_name,
             read_only=read_only,
             remote_uids_by_folder=remote_uids_by_folder,
+            uidvalidity_reset_folders=uidvalidity_reset_folders,
         )
         return FolderSyncPlan(
             folder_name=folder_name,
@@ -930,24 +1003,25 @@ class ImapSyncService:
         changed_flags: dict[int, FlagSet],
         read_only: bool,
         remote_uids_by_folder: dict[str, set[int]],
+        uidvalidity_reset_folders: frozenset[str],
     ) -> FolderSyncPlan:
         """UID set stable; reconcile only flags whose modseq advanced."""
+        changed_uids = frozenset(changed_flags)
         ops = self._pending_push_ops(
             account=account,
             folder_name=folder_name,
             read_only=read_only,
             remote_uids_by_folder=remote_uids_by_folder,
+            suppress_flag_uids=changed_uids,
+            uidvalidity_reset_folders=uidvalidity_reset_folders,
         )
         if changed_flags:
-            base_by_uid = self._index.list_folder_base_flags(
-                account_name=account.name,
-                folder_name=folder_name,
-            )
             uid_to_row = {
                 row.uid: row
-                for row in self._index.list_folder_slow_path_rows(
+                for row in self._index.list_folder_slow_path_rows_by_uid(
                     account_name=account.name,
                     folder_name=folder_name,
+                    uids=tuple(changed_uids),
                 )
                 if row.uid is not None
             }
@@ -955,13 +1029,12 @@ class ImapSyncService:
                 row = uid_to_row.get(uid)
                 if row is None:
                     continue
-                base, _ = base_by_uid.get(uid, (frozenset(), frozenset()))
                 self._reconcile_flags(
                     ops=ops,
                     row=row,
                     uid=uid,
                     remote=remote_flags,
-                    base=base,
+                    base=row.base_flags,
                     extra=extra,
                     read_only=read_only,
                 )
@@ -982,6 +1055,8 @@ class ImapSyncService:
         uid_to_flags: dict[int, FlagSet],
         read_only: bool,
         remote_uids_by_folder: dict[str, set[int]],
+        pending_move_source_uids: frozenset[int],
+        uidvalidity_reset_folders: frozenset[str],
     ) -> FolderSyncPlan:
         """Full per-folder UID-set diff (§6 of SYNCHRONIZATION.md)."""
         uid_validity = session.get_uid_validity(folder_name)
@@ -998,7 +1073,8 @@ class ImapSyncService:
             account_name=account.name,
             folder_name=folder_name,
         )
-        if stored is not None and stored.uid_validity != uid_validity:
+        uidvalidity_reset = stored is not None and stored.uid_validity != uid_validity
+        if uidvalidity_reset and stored is not None:
             # C-4: UIDVALIDITY reset.
             logger.warning(
                 "UIDVALIDITY changed for %s/%s (was %d, now %d) — full resync",
@@ -1006,10 +1082,6 @@ class ImapSyncService:
                 folder_name,
                 stored.uid_validity,
                 uid_validity,
-            )
-            self._index.clear_uids_for_folder(
-                account_name=account.name,
-                folder_name=folder_name,
             )
             stored = None
 
@@ -1022,12 +1094,14 @@ class ImapSyncService:
         }
 
         remote_uids = set(uid_to_mid.keys())
-        local_uids = set(rows_by_uid.keys())
-        new_uids = remote_uids - local_uids
+        local_uids = set() if uidvalidity_reset else set(rows_by_uid.keys())
+        new_uids = remote_uids - local_uids - set(pending_move_source_uids)
         gone_uids = local_uids - remote_uids
         common_uids = remote_uids & local_uids
 
         ops: list[SyncOp] = []
+        if uidvalidity_reset:
+            ops.append(UidValidityResetOp())
 
         # C-2 detection: a locally-TRASHED row whose server flags
         # changed since base means the user's delete intent collides
@@ -1056,6 +1130,9 @@ class ImapSyncService:
                 read_only=read_only,
                 suppress_delete_ids=c2_row_ids,
                 remote_uids_by_folder=remote_uids_by_folder,
+                include_flag_pushes=False,
+                uidvalidity_reset=uidvalidity_reset,
+                uidvalidity_reset_folders=uidvalidity_reset_folders,
             )
         )
 
@@ -1170,6 +1247,7 @@ class ImapSyncService:
         account: AccountConfig,
         folder_name: str,
         remote_uids_by_folder: dict[str, set[int]],
+        uidvalidity_reset_folders: frozenset[str],
     ) -> FolderSyncPlan:
         """Plan a folder that lives only locally (about to be CREATEd)."""
         ops = self._pending_push_ops(
@@ -1177,6 +1255,7 @@ class ImapSyncService:
             folder_name=folder_name,
             read_only=False,
             remote_uids_by_folder=remote_uids_by_folder,
+            uidvalidity_reset_folders=uidvalidity_reset_folders,
         )
         return FolderSyncPlan(
             folder_name=folder_name,
@@ -1194,6 +1273,10 @@ class ImapSyncService:
         read_only: bool,
         suppress_delete_ids: set[int] = frozenset(),  # type: ignore[assignment]
         remote_uids_by_folder: dict[str, set[int]] | None = None,
+        include_flag_pushes: bool = True,
+        suppress_flag_uids: frozenset[int] = frozenset(),
+        uidvalidity_reset: bool = False,
+        uidvalidity_reset_folders: frozenset[str] = frozenset(),
     ) -> list[SyncOp]:
         """Emit ops driven by local mutations recorded in the index."""
         ops: list[SyncOp] = []
@@ -1211,6 +1294,11 @@ class ImapSyncService:
                     continue
                 if read_only:
                     ops.append(RestoreOp(message_ref=row.message_ref))
+                elif uidvalidity_reset and row.uid is not None:
+                    # The UID belongs to the old epoch; keep the local
+                    # trashed row for retention, but do not issue STORE
+                    # against an invalid UID.
+                    continue
                 elif row.uid is not None:
                     ops.append(
                         PushDeleteOp(
@@ -1219,6 +1307,10 @@ class ImapSyncService:
                             storage_key=row.storage_key,
                         )
                     )
+                elif row.trashed_at is not None:
+                    # Server-side deletes are retained as local trash
+                    # until the normal retention cleanup reaps them.
+                    continue
                 else:
                     # No server UID — just drop the local row.
                     ops.append(
@@ -1230,10 +1322,18 @@ class ImapSyncService:
                 continue
 
             if row.local_status == MessageStatus.PENDING_MOVE:
-                if read_only or row.source_folder is None or row.source_uid is None:
+                if (
+                    read_only
+                    or row.source_folder is None
+                    or row.source_uid is None
+                    or account.folders.is_read_only(row.source_folder)
+                ):
                     # Cannot push the move: missing source handle or
-                    # the destination is read-only.  Leave the row
+                    # either endpoint is read-only.  Leave the row
                     # untouched until the user resolves it.
+                    continue
+                if row.source_folder in uidvalidity_reset_folders:
+                    ops.append(PushAppendOp(message_ref=row.message_ref))
                     continue
                 # Interrupted-move recovery: if the source folder was
                 # scanned and ``source_uid`` is no longer there, the
@@ -1265,7 +1365,12 @@ class ImapSyncService:
                 continue
 
             # ACTIVE row with flag drift.
-            if read_only:
+            if (
+                read_only
+                or uidvalidity_reset
+                or not include_flag_pushes
+                or row.uid in suppress_flag_uids
+            ):
                 continue
             ops.append(
                 PushFlagsOp(
@@ -1466,8 +1571,11 @@ class ImapSyncService:
             "flag_pushes_to_server": 0,
             "flag_conflicts_merged": 0,
             "deleted_on_server": 0,
+            "expunged_on_server": 0,
             "moved_to_server": 0,
             "appended_to_server": 0,
+            "reuploaded_to_server": 0,
+            "purged_local": 0,
         }
 
         # Two phases: phase-1 (fetch-heavy ops with a producer thread
@@ -1532,13 +1640,14 @@ class ImapSyncService:
 
         total_ops = len(plan.ops)
         completed = 0
+        had_failure = False
         with self._index.connection():
             if phase1:
                 while (item := q.get()) is not None:
                     op, raw = item
                     try:
                         _t = time.perf_counter()
-                        self._execute_one(
+                        success = self._execute_one(
                             op,
                             raw,
                             account=account,
@@ -1548,11 +1657,14 @@ class ImapSyncService:
                             mirror=mirror,
                             counters=counters,
                         )
+                        if not success:
+                            had_failure = True
                         if isinstance(op, FetchNewOp) and raw:
                             ingest_ns.append(
                                 int((time.perf_counter() - _t) * 1_000_000_000)
                             )
                     except Exception:
+                        had_failure = True
                         logger.exception(
                             "%s failed for %s/%s — skipping",
                             type(op).__name__,
@@ -1574,7 +1686,7 @@ class ImapSyncService:
 
             for op in phase2:
                 try:
-                    self._execute_one(
+                    success = self._execute_one(
                         op,
                         None,
                         account=account,
@@ -1584,7 +1696,10 @@ class ImapSyncService:
                         mirror=mirror,
                         counters=counters,
                     )
+                    if not success:
+                        had_failure = True
                 except Exception:
+                    had_failure = True
                     logger.exception(
                         "%s failed for %s/%s — skipping",
                         type(op).__name__,
@@ -1601,7 +1716,7 @@ class ImapSyncService:
                         )
                     )
 
-            if not plan.is_new:
+            if not plan.is_new and not had_failure:
                 self._index.record_folder_sync_state(
                     state=FolderSyncState(
                         account_name=account.name,
@@ -1611,6 +1726,13 @@ class ImapSyncService:
                         uidnext=plan.uidnext,
                         highest_modseq=plan.highest_modseq,
                     )
+                )
+            elif had_failure:
+                logger.warning(
+                    "Not advancing sync state for %s/%s because one or more "
+                    "operation(s) failed",
+                    account.name,
+                    folder_name,
                 )
 
         flush = getattr(mirror, "flush_writes", None)
@@ -1624,8 +1746,11 @@ class ImapSyncService:
             flag_pushes_to_server=counters["flag_pushes_to_server"],
             flag_conflicts_merged=counters["flag_conflicts_merged"],
             deleted_on_server=counters["deleted_on_server"],
+            expunged_on_server=counters["expunged_on_server"],
             moved_to_server=counters["moved_to_server"],
             appended_to_server=counters["appended_to_server"],
+            reuploaded_to_server=counters["reuploaded_to_server"],
+            purged_local=counters["purged_local"],
             scan_ms=plan.scan_ms,
             fetch_ms=sum(fetch_ns) // 1_000_000,
             ingest_ms=sum(ingest_ns) // 1_000_000,
@@ -1642,12 +1767,12 @@ class ImapSyncService:
         session: ImapClientSession,
         mirror: MirrorRepository,
         counters: dict[str, int],
-    ) -> None:
+    ) -> bool:
         now = datetime.now(tz=UTC)
 
         match op:
             case FetchNewOp() if raw:
-                self._ingest_raw(
+                success = self._ingest_raw(
                     account=account,
                     folder_ref=folder_ref,
                     mirror=mirror,
@@ -1657,7 +1782,18 @@ class ImapSyncService:
                     extra_imap_flags=op.extra_imap_flags,
                     raw=raw,
                 )
-                counters["fetched"] += 1
+                if success:
+                    counters["fetched"] += 1
+                return success
+
+            case FetchNewOp():
+                logger.warning(
+                    "No message bytes for UID %d in %s/%s",
+                    op.uid,
+                    account.name,
+                    folder_name,
+                )
+                return False
 
             case ServerDeleteOp():
                 row = self._index.get_message(message_ref=op.message_ref)
@@ -1674,6 +1810,7 @@ class ImapSyncService:
                         )
                     )
                 counters["deleted_on_server"] += 1
+                return True
 
             case PullFlagsOp():
                 row = self._index.get_message(message_ref=op.message_ref)
@@ -1690,6 +1827,7 @@ class ImapSyncService:
                         )
                     )
                 counters["flag_updates_from_server"] += 1
+                return True
 
             case PushFlagsOp():
                 session.store_flags(
@@ -1711,6 +1849,7 @@ class ImapSyncService:
                         )
                     )
                 counters["flag_pushes_to_server"] += 1
+                return True
 
             case MergeFlagsOp():
                 if op.push_to_server:
@@ -1734,21 +1873,27 @@ class ImapSyncService:
                         )
                     )
                 counters["flag_conflicts_merged"] += 1
+                return True
 
             case ReUploadOp():
-                self._execute_reupload(
+                success = self._execute_reupload(
                     op,
                     account=account,
                     folder_name=folder_name,
                     session=session,
                     now=now,
                 )
+                if success:
+                    counters["reuploaded_to_server"] += 1
+                return success
 
             case PushDeleteOp():
                 session.mark_deleted(folder_name, op.server_uid)
                 session.expunge(folder_name)
                 self._index.delete_message(message_ref=op.message_ref)
                 mirror.delete_message(folder=folder_ref, storage_key=op.storage_key)
+                counters["expunged_on_server"] += 1
+                return True
 
             case PurgeLocalOp():
                 self._index.delete_message(message_ref=op.message_ref)
@@ -1758,18 +1903,23 @@ class ImapSyncService:
                             folder=folder_ref,
                             storage_key=op.storage_key,
                         )
+                counters["purged_local"] += 1
+                return True
 
             case PushMoveOp():
-                self._execute_push_move(
+                success = self._execute_push_move(
                     op,
                     account=account,
                     session=session,
                     mirror=mirror,
                     now=now,
                 )
+                if success:
+                    counters["moved_to_server"] += 1
+                return success
 
             case PushAppendOp():
-                self._execute_push_append(
+                success = self._execute_push_append(
                     op,
                     account=account,
                     folder_name=folder_name,
@@ -1777,6 +1927,9 @@ class ImapSyncService:
                     mirror=mirror,
                     now=now,
                 )
+                if success:
+                    counters["appended_to_server"] += 1
+                return success
 
             case RestoreOp():
                 row = self._index.get_message(message_ref=op.message_ref)
@@ -1793,6 +1946,17 @@ class ImapSyncService:
                         account.name,
                         folder_name,
                     )
+                return True
+
+            case UidValidityResetOp():
+                self._execute_uidvalidity_reset(
+                    account=account,
+                    folder_ref=folder_ref,
+                    mirror=mirror,
+                )
+                return True
+
+        return False
 
     def _execute_reupload(
         self,
@@ -1802,10 +1966,10 @@ class ImapSyncService:
         folder_name: str,
         session: ImapClientSession,
         now: datetime,
-    ) -> None:
+    ) -> bool:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
-            return
+            return False
         mirror = self._mirror_factory(account)
         try:
             raw = mirror.get_message_bytes(
@@ -1820,7 +1984,7 @@ class ImapSyncService:
                 "Cannot re-upload id=%d — mirror read failed",
                 op.message_ref.id,
             )
-            return
+            return False
         new_uid = session.append_message(
             folder_name,
             raw,
@@ -1844,6 +2008,7 @@ class ImapSyncService:
                 synced_at=now if new_uid is not None else None,
             )
         )
+        return True
 
     def _execute_push_append(
         self,
@@ -1854,10 +2019,10 @@ class ImapSyncService:
         session: ImapClientSession,
         mirror: MirrorRepository,
         now: datetime,
-    ) -> None:
+    ) -> bool:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
-            return
+            return False
         try:
             raw = mirror.get_message_bytes(
                 folder=FolderRef(
@@ -1871,7 +2036,7 @@ class ImapSyncService:
                 "Cannot APPEND id=%d — mirror read failed",
                 op.message_ref.id,
             )
-            return
+            return False
         new_uid = session.append_message(
             folder_name,
             raw,
@@ -1915,6 +2080,7 @@ class ImapSyncService:
         # diff will see the new server UID and emit a FetchNewOp.  To
         # avoid duplicate ingestion, the next sync would create a
         # second row — accepted trade-off for non-UIDPLUS servers.
+        return True
 
     def _execute_push_move(
         self,
@@ -1924,10 +2090,10 @@ class ImapSyncService:
         session: ImapClientSession,
         mirror: MirrorRepository,  # noqa: ARG002
         now: datetime,
-    ) -> None:
+    ) -> bool:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
-            return
+            return False
         try:
             new_uid = session.move_message(
                 op.source_folder,
@@ -1942,7 +2108,7 @@ class ImapSyncService:
                 op.target_folder,
                 op.source_uid,
             )
-            return
+            return False
         logger.info(
             "Pushed local move: id=%d %s -> %s (src uid=%d, new uid=%s)",
             op.message_ref.id,
@@ -1981,6 +2147,32 @@ class ImapSyncService:
                     synced_at=None,
                 )
             )
+        return True
+
+    def _execute_uidvalidity_reset(
+        self,
+        *,
+        account: AccountConfig,
+        folder_ref: FolderRef,
+        mirror: MirrorRepository,
+    ) -> None:
+        stale_rows = [
+            row
+            for row in self._index.list_folder_messages(folder=folder_ref)
+            if row.local_status == MessageStatus.ACTIVE and row.uid is not None
+        ]
+        self._index.clear_uids_for_folder(
+            account_name=account.name,
+            folder_name=folder_ref.folder_name,
+        )
+        for row in stale_rows:
+            if not row.storage_key:
+                continue
+            with contextlib.suppress(Exception):
+                mirror.delete_message(
+                    folder=folder_ref,
+                    storage_key=row.storage_key,
+                )
 
     def _ingest_raw(
         self,
@@ -1993,7 +2185,7 @@ class ImapSyncService:
         server_flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str],
         raw: bytes,
-    ) -> None:
+    ) -> bool:
         if not raw:
             logger.warning(
                 "Empty body for UID %d in %s/%s — skipping",
@@ -2001,7 +2193,7 @@ class ImapSyncService:
                 account.name,
                 folder_ref.folder_name,
             )
-            return
+            return False
         try:
             store = getattr(mirror, "store_message_async", None)
             if store is not None:
@@ -2013,7 +2205,7 @@ class ImapSyncService:
                 )
         except Exception:
             logger.exception("Failed to store UID %d to mirror", uid)
-            return
+            return False
 
         # Project — the projection's MessageRef carries id=0, which
         # insert_message replaces with the autoincrement value.
@@ -2038,6 +2230,7 @@ class ImapSyncService:
             synced_at=datetime.now(tz=UTC),
         )
         self._index.insert_message(message=indexed)
+        return True
 
     def _run_cleanup(self) -> None:
         configured = {a.name for a in self._config.accounts}

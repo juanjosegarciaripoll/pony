@@ -561,6 +561,10 @@ class FlagReconciliationTestCase(unittest.TestCase):
         both = next(r for r in rows if r.message_id == "<both@example.com>")
         self.assertIn(MessageFlag.SEEN, both.local_flags)
         self.assertIn(MessageFlag.FLAGGED, both.local_flags)
+        self.assertEqual(
+            session.folders["INBOX"][1][1],
+            frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
+        )
 
 
 class ServerDeletionTestCase(unittest.TestCase):
@@ -581,6 +585,24 @@ class ServerDeletionTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].local_status, MessageStatus.TRASHED)
+
+    def test_server_deleted_row_retained_until_trash_cleanup(self) -> None:
+        raw = _make_raw_message("Retain me", "<retain@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={"INBOX": {1: ("<retain@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        del session.folders["INBOX"][1]
+        service.sync()
+        service.sync()
+
+        rows = index.list_folder_messages(folder=folder)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].local_status, MessageStatus.TRASHED)
+        self.assertIn(row.storage_key, mirror.list_messages(folder=folder))
 
 
 class ServerMoveTestCase(unittest.TestCase):
@@ -651,7 +673,19 @@ class UidValidityResetTestCase(unittest.TestCase):
         session.folders["INBOX"] = {
             10: ("<reset@example.com>", frozenset({MessageFlag.SEEN}), raw)
         }
-        service.sync()
+        plan = service.plan()
+
+        # Planning is read-only; the stale row is cleared only during execution.
+        rows_after_plan = index.list_folder_messages(folder=folder)
+        self.assertEqual(len(rows_after_plan), 1)
+        self.assertEqual(rows_after_plan[0].uid, 1)
+
+        service.execute(
+            plan,
+            confirmed_folders=frozenset(
+                f.folder_name for a in plan.accounts for f in a.folders
+            ),
+        )
 
         # Message still present in index, now with new UID.
         rows_after = index.list_folder_messages(folder=folder)
@@ -1224,6 +1258,12 @@ class FetchFailureTestCase(unittest.TestCase):
         self.assertIn("<good@example.com>", mids)
         self.assertIn("<also-good@example.com>", mids)
         self.assertEqual(len(rows), 2)
+        self.assertIsNone(
+            index_repo.get_folder_sync_state(
+                account_name="personal",
+                folder_name="INBOX",
+            )
+        )
 
 
 class EmptyMessageTestCase(unittest.TestCase):
@@ -2236,7 +2276,7 @@ class FastPathTestCase(unittest.TestCase):
             )
         )
 
-        service.sync()
+        result = service.sync()
         # Fast path: no metadata scan, APPEND still fires.
         self.assertEqual(session.scan_count, 1)
         self.assertTrue(
@@ -2244,6 +2284,8 @@ class FastPathTestCase(unittest.TestCase):
             f"expected append to INBOX, got {session.call_log!r}",
         )
         self.assertEqual(len(session.folders["INBOX"]), 1)
+        appended = sum(f.appended_to_server for a in result.accounts for f in a.folders)
+        self.assertEqual(appended, 1)
 
     def test_fast_path_pushes_flag_drift(self) -> None:
         """Local flag drift pushes via fast path — no FETCH."""
@@ -2373,6 +2415,10 @@ class FastPathTestCase(unittest.TestCase):
         [row2] = index.list_folder_messages(folder=folder)
         self.assertIn(MessageFlag.SEEN, row2.local_flags)
         self.assertIn(MessageFlag.FLAGGED, row2.local_flags)
+        self.assertEqual(
+            session.folders["INBOX"][1][1],
+            frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
+        )
 
     def test_burned_uids_converge_to_fast_path(self) -> None:
         """Gate compares server UIDNEXT — not ``max_surviving_uid + 1``.

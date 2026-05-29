@@ -234,9 +234,9 @@ Progress is reported via a `ProgressInfo` dataclass carrying `message`,
 
 IMAP servers assign a `UIDVALIDITY` value to each folder. If this value
 changes (e.g. after a server rebuild or mailbox migration), all cached UIDs
-become meaningless. Pony detects this automatically, discards the stale UID
-mapping, and performs a full resync of the affected folder by matching messages
-via `Message-ID`. No messages are lost.
+become meaningless. Pony detects this automatically during planning and, during
+execution, drops stale UID-bearing rows before refetching the folder in the new
+UID epoch. Local-only rows are preserved.
 
 ---
 

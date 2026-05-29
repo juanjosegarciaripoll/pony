@@ -826,6 +826,12 @@ def run_sync(
         total_fetched = sum(f.fetched for f in active)
         total_flag_updates = sum(f.flag_updates_from_server for f in active)
         total_pushes = sum(f.flag_pushes_to_server for f in active)
+        total_expunged = sum(f.expunged_on_server for f in active)
+        total_moved = sum(f.moved_to_server for f in active)
+        total_uploaded = sum(
+            f.appended_to_server + f.reuploaded_to_server for f in active
+        )
+        total_purged = sum(f.purged_local for f in active)
         skipped_suffix = (
             f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""
         )
@@ -834,7 +840,11 @@ def run_sync(
             f"{len(active)} folder(s) with changes{skipped_suffix}, "
             f"{total_fetched} new message(s), "
             f"{total_flag_updates} flag update(s) from server, "
-            f"{total_pushes} flag push(es) to server"
+            f"{total_pushes} flag push(es), "
+            f"{total_uploaded} upload(s), "
+            f"{total_moved} move(s), "
+            f"{total_expunged} expunge(s), "
+            f"{total_purged} local purge(s)"
         )
         for f in active:
             print(

@@ -462,6 +462,7 @@ class PendingPush:
     storage_key: str
     local_flags: frozenset[MessageFlag]
     extra_imap_flags: frozenset[str]
+    trashed_at: datetime | None = None
     source_folder: str | None = None
     source_uid: int | None = None
 

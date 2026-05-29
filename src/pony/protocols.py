@@ -342,6 +342,16 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def list_folder_slow_path_rows_by_uid(
+        self,
+        *,
+        account_name: str,
+        folder_name: str,
+        uids: Sequence[int],
+    ) -> Sequence[SlowPathRow]:
+        """Return slow-path rows for a specific UID set."""
+        ...
+
     def list_folder_base_flags(
         self, *, account_name: str, folder_name: str
     ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:

@@ -208,7 +208,7 @@ class SameAccountMoveTest(unittest.TestCase):
         self.assertEqual(list(index.list_folder_messages(folder=inbox)), [])
         self.assertEqual(len(list(index.list_folder_messages(folder=filed))), 1)
 
-        service.sync()
+        result = service.sync()
 
         # Server-side: source empty, target holds the message with
         # its original Message-ID (MOVE preserves identity).
@@ -221,6 +221,11 @@ class SameAccountMoveTest(unittest.TestCase):
             any(call.startswith("move:INBOX->Filed") for call in session.call_log)
         )
         self.assertFalse(any(call.startswith("append:") for call in session.call_log))
+        self.assertEqual(list(index.list_folder_messages(folder=inbox)), [])
+        [filed_row] = index.list_folder_messages(folder=filed)
+        self.assertEqual(filed_row.uid, 2000)
+        moved = sum(f.moved_to_server for a in result.accounts for f in a.folders)
+        self.assertEqual(moved, 1)
 
 
 class CrossAccountMoveTest(unittest.TestCase):

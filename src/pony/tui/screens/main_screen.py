@@ -425,9 +425,17 @@ class MainScreen(Screen[None]):
                 for ar in result.accounts:
                     fetched = sum(f.fetched for f in ar.folders)
                     merged = sum(f.flag_conflicts_merged for f in ar.folders)
-                    if fetched or merged:
+                    pushed = sum(
+                        f.appended_to_server
+                        + f.reuploaded_to_server
+                        + f.moved_to_server
+                        + f.expunged_on_server
+                        for f in ar.folders
+                    )
+                    if fetched or merged or pushed:
                         parts.append(
-                            f"{ar.account_name}: +{fetched} msgs, {merged} merged"
+                            f"{ar.account_name}: +{fetched} msgs, "
+                            f"{merged} merged, {pushed} pushed"
                         )
             msg = f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
             self.app.notify(msg)  # pyright: ignore[reportUnknownMemberType]

@@ -39,7 +39,7 @@ CREATE UNIQUE INDEX ux_messages_uid
 
 ## Pipeline
 
-1. **Plan** (`ImapSyncService.plan`) — fetch metadata, emit `SyncPlan`. No writes except clearing UIDs on UIDVALIDITY reset.
+1. **Plan** (`ImapSyncService.plan`) — fetch metadata, emit `SyncPlan`. No local mirror or index writes.
 2. **Execute** (`ImapSyncService.execute`) — apply ops, update mirror + index + watermarks.
 
 `ImapSyncService.sync` runs both and auto-confirms mass-deletion folders.
@@ -88,7 +88,7 @@ No cross-folder Message-ID map. Cross-folder server moves = delete in source + f
 
 - **C-1:** UID in `gone_uids` AND `local_flags != base_flags` → `ReUploadOp`.
 - **C-2:** Locally trashed but server has it in read-only folder → restore `ACTIVE`, pull flags.
-- **C-4:** UIDVALIDITY reset → NULL all UIDs, re-fetch next sync.
+- **C-4:** UIDVALIDITY reset → execute a reset op, drop stale UID-bearing rows, re-fetch in the new UID epoch.
 - **C-6:** >20% UIDs gone → confirmation required.
 
 ## Trash retention
