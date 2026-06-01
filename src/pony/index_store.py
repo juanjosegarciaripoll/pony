@@ -1883,6 +1883,12 @@ def _harvest_message_contacts(
         addr = addr.lower().strip()
         if not addr:
             continue
+        # Some mailers echo the email address as its own display name
+        # (e.g. "alice@example.com" <alice@example.com>).  Treat that as
+        # no display name so we never store an address string as a person's
+        # name and block later, real names from filling in.
+        if "@" in display_name:
+            display_name = ""
         # Check if email already belongs to a contact.
         existing = conn.execute(
             "SELECT contact_id FROM contact_emails WHERE email_address = ?",
@@ -1900,18 +1906,19 @@ def _harvest_message_contacts(
                 """,
                 (now, now, int(existing[0])),
             )
-            # Update name if we have one and the contact's name is empty.
+            # Update name fields that are blank or still hold an email
+            # address (a placeholder from a previous email-as-name harvest).
             if display_name.strip():
                 first, last = _split_display_name(display_name)
                 conn.execute(
                     """
                     UPDATE contacts SET
                         first_name = CASE
-                            WHEN first_name = '' THEN ?
-                            ELSE first_name END,
+                            WHEN first_name = '' OR first_name LIKE '%@%'
+                            THEN ? ELSE first_name END,
                         last_name = CASE
-                            WHEN last_name = '' THEN ?
-                            ELSE last_name END
+                            WHEN last_name = '' OR last_name LIKE '%@%'
+                            THEN ? ELSE last_name END
                     WHERE id = ?
                     """,
                     (first, last, int(existing[0])),

@@ -309,6 +309,28 @@ class HarvestContactsTests(unittest.TestCase):
         self.assertEqual(found.first_name, "Juan")
         self.assertEqual(found.last_name, "Garcia Ripoll")
 
+    def test_harvest_email_as_display_name_creates_blank_name(self) -> None:
+        repo = _make_repo()
+        msg = _make_indexed_message('"bob@example.com" <bob@example.com>')
+        repo.harvest_contacts([msg])
+        found = repo.find_contact_by_email(email_address="bob@example.com")
+        assert found is not None
+        self.assertEqual(found.first_name, "")
+        self.assertEqual(found.last_name, "")
+
+    def test_harvest_real_name_replaces_email_as_name(self) -> None:
+        repo = _make_repo()
+        # First harvest stores the email address as the display name.
+        msg1 = _make_indexed_message('"bob@example.com" <bob@example.com>')
+        repo.harvest_contacts([msg1])
+        # Second harvest has the real name — should overwrite the placeholder.
+        msg2 = _make_indexed_message("Bob Jones <bob@example.com>")
+        repo.harvest_contacts([msg2])
+        found = repo.find_contact_by_email(email_address="bob@example.com")
+        assert found is not None
+        self.assertEqual(found.first_name, "Bob")
+        self.assertEqual(found.last_name, "Jones")
+
     def test_harvest_four_word_name(self) -> None:
         repo = _make_repo()
         msg = _make_indexed_message(
