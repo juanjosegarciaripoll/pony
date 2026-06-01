@@ -156,6 +156,29 @@ class SearchContactsTests(unittest.TestCase):
         results = repo.search_contacts(prefix="zzz")
         self.assertEqual(len(results), 0)
 
+    def test_search_finds_contact_after_name_update(self) -> None:
+        repo = _make_repo()
+        saved = repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Robert",
+                last_name="Doe",
+                emails=("rdoe@example.com",),
+            )
+        )
+        repo.upsert_contact(
+            contact=Contact(
+                id=saved.id,
+                first_name="Alice",
+                last_name="Doe",
+                emails=("rdoe@example.com",),
+            )
+        )
+        results = repo.search_contacts(prefix="Alice")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].first_name, "Alice")
+        # Old first name must no longer match (no trace of it in email either).
+        self.assertEqual(repo.search_contacts(prefix="Robert"), [])
+
     def test_search_folds_diacritics(self) -> None:
         repo = _make_repo()
         repo.upsert_contact(

@@ -1541,6 +1541,22 @@ def _create_fts_tables(conn: sqlite3.Connection) -> None:
 
 def _create_fts_triggers(conn: sqlite3.Connection) -> None:
     """Create triggers that keep the FTS tables in sync with base tables."""
+    # Contact FTS triggers are dropped and recreated on every initialize() so
+    # that changes to the trigger bodies (e.g. bug fixes) take effect on
+    # existing databases without a schema-version bump.
+    for name in (
+        "contacts_ai",
+        "contacts_ad",
+        "contacts_au",
+        "contact_emails_ai",
+        "contact_emails_ad",
+        "contact_emails_au",
+        "contact_aliases_ai",
+        "contact_aliases_ad",
+        "contact_aliases_au",
+    ):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")  # noqa: S608
+
     # messages <-> messages_fts (external-content mode, standard pattern).
     conn.execute(
         """
@@ -1629,13 +1645,27 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        f"""
+        """
         CREATE TRIGGER IF NOT EXISTS contacts_au AFTER UPDATE ON contacts
         BEGIN
             DELETE FROM contacts_fts WHERE rowid = old.id;
-            {contact_refresh.format(cid="new.id")}
+            INSERT INTO contacts_fts(
+                rowid, first_name, last_name, email_addresses, aliases
+            )
+            SELECT c.id, c.first_name, c.last_name,
+                COALESCE(
+                    (SELECT GROUP_CONCAT(email_address, ' ')
+                     FROM contact_emails WHERE contact_id = c.id),
+                    ''
+                ),
+                COALESCE(
+                    (SELECT GROUP_CONCAT(alias, ' ')
+                     FROM contact_aliases WHERE contact_id = c.id),
+                    ''
+                )
+            FROM contacts c WHERE c.id = new.id;
         END
-        """  # noqa: S608
+        """
     )
     conn.execute(
         f"""
