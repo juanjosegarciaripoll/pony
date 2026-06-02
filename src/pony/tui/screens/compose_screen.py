@@ -390,6 +390,34 @@ class ComposeScreen(Screen[bool]):
             self.query_one("#body-area", TextArea).focus()
         else:
             self.query_one("#to-input", Input).focus()
+        self._maybe_prompt_missing_name()
+
+    def _maybe_prompt_missing_name(self) -> None:
+        """Open the contact editor when the selected account has no display name."""
+        account = self._get_account()
+        if account is None:
+            return
+        if self._account_from_address(account) != account.email_address:
+            return
+        if self._contacts is None:
+            self.notify(
+                "From: will use only your email address. "
+                "Set full_name in your config file to add a display name.",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        from .contact_edit_screen import ContactEditScreen
+
+        existing = self._contacts.find_contact_by_email(
+            email_address=account.email_address
+        )
+        contact = existing or Contact(
+            id=None, first_name="", last_name="", emails=(account.email_address,)
+        )
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ContactEditScreen(contact, self._contacts),
+        )
 
     # ------------------------------------------------------------------
     # Button handler
