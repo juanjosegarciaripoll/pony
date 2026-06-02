@@ -1373,8 +1373,11 @@ class C1ReUploadTestCase(unittest.TestCase):
 class C2RestoreTestCase(unittest.TestCase):
     """C-2: local-trash + server-flag-change → restore, cancel deletion."""
 
-    def test_trashed_message_restored_when_server_flags_changed(self) -> None:
-        raw = _make_raw_message("Restore me", "<c2@example.com>")
+    def test_trashed_message_deleted_even_when_server_flags_changed(self) -> None:
+        """A locally-trashed message is deleted from the server even if the
+        server updated its flags between the local trash and the sync.  The
+        user's explicit delete intent takes priority over any flag changes."""
+        raw = _make_raw_message("Delete me", "<c2@example.com>")
         service, index, _, session = _setup(
             server_folders={"INBOX": {1: ("<c2@example.com>", frozenset(), raw)}}
         )
@@ -1388,9 +1391,7 @@ class C2RestoreTestCase(unittest.TestCase):
         )
 
         # Server marks SEEN between syncs.  Deliver a fresh message
-        # too so UIDNEXT bumps and the planner runs the full slow-path
-        # flag reconciliation (C-2 lives in Step 3; the STATUS
-        # fast-path cannot detect silent server-side flag changes).
+        # too so UIDNEXT bumps and the planner runs the full slow-path.
         session.folders["INBOX"][1] = (
             "<c2@example.com>",
             frozenset({MessageFlag.SEEN}),
@@ -1401,13 +1402,8 @@ class C2RestoreTestCase(unittest.TestCase):
         session._uidnext["INBOX"] = 3
         service.sync()
 
-        # Message should be restored to ACTIVE with new flags.
-        rows = index.list_folder_messages(folder=folder)
-        c2 = next(r for r in rows if r.message_id == "<c2@example.com>")
-        self.assertEqual(c2.local_status, MessageStatus.ACTIVE)
-        self.assertIn(MessageFlag.SEEN, c2.local_flags)
-        # Server should NOT have received a delete.
-        self.assertEqual(session.deleted_uids, [])
+        # Message must be expunged from the server, not restored.
+        self.assertIn(1, session.deleted_uids)
 
     def test_trashed_message_deleted_when_server_flags_unchanged(self) -> None:
         """When server didn't change flags, normal push-delete applies."""
@@ -1427,6 +1423,7 @@ class C2RestoreTestCase(unittest.TestCase):
 
         # Normal delete should proceed.
         self.assertIn(1, session.deleted_uids)
+
 
 
 class MassDeletionThresholdTestCase(unittest.TestCase):

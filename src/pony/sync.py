@@ -1103,24 +1103,6 @@ class ImapSyncService:
         if uidvalidity_reset:
             ops.append(UidValidityResetOp())
 
-        # C-2 detection: a locally-TRASHED row whose server flags
-        # changed since base means the user's delete intent collides
-        # with a real server-side update.  Restore the row instead of
-        # pushing the deletion (the user can re-trash on their next
-        # pass).  Compute the row ids that get the C-2 treatment so
-        # ``_pending_push_ops`` can skip emitting PushDeleteOp for them.
-        c2_row_ids: set[int] = set()
-        for uid in remote_uids & local_uids:
-            row = rows_by_uid[uid]
-            if row.local_status != MessageStatus.TRASHED:
-                continue
-            remote_flags, _ = uid_to_flags.get(
-                uid,
-                (frozenset(), frozenset()),
-            )
-            if remote_flags != row.base_flags and not read_only:
-                c2_row_ids.add(row.message_ref.id)
-
         # Pending-push rows for this folder (uid IS NULL or PENDING_MOVE
         # or TRASHED or flag drift).  Emitted regardless of UID diff.
         ops.extend(
@@ -1128,7 +1110,6 @@ class ImapSyncService:
                 account=account,
                 folder_name=folder_name,
                 read_only=read_only,
-                suppress_delete_ids=c2_row_ids,
                 remote_uids_by_folder=remote_uids_by_folder,
                 include_flag_pushes=False,
                 uidvalidity_reset=uidvalidity_reset,
@@ -1186,14 +1167,13 @@ class ImapSyncService:
                 (frozenset(), frozenset()),
             )
             if row.local_status == MessageStatus.TRASHED:
-                # C-2: server still has a row we trashed.  In a
-                # read-only folder we always restore (no way to push
-                # the delete); in a writable folder, restore + pull
-                # only when the server's flags actually changed —
-                # that's the signal that the deletion conflicts with
-                # a real server-side update.  Otherwise the delete
-                # already queued by ``_pending_push_ops`` runs.
-                if read_only or row.message_ref.id in c2_row_ids:
+                # C-2: server still has a row we trashed.  In a read-only
+                # folder we have no way to push the delete, so restore ACTIVE
+                # and pull the server's current flags.  In a writable folder
+                # the PushDeleteOp already queued by _pending_push_ops will
+                # expunge the message regardless of any flag changes — the
+                # user's explicit delete intent takes priority.
+                if read_only:
                     ops.append(RestoreOp(message_ref=row.message_ref))
                     ops.append(
                         PullFlagsOp(
