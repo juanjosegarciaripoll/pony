@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import email.policy
 import mimetypes
 import re
+from email import message_from_bytes as _email_from_bytes
 from email.message import EmailMessage
-from email.utils import formatdate, getaddresses, make_msgid
+from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 from .message_renderer import RenderedMessage
@@ -119,15 +121,19 @@ def build_reply_all_recipients(
     from the source headers are preserved; comparisons are
     case-insensitive on the address part only.
     """
+    msg = _email_from_bytes(rendered.raw_bytes, policy=email.policy.default)
+
+    def _addr_pairs(header: str) -> list[tuple[str, str]]:
+        field = msg[header]
+        return [(a.display_name, a.addr_spec) for a in field.addresses] if field else []
+
     self_norm = self_address.strip().lower()
-    excluded: set[str] = {
-        addr.lower() for _, addr in getaddresses([rendered.from_]) if addr
-    }
+    excluded: set[str] = {addr.lower() for _, addr in _addr_pairs("From") if addr}
     excluded.add(self_norm)
 
     cc_parts: list[str] = []
     seen: set[str] = set(excluded)
-    for name, addr in getaddresses([rendered.to, rendered.cc]):
+    for name, addr in _addr_pairs("To") + _addr_pairs("Cc"):
         if not addr:
             continue
         norm = addr.lower()

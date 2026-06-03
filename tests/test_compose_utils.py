@@ -26,19 +26,32 @@ from pony.tui.compose_utils import (
 from pony.tui.message_renderer import RenderedMessage
 
 
-def _rendered(**kwargs: str) -> RenderedMessage:
-    defaults = dict(
-        subject="Hello",
-        from_="Alice <alice@example.com>",
-        to="Bob <bob@example.com>",
-        cc="",
-        date="Mon, 1 Jan 2024 12:00:00 +0000",
-        body="Original body.",
+def _rendered(**kwargs: object) -> RenderedMessage:
+    subject = str(kwargs.get("subject", "Hello"))
+    from_ = str(kwargs.get("from_", "Alice <alice@example.com>"))
+    to = str(kwargs.get("to", "Bob <bob@example.com>"))
+    cc = str(kwargs.get("cc", ""))
+    date = str(kwargs.get("date", "Mon, 1 Jan 2024 12:00:00 +0000"))
+    body_text = str(kwargs.get("body", "Original body."))
+    raw_bytes = kwargs.get("raw_bytes")
+
+    if not raw_bytes:
+        lines = [f"From: {from_}", f"To: {to}"]
+        if cc:
+            lines.append(f"Cc: {cc}")
+        lines.extend([f"Subject: {subject}", f"Date: {date}", "", body_text])
+        raw_bytes = "\r\n".join(lines).encode("utf-8")
+
+    return RenderedMessage(
+        subject=subject,
+        from_=from_,
+        to=to,
+        cc=cc,
+        date=date,
+        body=body_text,
         attachments=(),
-        raw_bytes=b"",
+        raw_bytes=raw_bytes,  # type: ignore[arg-type]
     )
-    defaults.update(kwargs)
-    return RenderedMessage(**defaults)  # type: ignore[arg-type]
 
 
 class ReplySubjectTest(unittest.TestCase):
@@ -148,6 +161,20 @@ class BuildReplyAllRecipientsTest(unittest.TestCase):
         )
         _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
         assert cc == ""
+
+    def test_cc_display_name_with_comma_not_split(self) -> None:
+        # RFC 2047-encoded display names containing commas (e.g. "Last, First")
+        # must not be split into multiple Cc entries.
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: me@example.com\r\n"
+            b"Cc: =?utf-8?q?Smith=2C_John?= <john@example.com>\r\n"
+            b"\r\n"
+            b"Body\r\n"
+        )
+        r = _rendered(raw_bytes=raw, from_="alice@example.com", to="me@example.com")
+        _to, cc = build_reply_all_recipients(r, self_address="me@example.com")
+        assert cc.count("john@example.com") == 1
 
 
 class BuildForwardBodyTest(unittest.TestCase):
