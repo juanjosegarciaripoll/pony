@@ -203,6 +203,12 @@ class MessageViewPanel(VerticalScroll):
         self._set_content(self._build_markup(self._rendered))
         self.scroll_home(animate=False)
 
+    def load_bytes(self, raw: bytes) -> None:
+        """Render a message from raw RFC 5322 bytes (no mirror lookup needed)."""
+        self._rendered = render_message(raw)
+        self._set_content(self._build_markup(self._rendered))
+        self.scroll_home(animate=False)
+
     def clear(self) -> None:
         self._rendered = None
         self._set_content("")
@@ -225,6 +231,13 @@ class MessageViewPanel(VerticalScroll):
         if self._rendered is None:
             return 0
         return len(self._rendered.attachments)
+
+    @property
+    def raw_bytes(self) -> bytes | None:
+        """Raw RFC 5322 bytes of the currently-loaded message, or None."""
+        if self._rendered is None:
+            return None
+        return self._rendered.raw_bytes
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         """Save attachment *index* (1-based) to *dest_dir*.

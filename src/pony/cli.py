@@ -368,6 +368,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite the output file if it already exists.",
     )
 
+    view_parser = subparsers.add_parser(
+        "view",
+        help="Open a single .eml file in the full-screen message viewer.",
+    )
+    view_parser.add_argument("file", type=Path, help="Path to an RFC 5322 .eml file.")
+
     subparsers.add_parser(
         "docs",
         help="Open the Pony Express documentation in a browser.",
@@ -384,9 +390,22 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, extra_args = parser.parse_known_args(argv)
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
+
+    # Bare-filename invocation: pony some-message.eml
+    if (
+        args.command is None
+        and len(extra_args) == 1
+        and not extra_args[0].startswith("-")
+    ):
+        maybe_file = Path(extra_args[0])
+        if maybe_file.is_file():
+            return run_eml_viewer(path=maybe_file, theme=args.theme)
+
+    # Re-parse strictly so unknown args and bad subcommands are reported.
+    args = parser.parse_args(argv)
 
     try:
         return _dispatch(args=args, paths=paths, parser=parser)
@@ -573,6 +592,9 @@ def _dispatch(
                 to_stdout=args.stdout,
                 force=args.force,
             )
+
+    if args.command == "view":
+        return run_eml_viewer(path=args.file, theme=args.theme)
 
     if args.command == "docs":
         return run_docs()
@@ -2866,6 +2888,30 @@ def run_account_set_password(
     index.initialize()
     index.store_credential(account_name=account_name, encrypted=encrypted)
     print(f"Password stored for account {account_name!r}.")
+    return 0
+
+
+def run_eml_viewer(*, path: Path, theme: str | None = None) -> int:
+    """Open a single .eml file in the full-screen message viewer."""
+    if not path.exists():
+        print(f"error: file not found: {path}", file=sys.stderr)
+        return 1
+    if not path.is_file():
+        print(f"error: not a regular file: {path}", file=sys.stderr)
+        return 1
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError as exc:
+        print(f"error: could not read {path}: {exc}", file=sys.stderr)
+        return 1
+
+    effective_theme, err = _resolve_theme(theme, None)
+    if err is not None:
+        return err
+
+    from .tui.app import EmlViewerApp
+
+    EmlViewerApp(raw_bytes=raw_bytes, theme_name=effective_theme).run()
     return 0
 
 

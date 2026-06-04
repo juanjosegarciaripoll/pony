@@ -1678,10 +1678,22 @@ class MainScreen(Screen[None]):
             )
 
     def _open_indices(self, indices: list[int]) -> None:
+        from ..message_renderer import extract_attachment as _extract_attachment
+        from .eml_viewer_screen import EmlViewerScreen
+
+        panel = self.query_one(MessageViewPanel)
+        raw = panel.raw_bytes
         dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
         missing: list[int] = []
         for idx in indices:
+            if raw is not None:
+                payload = _extract_attachment(raw, idx)
+                if payload is not None and payload.content_type == "message/rfc822":
+                    self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+                        EmlViewerScreen(payload.data, dest)
+                    )
+                    continue
             try:
                 name = self.save_attachment(idx, dest)
             except OSError as exc:

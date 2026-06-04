@@ -1,5 +1,5 @@
 """Pony Express terminal user interface."""
 
-from .app import ComposeApp, PonyApp
+from .app import ComposeApp, EmlViewerApp, PonyApp
 
-__all__ = ["ComposeApp", "PonyApp"]
+__all__ = ["ComposeApp", "EmlViewerApp", "PonyApp"]

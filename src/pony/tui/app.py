@@ -191,6 +191,47 @@ class ComposeApp(App[None]):
         pop_terminal_title()
 
 
+class EmlViewerApp(App[None]):
+    """Minimal Textual app for viewing a single .eml file.
+
+    Used by ``pony view <file>`` and when Pony is invoked with a filename
+    argument.  Nested email attachments open additional ``EmlViewerScreen``
+    instances on this app's screen stack.
+    """
+
+    TITLE = "Pony Express — Viewer"
+    INHERIT_BINDINGS = False
+
+    BINDINGS = [
+        Binding("Q", "quit", "Quit", priority=True),
+    ]
+
+    def __init__(
+        self,
+        raw_bytes: bytes,
+        theme_name: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._raw_bytes = raw_bytes
+        if theme_name is not None:
+            self.theme = theme_name
+
+    def on_mount(self) -> None:
+        push_terminal_title()
+        set_terminal_title("Pony Express — Viewer")
+        from .screens.eml_viewer_screen import EmlViewerScreen
+
+        self.push_screen(EmlViewerScreen(self._raw_bytes))
+
+    def on_unmount(self) -> None:
+        pop_terminal_title()
+
+    def on_screen_resume(self) -> None:
+        if len(self.screen_stack) <= 1:
+            self.exit()
+
+
 class ContactsApp(App[None]):
     """Minimal Textual app for the standalone contacts browser.
 
