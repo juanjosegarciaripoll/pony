@@ -6,70 +6,127 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
-### Changed
 
-- **Composer keybindings**: replaced the `Ctrl+X` chord prefix with direct
-  `Alt+letter` shortcuts — `Alt+S` send, `Alt+A` attach, `Alt+E` external
-  editor, `Alt+M` toggle Markdown.  `Ctrl+X`, `Ctrl+C`, and `Ctrl+V` now
-  work as cut / copy / paste again in the body and address fields.
+## [0.7.0]
+
+### Security
+
+- **Terminal escape injection via email headers**: `_escape()` in the message
+  view stripped Rich markup openers (`[`) but not C0/C1 control characters.
+  A `Subject` or `From` header containing ANSI escape sequences (e.g.
+  `ESC[2J`) could corrupt terminal state. All control characters except tab,
+  LF, and CR are now stripped before display. The same sanitisation applies to
+  `Subject`, `Date`, `Content-Type`, and all fields in the contact detail
+  screen.
+- **Path traversal in attachment save**: `save_attachment()` used the raw
+  `Content-Disposition` filename to build the output path without sanitisation.
+  A crafted filename such as `../../.bashrc` could write outside the downloads
+  directory. Filenames are now stripped to their base component via `Path.name`
+  with control characters removed, and every output path is verified with
+  `is_relative_to(dest)` before writing.
+- **NUL-byte format-sentinel injection**: the renderer uses `\x00` as an
+  internal delimiter for bold / italic / underline sentinels. A plain-text body
+  with embedded NUL bytes, or an HTML body using `&#0;` entities, could inject
+  spurious formatting into the TUI. NUL bytes are now stripped at both decode
+  sites (text/plain payload and HTML character data).
 
 ### Added
 
-- **Clickable links in message body**: web links (`http://`, `https://`) in the
-  body are now rendered as a ``[link↗]`` token; clicking it opens a dialog
-  (Open / Copy / Cancel).  ``mailto:`` links render as ``[✉]`` and open
-  Pony's composer directly with the recipient prefilled.  Both HTML anchor
-  tags and bare / angle-bracketed URLs in plain-text bodies are detected.
+- **Standalone EML file viewer**: `pony view <file.eml>` opens any RFC 5322
+  file in a full-screen message viewer. Invoking Pony with a bare filename
+  (`pony message.eml`) does the same without an explicit subcommand. When an
+  email attachment is of type `message/rfc822`, opening it pushes a nested
+  viewer on the same stack — `q` returns to the parent message — rather than
+  delegating to the OS.
+- **Forward as attachment**: forwarding a message now seeds the draft with the
+  source message attached as a removable `.eml` file, so the original arrives
+  intact for the recipient.
+- **Save message to disk** (`s`): a two-step dialog lets you choose what to
+  save (body as Markdown, individual attachments, with editable filenames) and
+  where. A `New Folder` button in the directory picker creates directories on
+  the fly.
+- **`pony folder dedup`**: find and eliminate duplicate messages in a folder
+  (same `Message-ID` header). Without `--apply` it is a dry-run; with
+  `--apply` it marks losers `TRASHED` for the next sync to expunge. The winner
+  in each group is the copy with the most informative flag set.
+- **`pony folder mirror`**: copy all messages from one folder into another,
+  replacing its contents. Writes `uid=NULL` index rows so the next
+  `pony sync` uploads them to the destination account via `APPEND`.
+- **Rich-text formatting from HTML emails**: bold (`<b>`/`<strong>`), italic
+  (`<i>`/`<em>`), underline (`<u>`), and strikethrough (`<s>`/`<del>`) are
+  preserved in the TUI message view. Plain text, CLI, and MCP paths see clean
+  text with no sentinels.
+- **Terminal window title**: the terminal emulator's title bar reflects the
+  current context — `Pony Express — account/folder` while reading, the app
+  name while composing. The original title is restored on exit.
+- **Clickable links in message body**: web links (`http://`, `https://`) render
+  as a `[link↗]` token; clicking opens a dialog (Open / Copy / Cancel).
+  `mailto:` links render as `[✉]` and prefill the composer's To field.
+- **Composer `Alt+letter` shortcuts**: `Alt+S` send, `Alt+A` attach, `Alt+E`
+  external editor, `Alt+M` toggle Markdown mode. `Ctrl+X`, `Ctrl+C`, and
+  `Ctrl+V` now work as cut / copy / paste in the body and address fields.
+- **Mass-deletion confirmation**: when sync detects >20% server-side deletions
+  in a folder the CLI and TUI show a `[CONFIRM: would delete N of M (Z%)]`
+  annotation and a warning. The plan is held until the user explicitly confirms.
+- **Textual theme selection**: set `theme = "nord"` (or any Textual theme name)
+  in `config.toml`. `--theme NAME` overrides for a single session;
+  `--list-themes` prints all available names.
 
 ### Fixed
 
-- **Cold-start local rescan skips full-row hydration**: when
-  ``rescan_local_account`` couldn't short-circuit a folder via the
-  mtime cache (first run after install, deleted ``local_scan_state.json``,
-  or any folder whose mtime advanced) it called ``list_folder_messages``
-  just to read each row's ``storage_key``, materialising the full
-  23-column ``IndexedMessage`` (datetime parses, three flag-set
-  constructions, etc.) for every indexed row.  Added a lean
-  ``IndexRepository.list_folder_storage_keys`` that returns
-  ``{storage_key: MessageRef}`` from a two-column ``SELECT`` (with the
-  empty-storage_key filter pushed into SQL) and switched the rescan to
-  use it.  Schema unchanged.
+- **Cc recipients split at commas inside RFC 2047 display names**: reply and
+  forward were calling `getaddresses()` on a decoded string, which split
+  `"García Ripoll, Juan José" <addr>` into two phantom recipients. The
+  structured header API (`field.addresses` on raw bytes) is used instead.
+- **Compose: missing display name prompts the user**: when the selected account
+  has no `full_name` in config and no matching contact, the contact editor
+  opens on mount so the user can set their name before the first send.
+- **Contacts harvest stores email address as display name**: when a mail client
+  emits the address as its own display name (`"alice@example.com"
+  <alice@example.com>`), the harvested contact now gets a blank display name
+  so a later harvest with a real name can overwrite it.
+- **Contacts FTS index lost after editing name**: a double-tombstone bug in the
+  `contacts_au` trigger and `CREATE TRIGGER IF NOT EXISTS` silently blocking
+  corrected trigger bodies caused updated contacts to vanish from autocomplete.
+  Triggers are dropped and recreated on every startup.
+- **Sync resurrects locally-trashed messages on server flag changes**: the C-2
+  conflict path was restoring `TRASHED` rows whenever the server's flags
+  changed since the last sync (e.g. `\Seen` set by an IMAP FETCH). `PushDeleteOp`
+  now runs unconditionally for `TRASHED` rows in writable folders.
+- **mbox: O(N) rewrites on bulk delete**: each `delete_message` call was
+  immediately flushing the mbox, causing N full rewrites for N deletions in one
+  sync cycle. Writes are now batched and flushed once at the end of the cycle.
+- **Dedup TOCTOU**: `run_dedup_folder` now holds a single SQLite transaction
+  across both the read snapshot and the mark-trashed writes, closing the window
+  where a concurrent sync could alter rows in between.
+- **Ctrl-C safety**: Maildir's `ThreadPoolExecutor` is drained on exit so
+  in-flight async writes are never abandoned. Config writes use a
+  tmp-then-replace pattern to prevent truncation on interrupt.
+- **Cold-start local rescan**: `rescan_local_account` was materialising full
+  `IndexedMessage` rows just to read each `storage_key`. A lean
+  `list_folder_storage_keys` two-column query replaces the full hydration.
 
 ### Changed
 
-- **Mass-deletion confirmation no longer silently skipped**: when sync
-  detects a folder with >20% server-side deletions, the CLI and TUI now
-  show a `[CONFIRM: would delete N of M (Z%)]` line per folder and a
-  warning paragraph explaining the situation.  Confirming the plan
-  ("y" in CLI, "Y" in TUI, or `--yes`) applies all deletions including
-  those flagged folders, instead of silently dropping them.
-
-### Added
-
-- **Textual theme selection**: set `theme = "nord"` (or any Textual theme name)
-  in `config.toml` to change the TUI colour scheme.  The `--theme NAME` CLI flag
-  overrides the config value for a single session, and `--list-themes` prints all
-  available theme names.  Applies to both the main TUI and the `pony compose`
-  standalone composer.
-
-### Changed
-
-- **Shared sync-plan formatting**: the plan categorisation and
-  human-readable label logic that previously existed as private helpers
-  in ``sync_confirm_screen.py`` and a separate duplicate in ``cli.py``
-  (``render_sync_plan``) is now a single canonical implementation in
-  ``sync.py`` (``format_plan_detail``, ``format_plan_summary``).  Both
-  the TUI confirm screen and the CLI sync command use the same
-  functions, so label text and op coverage are always in sync.  The old
-  CLI implementation was also missing the ``reupload`` and ``purge`` op
-  types added in a previous release.
-- **Silent no-activity accounts and folders**: the CLI post-sync summary
-  now skips accounts and per-folder timing lines where no messages were
-  fetched, no flags changed, and no server-side mutations occurred.
-  Only accounts or folders with actual changes (plus any with skipped
-  folders) appear in the output.  The TUI post-sync notification
-  likewise omits account entries with zero fetched messages and zero
-  flag conflicts merged.
+- **Message list: async streaming**: folder contents load in batches of 200
+  rows via a background worker, keeping the UI responsive during the SQL fetch.
+  Opening a second folder cancels any in-flight load.
+- **HTML-to-text rendering**: paragraph-level tags (`p`, `div`, `h1`–`h4`,
+  `ul`, `ol`, `table`) insert blank separators so consecutive block elements
+  produce readable spacing. Inline `<br>` and list items are handled
+  separately. Whitespace runs collapse to a single space.
+- **Composer attachment bar**: the single-line attachments bar is replaced with
+  per-file rows, each with a remove button.
+- **Unread counts 30× faster at startup**: a new covering index on
+  `(account_name, local_status, folder_name, local_flags)` lets
+  `unread_counts_by_folder` serve from the index B-tree without heap reads.
+  Measured: 0.44 s → 0.019 s on a 115 k-row account.
+- **Sync plan formatting unified**: `format_plan_detail` / `format_plan_summary`
+  in `sync.py` replace the previously duplicated logic in `sync_confirm_screen.py`
+  and `cli.py`. Both surfaces now share one implementation with consistent
+  labels and full op coverage.
+- **Silent no-activity accounts and folders**: the CLI post-sync summary and
+  TUI notification omit accounts and folders where nothing changed.
 
 ## [0.6.0] - 2026-04-20
 ### Fixed
@@ -570,3 +627,4 @@ First feature-complete release of Pony Express.
 [0.4.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.4.0
 [0.5.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.5.0
 [0.6.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.6.0
+[0.7.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.7.0
