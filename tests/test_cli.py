@@ -1164,6 +1164,346 @@ class DedupFolderTestCase(unittest.TestCase):
             self.assertIn("ghost", str(ctx.exception))
 
 
+class NewSubcommandTestCase(unittest.TestCase):
+    """Tests for CLI subcommands not covered by the existing test cases."""
+
+    # ------------------------------------------------------------------
+    # config show
+    # ------------------------------------------------------------------
+
+    def test_config_show_prints_config_file(self) -> None:
+        """``pony config show`` prints the config file contents to stdout."""
+        with isolated_app_env(), temporary_config() as config_path:
+            output = run_cli("--config", str(config_path), "config", "show")
+        self.assertIn("config_version", output)
+        self.assertIn("personal", output)
+
+    # ------------------------------------------------------------------
+    # local-summary
+    # ------------------------------------------------------------------
+
+    def test_local_summary_prints_header(self) -> None:
+        """``pony local-summary`` prints the local-summary header."""
+        with isolated_app_env(), temporary_config() as config_path:
+            output = run_cli("--config", str(config_path), "local-summary")
+        self.assertIn("Pony Express local summary", output)
+        self.assertIn("Config", output)
+
+    def test_local_summary_account_scope(self) -> None:
+        """``pony local-summary personal`` restricts output to that account."""
+        with isolated_app_env(), temporary_config() as config_path:
+            output = run_cli("--config", str(config_path), "local-summary", "personal")
+        self.assertIn("personal", output)
+
+    def test_local_summary_unknown_account_raises(self) -> None:
+        """``pony local-summary ghost`` raises SystemExit for unknown account."""
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli("--config", str(config_path), "local-summary", "ghost")
+            self.assertIn("ghost", str(ctx.exception))
+
+    # ------------------------------------------------------------------
+    # contacts search
+    # ------------------------------------------------------------------
+
+    def test_contacts_search_runs_without_error(self) -> None:
+        """``pony contacts search`` completes without crashing."""
+        with isolated_app_env(), temporary_config() as config_path:
+            run_cli("--config", str(config_path), "fixture-ingest")
+            # The fixture may or may not have contacts matching "ali";
+            # the important thing is that the command finishes cleanly.
+            output = run_cli("--config", str(config_path), "contacts", "search", "ali")
+        # Either "No contacts matching" or an actual result list — both are valid.
+        self.assertTrue(
+            "ali" in output.lower() or len(output.strip()) == 0,
+            msg=f"Unexpected output: {output!r}",
+        )
+
+    # ------------------------------------------------------------------
+    # --list-themes
+    # ------------------------------------------------------------------
+
+    def test_list_themes_prints_theme_names(self) -> None:
+        """``pony --list-themes`` prints at least one theme name."""
+        output = run_cli("--list-themes")
+        self.assertTrue(
+            len(output.strip()) > 0,
+            msg="--list-themes produced no output",
+        )
+
+    def test_list_themes_includes_textual_dark(self) -> None:
+        """``pony --list-themes`` includes the built-in textual-dark theme."""
+        output = run_cli("--list-themes")
+        self.assertIn("textual-dark", output)
+
+    # ------------------------------------------------------------------
+    # rescan --account unknown
+    # ------------------------------------------------------------------
+
+    def test_rescan_unknown_account_raises(self) -> None:
+        """``pony rescan --account ghost`` raises SystemExit with the account name."""
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli("--config", str(config_path), "rescan", "--account", "ghost")
+            self.assertIn("ghost", str(ctx.exception))
+
+    # ------------------------------------------------------------------
+    # folder list
+    # ------------------------------------------------------------------
+
+    def test_folder_list_runs_without_error(self) -> None:
+        """``pony folder list`` completes without crashing even with no folders."""
+        with isolated_app_env(), temporary_config() as config_path:
+            output = run_cli("--config", str(config_path), "folder", "list")
+        # With no synced data the output should mention the account or
+        # indicate there are no folders.
+        self.assertTrue(
+            "personal" in output or "no folders" in output.lower(),
+            msg=f"Unexpected folder list output: {output!r}",
+        )
+
+    def test_folder_list_after_seeding_shows_inbox(self) -> None:
+        """``pony folder list`` shows INBOX after a message has been seeded."""
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Folder list test", body="body")
+            output = run_cli("--config", str(config_path), "folder", "list")
+        self.assertIn("personal", output)
+        self.assertIn("INBOX", output)
+
+
+def _seed_multipart_alternative(config_path: Path) -> _SeedHandle:
+    """Seed a multipart/alternative fixture message into the index and mirror."""
+    import dataclasses
+
+    import corpus
+
+    from pony.config import load_config
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    raw = corpus.multipart_alternative()
+    mirror = MaildirMirrorRepository(
+        account_name=account.name,
+        root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    storage_key = mirror.store_message(folder=folder, raw_message=raw)
+
+    projected = project_rfc822_message(
+        message_ref=MessageRef(
+            account_name=account.name,
+            folder_name="INBOX",
+            id=0,
+        ),
+        raw_message=raw,
+        storage_key=storage_key,
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
+
+
+def _seed_plain_text_fixture(config_path: Path) -> _SeedHandle:
+    """Seed a plain_text fixture message into the index and mirror."""
+    import dataclasses
+
+    import corpus
+
+    from pony.config import load_config
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    raw = corpus.plain_text()
+    mirror = MaildirMirrorRepository(
+        account_name=account.name,
+        root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    storage_key = mirror.store_message(folder=folder, raw_message=raw)
+
+    projected = project_rfc822_message(
+        message_ref=MessageRef(
+            account_name=account.name,
+            folder_name="INBOX",
+            id=0,
+        ),
+        raw_message=raw,
+        storage_key=storage_key,
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
+
+
+class MessageCommandsTestCase(unittest.TestCase):
+    """Tests for ``pony message mime``, ``message get``, and ``message body``."""
+
+    # --- message mime ---
+
+    def test_message_mime_dumps_mime_tree(self) -> None:
+        """``message mime`` prints the MIME structure for a multipart/alternative."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_multipart_alternative(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "mime",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("multipart/alternative", output)
+        self.assertIn("text/plain", output)
+        self.assertIn("text/html", output)
+
+    def test_message_mime_angle_bracket_normalization(self) -> None:
+        """Passing a Message-ID without angle brackets finds the same message."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_multipart_alternative(config_path)
+            # Strip angle brackets so the CLI must normalize the id.
+            bare_id = ref.rfc5322_id.strip("<>")
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "mime",
+                ref.account_name,
+                ref.folder_name,
+                bare_id,
+            )
+        self.assertIn("multipart/alternative", output)
+        self.assertIn("text/plain", output)
+        self.assertIn("text/html", output)
+
+    def test_message_mime_unknown_account_exits(self) -> None:
+        """``message mime`` raises SystemExit for a non-existent account."""
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "mime",
+                    "ghost",
+                    "INBOX",
+                    "<some-id@example.com>",
+                )
+            self.assertIn("ghost", str(ctx.exception))
+
+    # --- message get ---
+
+    def test_message_get_shows_attachment_metadata(self) -> None:
+        """``message get`` with an attachment message shows attachment info."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("Message-ID:", output)
+        self.assertIn("From:", output)
+        self.assertIn("Subject:", output)
+        self.assertIn("Attach.", output)
+
+    def test_message_get_not_found_exits(self) -> None:
+        """``message get`` raises SystemExit when the message does not exist."""
+        with isolated_app_env(), temporary_config() as config_path:
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "get",
+                    "personal",
+                    "INBOX",
+                    "<no-such-id@example.com>",
+                )
+            self.assertIn("not found", str(ctx.exception).lower())
+
+    # --- message body ---
+
+    def test_message_body_prints_body_text(self) -> None:
+        """``message body`` outputs headers and non-empty body text."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_plain_text_fixture(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "body",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("From:", output)
+        self.assertIn("Subject:", output)
+        # Body follows the blank line separator.
+        parts = output.split("\n\n", 1)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(parts[1].strip())
+
+    # --- _normalize_message_id ---
+
+    def test_normalize_message_id_bracketed_returns_single_form(self) -> None:
+        """Already-bracketed id returns a single-element list unchanged."""
+        from pony.cli import _normalize_message_id
+
+        result = _normalize_message_id("<foo@bar>")
+        self.assertEqual(result, ["<foo@bar>"])
+
+    def test_normalize_message_id_bare_contains_bracketed(self) -> None:
+        """Bare id without angle brackets also produces the bracketed form."""
+        from pony.cli import _normalize_message_id
+
+        result = _normalize_message_id("foo@bar")
+        self.assertIn("<foo@bar>", result)
+
+    def test_normalize_message_id_bare_contains_bare(self) -> None:
+        """The bare string itself appears as an element of the returned list."""
+        from pony.cli import _normalize_message_id
+
+        result = _normalize_message_id("foo@bar")
+        self.assertIn("foo@bar", result)
+
+
 def sample_config_toml() -> str:
     """Return a minimal valid TOML app configuration."""
     return """

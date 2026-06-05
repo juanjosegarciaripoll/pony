@@ -87,11 +87,15 @@ class PonyApp(App[None]):
         await self._start_mcp_tcp_server()
 
     async def _start_mcp_tcp_server(self) -> None:
+        from ..config import ConfigError
         from ..mcp_server import start_tcp_mcp_server
 
         paths = AppPaths.default()
         state_file = paths.mcp_state_file
-        task, _ = await start_tcp_mcp_server(self._config_path, state_file)
+        try:
+            task, _ = await start_tcp_mcp_server(self._config_path, state_file)
+        except (ConfigError, OSError):
+            return
         self._mcp_tcp_task = task
         self._mcp_state_file = state_file
 

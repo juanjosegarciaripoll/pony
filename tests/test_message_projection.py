@@ -475,3 +475,91 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         self.assertIn("Content", rendered.body)
         self.assertNotIn("margin", rendered.body)
         self.assertNotIn("font-size", rendered.body)
+
+
+class MessageIdFallbackProjectionTest(unittest.TestCase):
+    """Exchange-style bare Message-ID fold triggers stdlib fallback.
+
+    The regex parser uses ``[ \t]*`` after the colon, so a bare CRLF
+    (no leading whitespace on the continuation line) yields an empty
+    group(2) → empty message_id after strip.  The stdlib fallback is
+    then invoked.  For truly bare (non-indented) continuation lines
+    neither parser can recover the value; the important invariant is
+    that the code does **not** raise and returns an empty string rather
+    than crashing.
+    """
+
+    def test_bare_continuation_does_not_raise(self) -> None:
+        """Fallback path runs without error; result is empty for bare continuation."""
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Subject: Test\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID:\r\n"
+            b"<test-fallback@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"Body text.\r\n"
+        )
+        msg = _project(raw)
+        # Both the regex and stdlib parsers treat the bare (non-indented)
+        # continuation as a new (invalid) header, so the recovered value
+        # is the empty string rather than "<test-fallback@example.com>".
+        # The key invariant: no exception is raised.
+        self.assertEqual(msg.message_id, "")
+
+    def test_tab_folded_message_id_recovered(self) -> None:
+        """Stdlib fallback recovers a tab-folded Message-ID the regex misses.
+
+        The regex captures group(2) as empty when the header value is on a
+        tab-indented continuation line and the colon line has NO value at all
+        — this exercises the ``if not message_id`` branch.
+        """
+        # Construct a raw message where _parse_headers returns b"" for message-id
+        # by checking: after stripping, the regex group(2) for the Message-ID
+        # line is empty (just b'\r'), triggering the fallback.
+        # The fallback (stdlib compat32) correctly folds the tab continuation.
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Subject: Fallback Test\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID:\r\n"
+            b"\t<test-fallback@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"Body text.\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.message_id, "<test-fallback@example.com>")
+
+
+class TextCalendarAttachmentProjectionTest(unittest.TestCase):
+    """text/calendar part must be counted as an attachment."""
+
+    def test_text_calendar_detected_as_attachment(self) -> None:
+        raw = (
+            b"From: organizer@example.com\r\n"
+            b"To: attendee@example.com\r\n"
+            b"Subject: Meeting invite\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID: <invite@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/mixed; boundary="cal-boundary"\r\n'
+            b"\r\n"
+            b"--cal-boundary\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"Please find the attached calendar invite.\r\n"
+            b"--cal-boundary\r\n"
+            b"Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n"
+            b"\r\n"
+            b"BEGIN:VCALENDAR\r\n"
+            b"END:VCALENDAR\r\n"
+            b"--cal-boundary--\r\n"
+        )
+        msg = _project(raw)
+        self.assertTrue(msg.has_attachments)

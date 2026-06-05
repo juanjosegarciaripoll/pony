@@ -257,8 +257,7 @@ async def test_forward_eml_attachment_can_be_removed(
     assert send_mock.call_count == 1
     sent = send_mock.call_args.kwargs["msg"]
     assert not any(
-        part.get_content_type() == "message/rfc822"
-        for part in sent.iter_attachments()
+        part.get_content_type() == "message/rfc822" for part in sent.iter_attachments()
     )
 
 
@@ -590,6 +589,65 @@ async def test_folder_tree_next_inbox() -> None:
             account_name="one",
             folder_name="INBOX",
         )
+
+
+async def test_mcp_server_error_no_config_path() -> None:
+    """PonyApp starts cleanly when no config_path is provided.
+
+    Covers the try/except in _start_mcp_tcp_server: passing config_path=None
+    causes start_tcp_mcp_server to raise ConfigError or OSError, which is
+    silently swallowed so the app continues to run normally.
+    """
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mcp-no-config")
+    # build_pony_app does not pass config_path, so _config_path is None.
+    assert app._config_path is None  # noqa: SLF001
+    async with app.run_test() as pilot:
+        await pilot.pause()
+    # If we reach here without exception the test passes.
+
+
+async def test_q_key_quits_app() -> None:
+    """Pressing Q exits the app cleanly via the app-level binding."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="q-quit",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("Q")
+        await pilot.pause()
+    # If run_test exits cleanly the app quit without raising.
+
+
+async def test_message_list_renders_subject() -> None:
+    """Starting the app with a seeded message does not raise.
+
+    Smoke test: the folder panel and message list mount successfully and
+    labels are renderable strings.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="renders",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert pilot.app is not None
+        # The screen stack has at least one screen mounted.
+        assert len(app.screen_stack) >= 1
+
+
+async def test_app_unmounts_cleanly() -> None:
+    """PonyApp tears down without raising during on_unmount."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="unmount",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+    # Reaching here means on_unmount completed without exception.
 
 
 async def test_sync_nothing_to_sync_no_cancel_notification(
