@@ -16,11 +16,14 @@ from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
 from pony.smtp_sender import SMTPError, send_message
 from pony.tui.compose_utils import (
     _add_blockquote_hardbreaks,
+    _split_at_quote_boundary,
     build_email_message,
     build_forward_body,
     build_reply_all_recipients,
     build_reply_body,
     forward_subject,
+    new_compose_body,
+    parse_draft_fields,
     reply_subject,
 )
 from pony.tui.message_renderer import RenderedMessage
@@ -427,6 +430,154 @@ class SmtpSenderTest(unittest.TestCase):
                 password="secret",
                 msg=EmailMessage(),
             )
+
+
+class SplitAtQuoteBoundaryTest(unittest.TestCase):
+    def test_no_boundary_returns_full_text(self) -> None:
+        text = "Hello world"
+        user, quoted = _split_at_quote_boundary(text)
+        assert user == "Hello world"
+        assert quoted == ""
+
+    def test_on_wrote_boundary_splits_correctly(self) -> None:
+        text = "My reply\n\nOn Mon, 1 Jan wrote:\n\n> Original"
+        user, quoted = _split_at_quote_boundary(text)
+        assert "My reply" in user
+        assert "On Mon, 1 Jan wrote:" in quoted
+
+    def test_boundary_at_start_no_newline_before(self) -> None:
+        text = "On Mon wrote:\n\n> Original"
+        user, quoted = _split_at_quote_boundary(text)
+        assert user == ""
+        assert "On Mon wrote:" in quoted
+
+
+class NewComposeBodyTest(unittest.TestCase):
+    def test_no_signature_returns_empty(self) -> None:
+        assert new_compose_body(None) == ""
+
+    def test_with_signature_includes_sig_block(self) -> None:
+        body = new_compose_body("Alice Smith")
+        assert "Alice Smith" in body
+        assert "-- " in body
+
+
+class BuildReplyBodyWithSignatureTest(unittest.TestCase):
+    def test_reply_body_includes_signature(self) -> None:
+        r = _rendered(body="Some message.")
+        body = build_reply_body(r, signature="Alice")
+        assert "Alice" in body
+        assert "-- " in body
+
+
+class BuildForwardBodyWithSignatureTest(unittest.TestCase):
+    def test_forward_body_includes_signature(self) -> None:
+        r = _rendered(body="Forward content.")
+        body = build_forward_body(r, signature="Alice")
+        assert "Alice" in body
+        assert "-- " in body
+
+
+class ParseDraftFieldsTest(unittest.TestCase):
+    def test_extracts_headers_and_body(self) -> None:
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["From"] = "alice@example.com"
+        msg["To"] = "bob@example.com"
+        msg["Cc"] = "carol@example.com"
+        msg["Bcc"] = "dan@example.com"
+        msg["Subject"] = "Test draft"
+        msg.set_content("Draft body text")
+        raw = msg.as_bytes()
+
+        fields = parse_draft_fields(raw)
+        assert fields["to"] == "bob@example.com"
+        assert fields["cc"] == "carol@example.com"
+        assert fields["bcc"] == "dan@example.com"
+        assert fields["subject"] == "Test draft"
+        assert "Draft body text" in fields["body"]
+
+    def test_missing_headers_return_empty_strings(self) -> None:
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["From"] = "alice@example.com"
+        msg.set_content("body only")
+        fields = parse_draft_fields(msg.as_bytes())
+        assert fields["to"] == ""
+        assert fields["cc"] == ""
+        assert fields["subject"] == ""
+
+
+class BuildEmailMessageBranchesTest(unittest.TestCase):
+    def _build_md(self, body: str, **kwargs: object) -> object:
+        return build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="",
+            subject="Test",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+            **kwargs,
+        )
+
+    def test_markdown_with_signature_renders_sig_section(self) -> None:
+        body = "Hello world\n\n-- \nAlice Smith"
+        msg = self._build_md(body)
+        html_parts = [
+            part.get_payload(decode=True).decode()
+            for part in msg.walk()
+            if part.get_content_type() == "text/html"
+        ]
+        assert html_parts
+        assert any("Alice" in h for h in html_parts)
+
+    def test_markdown_with_quoted_content(self) -> None:
+        body = "My reply\n\nOn Mon wrote:\n\n> Original text"
+        msg = self._build_md(body)
+        html_parts = [
+            part.get_payload(decode=True).decode()
+            for part in msg.walk()
+            if part.get_content_type() == "text/html"
+        ]
+        assert any("Original text" in h for h in html_parts)
+
+    def test_build_email_with_bcc(self) -> None:
+        msg = build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="carol@example.com",
+            subject="BCC test",
+            body="body",
+            attachment_paths=[],
+        )
+        assert msg["Bcc"] == "carol@example.com"
+
+    def test_unknown_mime_type_falls_back_to_octet_stream(self) -> None:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".xyz_unknown", delete=False) as f:
+            f.write(b"binary data")
+            tmp = Path(f.name)
+        try:
+            msg = build_email_message(
+                from_address="a@example.com",
+                to="b@example.com",
+                cc="",
+                bcc="",
+                subject="x",
+                body="x",
+                attachment_paths=[tmp],
+            )
+            payloads = list(msg.iter_attachments())
+            assert len(payloads) == 1
+            assert payloads[0].get_content_type() == "application/octet-stream"
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

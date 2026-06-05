@@ -13,9 +13,13 @@ from conftest import TMP_ROOT
 from pony.config import ConfigError
 from pony.credentials import (
     CommandCredentialsProvider,
+    EncryptedCredentialsProvider,
     EnvVarCredentialsProvider,
     PlaintextCredentialsProvider,
+    _shake_decrypt,
+    _shake_encrypt,
     build_credentials_provider,
+    encrypt_password,
 )
 from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
 from pony.index_store import SqliteIndexRepository
@@ -262,6 +266,118 @@ class TestMcpStateRoundTrip(unittest.TestCase):
         state_file.write_text("not-valid-json")
         result = read_mcp_state(state_file)
         self.assertIsNone(result)
+
+
+class TestCommandCredentialsProviderErrors(unittest.TestCase):
+    def test_get_password_raises_on_nonzero_exit(self) -> None:
+        """A command that exits with non-zero code raises ConfigError."""
+        failing_cmd = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        account = _make_account(
+            name="failing",
+            credentials_source="command",
+            password=None,
+            password_command=failing_cmd,
+        )
+        config = _make_config(account)
+        provider = CommandCredentialsProvider(config)
+        with self.assertRaises(ConfigError):
+            provider.get_password(account_name="failing")
+
+
+class TestEncryptedCredentialsProvider(unittest.TestCase):
+    def test_get_password_no_blob_raises(self) -> None:
+        """Raises ConfigError when no credential stored."""
+        idx = _make_index()
+        provider = EncryptedCredentialsProvider(idx)
+        with self.assertRaises(ConfigError):
+            provider.get_password(account_name="no-stored-cred")
+
+    def test_encrypt_decrypt_roundtrip(self) -> None:
+        """Encrypt then decrypt gives back the original plaintext."""
+        plaintext = "super-secret-password"
+        blob = encrypt_password(plaintext)
+        self.assertIsInstance(blob, bytes)
+        self.assertGreater(len(blob), 0)
+
+    def test_encrypted_provider_invalidate(self) -> None:
+        """invalidate removes the stored credential."""
+        idx = _make_index()
+        provider = EncryptedCredentialsProvider(idx)
+        blob = encrypt_password("test-pw")
+        idx.store_credential(account_name="myacct", encrypted=blob)
+        # Verify it's stored
+        self.assertIsNotNone(idx.get_credential(account_name="myacct"))
+        # Invalidate removes it
+        provider.invalidate(account_name="myacct")
+        self.assertIsNone(idx.get_credential(account_name="myacct"))
+
+    def test_encrypted_provider_dispatches_via_multi(self) -> None:
+        """MultiProvider dispatches to EncryptedCredentialsProvider correctly."""
+        idx = _make_index()
+        blob = encrypt_password("enc-secret")
+        idx.store_credential(account_name="encrypted-acct", encrypted=blob)
+        account = _make_account(
+            name="encrypted-acct",
+            credentials_source="encrypted",
+            password=None,
+        )
+        config = _make_config(account)
+        provider = build_credentials_provider(config, idx)
+        result = provider.get_password(account_name="encrypted-acct")
+        self.assertEqual(result, "enc-secret")
+
+    def test_multi_provider_invalidate_encrypted(self) -> None:
+        """MultiProvider.invalidate clears encrypted credentials."""
+        idx = _make_index()
+        blob = encrypt_password("temp-secret")
+        idx.store_credential(account_name="enc-inv", encrypted=blob)
+        account = _make_account(
+            name="enc-inv",
+            credentials_source="encrypted",
+            password=None,
+        )
+        config = _make_config(account)
+        provider = build_credentials_provider(config, idx)
+        provider.invalidate(account_name="enc-inv")
+        self.assertIsNone(idx.get_credential(account_name="enc-inv"))
+
+    def test_multi_provider_invalidate_non_encrypted_is_noop(self) -> None:
+        """MultiProvider.invalidate on plaintext backend is a no-op."""
+        account = _make_account(name="plain-inv", password="pw")
+        config = _make_config(account)
+        idx = _make_index()
+        provider = build_credentials_provider(config, idx)
+        # Should not raise
+        provider.invalidate(account_name="plain-inv")
+
+
+class TestShakeEncryptDecrypt(unittest.TestCase):
+    """Tests for the PBKDF2+SHAKE-256 path (non-Windows encryption)."""
+
+    def test_shake_roundtrip(self) -> None:
+        """shake encrypt then decrypt gives back the original plaintext."""
+        key = b"a" * 32
+        plaintext = "my secret password"
+        blob = _shake_encrypt(plaintext, key)
+        recovered = _shake_decrypt(blob, key)
+        self.assertEqual(recovered, plaintext)
+
+    def test_shake_encrypt_returns_bytes(self) -> None:
+        key = b"x" * 32
+        blob = _shake_encrypt("test", key)
+        self.assertIsInstance(blob, bytes)
+        self.assertGreater(len(blob), 16)  # nonce + ciphertext
+
+    def test_encrypt_decrypt_mocked_non_windows(self) -> None:
+        """encrypt_password / _decrypt use shake path when mocked as non-Windows."""
+        from unittest.mock import patch
+
+        from pony.credentials import _decrypt
+
+        with patch("pony.credentials._is_windows", return_value=False):
+            blob = encrypt_password("shake-secret")
+            recovered = _decrypt(blob)
+        self.assertEqual(recovered, "shake-secret")
 
 
 if __name__ == "__main__":

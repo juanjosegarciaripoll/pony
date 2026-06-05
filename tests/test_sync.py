@@ -1425,7 +1425,6 @@ class C2RestoreTestCase(unittest.TestCase):
         self.assertIn(1, session.deleted_uids)
 
 
-
 class MassDeletionThresholdTestCase(unittest.TestCase):
     """C-6: mass deletion detected → folder needs confirmation."""
 
@@ -2551,3 +2550,203 @@ class DedupSyncPropagationTestCase(unittest.TestCase):
         uids = {r.uid for r in surviving if r.uid is not None}
         self.assertNotIn(2, uids, "UID 2 row must be gone from the index")
         self.assertIn(1, uids, "UID 1 must survive")
+
+
+# ---------------------------------------------------------------------------
+# SyncPlan utility method tests
+# ---------------------------------------------------------------------------
+
+
+class SyncPlanUtilityTestCase(unittest.TestCase):
+    """Tests for SyncPlan methods and format helpers."""
+
+    from pony.domain import MessageRef
+    from pony.sync import (
+        AccountSyncPlan,
+        FetchNewOp,
+        FolderSyncPlan,
+        MergeFlagsOp,
+        PullFlagsOp,
+        PurgeLocalOp,
+        PushAppendOp,
+        PushDeleteOp,
+        PushFlagsOp,
+        PushMoveOp,
+        RestoreOp,
+        ReUploadOp,
+        ServerDeleteOp,
+        SyncPlan,
+        UidValidityResetOp,
+        _categorize_ops,
+        format_plan_detail,
+        format_plan_summary,
+    )
+
+    def _ref(self, id_: int = 1) -> MessageRef:
+        from pony.domain import MessageRef
+
+        return MessageRef(account_name="acct", folder_name="INBOX", id=id_)
+
+    def _empty_folder(self, name: str = "INBOX") -> FolderSyncPlan:
+        from pony.sync import FolderSyncPlan
+
+        return FolderSyncPlan(folder_name=name, uid_validity=1, highest_uid=1, ops=())
+
+    def test_is_empty_true_for_empty_plan(self) -> None:
+        from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
+
+        folder = FolderSyncPlan(
+            folder_name="INBOX", uid_validity=1, highest_uid=0, ops=()
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        self.assertTrue(plan.is_empty())
+
+    def test_is_empty_false_when_creates(self) -> None:
+        from pony.sync import AccountSyncPlan, SyncPlan
+
+        acct = AccountSyncPlan(account_name="acct", folders=(), creates=("Archive",))
+        plan = SyncPlan(accounts=(acct,))
+        self.assertFalse(plan.is_empty())
+
+    def test_is_empty_false_when_ops(self) -> None:
+        from pony.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
+
+        op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
+        folder = FolderSyncPlan(
+            folder_name="INBOX", uid_validity=1, highest_uid=1, ops=(op,)
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        self.assertFalse(plan.is_empty())
+
+    def test_count_ops_for_fetch(self) -> None:
+        from pony.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
+
+        op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
+        folder = FolderSyncPlan(
+            folder_name="INBOX", uid_validity=1, highest_uid=1, ops=(op,)
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        self.assertEqual(plan.count_ops(FetchNewOp), 1)
+        from pony.sync import ServerDeleteOp
+
+        self.assertEqual(plan.count_ops(ServerDeleteOp), 0)
+
+    def test_categorize_restore_op(self) -> None:
+        from pony.sync import RestoreOp, _categorize_ops
+
+        op = RestoreOp(message_ref=self._ref())
+        counts = _categorize_ops((op,))
+        self.assertIn("restore", counts)
+        self.assertEqual(counts["restore"], 1)
+
+    def test_categorize_reupload_op(self) -> None:
+        from pony.sync import ReUploadOp, _categorize_ops
+
+        op = ReUploadOp(message_ref=self._ref(), local_flags=frozenset())
+        counts = _categorize_ops((op,))
+        self.assertIn("reupload", counts)
+
+    def test_categorize_purge_op(self) -> None:
+        from pony.sync import PurgeLocalOp, _categorize_ops
+
+        op = PurgeLocalOp(message_ref=self._ref(), storage_key="key1")
+        counts = _categorize_ops((op,))
+        self.assertIn("purge", counts)
+
+    def test_categorize_uidvalidity_reset_op(self) -> None:
+        from pony.sync import UidValidityResetOp, _categorize_ops
+
+        op = UidValidityResetOp()
+        counts = _categorize_ops((op,))
+        self.assertIn("uidvalidity_reset", counts)
+
+    def test_format_plan_detail_with_skipped_folders(self) -> None:
+        from pony.sync import AccountSyncPlan, SyncPlan, format_plan_detail
+
+        acct = AccountSyncPlan(
+            account_name="acct",
+            folders=(),
+            skipped_folders=("Spam", "Trash"),
+        )
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        self.assertIn("skipped", detail)
+        self.assertIn("Spam", detail)
+
+    def test_format_plan_detail_with_creates(self) -> None:
+        from pony.sync import AccountSyncPlan, SyncPlan, format_plan_detail
+
+        acct = AccountSyncPlan(
+            account_name="acct",
+            folders=(),
+            creates=("Archive",),
+        )
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        self.assertIn("create folder", detail)
+        self.assertIn("Archive", detail)
+
+    def test_format_plan_detail_new_folder(self) -> None:
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            SyncPlan,
+            format_plan_detail,
+        )
+
+        folder = FolderSyncPlan(
+            folder_name="NewInbox",
+            uid_validity=1,
+            highest_uid=0,
+            ops=(),
+            is_new=True,
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        self.assertIn("new folder", detail)
+
+    def test_format_plan_detail_with_confirmation_needed(self) -> None:
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            ServerDeleteOp,
+            SyncPlan,
+            format_plan_detail,
+        )
+
+        op = ServerDeleteOp(uid=1, message_ref=self._ref())
+        folder = FolderSyncPlan(
+            folder_name="INBOX",
+            uid_validity=1,
+            highest_uid=10,
+            ops=(op,),
+            needs_confirmation=True,
+            pending_delete_count=5,
+            pending_delete_total=10,
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        self.assertIn("CONFIRM", detail)
+
+    def test_format_plan_summary_with_ops(self) -> None:
+        from pony.sync import (
+            AccountSyncPlan,
+            FetchNewOp,
+            FolderSyncPlan,
+            SyncPlan,
+            format_plan_summary,
+        )
+
+        op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
+        folder = FolderSyncPlan(
+            folder_name="INBOX", uid_validity=1, highest_uid=1, ops=(op,)
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        summary = format_plan_summary(plan)
+        self.assertIn("download", summary)

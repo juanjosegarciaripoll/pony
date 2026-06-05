@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -348,6 +349,118 @@ class ConfigParsingTestCase(unittest.TestCase):
         account = config.accounts[0]
         assert isinstance(account, AccountConfig)
         self.assertIsNone(account.archive_folder)
+
+
+class ConfigValidationErrorsTestCase(unittest.TestCase):
+    """Tests for validation error branches in config parsing."""
+
+    def _base_dir(self) -> Path:
+        d = TMP_ROOT / "cfg-val" / uuid4().hex
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_load_config_invalid_toml_raises(self) -> None:
+
+        temp = TMP_ROOT / "bad-toml" / uuid4().hex
+        temp.mkdir(parents=True, exist_ok=True)
+        cfg = temp / "config.toml"
+        cfg.write_text("[unclosed", encoding="utf-8")
+        with self.assertRaises(ConfigError):
+            load_config(cfg)
+
+    def test_load_config_json_file_reads(self) -> None:
+        """A .json config file is parsed via json.loads (line 84)."""
+        import json
+
+        data = sample_config()
+        temp = TMP_ROOT / "json-cfg" / uuid4().hex
+        temp.mkdir(parents=True, exist_ok=True)
+        cfg = temp / "config.json"
+        cfg.write_text(json.dumps(data), encoding="utf-8")
+        config = load_config(cfg)
+        self.assertEqual(len(config.accounts), 1)
+
+    def test_top_level_not_dict_raises(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_config([1, 2, 3])
+
+    def test_accounts_not_list_raises(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_config({"config_version": 2, "accounts": "not-a-list"})
+
+    def test_account_not_object_raises(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_config(
+                {
+                    "config_version": 2,
+                    "accounts": ["not-a-dict"],
+                }
+            )
+
+    def test_imap_account_not_object_raises(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_config(
+                {
+                    "config_version": 2,
+                    "accounts": ["not-a-dict"],
+                }
+            )
+
+    def test_password_command_not_list_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["password_command"] = "a-string-not-a-list"  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_config_version_not_int_raises(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_config({"config_version": "two"})
+
+    def test_trash_retention_days_negative_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["mirror"]["trash_retention_days"] = -1  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_require_mapping_not_dict_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["smtp"] = "not-a-dict"  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_require_string_list_not_list_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["folders"] = {
+            "include": "not-a-list",
+            "exclude": [],
+            "read_only": [],
+        }  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_require_int_not_int_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["imap_port"] = "not-an-int"  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_optional_string_empty_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["sent_folder"] = ""  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_require_bool_not_bool_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["imap_ssl"] = "true"  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
+
+    def test_invalid_credentials_source_raises(self) -> None:
+        data = sample_config()
+        data["accounts"][0]["credentials_source"] = "magic"  # type: ignore[index]
+        with self.assertRaises(ConfigError):
+            parse_config(data)
 
 
 class FolderPolicyTestCase(unittest.TestCase):

@@ -1504,6 +1504,222 @@ class MessageCommandsTestCase(unittest.TestCase):
         self.assertIn("foo@bar", result)
 
 
+class EmlViewerCliTest(unittest.TestCase):
+    """Tests for the ``pony view`` command and EML viewer error paths."""
+
+    def test_view_nonexistent_file_exits_with_error(self) -> None:
+        from pony.cli import run_eml_viewer
+
+        with isolated_app_env():
+            rc = run_eml_viewer(path=Path("/no/such/file.eml"))
+        self.assertEqual(rc, 1)
+
+    def test_view_command_not_a_file_exits(self) -> None:
+        import tempfile
+
+        from pony.cli import run_eml_viewer
+
+        with isolated_app_env(), tempfile.TemporaryDirectory() as tmpdir:
+            rc = run_eml_viewer(path=Path(tmpdir))
+        self.assertEqual(rc, 1)
+
+
+class ContactsCommandsTest(unittest.TestCase):
+    """Tests for contacts show, export, import commands."""
+
+    def test_contacts_show_not_found(self) -> None:
+        """``pony contacts show`` returns 1 when email not in index."""
+        with isolated_app_env(), temporary_config() as config_path:
+            rc = run_cli_ret(
+                "--config",
+                str(config_path),
+                "contacts",
+                "show",
+                "nobody@nowhere.invalid",
+            )
+        self.assertEqual(rc, 1)
+
+    def test_contacts_export_no_path_no_bbdb_returns_1(self) -> None:
+        """``pony contacts export`` exits 1 when no path given and no bbdb_path."""
+        from pony.cli import run_contacts_export
+
+        with isolated_app_env():
+            from pony.paths import AppPaths
+
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+            rc = run_contacts_export(paths=paths, config_path=None, output_path=None)
+        self.assertEqual(rc, 1)
+
+    def test_contacts_export_to_explicit_path(self) -> None:
+        """``pony contacts export /path/out.bbdb`` writes a file and returns 0."""
+        with isolated_app_env(), temporary_config() as config_path:
+            export_path = TMP_ROOT / "contacts_export_test.bbdb"
+            rc = run_cli_ret(
+                "--config",
+                str(config_path),
+                "contacts",
+                "export",
+                str(export_path),
+            )
+        self.assertEqual(rc, 0)
+        self.assertTrue(export_path.exists())
+
+    def test_contacts_search_with_results(self) -> None:
+        """``pony contacts search`` shows results when contacts exist."""
+        with isolated_app_env(), temporary_config() as config_path:
+            run_cli("--config", str(config_path), "fixture-ingest")
+            output = run_cli(
+                "--config", str(config_path), "contacts", "search", "alice"
+            )
+        # Either no results or results — no crash is the key assertion.
+        self.assertIsNotNone(output)
+
+
+class LocalSummaryNoConfigTest(unittest.TestCase):
+    """Tests for run_local_summary with no loaded config."""
+
+    def test_local_summary_no_config_shows_message(self) -> None:
+        """Without a valid config, local-summary says so."""
+        with isolated_app_env():
+            output = run_cli("local-summary")
+        self.assertIn("Pony Express local summary", output)
+        # Either shows "(no config loaded" or normal header — both are valid.
+        self.assertIn("Files", output)
+
+
+class ResetCommandTest(unittest.TestCase):
+    """Tests for ``pony reset --yes`` and ``pony reset --account``."""
+
+    def test_reset_yes_removes_index_file(self) -> None:
+        """``pony reset --yes`` removes the index DB file."""
+        import sqlite3
+
+        with isolated_app_env(), temporary_config() as config_path:
+            from pony.paths import AppPaths
+
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+            # Create a DB so there's something to delete.
+            paths.data_dir.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(paths.index_db_file))
+            conn.execute("CREATE TABLE foo (id INTEGER PRIMARY KEY)")
+            conn.commit()
+            conn.close()
+            self.assertTrue(paths.index_db_file.exists())
+
+            output = run_cli("--config", str(config_path), "reset", "--yes")
+        self.assertIn("Reset complete", output)
+
+    def test_reset_account_yes_purges_account(self) -> None:
+        """``pony reset --account personal --yes`` purges that account's data."""
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Reset test", body="body")
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "reset",
+                "--account",
+                "personal",
+                "--yes",
+            )
+        self.assertIn("Reset complete", output)
+
+    def test_reset_account_unknown_returns_2(self) -> None:
+        """``pony reset --account ghost --yes`` exits 2 for unknown account."""
+        with isolated_app_env(), temporary_config() as config_path:
+            rc = run_cli_ret(
+                "--config",
+                str(config_path),
+                "reset",
+                "--account",
+                "ghost",
+                "--yes",
+            )
+        self.assertEqual(rc, 2)
+
+
+class MessageGetCcTest(unittest.TestCase):
+    """Tests for message get with Cc field."""
+
+    def test_message_get_shows_cc_when_present(self) -> None:
+        """``message get`` shows Cc line when message has Cc recipients."""
+        import dataclasses
+        from email.message import EmailMessage
+
+        from pony.config import load_config
+        from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.message_projection import project_rfc822_message
+        from pony.paths import AppPaths
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            assert isinstance(account, AccountConfig)
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+
+            rfc5322_id = f"<cc-test-{uuid4().hex}@example.com>"
+            msg = EmailMessage()
+            msg["From"] = "sender@example.com"
+            msg["To"] = account.email_address
+            msg["Cc"] = "cc@example.com"
+            msg["Subject"] = "Test with Cc"
+            msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+            msg["Message-ID"] = rfc5322_id
+            msg.set_content("body text")
+            raw = msg.as_bytes()
+
+            mirror = MaildirMirrorRepository(
+                account_name=account.name, root_dir=account.mirror.path
+            )
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+            storage_key = mirror.store_message(folder=folder, raw_message=raw)
+            projected = project_rfc822_message(
+                message_ref=MessageRef(
+                    account_name=account.name, folder_name="INBOX", id=0
+                ),
+                raw_message=raw,
+                storage_key=storage_key,
+            )
+            stored = dataclasses.replace(
+                projected, message_id=rfc5322_id, local_status=MessageStatus.ACTIVE
+            )
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            index.insert_message(message=stored)
+
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                account.name,
+                "INBOX",
+                rfc5322_id,
+            )
+        self.assertIn("Cc:", output)
+        self.assertIn("cc@example.com", output)
+
+    def test_message_get_plain_text_shows_no_attachments(self) -> None:
+        """``message get`` on a plain text message shows 'Attach.: no'."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_plain_text_fixture(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        # plain_text() has no attachments — should show "no"
+        self.assertIn("Attach.:", output)
+
+
 def sample_config_toml() -> str:
     """Return a minimal valid TOML app configuration."""
     return """

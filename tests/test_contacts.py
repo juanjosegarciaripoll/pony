@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -333,9 +334,7 @@ class HarvestContactsTests(unittest.TestCase):
 
     def test_harvest_four_word_name(self) -> None:
         repo = _make_repo()
-        msg = _make_indexed_message(
-            "Juan Jose Garcia Ripoll <juan@example.com>"
-        )
+        msg = _make_indexed_message("Juan Jose Garcia Ripoll <juan@example.com>")
         repo.harvest_contacts([msg])
         found = repo.find_contact_by_email(email_address="juan@example.com")
         assert found is not None
@@ -755,3 +754,114 @@ class ContactsCliTests(unittest.TestCase):
             sys.stdout = old_stdout
         self.assertEqual(rc, 1)
         self.assertIn("No input path", captured.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# bbdb.py internal parser tests
+# ---------------------------------------------------------------------------
+
+
+class BbdbParserInternalsTest(unittest.TestCase):
+    """Tests for bbdb.py parsing helpers not otherwise exercised."""
+
+    def test_lisp_string_empty_returns_nil(self) -> None:
+        from pony.bbdb import _lisp_string
+
+        self.assertEqual(_lisp_string(""), "nil")
+
+    def test_sexp_to_string_non_string_returns_empty(self) -> None:
+        from pony.bbdb import _sexp_to_string
+
+        self.assertEqual(_sexp_to_string(42), "")
+        self.assertEqual(_sexp_to_string(None), "")
+
+    def test_parse_bbdb_record_too_few_fields_returns_none(self) -> None:
+        from pony.bbdb import _parse_bbdb_record
+
+        # A record with fewer than 8 fields
+        result = _parse_bbdb_record('["Alice" "Smith"]')
+        self.assertIsNone(result)
+
+    def test_read_bbdb_skips_comment_lines(self) -> None:
+        import tempfile
+
+        from pony.bbdb import read_bbdb
+
+        content = "; this is a comment\n; another comment\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".bbdb", delete=False) as f:
+            f.write(content)
+            path = Path(f.name)
+        try:
+            result = read_bbdb(path)
+            self.assertEqual(result, [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_extract_notes_with_nested_list(self) -> None:
+        from pony.bbdb import _extract_notes
+
+        # Nested list structure: [[("notes", "text")]]
+        xfields = [[("notes", "my notes")]]
+        result = _extract_notes(xfields)
+        self.assertEqual(result, "my notes")
+
+    def test_extract_notes_with_flat_tuple(self) -> None:
+        from pony.bbdb import _extract_notes
+
+        xfields = [("notes", "flat notes")]
+        result = _extract_notes(xfields)
+        self.assertEqual(result, "flat notes")
+
+    def test_extract_notes_empty_returns_empty(self) -> None:
+        from pony.bbdb import _extract_notes
+
+        self.assertEqual(_extract_notes([]), "")
+        self.assertEqual(_extract_notes(None), "")
+
+    def test_parse_bbdb_date_from_string(self) -> None:
+        from pony.bbdb import _parse_bbdb_date
+
+        result = _parse_bbdb_date("2024-01-15")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.year, 2024)
+
+    def test_parse_bbdb_date_from_tuple(self) -> None:
+        from pony.bbdb import _parse_bbdb_date
+
+        result = _parse_bbdb_date(("creation-date", "2024-06-01"))
+        self.assertIsNotNone(result)
+
+    def test_parse_bbdb_date_from_list(self) -> None:
+        from pony.bbdb import _parse_bbdb_date
+
+        result = _parse_bbdb_date([("timestamp", "2024-03-15")])
+        self.assertIsNotNone(result)
+
+    def test_parse_bbdb_date_invalid_returns_none(self) -> None:
+        from pony.bbdb import _parse_bbdb_date
+
+        result = _parse_bbdb_date("not-a-date")
+        self.assertIsNone(result)
+
+    def test_parse_bbdb_date_none_returns_none(self) -> None:
+        from pony.bbdb import _parse_bbdb_date
+
+        result = _parse_bbdb_date(None)
+        self.assertIsNone(result)
+
+    def test_read_bbdb_line_not_ending_with_bracket_skipped(self) -> None:
+        import tempfile
+
+        from pony.bbdb import read_bbdb
+
+        # A line that starts with [ but doesn't end with ]
+        content = "[incomplete record without end bracket\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".bbdb", delete=False) as f:
+            f.write(content)
+            path = Path(f.name)
+        try:
+            result = read_bbdb(path)
+            self.assertEqual(result, [])
+        finally:
+            path.unlink(missing_ok=True)
