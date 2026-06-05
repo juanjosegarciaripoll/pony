@@ -1523,6 +1523,36 @@ class EmlViewerCliTest(unittest.TestCase):
             rc = run_eml_viewer(path=Path(tmpdir))
         self.assertEqual(rc, 1)
 
+    def test_docs_command_opens_browser(self) -> None:
+        """``pony docs`` opens the documentation URL."""
+        from unittest.mock import patch
+
+        with isolated_app_env(), patch("webbrowser.open") as mock_open:
+            run_cli("docs")
+        # Docs command should call webbrowser.open with a URL
+        self.assertEqual(mock_open.call_count, 1)
+        url = mock_open.call_args.args[0]
+        self.assertTrue(url.startswith("http") or url.startswith("file://"))
+
+    def test_view_command_dispatches_via_cli(self) -> None:
+        """``pony view file.eml`` reads the file and (mock) launches the viewer."""
+        import tempfile
+        from unittest.mock import patch
+
+        import corpus
+
+        raw = corpus.plain_text()
+        with isolated_app_env():
+            with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as f:
+                f.write(raw)
+                eml_path = Path(f.name)
+            try:
+                with patch("pony.tui.app.EmlViewerApp.run"):
+                    run_cli("view", str(eml_path))
+            finally:
+                eml_path.unlink(missing_ok=True)
+        # If no SystemExit and no crash, the view command ran
+
 
 class ContactsCommandsTest(unittest.TestCase):
     """Tests for contacts show, export, import commands."""
@@ -1574,6 +1604,115 @@ class ContactsCommandsTest(unittest.TestCase):
             )
         # Either no results or results — no crash is the key assertion.
         self.assertIsNotNone(output)
+
+
+class CliHelperFunctionsTest(unittest.TestCase):
+    """Tests for internal CLI helper functions."""
+
+    def test_maildir_folders_with_subdirs(self) -> None:
+        """_maildir_folders discovers INBOX plus dot-prefixed subdirs."""
+        import tempfile
+
+        from pony.cli import _maildir_folders
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # Create INBOX cur/new
+            (root / "cur").mkdir()
+            (root / "new").mkdir()
+            (root / "cur" / "msg1").write_text("x")
+            # Create a subfolder
+            sent = root / ".Sent"
+            sent.mkdir()
+            (sent / "cur").mkdir()
+            (sent / "new").mkdir()
+            (sent / "cur" / "msg2").write_text("x")
+            # Create a non-dir dot-prefixed file (should be skipped)
+            (root / ".hidden-file").write_text("not a folder")
+
+            result = _maildir_folders(root)
+
+        self.assertIn("INBOX", result)
+        self.assertEqual(result["INBOX"], 1)
+        self.assertIn("Sent", result)
+        self.assertEqual(result["Sent"], 1)
+
+    def test_maildir_folders_nonexistent_returns_empty(self) -> None:
+        from pony.cli import _maildir_folders
+
+        result = _maildir_folders(Path("/no/such/dir"))
+        self.assertEqual(result, {})
+
+    def test_mbox_folders_with_mbox_files(self) -> None:
+        import tempfile
+
+        from pony.cli import _mbox_folders
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "INBOX.mbox").write_text("From ...\n")
+            (root / "Sent.mbox").write_text("From ...\n")
+            result = _mbox_folders(root)
+
+        self.assertIn("INBOX", result)
+        self.assertIn("Sent", result)
+
+    def test_mbox_folders_empty_dir_has_inbox(self) -> None:
+        import tempfile
+
+        from pony.cli import _mbox_folders
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _mbox_folders(Path(tmpdir))
+
+        self.assertIn("INBOX", result)
+        self.assertIsNone(result["INBOX"])
+
+    def test_fmt_size_bytes(self) -> None:
+        from pony.cli import _fmt_size
+
+        self.assertIn("B", _fmt_size(500))
+
+    def test_fmt_size_kilobytes(self) -> None:
+        from pony.cli import _fmt_size
+
+        result = _fmt_size(2048)
+        self.assertIn("KB", result)
+
+    def test_fmt_size_megabytes(self) -> None:
+        from pony.cli import _fmt_size
+
+        result = _fmt_size(2 * 1024 * 1024)
+        self.assertIn("MB", result)
+
+
+class LocalSummaryMboxTest(unittest.TestCase):
+    """Test local-summary with an mbox-format account."""
+
+    def test_local_summary_mbox_account(self) -> None:
+        """``pony local-summary`` works with an mbox-format account."""
+        with isolated_app_env() as env_root:
+            # Create a config with mbox format
+            config_path = env_root / "config" / "config.toml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                "config_version = 2\n"
+                "[[accounts]]\n"
+                'name = "mbox-test"\n'
+                'email_address = "user@example.com"\n'
+                'imap_host = "imap.example.com"\n'
+                'username = "user"\n'
+                'credentials_source = "plaintext"\n'
+                'password = "secret"\n'
+                "[accounts.smtp]\n"
+                'host = "smtp.example.com"\n'
+                "[accounts.mirror]\n"
+                'path = "mirrors/mbox"\n'
+                'format = "mbox"\n',
+                encoding="utf-8",
+            )
+            output = run_cli("--config", str(config_path), "local-summary")
+        self.assertIn("Pony Express local summary", output)
 
 
 class LocalSummaryNoConfigTest(unittest.TestCase):

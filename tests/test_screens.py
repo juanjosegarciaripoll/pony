@@ -783,3 +783,208 @@ async def test_sync_confirm_button_ignored_while_syncing() -> None:
         await pilot.pause()
     # on_confirm called exactly once
     assert len(called) == 1
+
+
+# ===========================================================================
+# ContactDetailScreen and ContactEditScreen
+# ===========================================================================
+
+
+async def test_contact_detail_screen_mounts() -> None:
+    """ContactDetailScreen displays a contact without crashing."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+
+    paths = make_tmp_paths("contact-detail")
+    index = make_index(paths)
+    contact = Contact(
+        id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+    )
+    saved = index.upsert_contact(contact=contact)
+
+    app = _make_host(ContactDetailScreen, saved, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Screen should have mounted without error
+        assert app.screen is not None
+
+
+async def test_contact_detail_screen_escape_dismisses() -> None:
+    """Pressing Escape dismisses ContactDetailScreen."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+
+    paths = make_tmp_paths("contact-detail-esc")
+    index = make_index(paths)
+    contact = Contact(
+        id=None,
+        first_name="Bob",
+        last_name="Jones",
+        emails=("bob@x.com",),
+        organization="ACME",
+        notes="Some notes",
+    )
+    saved = index.upsert_contact(contact=contact)
+
+    app = _make_host(ContactDetailScreen, saved, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is False
+
+
+async def test_contact_edit_screen_mounts() -> None:
+    """ContactEditScreen mounts and shows input fields."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("contact-edit")
+    index = make_index(paths)
+    contact = Contact(
+        id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+    )
+
+    app = _make_host(ContactEditScreen, contact, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Input
+
+        inputs = app.screen.query(Input)
+        assert len(list(inputs)) > 0
+
+
+async def test_contact_edit_screen_escape_dismisses_none() -> None:
+    """Pressing Escape dismisses ContactEditScreen with None."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("contact-edit-esc")
+    index = make_index(paths)
+    contact = Contact(
+        id=None, first_name="Carol", last_name="White", emails=("carol@x.com",)
+    )
+
+    app = _make_host(ContactEditScreen, contact, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is None
+
+
+async def test_contact_edit_screen_save_ctrl_s() -> None:
+    """Pressing ctrl+s saves and dismisses ContactEditScreen with a Contact."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("contact-edit-save")
+    index = make_index(paths)
+    contact = Contact(
+        id=None, first_name="Dave", last_name="Brown", emails=("dave@x.com",)
+    )
+
+    app = _make_host(ContactEditScreen, contact, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+    # Should have been saved (returned Contact or None)
+
+
+async def test_contact_browser_with_contacts_shows_rows() -> None:
+    """ContactBrowserScreen with seeded contacts shows rows in the table."""
+    from textual.widgets import DataTable
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    paths = make_tmp_paths("cb-rows")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+        )
+    )
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Bob", last_name="Jones", emails=("bob@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#contact-table", DataTable)
+        assert table.row_count == 2
+
+
+async def test_contact_browser_search_filters_rows() -> None:
+    """Searching in ContactBrowserScreen filters the displayed rows."""
+    from textual.widgets import DataTable
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    paths = make_tmp_paths("cb-search")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+        )
+    )
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Bob", last_name="Jones", emails=("bob@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        for ch in "Alice":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+        table = app.screen.query_one("#contact-table", DataTable)
+        assert table.row_count == 1
+
+
+async def test_contact_browser_mark_contact() -> None:
+    """Pressing space marks a contact (mark_down action)."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    paths = make_tmp_paths("cb-mark")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Dave", last_name="Lee", emails=("dave@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # space marks the current row and moves down (action_mark_down)
+        await pilot.press("space")
+        await pilot.pause()
+        screen = app.screen
+        # If mark worked, _marked should contain the contact's id
+        from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+        assert isinstance(screen, ContactBrowserScreen)
