@@ -2750,3 +2750,55 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         plan = SyncPlan(accounts=(acct,))
         summary = format_plan_summary(plan)
         self.assertIn("download", summary)
+
+    def test_categorize_push_move_op(self) -> None:
+        from pony.sync import PushMoveOp, _categorize_ops
+
+        op = PushMoveOp(
+            message_ref=self._ref(),
+            source_folder="INBOX",
+            source_uid=1,
+            target_folder="Archive",
+        )
+        counts = _categorize_ops((op,))
+        self.assertIn("push_move", counts)
+
+    def test_categorize_push_append_op(self) -> None:
+        from pony.sync import PushAppendOp, _categorize_ops
+
+        op = PushAppendOp(message_ref=self._ref())
+        counts = _categorize_ops((op,))
+        self.assertIn("push_append", counts)
+
+    def test_categorize_push_delete_op(self) -> None:
+        from pony.sync import PushDeleteOp, _categorize_ops
+
+        op = PushDeleteOp(message_ref=self._ref(), server_uid=1, storage_key="k")
+        counts = _categorize_ops((op,))
+        self.assertIn("push_delete", counts)
+
+    def test_categorize_pull_flags_op(self) -> None:
+        from pony.sync import PullFlagsOp, _categorize_ops
+
+        op = PullFlagsOp(uid=1, message_ref=self._ref(), new_flags=frozenset())
+        counts = _categorize_ops((op,))
+        self.assertIn("pull_flags", counts)
+
+    def test_categorize_push_flags_op(self) -> None:
+        from pony.sync import PushFlagsOp, _categorize_ops
+
+        op = PushFlagsOp(uid=1, message_ref=self._ref(), new_flags=frozenset())
+        counts = _categorize_ops((op,))
+        self.assertIn("push_flags", counts)
+
+    def test_categorize_merge_flags_op(self) -> None:
+        from pony.sync import MergeFlagsOp, _categorize_ops
+
+        op = MergeFlagsOp(
+            uid=1,
+            message_ref=self._ref(),
+            merged_flags=frozenset(),
+            push_to_server=True,
+        )
+        counts = _categorize_ops((op,))
+        self.assertIn("merge_flags", counts)

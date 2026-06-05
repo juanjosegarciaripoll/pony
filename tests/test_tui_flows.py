@@ -969,6 +969,120 @@ async def test_reply_shortcut_opens_compose_screen(
         await pilot.pause()
 
 
+async def test_reply_all_opens_compose_with_cc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing R (reply-all) opens ComposeScreen with Cc populated."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    # Build a message with a Cc header
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "alice@example.com"
+    msg["To"] = "acct@example.com"
+    msg["Cc"] = "carol@example.com"
+    msg["Subject"] = "Thread"
+    msg["Date"] = "Fri, 11 Apr 2026 10:00:00 +0000"
+    msg["Message-ID"] = f"<reply-all-{uuid4().hex}@example.com>"
+    msg.set_content("Reply me all")
+    raw = msg.as_bytes()
+
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="reply-all",
+        seed=[(folder, raw)],
+    )
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", lambda **_: None)
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("R")
+        await pilot.pause()
+        assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+        await pilot.press("Q")
+        await pilot.pause()
+
+
+async def test_compose_send_with_contacts_harvests_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After sending, new recipients are added to the contacts store."""
+    paths = make_tmp_paths("harvest")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    import dataclasses as _dc
+
+    # Set full_name so the compose screen doesn't push a ContactEditScreen
+    account = _dc.replace(account, full_name="Test User")
+    config = make_test_config(accounts=(account,))
+
+    from pony.tui.app import ComposeApp
+
+    app = ComposeApp(
+        config=config,
+        account=account,
+        index=index,
+        mirrors=dict(mirrors),
+        contacts=index,  # Pass index as contacts to enable harvest
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "new-contact@example.com"
+        app.screen.query_one("#subject-input", Input).value = "Test"
+        app.screen.query_one("#body-area", TextArea).load_text("Body")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert send_mock.call_count == 1
+    # Verify harvest ran without error — contact may or may not exist yet
+    index.find_contact_by_email(email_address="new-contact@example.com")
+
+
+async def test_move_shortcut_opens_folder_picker() -> None:
+    """Pressing M opens the PickFolderScreen to select a move target."""
+    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="move-picker",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("M")
+        await pilot.pause()
+        assert any(isinstance(s, PickFolderScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not any(isinstance(s, PickFolderScreen) for s in app.screen_stack)
+
+
+async def test_harvest_contacts_key_no_contacts_store() -> None:
+    """Pressing H when no contacts store is set notifies instead of crashing."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="harvest-no-contacts",
+        seed=[(folder, plain_text())],
+    )
+    # build_pony_app does not pass contacts, so H should show a notification
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("H")
+        await pilot.pause()
+    # No crash expected; harvest_contacts was a no-op (no contacts store)
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen

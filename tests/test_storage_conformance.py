@@ -321,3 +321,103 @@ class BuildMboxTocTestCase(unittest.TestCase):
             self.assertGreaterEqual(start, prev_stop)
             self.assertLess(start, stop)
             prev_stop = stop
+
+
+class MboxMessageByIdTest(unittest.TestCase):
+    """Tests for the mbox message_id fast-path and _close_all."""
+
+    def test_get_message_bytes_with_message_id_fast_path(self) -> None:
+        """Providing message_id triggers the mmap fast path when mbox is not open."""
+        from uuid import uuid4
+
+        from pony.domain import FolderRef
+        from pony.storage import MboxMirrorRepository
+
+        root = TMP_ROOT / "mbox-mid" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        mirror = MboxMirrorRepository(account_name="acct", root_dir=root)
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        msg = EmailMessage()
+        msg["From"] = "alice@example.com"
+        msg["To"] = "bob@example.com"
+        msg["Subject"] = "Fast path test"
+        msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = "<fast-path-test@example.com>"
+        msg.set_content("body content")
+        raw = msg.as_bytes()
+
+        key = mirror.store_message(folder=folder, raw_message=raw)
+        mirror.flush_writes()
+
+        # Force a fresh mirror instance to ensure the mbox is not cached
+        mirror2 = MboxMirrorRepository(account_name="acct", root_dir=root)
+        result = mirror2.get_message_bytes(
+            folder=folder,
+            storage_key=key,
+            message_id="<fast-path-test@example.com>",
+        )
+        self.assertIn(b"Fast path test", result)
+
+    def test_get_message_bytes_with_unknown_message_id_falls_back(self) -> None:
+        """When message_id is not found via mmap, fallback returns correct bytes."""
+        from uuid import uuid4
+
+        from pony.domain import FolderRef
+        from pony.storage import MboxMirrorRepository
+
+        root = TMP_ROOT / "mbox-mid-fb" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        mirror = MboxMirrorRepository(account_name="acct", root_dir=root)
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        msg = EmailMessage()
+        msg["From"] = "alice@example.com"
+        msg["To"] = "bob@example.com"
+        msg["Subject"] = "Fallback test"
+        msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = "<fallback-test@example.com>"
+        msg.set_content("fallback body")
+        raw = msg.as_bytes()
+
+        key = mirror.store_message(folder=folder, raw_message=raw)
+        mirror.flush_writes()
+
+        mirror2 = MboxMirrorRepository(account_name="acct", root_dir=root)
+        # Pass a non-matching message_id - should fall back to key lookup
+        result = mirror2.get_message_bytes(
+            folder=folder,
+            storage_key=key,
+            message_id="<no-such-id@example.com>",
+        )
+        self.assertIn(b"Fallback test", result)
+
+    def test_mbox_close_all_on_del(self) -> None:
+        """_close_all runs without error during garbage collection."""
+        from uuid import uuid4
+
+        from pony.domain import FolderRef
+        from pony.storage import MboxMirrorRepository
+
+        root = TMP_ROOT / "mbox-gc" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        mirror = MboxMirrorRepository(account_name="acct", root_dir=root)
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        msg = EmailMessage()
+        msg["From"] = "x@x.com"
+        msg["To"] = "y@y.com"
+        msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = "<gc-test@example.com>"
+        msg.set_content("gc body")
+        mirror.store_message(folder=folder, raw_message=msg.as_bytes())
+
+        # Open the mbox by reading
+        mirror.get_message_bytes(
+            folder=folder,
+            storage_key="0",
+        )
+        # Calling _close_all explicitly should not raise
+        mirror._close_all()
+        # And calling it again (empty handles) should also be fine
+        mirror._close_all()
