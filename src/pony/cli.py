@@ -368,6 +368,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite the output file if it already exists.",
     )
 
+    message_mime = message_subparsers.add_parser(
+        "mime",
+        help="Dump the raw MIME structure of a message (types, dispositions, sizes).",
+    )
+    message_mime.add_argument("account")
+    message_mime.add_argument("folder")
+    message_mime.add_argument("message_id")
+
     view_parser = subparsers.add_parser(
         "view",
         help="Open a single .eml file in the full-screen message viewer.",
@@ -591,6 +599,14 @@ def _dispatch(
                 output=args.output,
                 to_stdout=args.stdout,
                 force=args.force,
+            )
+        if args.message_command == "mime":
+            return run_message_mime(
+                paths=paths,
+                config_path=args.config,
+                account=account,
+                folder=args.folder,
+                message_id=args.message_id,
             )
 
     if args.command == "view":
@@ -1629,7 +1645,8 @@ def run_message_get(
     paths.ensure_runtime_dirs()
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    hits = index.find_messages_by_message_id(
+    hits = _find_messages(
+        index,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
@@ -1687,6 +1704,39 @@ def run_message_get(
     else:
         print(f"Attach.:    {'yes' if msg.has_attachments else 'no'}")
     return 0
+
+
+def _normalize_message_id(message_id: str) -> list[str]:
+    """Return candidate message-id strings to try against the index.
+
+    The index stores RFC 5322 Message-IDs with their angle brackets intact
+    (e.g. ``<foo@bar>``).  Users naturally omit the brackets on the command
+    line.  This returns both forms so callers can try each in turn.
+    """
+    stripped = message_id.strip("<>")
+    bracketed = f"<{stripped}>"
+    if message_id == bracketed:
+        return [message_id]
+    return [message_id, bracketed, stripped]
+
+
+def _find_messages(
+    index: SqliteIndexRepository,
+    *,
+    account_name: str,
+    folder_name: str,
+    message_id: str,
+) -> list[IndexedMessage]:
+    """Look up messages trying both bare and angle-bracketed message IDs."""
+    for candidate in _normalize_message_id(message_id):
+        hits = index.find_messages_by_message_id(
+            account_name=account_name,
+            folder_name=folder_name,
+            message_id=candidate,
+        )
+        if hits:
+            return list(hits)
+    return []
 
 
 def _try_render_attachments(
@@ -1759,7 +1809,8 @@ def run_message_body(
     # when a Message-ID has multiple matches, the most recent wins.
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    hits = index.find_messages_by_message_id(
+    hits = _find_messages(
+        index,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
@@ -1827,7 +1878,8 @@ def run_message_attachment(
 
     idx = SqliteIndexRepository(database_path=paths.index_db_file)
     idx.initialize()
-    hits = idx.find_messages_by_message_id(
+    hits = _find_messages(
+        idx,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
@@ -1867,6 +1919,98 @@ def run_message_attachment(
         )
     dest.write_bytes(payload.data)
     print(f"Wrote {len(payload.data)} bytes to {dest}")
+    return 0
+
+
+def run_message_mime(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str,
+    folder: str,
+    message_id: str,
+) -> int:
+    """Dump the raw MIME structure of a message as a tree."""
+    import email
+    import email.policy
+    from email.message import EmailMessage
+
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+
+    acc = next(
+        (
+            a
+            for a in config.accounts
+            if isinstance(a, AccountConfig) and a.name == account
+        ),
+        None,
+    )
+    if acc is None:
+        raise SystemExit(f"No account named {account!r} in config.")
+
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    hits = _find_messages(
+        index,
+        account_name=account,
+        folder_name=folder,
+        message_id=message_id,
+    )
+    if not hits:
+        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
+    indexed = hits[0]
+    mirror = _build_mirror(acc)
+    try:
+        raw = mirror.get_message_bytes(
+            folder=FolderRef(account_name=account, folder_name=folder),
+            storage_key=indexed.storage_key,
+        )
+    except (KeyError, FileNotFoundError, OSError) as exc:
+        raise SystemExit(
+            f"Message body not found in mirror: {account}/{folder}/{message_id}"
+        ) from exc
+
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    assert isinstance(msg, EmailMessage)
+
+    print(f"Message-ID: {message_id}")
+    print(f"Subject:    {msg.get('Subject', '')}")
+    print()
+
+    def _dump_part(part: EmailMessage, depth: int) -> None:
+        indent = "  " * depth
+        ct = part.get_content_type()
+        disp = part.get_content_disposition() or ""
+        fname = part.get_filename() or ""
+        charset = part.get_content_charset() or ""
+        cte = part.get("Content-Transfer-Encoding", "")
+        cid = part.get("Content-ID", "")
+
+        payload = part.get_payload(decode=True)
+        size = f"{len(payload)} B" if isinstance(payload, bytes) else "—"
+
+        line = f"{indent}{ct}"
+        if disp:
+            line += f"  disposition={disp}"
+        if fname:
+            line += f"  filename={fname!r}"
+        if charset:
+            line += f"  charset={charset}"
+        if cte:
+            line += f"  cte={cte}"
+        if cid:
+            line += f"  cid={cid}"
+        if not part.is_multipart():
+            line += f"  size={size}"
+        print(line)
+
+        if part.is_multipart():
+            for sub in part.get_payload():
+                if isinstance(sub, EmailMessage):
+                    _dump_part(sub, depth + 1)
+
+    _dump_part(msg, 0)
     return 0
 
 

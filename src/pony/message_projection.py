@@ -8,6 +8,8 @@ actually displayed in the TUI (via ``message_renderer.py``).
 from __future__ import annotations
 
 import base64
+import email
+import email.policy
 import quopri
 import re
 from datetime import UTC, datetime
@@ -29,9 +31,9 @@ _HEADER_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-# Detect attachments: Content-Disposition: attachment or filename=
+# Detect attachments: Content-Disposition: attachment, filename=, or text/calendar.
 _ATTACHMENT_RE = re.compile(
-    rb"Content-Disposition:\s*attachment|filename\s*=",
+    rb"Content-Disposition:\s*attachment|filename\s*=|Content-Type:\s*text/calendar",
     re.IGNORECASE,
 )
 
@@ -72,6 +74,12 @@ def project_rfc822_message(
     body_preview = _extract_body_preview(body, raw_message)
     message_id_raw = header_map.get(b"message-id", b"")
     message_id = " ".join(message_id_raw.decode("ascii", errors="replace").split())
+    if not message_id:
+        # Exchange sometimes folds the Message-ID value onto a bare (non-indented)
+        # continuation line, which the regex parser misses.  Fall back to the
+        # stdlib parser — only for this field to keep the fast path intact.
+        _fb = email.message_from_bytes(raw_message, policy=email.policy.compat32)
+        message_id = (_fb.get("Message-ID") or "").strip()
 
     return IndexedMessage(
         message_ref=message_ref,

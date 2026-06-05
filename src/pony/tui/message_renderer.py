@@ -48,6 +48,14 @@ _FORMAT_IDS = frozenset(("B1", "B0", "I1", "I0", "U1", "U0", "S1", "S0"))
 # Characters that are forbidden in cross-platform filenames.
 _UNSAFE_FILENAME_CHARS_RE = re.compile(r'[/\\<>:"|?*\x00-\x1f]')
 
+# Synthesized filenames for inline parts that carry no filename header.
+_INLINE_ATTACHMENT_FILENAMES: dict[str, str] = {
+    "text/calendar": "invite.ics",
+    "text/vcard": "contact.vcf",
+    "text/x-vcard": "contact.vcf",
+    "application/ics": "invite.ics",
+}
+
 
 def _safe_filename_stem(text: str, fallback: str = "message") -> str:
     """Sanitize *text* for use as a filename stem (no extension, no path)."""
@@ -264,13 +272,34 @@ def _extract_body_and_attachments(
                     payload.decode(charset, errors="replace").replace("\x00", "")
                 )
 
-        elif content_type == "text/html" and not body_parts and not in_nested:
-            # Only collect HTML if we have no plain text yet and we're
-            # not inside a nested message.
+        elif content_type == "text/html":
+            # Collect as HTML fallback only when we have no plain text yet.
+            if not body_parts and not in_nested:
+                payload = part.get_payload(decode=True)
+                if isinstance(payload, bytes):
+                    charset = part.get_content_charset() or "utf-8"
+                    html_parts.append(payload.decode(charset, errors="replace"))
+
+        else:
+            # Inline part with an unrecognised content-type (e.g. text/calendar).
+            # Expose it as a named attachment so the user can see and extract it.
             payload = part.get_payload(decode=True)
-            if isinstance(payload, bytes):
-                charset = part.get_content_charset() or "utf-8"
-                html_parts.append(payload.decode(charset, errors="replace"))
+            size = len(payload) if isinstance(payload, bytes) else 0
+            subtype = (
+                content_type.split("/")[-1] if "/" in content_type else content_type
+            )
+            filename = _INLINE_ATTACHMENT_FILENAMES.get(
+                content_type, f"attachment.{subtype}"
+            )
+            attachments.append(
+                AttachmentInfo(
+                    index=attach_index,
+                    filename=filename,
+                    content_type=content_type,
+                    size_bytes=size,
+                )
+            )
+            attach_index += 1
 
     links: list[tuple[str, str]] = []
     if body_parts:
@@ -524,6 +553,24 @@ def build_browser_html(raw_bytes: bytes) -> str:
         ):
             charset = part.get_content_charset() or "utf-8"
             plain_body = payload.decode(charset, errors="replace")
+        elif content_type not in ("text/plain", "text/html"):
+            # Inline unrecognised type — mirrors _extract_body_and_attachments.
+            size = len(payload) if isinstance(payload, bytes) else 0
+            subtype = (
+                content_type.split("/")[-1] if "/" in content_type else content_type
+            )
+            att_filename = _INLINE_ATTACHMENT_FILENAMES.get(
+                content_type, f"attachment.{subtype}"
+            )
+            attachments.append(
+                AttachmentInfo(
+                    index=attach_index,
+                    filename=att_filename,
+                    content_type=content_type,
+                    size_bytes=size,
+                )
+            )
+            attach_index += 1
 
     # Resolve cid: references in the HTML body.
     if html_body is not None:
@@ -669,6 +716,25 @@ def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None
                     return None
                 return AttachmentPayload(
                     filename=part.get_filename() or "(unnamed)",
+                    content_type=content_type,
+                    size_bytes=len(payload),
+                    data=payload,
+                )
+        elif content_type not in ("text/plain", "text/html"):
+            # Inline unrecognised type — mirrors _extract_body_and_attachments.
+            found += 1
+            if found == index:
+                payload = part.get_payload(decode=True)
+                if not isinstance(payload, bytes):
+                    return None
+                subtype = (
+                    content_type.split("/")[-1] if "/" in content_type else content_type
+                )
+                filename = _INLINE_ATTACHMENT_FILENAMES.get(
+                    content_type, f"attachment.{subtype}"
+                )
+                return AttachmentPayload(
+                    filename=filename,
                     content_type=content_type,
                     size_bytes=len(payload),
                     data=payload,
