@@ -1130,7 +1130,7 @@ async def test_contact_browser_search_filters_rows() -> None:
 
 
 async def test_contact_browser_mark_contact() -> None:
-    """Pressing space marks a contact (mark_down action)."""
+    """Pressing m marks a contact (action_mark_down), shift+up unmarks."""
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.domain import Contact
@@ -1146,13 +1146,20 @@ async def test_contact_browser_mark_contact() -> None:
     app = ContactsApp(contacts=index)
     async with app.run_test() as pilot:
         await pilot.pause()
-        # space marks the current row and moves down (action_mark_down)
-        await pilot.press("space")
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#contact-table", DataTable)
+        table.focus()
         await pilot.pause()
-        screen = app.screen
-        # If mark worked, _marked should contain the contact's id
+        # m marks the current row and moves down (action_mark_down)
+        await pilot.press("m")
+        await pilot.pause()
+        # shift+up unmarks (action_mark_up)
+        await pilot.press("shift+up")
+        await pilot.pause()
         from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
 
+        screen = app.screen
         assert isinstance(screen, ContactBrowserScreen)
 
 
@@ -1436,3 +1443,83 @@ async def test_contact_browser_edit_key() -> None:
         assert any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
         await pilot.press("escape")
         await pilot.pause()
+
+
+async def test_contact_browser_delete_shows_confirm() -> None:
+    """Pressing D on a marked contact shows ConfirmScreen."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.confirm_screen import ConfirmScreen
+
+    paths = make_tmp_paths("cb-delete")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="ToDelete", last_name="User", emails=("del@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#contact-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        # Mark the contact, then press D to get confirm dialog
+        await pilot.press("m")
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        # ConfirmScreen should appear
+        assert any(isinstance(s, ConfirmScreen) for s in app.screen_stack)
+        # Press y to confirm deletion
+        await pilot.press("y")
+        await pilot.pause()
+    # Contact should be deleted from index
+    result = index.find_contact_by_email(email_address="del@x.com")
+    assert result is None
+
+
+async def test_contact_browser_search_submitted() -> None:
+    """Submitting search input filters and hides the search bar."""
+    from textual.widgets import DataTable, Input
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    paths = make_tmp_paths("cb-search-sub")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Alice", last_name="Smith", emails=("a@x.com",)
+        )
+    )
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Bob", last_name="Jones", emails=("b@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Open search, type, submit
+        await pilot.press("slash")
+        await pilot.pause()
+        search = app.screen.query_one("#contact-search", Input)
+        search.value = "Alice"
+        # Trigger submitted event directly
+        from textual.widgets._input import Input as TxInput
+
+        app.screen.on_input_submitted(
+            TxInput.Submitted(search, value="Alice", validation_result=None)
+        )
+        await pilot.pause()
+        # Search bar should be hidden
+        assert not search.display
+        # Table should have 1 row
+        table = app.screen.query_one("#contact-table", DataTable)
+        assert table.row_count == 1
