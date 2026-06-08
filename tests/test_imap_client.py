@@ -382,6 +382,41 @@ class ImapSessionMockedTest(unittest.TestCase):
         session.create_folder("Existing")
         mock_client.create_folder.assert_not_called()
 
+    def test_retry_raises_on_max_retries_exceeded(self) -> None:
+        """After max_retries, the transient error is re-raised."""
+        import ssl
+
+        session, mock_client = self._make_session()
+        # Set max_retries=1 so the first failure exceeds the limit
+        session._max_retries = 1
+
+        def _always_fail():
+            raise ssl.SSLEOFError("persistent failure")
+
+        mock_client.list_folders = _always_fail
+        with (
+            patch.object(session, "_new_connection", return_value=mock_client),
+            self.assertRaises(ssl.SSLEOFError),
+        ):
+            session.list_folders()
+
+    def test_parse_imap_flags_empty_decode(self) -> None:
+        """Flags that decode to empty string are not added to extra."""
+        # Decoding b'\x00' with errors='replace' gives a replacement character,
+        # not empty. To get empty we need a flag that's literally empty bytes.
+        known, extra = _parse_imap_flags((b"",))
+        # Empty decoded string should not be added to extra
+        self.assertNotIn("", extra)
+
+    def test_fetch_message_bytes_uid_not_in_batch(self) -> None:
+        """fetch_message_bytes raises KeyError when uid not in batch result."""
+        session, mock_client = self._make_session()
+        mock_client.select_folder.return_value = {}
+        # Return empty dict so UID is not found
+        mock_client.fetch.return_value = {}
+        with self.assertRaises(KeyError):
+            session.fetch_message_bytes("INBOX", 42)
+
     def test_fetch_uid_to_message_id_selected_already(self) -> None:
         """When folder is already selected, _ensure_selected is a no-op."""
         session, mock_client = self._make_session()

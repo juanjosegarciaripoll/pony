@@ -1244,17 +1244,24 @@ async def test_message_list_mark_and_navigation() -> None:
         ml = app.screen.query_one(MessageListPanel)
         ml.focus()
         await pilot.pause()
+        await pilot.pause()  # Extra pause to let message list load
         # Press m to mark current row
         await pilot.press("m")
         await pilot.pause()
         # Jump to last row with >
         await pilot.press("greater_than_sign")
         await pilot.pause()
+        await pilot.pause()  # Wait for async cursor_last
         # Jump to first row with <
         await pilot.press("less_than_sign")
         await pilot.pause()
         # Use shift+down to mark and move
         await pilot.press("shift+down")
+        await pilot.pause()
+        # Also test n/p navigation in the message list
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("p")
         await pilot.pause()
 
 
@@ -1479,6 +1486,46 @@ async def test_compose_new_no_smtp_notifies() -> None:
         await pilot.press("c")
         await pilot.pause()
     # Should show notification, not open compose
+
+
+async def test_open_attachments_key_shows_picker() -> None:
+    """Pressing O on a message with attachments shows AttachmentPickerScreen."""
+    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-att",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("O")
+        await pilot.pause()
+        assert any(isinstance(s, AttachmentPickerScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_save_attachments_key_shows_picker() -> None:
+    """Pressing S on a message with attachments shows AttachmentPickerScreen."""
+    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="save-att",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        assert any(isinstance(s, AttachmentPickerScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 async def test_save_message_opens_save_screen() -> None:
