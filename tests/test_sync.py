@@ -2802,3 +2802,71 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         )
         counts = _categorize_ops((op,))
         self.assertIn("merge_flags", counts)
+
+    def test_categorize_unknown_op_uses_other_key(self) -> None:
+        from unittest.mock import MagicMock
+
+        from pony.sync import _categorize_ops
+
+        # Create a mock object that's not a known op type
+        unknown_op = MagicMock(spec=[])
+        counts = _categorize_ops((unknown_op,))
+        self.assertIn("other", counts)
+
+    def test_format_op_counts_includes_other(self) -> None:
+        from pony.sync import _format_op_counts
+
+        counts = {"other": 3}
+        parts = _format_op_counts(counts)
+        self.assertTrue(any("other" in p for p in parts))
+
+    def test_format_plan_detail_empty_folder_no_ops_no_new(self) -> None:
+        """format_plan_detail skips output when folder has no ops and is_new=False."""
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            SyncPlan,
+            format_plan_detail,
+        )
+
+        folder = FolderSyncPlan(
+            folder_name="INBOX",
+            uid_validity=1,
+            highest_uid=0,
+            ops=(),
+            is_new=False,
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        # With no ops and not new, the folder line is not added but the header is
+        self.assertIn("acct", detail)
+
+    def test_format_plan_detail_needs_confirmation_no_total(self) -> None:
+        """Format confirms when needs_confirmation=True but pending_delete_total=0."""
+        from pony.domain import MessageRef
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            ServerDeleteOp,
+            SyncPlan,
+            format_plan_detail,
+        )
+
+        op = ServerDeleteOp(
+            uid=1,
+            message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=1),
+        )
+        folder = FolderSyncPlan(
+            folder_name="INBOX",
+            uid_validity=1,
+            highest_uid=10,
+            ops=(op,),
+            needs_confirmation=True,
+            pending_delete_count=0,
+            pending_delete_total=0,  # no total → "needs confirmation" text
+        )
+        acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+        plan = SyncPlan(accounts=(acct,))
+        detail = format_plan_detail(plan)
+        self.assertIn("needs confirmation", detail)

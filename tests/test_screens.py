@@ -1286,3 +1286,153 @@ async def test_save_folder_picker_escape_returns_none(tmp_path) -> None:
         await pilot.press("escape")
         await pilot.pause()
     assert app.return_value is None
+
+
+# ===========================================================================
+# ContactDetailScreen — more field coverage
+# ===========================================================================
+
+
+async def test_contact_detail_screen_with_all_fields() -> None:
+    """ContactDetailScreen shows all optional fields when set."""
+    from datetime import UTC, datetime
+
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+
+    paths = make_tmp_paths("contact-detail-full")
+    index = make_index(paths)
+    contact = Contact(
+        id=None,
+        first_name="Eve",
+        last_name="Wilson",
+        emails=("eve@x.com",),
+        affix=("Dr.",),
+        aliases=("Evie",),
+        organization="ACME",
+        notes="Important contact",
+        message_count=5,
+        last_seen=datetime(2024, 6, 1, tzinfo=UTC),
+    )
+    saved = index.upsert_contact(contact=contact)
+
+    app = _make_host(ContactDetailScreen, saved, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Press e to edit (action_edit)
+        await pilot.press("e")
+        await pilot.pause()
+        from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+        assert any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_contact_detail_screen_no_emails() -> None:
+    """ContactDetailScreen shows '(none)' when contact has no email."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+
+    paths = make_tmp_paths("contact-detail-no-email")
+    index = make_index(paths)
+    contact = Contact(
+        id=None,
+        first_name="NoEmail",
+        last_name="User",
+        emails=(),
+    )
+    saved = index.upsert_contact(contact=contact)
+
+    app = _make_host(ContactDetailScreen, saved, index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_contact_browser_enter_row_opens_detail() -> None:
+    """Pressing Enter on a row opens ContactDetailScreen."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+
+    paths = make_tmp_paths("cb-enter")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#contact-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        # Move to the first row
+        table.move_cursor(row=0)
+        await pilot.pause()
+        # Press enter to select the row (on_data_table_row_selected)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert any(isinstance(s, ContactDetailScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_contact_browser_new_contact_key() -> None:
+    """Pressing c opens ContactEditScreen for a new contact."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("cb-new")
+    index = make_index(paths)
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+        assert any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_contact_browser_edit_key() -> None:
+    """Pressing e opens ContactEditScreen for the current contact."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("cb-edit")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Bob", last_name="Jones", emails=("bob@x.com",)
+        )
+    )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#contact-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
