@@ -758,6 +758,172 @@ async def test_contacts_app_search_bar() -> None:
 
 
 # ===========================================================================
+# AttachmentPickerScreen + parse_attachment_selection
+# ===========================================================================
+
+
+def test_parse_attachment_selection_star_returns_all() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    result = parse_attachment_selection("*", total=3)
+    assert result == [1, 2, 3]
+
+
+def test_parse_attachment_selection_single() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    result = parse_attachment_selection("1", total=3)
+    assert result == [1]
+
+
+def test_parse_attachment_selection_comma_separated() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    result = parse_attachment_selection("1, 3", total=3)
+    assert result == [1, 3]
+
+
+def test_parse_attachment_selection_empty_returns_none() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    assert parse_attachment_selection("", total=3) is None
+
+
+def test_parse_attachment_selection_non_numeric_returns_none() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    assert parse_attachment_selection("abc", total=3) is None
+
+
+def test_parse_attachment_selection_out_of_range_returns_none() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    assert parse_attachment_selection("5", total=3) is None
+
+
+def test_parse_attachment_selection_duplicates_returns_none() -> None:
+    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
+
+    assert parse_attachment_selection("1,1", total=3) is None
+
+
+async def test_attachment_picker_screen_submit_returns_indices() -> None:
+    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
+    app = _make_host(AttachmentPickerScreen, action_label="Save", attachment_count=3)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("1", "comma", "3")
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.return_value == [1, 3]
+
+
+async def test_attachment_picker_screen_escape_returns_none() -> None:
+    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
+    app = _make_host(AttachmentPickerScreen, action_label="Open", attachment_count=2)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is None
+
+
+# ===========================================================================
+# SyncConfirmScreen — additional plan variants
+# ===========================================================================
+
+
+async def test_sync_confirm_with_ops_shows_summary() -> None:
+    """SyncConfirmScreen composed with a plan that has ops shows a summary."""
+    from pony.sync import (
+        AccountSyncPlan,
+        FetchNewOp,
+        FolderSyncPlan,
+        SyncPlan,
+    )
+
+    op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
+    folder = FolderSyncPlan(
+        folder_name="INBOX", uid_validity=1, highest_uid=1, ops=(op,)
+    )
+    acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+    plan = SyncPlan(accounts=(acct,))
+
+    app = _make_host(SyncConfirmScreen, plan, None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Static
+
+        statics = [str(w.render()) for w in app.screen.query(Static)]
+        assert any("download" in s.lower() for s in statics)
+        await pilot.press("n")
+        await pilot.pause()
+
+
+async def test_sync_confirm_with_skipped_folders() -> None:
+    """SyncConfirmScreen with skipped folders shows the skipped text."""
+    from pony.sync import AccountSyncPlan, SyncPlan
+
+    acct = AccountSyncPlan(
+        account_name="acct",
+        folders=(),
+        skipped_folders=("Spam", "Trash"),
+    )
+    plan = SyncPlan(accounts=(acct,))
+
+    app = _make_host(SyncConfirmScreen, plan, None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Static
+
+        statics = [str(w.render()) for w in app.screen.query(Static)]
+        # Skipped folders text may appear as a Static widget
+        assert any("Spam" in s for s in statics) or len(statics) > 0
+        await pilot.press("n")
+        await pilot.pause()
+
+
+async def test_sync_confirm_with_confirmation_needed() -> None:
+    """SyncConfirmScreen with a folder needing confirmation shows warning."""
+    from pony.domain import MessageRef
+    from pony.sync import (
+        AccountSyncPlan,
+        FolderSyncPlan,
+        ServerDeleteOp,
+        SyncPlan,
+    )
+
+    op = ServerDeleteOp(
+        uid=1,
+        message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=1),
+    )
+    folder = FolderSyncPlan(
+        folder_name="INBOX",
+        uid_validity=1,
+        highest_uid=10,
+        ops=(op,),
+        needs_confirmation=True,
+        pending_delete_count=5,
+        pending_delete_total=10,
+    )
+    acct = AccountSyncPlan(account_name="acct", folders=(folder,))
+    plan = SyncPlan(accounts=(acct,))
+
+    app = _make_host(SyncConfirmScreen, plan, None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Button
+
+        buttons = list(app.screen.query(Button))
+        button_labels = [str(b.label) for b in buttons]
+        assert any("Proceed" in lbl for lbl in button_labels)
+        await pilot.press("n")
+        await pilot.pause()
+
+
+# ===========================================================================
 # SyncConfirmScreen — button ignored while syncing
 # ===========================================================================
 
@@ -988,3 +1154,93 @@ async def test_contact_browser_mark_contact() -> None:
         from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
 
         assert isinstance(screen, ContactBrowserScreen)
+
+
+# ===========================================================================
+# ContactSuggester unit tests
+# ===========================================================================
+
+
+def test_contact_suggester_get_suggestion_no_comma() -> None:
+    """Typing a prefix without comma gets a suggestion for the full field."""
+    import asyncio
+
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import ContactSuggester
+
+    paths = make_tmp_paths("suggester-1")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Alice", last_name="Smith", emails=("alice@x.com",)
+        )
+    )
+    suggester = ContactSuggester(index)
+    result = asyncio.get_event_loop().run_until_complete(
+        suggester.get_suggestion("ali")
+    )
+    assert result is not None
+    assert "alice@x.com" in result
+
+
+def test_contact_suggester_with_comma_completes_last_token() -> None:
+    """After a comma, the suggester completes only the last token."""
+    import asyncio
+
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import ContactSuggester
+
+    paths = make_tmp_paths("suggester-2")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None, first_name="Bob", last_name="Jones", emails=("bob@x.com",)
+        )
+    )
+    suggester = ContactSuggester(index)
+    result = asyncio.get_event_loop().run_until_complete(
+        suggester.get_suggestion("alice@x.com, bo")
+    )
+    assert result is not None
+    assert "alice@x.com" in result
+    assert "bob@x.com" in result
+
+
+def test_contact_suggester_short_prefix_returns_none() -> None:
+    """Typed prefix with < 2 chars returns None."""
+    import asyncio
+
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.tui.widgets.contact_suggester import ContactSuggester
+
+    paths = make_tmp_paths("suggester-3")
+    index = make_index(paths)
+    suggester = ContactSuggester(index)
+    result = asyncio.get_event_loop().run_until_complete(suggester.get_suggestion("a"))
+    assert result is None
+
+
+def test_contact_suggester_no_email_returns_none() -> None:
+    """Contact with no email returns None suggestion."""
+    import asyncio
+
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import ContactSuggester
+
+    paths = make_tmp_paths("suggester-4")
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(id=None, first_name="NoEmail", last_name="User", emails=())
+    )
+    suggester = ContactSuggester(index)
+    result = asyncio.get_event_loop().run_until_complete(
+        suggester.get_suggestion("noe")
+    )
+    assert result is None

@@ -1686,6 +1686,105 @@ class CliHelperFunctionsTest(unittest.TestCase):
         self.assertIn("MB", result)
 
 
+class MoreCliCommandsTest(unittest.TestCase):
+    """Additional CLI command coverage tests."""
+
+    def test_config_edit_mocked_editor(self) -> None:
+        """``pony config edit`` opens the config file in an editor."""
+        import types
+        from unittest.mock import patch
+
+        mock_result = types.SimpleNamespace(returncode=0)
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            output = run_cli("--config", str(config_path), "config", "edit")
+        self.assertIn("Opening", output)
+
+    def test_contacts_show_finds_existing_contact(self) -> None:
+        """``pony contacts show`` displays details for a known contact."""
+        from pony.domain import Contact
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            index.upsert_contact(
+                contact=Contact(
+                    id=None,
+                    first_name="Jane",
+                    last_name="Doe",
+                    emails=("jane@example.com",),
+                )
+            )
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "contacts",
+                "show",
+                "jane@example.com",
+            )
+        self.assertIn("Jane", output)
+        self.assertIn("Doe", output)
+
+    def test_contacts_import_from_bbdb(self) -> None:
+        """``pony contacts import`` reads a BBDB file."""
+        import tempfile
+
+        with isolated_app_env(), temporary_config() as config_path:
+            record = (
+                '["Alice" "Smith" nil nil ("alice@example.com") nil nil nil nil nil]\n'
+            )
+            with tempfile.NamedTemporaryFile(
+                suffix=".bbdb", delete=False, mode="w"
+            ) as f:
+                f.write("; BBDB file\n")
+                f.write(record)
+                bbdb_path = Path(f.name)
+            try:
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "contacts",
+                    "import",
+                    str(bbdb_path),
+                )
+            finally:
+                bbdb_path.unlink(missing_ok=True)
+        self.assertIn("import", output.lower())
+
+    def test_contacts_import_shows_result(self) -> None:
+        """``pony contacts import`` reports import counts."""
+        import tempfile
+
+        with isolated_app_env(), temporary_config() as config_path:
+            with tempfile.NamedTemporaryFile(
+                suffix=".bbdb", delete=False, mode="w"
+            ) as f:
+                f.write("; BBDB file\n")
+                f.write(
+                    '["Carol" "White" nil nil ("carol@example.com") '
+                    "nil nil nil nil nil]\n"
+                )
+                bbdb_path = Path(f.name)
+            try:
+                rc = run_cli_ret(
+                    "--config",
+                    str(config_path),
+                    "contacts",
+                    "import",
+                    str(bbdb_path),
+                )
+            finally:
+                bbdb_path.unlink(missing_ok=True)
+        self.assertEqual(rc, 0)
+
+
 class LocalSummaryMboxTest(unittest.TestCase):
     """Test local-summary with an mbox-format account."""
 

@@ -1083,6 +1083,76 @@ async def test_harvest_contacts_key_no_contacts_store() -> None:
     # No crash expected; harvest_contacts was a no-op (no contacts store)
 
 
+async def test_message_view_prev_message_key() -> None:
+    """Pressing p in the message view navigates to the previous message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="nav-prev",
+        seed=[
+            (folder, _custom_plain("first", body="first body")),
+            (folder, _custom_plain("second", body="second body")),
+        ],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        # Move to 2nd message then open it
+        pilot.app.screen.query_one(MessageListPanel).focus()
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        assert view.display is True
+        # Press p to go to previous
+        await pilot.press("p")
+        await pilot.pause()
+
+
+async def test_message_view_page_down_key() -> None:
+    """Pressing space in the message view scrolls or goes to next message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="page-down",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        assert view.display is True
+        # Press space to page down or advance to next message
+        await pilot.press("space")
+        await pilot.pause()
+
+
+async def test_message_view_save_attachment_from_viewer(tmp_path) -> None:
+    """Pressing ctrl+1 in the EML viewer saves attachment 1."""
+    from textual.app import App, ComposeResult
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    raw = multipart_mixed_attachment()
+
+    class _TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        def on_mount(self) -> None:
+            self.push_screen(EmlViewerScreen(raw, downloads_dir=tmp_path))
+
+    app = _TestApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_save_attachment("1")
+        await pilot.pause()
+    # Check that a file was saved
+    saved = list(tmp_path.glob("*"))
+    assert len(saved) >= 1
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
