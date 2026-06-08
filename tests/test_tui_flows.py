@@ -1528,6 +1528,39 @@ async def test_save_attachments_key_shows_picker() -> None:
         await pilot.pause()
 
 
+async def test_move_to_folder_direct() -> None:
+    """_move_to_folder moves message to target folder."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="move-direct")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Archive")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<move-direct@example.com>",
+    )
+
+    archive = FolderRef(account_name="acct", folder_name="Archive")
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
+        # Call _move_to_folder directly
+        screen._move_to_folder(msgs, folder, archive)  # noqa: SLF001
+
+    # Row should be moved to Archive folder
+    from pony.domain import MessageStatus
+
+    moved_rows = [
+        r
+        for r in index.list_folder_messages(folder=archive)
+        if r.local_status == MessageStatus.PENDING_MOVE
+    ]
+    assert len(moved_rows) == 1
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
