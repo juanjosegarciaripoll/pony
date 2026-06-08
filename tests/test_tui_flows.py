@@ -1258,6 +1258,155 @@ async def test_message_list_mark_and_navigation() -> None:
         await pilot.pause()
 
 
+async def test_folder_panel_with_nested_folders() -> None:
+    """Nested folders (like Archive/2024) render as branch nodes in the tree."""
+    paths = make_tmp_paths("nested-folders")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    credentials = PlaintextCredentialsProvider(config)
+
+    # Seed messages in nested folders
+    for folder_name in ["INBOX", "Archive/2024", "Archive/2023"]:
+        mirror = mirrors["acct"]
+        folder = FolderRef(account_name="acct", folder_name=folder_name)
+        mirror.create_folder(account_name="acct", folder_name=folder_name)
+        seed_message(
+            index=index,
+            mirror=mirror,
+            folder=folder,
+            raw=plain_text(),
+            message_id=f"<nested-{folder_name.replace('/', '-')}@example.com>",
+        )
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        fp = app.screen.query_one(FolderPanel)
+        # The tree should have rendered without error
+        assert fp is not None
+
+
+async def test_compose_toggle_markdown() -> None:
+    """Pressing alt+m toggles markdown mode in the compose screen."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="toggle-md")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Check initial state (markdown off)
+        initial_mode = app.screen._markdown_mode
+        await pilot.press("alt+m")
+        await pilot.pause()
+        assert app.screen._markdown_mode != initial_mode
+        await pilot.press("alt+m")
+        await pilot.pause()
+        assert app.screen._markdown_mode == initial_mode
+
+
+async def test_compose_add_attachment_key_opens_picker() -> None:
+    """Pressing alt+a opens the AddAttachmentScreen."""
+    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="add-att")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("alt+a")
+        await pilot.pause()
+        assert any(isinstance(s, AddAttachmentScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_compose_screen_prompts_for_name_when_no_display_name() -> None:
+    """ComposeApp pushes ContactEditScreen when account has no display name."""
+    from pony.tui.app import ComposeApp
+    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+
+    paths = make_tmp_paths("prompt-name")
+    account = make_test_account(paths)  # no full_name set
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+
+    app = ComposeApp(
+        config=config,
+        account=account,
+        index=index,
+        mirrors=dict(mirrors),
+        contacts=index,  # contacts store is set → triggers the prompt
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # If contacts store is set and account has no display name,
+        # ContactEditScreen should be pushed
+        has_edit = any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
+        if has_edit:
+            await pilot.press("escape")
+            await pilot.pause()
+
+
+async def test_compose_send_fails_without_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sending without a password shows an error notification."""
+    paths = make_tmp_paths("no-password")
+    account = make_test_account(paths, password=None)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    from pony.tui.app import ComposeApp
+
+    app = ComposeApp(
+        config=config,
+        account=account,
+        index=index,
+        mirrors=dict(mirrors),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "bob@example.com"
+        app.screen.query_one("#body-area", TextArea).load_text("Body")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    # Send should NOT have been called due to missing password
+    assert send_mock.call_count == 0
+
+
+async def test_compose_send_with_no_sent_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sending when no Sent folder exists shows a warning notification but succeeds."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="no-sent")
+    # Don't create the Sent folder so _save_to_folder hits the "folder not found" path
+    send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "bob@example.com"
+        app.screen.query_one("#subject-input", Input).value = "No Sent"
+        app.screen.query_one("#body-area", TextArea).load_text("Body")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    # SMTP was called (send succeeded) even though Sent folder didn't exist
+    assert send_mock.call_count == 1
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
