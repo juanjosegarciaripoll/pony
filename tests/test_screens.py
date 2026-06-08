@@ -1244,3 +1244,45 @@ def test_contact_suggester_no_email_returns_none() -> None:
         suggester.get_suggestion("noe")
     )
     assert result is None
+
+
+# ===========================================================================
+# SaveFolderPickerScreen
+# ===========================================================================
+
+
+async def test_save_folder_picker_cancel_returns_none(tmp_path) -> None:
+    """Clicking Cancel dismisses SaveFolderPickerScreen with None."""
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click("#cancel")
+        await pilot.pause()
+    assert app.return_value is None
+
+
+async def test_save_folder_picker_select_returns_path(tmp_path) -> None:
+    """Clicking Select dismisses SaveFolderPickerScreen with a Path."""
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click("#select")
+        await pilot.pause()
+    assert app.return_value is not None
+    assert isinstance(app.return_value, __import__("pathlib").Path)
+
+
+async def test_save_folder_picker_escape_returns_none(tmp_path) -> None:
+    """Pressing Escape dismisses SaveFolderPickerScreen with None."""
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is None

@@ -838,3 +838,68 @@ def _make_message(
         uid=uid,
         extra_imap_flags=extra_imap_flags,
     )
+
+
+class MarkFolderReadTestCase(unittest.TestCase):
+    """Tests for mark_folder_read."""
+
+    def test_marks_all_active_messages_as_seen(self) -> None:
+        from datetime import UTC, datetime
+
+        from pony.domain import FolderRef, MessageRef, MessageStatus
+
+        repo = _fresh_repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        # Insert two messages without SEEN flag
+        from pony.domain import IndexedMessage
+
+        for i in range(2):
+            row = IndexedMessage(
+                message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=0),
+                message_id=f"<mark-read-{i}@x.com>",
+                sender="alice@x.com",
+                recipients="bob@x.com",
+                cc="",
+                subject=f"Message {i}",
+                body_preview="",
+                storage_key=f"key{i}",
+                local_flags=frozenset(),
+                base_flags=frozenset(),
+                local_status=MessageStatus.ACTIVE,
+                received_at=datetime(2024, 1, i + 1, tzinfo=UTC),
+            )
+            repo.insert_message(message=row)
+
+        count = repo.mark_folder_read(folder=folder)
+        self.assertEqual(count, 2)
+
+        messages = list(repo.list_folder_messages(folder=folder))
+        for m in messages:
+            self.assertIn(MessageFlag.SEEN, m.local_flags)
+
+    def test_mark_folder_read_already_seen_returns_zero(self) -> None:
+        from datetime import UTC, datetime
+
+        from pony.domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
+
+        repo = _fresh_repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        row = IndexedMessage(
+            message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=0),
+            message_id="<already-seen@x.com>",
+            sender="alice@x.com",
+            recipients="bob@x.com",
+            cc="",
+            subject="Already seen",
+            body_preview="",
+            storage_key="key",
+            local_flags=frozenset({MessageFlag.SEEN}),
+            base_flags=frozenset({MessageFlag.SEEN}),
+            local_status=MessageStatus.ACTIVE,
+            received_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+        repo.insert_message(message=row)
+        count = repo.mark_folder_read(folder=folder)
+        self.assertEqual(count, 0)
