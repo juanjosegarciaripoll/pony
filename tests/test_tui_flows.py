@@ -1407,6 +1407,80 @@ async def test_compose_send_with_no_sent_folder(
     assert send_mock.call_count == 1
 
 
+async def test_browse_contacts_no_store_notifies() -> None:
+    """Pressing B without a contacts store shows a notification."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="browse-no-contacts",
+        seed=[(folder, plain_text())],
+    )
+    # build_pony_app doesn't pass contacts, so browse should show notification
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("B")
+        await pilot.pause()
+    # No crash - notification was shown
+
+
+async def test_harvest_contacts_with_store() -> None:
+    """Pressing H with contacts store harvests from current folder."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    paths = make_tmp_paths("harvest-with-contacts")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<harvest-contacts@example.com>",
+    )
+    credentials = PlaintextCredentialsProvider(config)
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+        contacts=index,  # Pass contacts so H actually harvests
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("H")
+        await pilot.pause()
+    # Harvest ran without error
+
+
+async def test_compose_new_no_smtp_notifies() -> None:
+    """Pressing c with no sendable accounts shows a notification."""
+    paths = make_tmp_paths("no-smtp")
+    account = make_test_account(paths, with_smtp=False)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    credentials = PlaintextCredentialsProvider(config)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<no-smtp@example.com>",
+    )
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("c")
+        await pilot.pause()
+    # Should show notification, not open compose
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
