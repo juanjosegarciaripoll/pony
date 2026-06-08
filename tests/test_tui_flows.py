@@ -1561,6 +1561,104 @@ async def test_move_to_folder_direct() -> None:
     assert len(moved_rows) == 1
 
 
+async def test_move_cross_account_direct() -> None:
+    """_move_to_folder with two different accounts covers _move_cross_account."""
+    paths = make_tmp_paths("cross-move")
+    account1 = make_test_account(paths, name="acct1")
+    account2 = make_test_account(paths, name="acct2")
+    config = make_test_config(accounts=(account1, account2))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    credentials = PlaintextCredentialsProvider(config)
+
+    folder1 = FolderRef(account_name="acct1", folder_name="INBOX")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct1"],
+        folder=folder1,
+        raw=plain_text(),
+        message_id="<cross-move@example.com>",
+    )
+    mirrors["acct2"].create_folder(account_name="acct2", folder_name="INBOX")
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+    )
+
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
+        screen._move_to_folder(msgs, folder1, folder2)  # noqa: SLF001
+
+    # Check that a message was created in acct2/INBOX
+    dest_msgs = list(index.list_folder_messages(folder=folder2))
+    assert len(dest_msgs) >= 1
+
+
+async def test_compose_from_draft_opens_compose() -> None:
+    """Pressing e on a Drafts message opens ComposeScreen with draft content."""
+    from email.message import EmailMessage
+
+    folder = FolderRef(account_name="acct", folder_name="Drafts")
+    draft_msg = EmailMessage()
+    draft_msg["From"] = "acct@example.com"
+    draft_msg["To"] = "bob@example.com"
+    draft_msg["Subject"] = "My draft"
+    draft_msg.set_content("Draft body text")
+    raw = draft_msg.as_bytes()
+
+    paths = make_tmp_paths("draft-edit")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    credentials = PlaintextCredentialsProvider(config)
+
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=raw,
+        message_id="<draft@example.com>",
+    )
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=credentials,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        fp = app.screen.query_one(FolderPanel)
+        fp.focus()
+        await pilot.pause()
+        # Select the Drafts folder node via select_folder_ref
+        app.screen.query_one(FolderPanel).select_folder_ref(folder)
+        await pilot.pause()
+        await pilot.pause()
+        # Select the first message
+        ml = app.screen.query_one(MessageListPanel)
+        ml.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # Press e to edit the draft
+        await pilot.press("e")
+        await pilot.pause()
+        assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+        await pilot.press("Q")
+        await pilot.pause()
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
