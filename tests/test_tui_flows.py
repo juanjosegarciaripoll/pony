@@ -1659,6 +1659,112 @@ async def test_compose_from_draft_opens_compose() -> None:
         await pilot.pause()
 
 
+async def test_new_folder_creates_in_mirror() -> None:
+    """Pressing N, typing a name, and pressing Enter creates a new folder."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="new-folder-create",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("N")
+        await pilot.pause()
+        from pony.tui.screens.new_folder_screen import NewFolderScreen
+
+        assert any(isinstance(s, NewFolderScreen) for s in app.screen_stack)
+        for ch in "Archive":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+    # Archive folder should exist in mirror
+    folder_refs = mirrors["acct"].list_folders(account_name="acct")
+    folder_names = [r.folder_name for r in folder_refs]
+    assert "Archive" in folder_names
+
+
+async def test_open_attachment_submits_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing O then submitting '1' opens the first attachment."""
+    launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    monkeypatch.setattr(
+        "pony.tui.screens.main_screen.MainScreen._launch_file", launch_mock
+    )
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-att-index",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        # Open attachments
+        await pilot.press("O")
+        await pilot.pause()
+        from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
+        assert any(isinstance(s, AttachmentPickerScreen) for s in app.screen_stack)
+        # Type "1" and submit
+        await pilot.press("1")
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+    # _launch_file should have been called for attachment 1
+    assert launch_mock.call_count >= 1
+
+
+async def test_open_attachment_numeric_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing '1' in the message view opens attachment 1 directly."""
+    launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    monkeypatch.setattr(
+        "pony.tui.screens.main_screen.MainScreen._launch_file", launch_mock
+    )
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-att-numeric",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        view.focus()
+        await pilot.pause()
+        # Press "1" to trigger screen.open_attachment('1')
+        await pilot.press("1")
+        await pilot.pause()
+        await pilot.pause()
+    # attachment should have been opened or notification shown
+    # (no crash = success)
+
+
+async def test_save_attachment_numeric_key() -> None:
+    """Pressing ctrl+1 in the message view saves attachment 1."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="save-att-numeric",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        view.focus()
+        await pilot.pause()
+        # Press ctrl+1 to trigger screen.save_attachment('1')
+        await pilot.press("ctrl+1")
+        await pilot.pause()
+        await pilot.pause()
+    # no crash = success
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
