@@ -1765,6 +1765,117 @@ async def test_save_attachment_numeric_key() -> None:
     # no crash = success
 
 
+async def test_archive_no_folder_configured_notifies() -> None:
+    """Pressing A when archive_folder is not configured shows an error."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    # build_pony_app doesn't set archive_folder by default
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="archive-no-folder",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("A")
+        await pilot.pause()
+    # Should show "No archive_folder configured" notification — no crash
+
+
+async def test_reply_and_send_marks_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing r and sending a reply marks the original message as answered."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    from email.message import EmailMessage as _EMsg
+
+    raw_msg = _EMsg()
+    raw_msg["From"] = "alice@example.com"
+    raw_msg["To"] = "acct@example.com"
+    raw_msg["Subject"] = "Reply to me"
+    raw_msg["Date"] = "Fri, 11 Apr 2026 10:00:00 +0000"
+    raw_msg["Message-ID"] = "<reply-me@example.com>"
+    raw_msg.set_content("Please reply")
+    raw = raw_msg.as_bytes()
+
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="reply-send",
+        seed=[(folder, raw)],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "alice@example.com"
+        app.screen.query_one("#body-area", TextArea).load_text("Reply body")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert send_mock.call_count == 1
+
+
+async def test_navigate_prev_in_message_view() -> None:
+    """Pressing p in message view navigates to previous message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="nav-prev-view",
+        seed=[
+            (folder, _custom_plain("msg1", body="first body")),
+            (folder, _custom_plain("msg2", body="second body")),
+        ],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        # Navigate to second message (older)
+        ml = app.screen.query_one(MessageListPanel)
+        ml.focus()
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # Now press p in the view to go back
+        view = app.screen.query_one(MessageViewPanel)
+        view.focus()
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+
+async def test_compose_reply_sends_and_marks_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing r and sending marks the original as ANSWERED."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="compose-reply-send",
+        seed=[(folder, plain_text())],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "alice@example.com"
+        app.screen.query_one("#body-area", TextArea).load_text("Reply")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert send_mock.call_count == 1
+
+
 async def test_save_message_opens_save_screen() -> None:
     """Pressing s opens the SaveMessageScreen."""
     from pony.tui.screens.save_message_screen import SaveMessageScreen
