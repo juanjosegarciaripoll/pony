@@ -484,16 +484,18 @@ class FolderPolicyTestCase(unittest.TestCase):
         self.assertTrue(p.should_sync("Sent"))
         self.assertFalse(p.is_read_only("INBOX"))
 
-    def test_include_whitelist(self) -> None:
+    def test_include_alone_does_not_restrict(self) -> None:
+        # include is exceptions to exclude, not a global whitelist: folders
+        # matched by neither list still sync.
         p = self._policy(include=["INBOX", "Archive"])
         self.assertTrue(p.should_sync("INBOX"))
-        self.assertFalse(p.should_sync("Sent"))
+        self.assertTrue(p.should_sync("Sent"))
 
-    def test_include_regex_matches_subfolders(self) -> None:
-        p = self._policy(include=["Archive/.*"])
-        self.assertTrue(p.should_sync("Archive/2024"))
-        self.assertFalse(p.should_sync("Archive"))
-        self.assertFalse(p.should_sync("INBOX"))
+    def test_include_rescues_subfolders_from_exclude(self) -> None:
+        p = self._policy(include=["Archive/.*"], exclude=["Archive.*"])
+        self.assertTrue(p.should_sync("Archive/2024"))  # rescued by include
+        self.assertFalse(p.should_sync("Archive"))  # excluded, not rescued
+        self.assertTrue(p.should_sync("INBOX"))  # untouched -> syncs
 
     def test_include_overrides_exclude(self) -> None:
         p = self._policy(include=["INBOX", "Spam"], exclude=["Spam"])

@@ -27,16 +27,17 @@ class MirrorConfig:
 class FolderConfig:
     """Per-account folder sync policy.
 
-    ``include``: if non-empty, only these folders are synchronised.  Empty
-    means sync all folders the server exposes.
+    ``exclude``: folders that are skipped during synchronisation.
 
-    ``exclude``: folders that are never synchronised, even if listed in
-    ``include``.  Takes precedence over both ``include`` and ``read_only``.
+    ``include``: exceptions to ``exclude`` — folders synchronised even when
+    matched by an ``exclude`` pattern.  ``include`` is *not* a global
+    whitelist: folders matched by neither list are still synced.  To sync
+    only a chosen set of folders, exclude everything (``exclude = [".*"]``)
+    and list the wanted folders in ``include``.
 
     ``read_only``: folders synchronised server-to-local only.  Local flag
-    changes and deletions are never pushed back to the server.  A folder in
-    ``read_only`` is automatically included in sync even when ``include`` is
-    non-empty, unless it also appears in ``exclude``.
+    changes and deletions are never pushed back to the server.  Like
+    ``include``, ``read_only`` also rescues a folder from ``exclude``.
     """
 
     include: tuple[str, ...] = ()
@@ -47,17 +48,15 @@ class FolderConfig:
         """Return True if this folder should be synchronised at all.
 
         ``include`` and ``read_only`` override ``exclude``: a folder
-        matched by any of them is synced even if also excluded.  When
-        ``include`` is non-empty, folders not matched by ``include``
-        or ``read_only`` are excluded by default.
+        matched by either is synced even if also matched by an ``exclude``
+        pattern.  A folder matched by none of the three lists is synced by
+        default — ``include`` does not act as a global whitelist.
         """
         if self._matches(self.include, folder_name):
             return True
         if self._matches(self.read_only, folder_name):
             return True
-        if self._matches(self.exclude, folder_name):
-            return False
-        return not self.include
+        return not self._matches(self.exclude, folder_name)
 
     def is_read_only(self, folder_name: str) -> bool:
         """Return True if this folder is server-to-local only."""

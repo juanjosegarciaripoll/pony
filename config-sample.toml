@@ -88,11 +88,14 @@
 # - trash_retention_days: Days to keep deleted messages in trash (default: 30)
 #
 # Folder sync policy (optional — omit the [accounts.folders] section to sync all):
-# - include:   Regex whitelist of folder names to sync. Empty or omitted = sync all.
-# - exclude:   Folders never synced, even if matched by include. Takes precedence.
+# - exclude:   Folders skipped during sync.
+# - include:   Exceptions to exclude — folders synced even when matched by an
+#              exclude pattern. NOT a global whitelist: folders matched by
+#              neither list are still synced. To sync only a chosen set,
+#              exclude everything (exclude = [".*"]) and list them in include.
 # - read_only: Folders synced server-to-local only. Local flag changes and
-#              deletions are never pushed back. Automatically included in sync
-#              (unless also matched by exclude), even when include is non-empty.
+#              deletions are never pushed back. Like include, read_only also
+#              rescues a folder from exclude.
 #
 # All three lists are Python re.fullmatch() patterns, so plain names like "INBOX"
 # match exactly, while patterns like "Archive/.*" match subfolders and ".*" matches
@@ -142,11 +145,11 @@ path = "mirrors/work"
 format = "mbox"
 trash_retention_days = 14
 
-# Sync INBOX and Archive (including all subfolders); exclude all Gmail system
-# folders; treat everything under Sent as read-only.
+# Sync only INBOX, Archive (including all subfolders) and Sent Mail: exclude
+# everything, then list the wanted folders in include. Treat Sent as read-only.
 [accounts.folders]
+exclude   = [".*"]
 include   = ["INBOX", "Archive", "Archive/.*", "Sent Mail"]
-exclude   = ["\\[Gmail\\]/.*"]
 read_only = ["Sent Mail"]
 
 # ── Local accounts ───────────────────────────────────────────────────────────

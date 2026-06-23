@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Folder `include` no longer acts as a global whitelist**: a non-empty
+  `[accounts.folders] include` list previously restricted sync to *only* the
+  listed folders, silently freezing every other folder (INBOX included).
+  `include` is now correctly an exception list for `exclude` — folders matched
+  by neither list still sync. To sync only a chosen set, exclude everything
+  (`exclude = [".*"]`) and list the wanted folders in `include`.
+
 ## [0.7.0] - 2026-06-04
 
 ### Security
