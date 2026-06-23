@@ -9,6 +9,8 @@ addresses, aliases, and metadata under a single contact record. The store is
 built automatically from mail headers and can be browsed, searched, edited,
 merged, and synchronised with Emacs BBDB format.
 
+![Contacts browser](assets/contacts.png)
+
 ## Contact records
 
 Each contact represents one person.

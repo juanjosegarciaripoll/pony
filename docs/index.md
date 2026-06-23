@@ -12,6 +12,13 @@ indexes it in SQLite for fast search, and presents it through a keyboard-driven
 terminal interface. Outgoing mail is sent over SMTP with optional Markdown
 rendering to `multipart/alternative`.
 
+![Pony Express main screen](assets/main-screen.png)
+
+!!! note
+    All screenshots in this documentation are rendered from synthetic demo
+    data — no real account is involved. Regenerate them with
+    `uv run python scripts/capture_screenshots.py`.
+
 ## Features
 
 | Area | What it does |

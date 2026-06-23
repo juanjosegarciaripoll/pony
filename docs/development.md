@@ -102,6 +102,24 @@ uv run mkdocs build
 The built site goes to `site/` (gitignored). GitHub Pages deployment is
 automated via the `.github/workflows/docs.yml` workflow.
 
+### Regenerating screenshots
+
+The screenshots in the README and docs are generated from synthetic demo data
+— no real account is involved. Two committed scripts drive this:
+
+- `scripts/demo_seed.py` builds a throwaway mail store (fake accounts,
+  messages, contacts) from Pony's public repositories.
+- `scripts/capture_screenshots.py` drives the real Textual screens headlessly
+  over that store, exports each as SVG, and rasterises to PNG in
+  `docs/assets/`.
+
+```bash
+uv run python scripts/capture_screenshots.py
+```
+
+The SVG→PNG step requires [Inkscape](https://inkscape.org/) on `PATH`. The demo
+clock is fixed, so re-runs are reproducible.
+
 ## Building standalone executables
 
 The primary distribution format is a platform-native binary built with

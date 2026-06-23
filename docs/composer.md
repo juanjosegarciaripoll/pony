@@ -7,6 +7,8 @@ title: Composer
 The composer opens as a full-screen overlay inside the TUI or as a standalone
 window when launched from the command line.
 
+![Composer](assets/compose.png)
+
 ## Opening the composer
 
 | Method | How |

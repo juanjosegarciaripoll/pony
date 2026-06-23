@@ -9,6 +9,25 @@ terminal interface built with [Textual](https://textual.textualize.io/).
 Outgoing mail is sent over SMTP with optional Markdown rendering to
 `multipart/alternative`.
 
+## Screenshots
+
+A three-pane reader — folder tree, message list, and preview — driven entirely
+from the keyboard:
+
+![Pony Express main screen](docs/assets/main-screen.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/compose.png" alt="Composer"><br><sub><b>Composer</b> — To/Cc/Bcc, subject, attachments, and an optional Markdown body.</sub></td>
+    <td width="50%"><img src="docs/assets/search.png" alt="Search results"><br><sub><b>Search</b> — fast SQLite-backed query across a folder or account.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/contacts.png" alt="Contacts browser"><br><sub><b>Contacts</b> — harvested from your mail, searchable and editable.</sub></td>
+    <td width="50%" valign="top"><sub>The screens above are rendered from synthetic demo data — no real
+    account is involved. Regenerate them with<br><code>uv run python scripts/capture_screenshots.py</code>.</sub></td>
+  </tr>
+</table>
+
 ## Warning
 
 This is an experimental personal project. There is no guarantee about

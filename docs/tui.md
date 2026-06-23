@@ -6,6 +6,8 @@ title: Terminal UI
 
 Launch the TUI with `pony tui`. Press ++q++ to quit at any time.
 
+![Pony Express main screen](assets/main-screen.png)
+
 ## Layout
 
 The TUI is a three-pane layout. All accounts are visible simultaneously; the
@@ -168,6 +170,10 @@ explicitly request it.
 ## Search
 
 Press ++slash++ from anywhere in the main reader to open the search dialog.
+Results replace the message list, with the active query shown in the panel
+title:
+
+![Search results](assets/search.png)
 
 ```
 +----------------------------------------------------------------------+
