@@ -835,9 +835,7 @@ class ImapSyncService:
                         stored=fast_path[folder_name],
                         read_only=folder_policy.is_read_only(folder_name),
                         remote_uids_by_folder=remote_uids_by_folder,
-                        uidvalidity_reset_folders=frozenset(
-                            uidvalidity_reset_folders
-                        ),
+                        uidvalidity_reset_folders=frozenset(uidvalidity_reset_folders),
                     )
                 elif folder_name in medium_path:
                     stored, changed = medium_path[folder_name]
@@ -848,9 +846,7 @@ class ImapSyncService:
                         changed_flags=changed,
                         read_only=folder_policy.is_read_only(folder_name),
                         remote_uids_by_folder=remote_uids_by_folder,
-                        uidvalidity_reset_folders=frozenset(
-                            uidvalidity_reset_folders
-                        ),
+                        uidvalidity_reset_folders=frozenset(uidvalidity_reset_folders),
                     )
                 else:
                     uid_to_mid, uid_to_flags = slow_path[folder_name]
@@ -866,9 +862,7 @@ class ImapSyncService:
                             folder_name,
                             frozenset(),
                         ),
-                        uidvalidity_reset_folders=frozenset(
-                            uidvalidity_reset_folders
-                        ),
+                        uidvalidity_reset_folders=frozenset(uidvalidity_reset_folders),
                     )
                 plan = dataclasses.replace(
                     plan,

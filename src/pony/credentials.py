@@ -311,12 +311,12 @@ def _dpapi_encrypt(plaintext: str) -> bytes:
         ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_char)),
     )
     blob_out = _BLOB()
-    if not ctypes.windll.crypt32.CryptProtectData(
+    if not ctypes.windll.crypt32.CryptProtectData(  # type: ignore[attr-defined]
         ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
     ):
         raise ConfigError("DPAPI CryptProtectData failed")
     result = bytes(blob_out.pbData[: blob_out.cbData])
-    ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    ctypes.windll.kernel32.LocalFree(blob_out.pbData)  # type: ignore[attr-defined]
     return result
 
 
@@ -335,10 +335,10 @@ def _dpapi_decrypt(blob: bytes) -> str:
         ctypes.cast(ctypes.c_char_p(blob), ctypes.POINTER(ctypes.c_char)),
     )
     blob_out = _BLOB()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
+    if not ctypes.windll.crypt32.CryptUnprotectData(  # type: ignore[attr-defined]
         ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
     ):
         raise ConfigError("DPAPI CryptUnprotectData failed")
     result = bytes(blob_out.pbData[: blob_out.cbData])
-    ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    ctypes.windll.kernel32.LocalFree(blob_out.pbData)  # type: ignore[attr-defined]
     return result.decode("utf-8")
