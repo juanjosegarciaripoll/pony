@@ -62,6 +62,32 @@ uv run python scripts/build.py --installer # + platform installer
 
 Artifacts → `artifacts/`. `pony.spec` controls bundling. `paths.bundled_docs_path()` detects frozen execution.
 
+## Releasing (agent runbook)
+
+One dispatch-driven workflow does everything: `.github/workflows/release.yml`
+(`prepare → build → publish`). To cut version `X.Y.Z`:
+
+1. Make sure `main` is green and up to date (`git pull`).
+2. Edit `CHANGELOG.md`: add `## [X.Y.Z]` **with no date** as the **very first**
+   heading, with the release notes under it. `X.Y.Z` must be **strictly
+   greater** than the `version` in `pyproject.toml`. Do **not** touch any
+   version string — the workflow stamps `pyproject.toml` + `version.py`.
+3. Commit and push to `main`.
+4. Trigger the release: `gh workflow run release.yml`
+   (add `-f prerelease=true` for a pre-release).
+5. Watch it:
+   `gh run watch "$(gh run list --workflow release.yml -L1 --json databaseId -q '.[0].databaseId')"`.
+   It stamps the date + version files, pushes the bump commit, builds/tests on
+   Linux + macOS + Windows, then tags `vX.Y.Z` and publishes the release with
+   binaries attached.
+6. If it fails **before** publish: nothing is tagged or released. Fix the cause
+   and re-run. The bump commit may already be on `main` — if so, `git revert`
+   it before retrying so step 2's version check stays valid.
+
+The workflow aborts (no release) if the first CHANGELOG heading is dated/not a
+bare `## [X.Y.Z]`, if the version is not greater than the current one, or if
+tag `vX.Y.Z` already exists.
+
 ## Do NOT
 
 - Mock the database — use real SQLite via `SqliteIndexRepository`.
