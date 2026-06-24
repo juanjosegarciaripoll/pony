@@ -516,8 +516,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`pyproject.toml`**: added `[dependency-groups] build` group containing
   `pyinstaller>=6.0`. Install with `uv sync --group build`.
 
-## [0.2.0]
-
+## [0.2.0] - 2026-06-24
 ### Added
 
 - **Archive action**: press ++shift+a++ in the TUI to move the selected
@@ -637,3 +636,4 @@ First feature-complete release of Pony Express.
 [0.6.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.6.0
 [0.7.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.7.0
 [0.8.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.8.0
+[0.2.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.2.0
