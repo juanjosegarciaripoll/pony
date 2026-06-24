@@ -72,3 +72,7 @@ Artifacts → `artifacts/`. `pony.spec` controls bundling. `paths.bundled_docs_p
 - Add write/mutating MCP tools without approval.
 - Create docs files unless asked.
 - Add emojis unless asked.
+- **Reference AI in git history.** Never mention Claude, Anthropic, "AI", or
+  any assistant in commit messages, commit trailers (no `Co-Authored-By` for
+  the assistant), PR titles, or PR descriptions. Commits must read as
+  ordinary human-authored history.
