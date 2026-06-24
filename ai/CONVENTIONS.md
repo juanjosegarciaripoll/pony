@@ -44,7 +44,7 @@ Single `config.toml` → domain objects directly. `config-sample.toml` must mirr
 
 ## Versions
 
-`pyproject.toml` + `version.py` updated atomically by release Action. To release: add an undated `## [X.Y.Z]` heading to `CHANGELOG.md`, trigger the workflow — it stamps the date, tags, and publishes. Guard: tag must not already exist.
+`pyproject.toml` + `version.py` updated atomically by the `release.yml` Action (single dispatch-driven `prepare → build → publish` pipeline). To release: add an undated `## [X.Y.Z]` heading at the **very top** of `CHANGELOG.md`, then trigger the workflow — it reads **only the first heading**, stamps the date, builds + tests on all three platforms, then tags and publishes the release with binaries attached. Guards: the first heading must be an undated bare `## [X.Y.Z]`; the version must be **strictly greater** than the current one (no downgrades); the tag must not already exist.
 
 ## Build
 

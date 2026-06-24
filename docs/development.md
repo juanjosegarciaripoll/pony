@@ -179,9 +179,14 @@ when running from source.
 
 ### CI
 
-The `release-build.yml` workflow runs on every version tag and on GitHub
-Release publication. It runs tests, builds the docs, compiles the binary,
-and uploads both the installer and the portable archive for each platform.
+The `release.yml` workflow is the single, dispatch-driven release pipeline.
+Triggered manually (Actions → Create Release → Run workflow), it runs three
+jobs in sequence: `prepare` reads the new version from the first CHANGELOG
+heading, stamps `pyproject.toml`/`version.py`, and pushes the bump commit;
+`build` runs tests, builds the docs, and compiles the binary plus installer
+and portable archive for each platform (Linux, macOS, Windows); `publish`
+tags the commit and creates the GitHub release with all binaries attached —
+only after every build succeeds.
 
 ## Project structure
 

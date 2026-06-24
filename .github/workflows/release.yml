@@ -1,5 +1,19 @@
 name: Create Release
 
+# Single, dispatch-driven release pipeline:
+#
+#   prepare  -> read the version from the FIRST CHANGELOG heading, validate it,
+#               stamp pyproject.toml + version.py, commit, and push to the
+#               branch. No tag yet.
+#   build    -> build + test + package on Linux, macOS, and Windows from the
+#               exact commit produced by `prepare`.
+#   publish  -> only after every build succeeds: tag the commit and create the
+#               GitHub release with all binaries attached in one shot.
+#
+# There is no `push: tags` trigger and no second workflow. A tag pushed by the
+# default GITHUB_TOKEN would not trigger another workflow anyway, so the build
+# is wired directly into this pipeline via `needs:`.
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,13 +24,25 @@ on:
         default: false
 
 permissions:
-  contents: write        # push commits, tags, and the GitHub release
-  actions: write         # dispatch release-build.yml via workflow_dispatch
+  contents: write        # push commit + tag, create the GitHub release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APP_NAME: pony
+  PYTHON_VERSION: '3.13'
 
 jobs:
-  release:
-    name: Bump version and create release
+  prepare:
+    name: Prepare release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      old_version: ${{ steps.version.outputs.old_version }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,138 +53,124 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Read version from CHANGELOG and update files
+      - name: Detect version, validate, and stamp files
         id: version
         run: |
           python - <<'PY'
           import os, re, subprocess, sys
           from datetime import date
 
-          # --- 1. Read new version from CHANGELOG.md ---
+          # --- Read the version from the FIRST CHANGELOG heading only ---
           #
-          # Expected workflow:
-          #   1. Developer writes a new "## [X.Y.Z]" section (no date) at the
-          #      top of the changelog and commits it to main.
-          #   2. Developer triggers this workflow.
-          #   3. The workflow reads X.Y.Z as the release version, stamps the
-          #      date, overwrites pyproject.toml + version.py, tags, and releases.
+          # Release flow:
+          #   1. Add a new undated "## [X.Y.Z]" section at the VERY TOP of
+          #      CHANGELOG.md and commit it to the release branch.
+          #   2. Trigger this workflow.
           #
-          # CHANGELOG.md is the single source of truth for the release version.
-          # The only guard is that the tag vX.Y.Z must not already exist — that
-          # prevents re-releasing a published version, while still allowing the
-          # first release (when pyproject.toml already matches the changelog).
+          # Only the first "## [" heading is inspected — never a search across
+          # the whole file — so a stray undated heading deeper in the changelog
+          # can never be picked up. The version must also be strictly greater
+          # than the current one, which blocks any accidental downgrade.
 
           with open("CHANGELOG.md", "r", encoding="utf-8") as f:
               changelog = f.read()
 
-          undated = re.search(
-              r'^## \[(\d+\.\d+\.\d+)\]\s*$',
-              changelog,
-              re.MULTILINE,
-          )
-          if not undated:
-              print(
-                  "ERROR: No undated '## [X.Y.Z]' heading found in CHANGELOG.md.\n"
-                  "Write a new changelog section for the release before "
-                  "triggering this workflow.",
-                  file=sys.stderr,
-              )
-              sys.exit(1)
+          first = re.search(r'^## \[.*$', changelog, re.MULTILINE)
+          if not first:
+              sys.exit("ERROR: no '## [...]' heading found in CHANGELOG.md.")
 
-          new = undated.group(1)
+          heading = first.group(0)
+          m = re.match(r'^## \[(\d+\.\d+\.\d+)\]\s*$', heading)
+          if not m:
+              sys.exit(
+                  f"ERROR: the first CHANGELOG heading is {heading!r}, not an "
+                  "undated '## [X.Y.Z]'.\nAdd a new undated version section at "
+                  "the very top of CHANGELOG.md before releasing."
+              )
+
+          new = m.group(1)
           tag = f"v{new}"
           today = date.today().isoformat()
 
-          # --- 2. Refuse to re-release an existing tag ---
-
-          result = subprocess.run(
+          # --- Guard 1: refuse to re-release an existing tag ---
+          if subprocess.run(
               ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"],
               capture_output=True,
-          )
-          if result.returncode == 0:
-              print(
+          ).returncode == 0:
+              sys.exit(
                   f"ERROR: tag {tag} already exists. Bump the version in "
-                  "CHANGELOG.md before releasing.",
-                  file=sys.stderr,
+                  "CHANGELOG.md before releasing."
               )
-              sys.exit(1)
 
-          # --- 3. Read current pyproject.toml version (for the commit message) ---
-
+          # --- Read current version from pyproject.toml ---
           with open("pyproject.toml", "r", encoding="utf-8") as f:
               pyproject = f.read()
-
-          match = re.search(
+          om = re.search(
               r'^version\s*=\s*"(\d+\.\d+\.\d+)"', pyproject, re.MULTILINE,
           )
-          if not match:
-              print("ERROR: Could not find version in pyproject.toml", file=sys.stderr)
-              sys.exit(1)
-          old = match.group(1)
+          if not om:
+              sys.exit("ERROR: could not find version in pyproject.toml.")
+          old = om.group(1)
+
+          # --- Guard 2: strict monotonic increase (blocks downgrades) ---
+          def parts(v):
+              return tuple(int(x) for x in v.split("."))
+
+          if parts(new) <= parts(old):
+              sys.exit(
+                  f"ERROR: new version {new} is not greater than the current "
+                  f"version {old}. Refusing to release a downgrade."
+              )
 
           print(f"Releasing {old} -> {new}")
 
-          # --- 4. Update pyproject.toml ---
-
+          # --- Stamp pyproject.toml ---
           pyproject = re.sub(
-              r'^(version\s*=\s*)"[^"]+"',
-              f'\\1"{new}"',
-              pyproject,
-              count=1,
-              flags=re.MULTILINE,
+              r'^(version\s*=\s*)"[^"]+"', f'\\1"{new}"',
+              pyproject, count=1, flags=re.MULTILINE,
           )
           with open("pyproject.toml", "w", encoding="utf-8") as f:
               f.write(pyproject)
 
-          # --- 5. Update version.py ---
-
+          # --- Stamp version.py ---
           ver_path = "src/pony/version.py"
           with open(ver_path, "r", encoding="utf-8") as f:
               ver_text = f.read()
           ver_text = re.sub(
-              r'^(__version__:\s*str\s*=\s*)"[^"]+"',
-              f'\\1"{new}"',
-              ver_text,
-              count=1,
-              flags=re.MULTILINE,
+              r'^(__version__:\s*str\s*=\s*)"[^"]+"', f'\\1"{new}"',
+              ver_text, count=1, flags=re.MULTILINE,
           )
           with open(ver_path, "w", encoding="utf-8") as f:
               f.write(ver_text)
 
-          # --- 6. Stamp date on the CHANGELOG heading ---
-
+          # --- Stamp the date on the CHANGELOG heading ---
           changelog = (
-              changelog[:undated.start()]
+              changelog[:first.start()]
               + f"## [{new}] - {today}"
-              + changelog[undated.end():]
+              + changelog[first.end():]
           )
 
-          version_link = (
+          link = (
               f"[{new}]: https://github.com/juanjosegarciaripoll/pony"
               f"/releases/tag/{tag}"
           )
-          if f"[{new}]:" in changelog:
+          if re.search(rf'^\[{re.escape(new)}\]:', changelog, re.MULTILINE):
               changelog = re.sub(
-                  rf'^\[{re.escape(new)}\]:.*$',
-                  version_link,
-                  changelog,
-                  count=1,
-                  flags=re.MULTILINE,
+                  rf'^\[{re.escape(new)}\]:.*$', link,
+                  changelog, count=1, flags=re.MULTILINE,
               )
           else:
-              changelog = changelog.rstrip() + "\n" + version_link + "\n"
+              changelog = changelog.rstrip() + "\n" + link + "\n"
 
           with open("CHANGELOG.md", "w", encoding="utf-8") as f:
               f.write(changelog)
-
-          # --- 7. Write outputs ---
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"version={new}\n")
@@ -166,41 +178,127 @@ jobs:
               out.write(f"old_version={old}\n")
           PY
 
+      - name: Commit version bump and push
+        id: commit
+        run: |
+          git add pyproject.toml CHANGELOG.md src/pony/version.py
+          git commit -m "Release ${{ steps.version.outputs.tag }}
+
+          Bump version ${{ steps.version.outputs.old_version }} -> ${{ steps.version.outputs.version }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and package
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --group dev --group build --group docs
+        shell: bash
+
+      - name: Run tests
+        run: uv run python -m pytest
+        shell: bash
+
+      - name: Build documentation
+        run: uv run mkdocs build --strict
+        shell: bash
+
+      - name: Install Inno Setup (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          choco install innosetup --yes
+          echo "C:\Program Files (x86)\Inno Setup 6" >> "$GITHUB_PATH"
+        shell: bash
+
+      - name: Build binary and installers
+        run: uv run python scripts/build.py --skip-tests --skip-docs --installer
+        shell: bash
+
+      - name: List artifacts
+        run: ls artifacts/
+        shell: bash
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.platform }}-${{ env.TAG }}
+          path: artifacts/
+
+  publish:
+    name: Tag and publish release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag
+        run: |
+          git tag -a "${{ needs.prepare.outputs.tag }}" \
+            -m "Release ${{ needs.prepare.outputs.version }}"
+          git push origin "${{ needs.prepare.outputs.tag }}"
+
       - name: Build release body from CHANGELOG and README
-        id: changelog
         run: |
           python - <<'PY'
-          import os, re
+          import re
 
-          version = "${{ steps.version.outputs.version }}"
-          tag = "${{ steps.version.outputs.tag }}"
-
-          # --- Extract changelog section for this version ---
+          version = "${{ needs.prepare.outputs.version }}"
+          tag = "${{ needs.prepare.outputs.tag }}"
 
           with open("CHANGELOG.md", "r", encoding="utf-8") as f:
               changelog = f.read()
-
           pattern = rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)"
           match = re.search(pattern, changelog, re.DOTALL)
           changes = match.group(1).strip() if match else ""
 
-          # --- Extract one-liner from README ---
-
           with open("README.md", "r", encoding="utf-8") as f:
               readme = f.read()
-
-          # Grab the first paragraph after the # heading
           desc_match = re.search(r'^# .+\n\n(.+?)(?:\n\n|\Z)', readme, re.DOTALL)
           description = desc_match.group(1).strip() if desc_match else ""
-
-          # --- Compose release body ---
 
           parts = []
           if description:
               parts.append(description)
           if changes:
               parts.append("## What's new\n\n" + changes)
-
           parts.append(
               "## Install\n\n"
               "```bash\n"
@@ -214,31 +312,15 @@ jobs:
               "| **[Changelog](https://github.com/juanjosegarciaripoll/pony/blob/main/CHANGELOG.md)**"
           )
 
-          body = "\n\n".join(parts)
-
           with open("release_body.md", "w", encoding="utf-8") as f:
-              f.write(body)
-
-          print(f"Release body ({len(body)} chars):")
-          print(body[:800])
+              f.write("\n\n".join(parts))
           PY
 
-      - name: Commit version bump
-        run: |
-          git add pyproject.toml CHANGELOG.md src/pony/version.py
-          git commit -m "Release ${{ steps.version.outputs.tag }}
-
-          Bump version ${{ steps.version.outputs.old_version }} -> ${{ steps.version.outputs.version }}"
-
-      - name: Create tag
-        run: |
-          git tag -a "${{ steps.version.outputs.tag }}" \
-            -m "Release ${{ steps.version.outputs.version }}"
-
-      - name: Push commit and tag
-        run: |
-          git push origin HEAD
-          git push origin "${{ steps.version.outputs.tag }}"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Create GitHub release
         env:
@@ -248,14 +330,8 @@ jobs:
           if [ "${{ inputs.prerelease }}" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           fi
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "Pony Express ${{ steps.version.outputs.version }}" \
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "Pony Express ${{ needs.prepare.outputs.version }}" \
             --notes-file release_body.md \
-            $PRERELEASE_FLAG
-
-      - name: Trigger release builds
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run release-build.yml \
-            --ref "${{ steps.version.outputs.tag }}"
+            $PRERELEASE_FLAG \
+            dist/*
