@@ -5,8 +5,7 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.8.0]
-
+## [0.8.0] - 2026-06-24
 ### Fixed
 
 - **Folder `include` no longer acts as a global whitelist**: a non-empty
@@ -637,3 +636,4 @@ First feature-complete release of Pony Express.
 [0.5.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.5.0
 [0.6.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.6.0
 [0.7.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.7.0
+[0.8.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.8.0
