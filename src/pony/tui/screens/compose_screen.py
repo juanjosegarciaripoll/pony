@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import tempfile
@@ -441,8 +442,6 @@ class ComposeScreen(Screen[bool]):
         elif "attach-remove-btn" in btn.classes:
             row = btn.parent
             if isinstance(row, _AttachRow):
-                import contextlib
-
                 with contextlib.suppress(ValueError):
                     self._attachment_paths.remove(row.attachment_path)
                 self._refresh_attachments_bar()

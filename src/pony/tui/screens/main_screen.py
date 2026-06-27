@@ -5,9 +5,6 @@ from __future__ import annotations
 import collections.abc
 import contextlib
 import dataclasses
-import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -48,7 +45,7 @@ from ..compose_utils import (
     reply_subject,
 )
 from ..message_renderer import render_message
-from ..terminal import set_terminal_title
+from ..terminal import launch_file, set_terminal_title
 from ..widgets.folder_panel import FolderPanel
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
@@ -929,6 +926,22 @@ class MainScreen(Screen[None]):
         Message-ID is preserved — accounts are independent identity
         namespaces and a true copy keeps IMAP thread integrity intact.
         """
+        self._prompt_folder_picker(verb="Copy", on_chosen=self._copy_to_folder)
+
+    def _prompt_folder_picker(
+        self,
+        *,
+        verb: str,
+        on_chosen: collections.abc.Callable[
+            [list[IndexedMessage], FolderRef, FolderRef], None
+        ],
+    ) -> None:
+        """Resolve the marked messages and prompt for a destination folder.
+
+        Shared skeleton for :meth:`action_copy` / :meth:`action_move`: gathers
+        the targets, opens :class:`PickFolderScreen` titled with *verb*, and on
+        a non-cancel dismissal invokes ``on_chosen(messages, source, target)``.
+        """
         summaries = self._targets()
         if not summaries:
             return
@@ -942,14 +955,14 @@ class MainScreen(Screen[None]):
         screen = PickFolderScreen(
             config=self._config,
             mirrors=self._mirrors,
-            title=f"Copy to folder (source: {source_ref.folder_name})",
+            title=f"{verb} to folder (source: {source_ref.folder_name})",
             exclude=source_ref,
         )
 
         def _on_dismiss(target: FolderRef | None) -> None:
             if target is None:
                 return
-            self._copy_to_folder(messages, source_ref, target)
+            on_chosen(messages, source_ref, target)
 
         self.app.push_screen(screen, _on_dismiss)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
 
@@ -1058,29 +1071,7 @@ class MainScreen(Screen[None]):
           relay the deletion).  Target-first ordering means an
           interruption leaves a duplicate, not a loss.
         """
-        summaries = self._targets()
-        if not summaries:
-            return
-        messages = self._resolve_targets(summaries)
-        if not messages:
-            return
-        source_ref = self._folder_ref_from_summary(summaries[0])
-
-        from .pick_folder_screen import PickFolderScreen
-
-        screen = PickFolderScreen(
-            config=self._config,
-            mirrors=self._mirrors,
-            title=f"Move to folder (source: {source_ref.folder_name})",
-            exclude=source_ref,
-        )
-
-        def _on_dismiss(target: FolderRef | None) -> None:
-            if target is None:
-                return
-            self._move_to_folder(messages, source_ref, target)
-
-        self.app.push_screen(screen, _on_dismiss)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
+        self._prompt_folder_picker(verb="Move", on_chosen=self._move_to_folder)
 
     def _find_account(self, account_name: str) -> AccountConfig | None:
         """Return the IMAP AccountConfig for *account_name*, or None.
@@ -1392,16 +1383,51 @@ class MainScreen(Screen[None]):
         """Accounts that can send via SMTP (IMAP or local-with-SMTP)."""
         return [a for a in self._config.accounts if a.can_send]
 
+    def _sendable_or_notify(self, verb: str) -> list[AnyAccount] | None:
+        """Return sendable accounts, or warn (tagged with *verb*) and None.
+
+        *verb* is the present participle of the action ("Composing",
+        "Replying", "Forwarding") that opens the notice.
+        """
+        accounts = self._sendable_accounts()
+        if not accounts:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"{verb} requires an IMAP account (SMTP is needed to send).",
+                severity="warning",
+            )
+            return None
+        return accounts
+
+    def _load_current_raw_or_notify(
+        self, msg: IndexedMessage, *, noun: str
+    ) -> bytes | None:
+        """Read *msg*'s raw bytes from its mirror for a reply/forward.
+
+        On a read failure, notify "Could not load message for {noun}" and
+        return None.  Indexes ``_mirrors`` directly: the current message's
+        account always has a mirror.
+        """
+        mirror = self._mirrors[msg.message_ref.account_name]
+        try:
+            return mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Could not load message for {noun}.", severity="error"
+            )
+            return None
+
     def compose_new(self, to: str = "") -> None:
         """Open a blank compose screen, optionally pre-filled with *to*."""
         from .compose_screen import ComposeInitial, ComposeScreen
 
-        accounts = self._sendable_accounts()
-        if not accounts:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Composing requires an IMAP account (SMTP is needed to send).",
-                severity="warning",
-            )
+        accounts = self._sendable_or_notify("Composing")
+        if accounts is None:
             return
         # Prefer the current message's account when it's sendable; otherwise
         # default to the first IMAP account.
@@ -1439,24 +1465,11 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
-        accounts = self._sendable_accounts()
-        if not accounts:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Replying requires an IMAP account (SMTP is needed to send).",
-                severity="warning",
-            )
+        accounts = self._sendable_or_notify("Replying")
+        if accounts is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
-        try:
-            raw = mirror.get_message_bytes(
-                folder=FolderRef(
-                    account_name=msg.message_ref.account_name,
-                    folder_name=msg.message_ref.folder_name,
-                ),
-                storage_key=msg.storage_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify("Could not load message for reply.", severity="error")  # pyright: ignore[reportUnknownMemberType]
+        raw = self._load_current_raw_or_notify(msg, noun="reply")
+        if raw is None:
             return
         rendered = render_message(raw)
         # Source may be a local account; fall back to the first IMAP account
@@ -1497,24 +1510,11 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
-        accounts = self._sendable_accounts()
-        if not accounts:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Replying requires an IMAP account (SMTP is needed to send).",
-                severity="warning",
-            )
+        accounts = self._sendable_or_notify("Replying")
+        if accounts is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
-        try:
-            raw = mirror.get_message_bytes(
-                folder=FolderRef(
-                    account_name=msg.message_ref.account_name,
-                    folder_name=msg.message_ref.folder_name,
-                ),
-                storage_key=msg.storage_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify("Could not load message for reply.", severity="error")  # pyright: ignore[reportUnknownMemberType]
+        raw = self._load_current_raw_or_notify(msg, noun="reply")
+        if raw is None:
             return
         rendered = render_message(raw)
         account = next(
@@ -1558,24 +1558,11 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
-        accounts = self._sendable_accounts()
-        if not accounts:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Forwarding requires an IMAP account (SMTP is needed to send).",
-                severity="warning",
-            )
+        accounts = self._sendable_or_notify("Forwarding")
+        if accounts is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
-        try:
-            raw = mirror.get_message_bytes(
-                folder=FolderRef(
-                    account_name=msg.message_ref.account_name,
-                    folder_name=msg.message_ref.folder_name,
-                ),
-                storage_key=msg.storage_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify("Could not load message for forward.", severity="error")  # pyright: ignore[reportUnknownMemberType]
+        raw = self._load_current_raw_or_notify(msg, noun="forward")
+        if raw is None:
             return
         rendered = render_message(raw)
         account = next(
@@ -1616,12 +1603,8 @@ class MainScreen(Screen[None]):
         msg = self.get_current_message()
         if msg is None:
             return
-        accounts = self._sendable_accounts()
-        if not accounts:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Composing requires an IMAP account (SMTP is needed to send).",
-                severity="warning",
-            )
+        accounts = self._sendable_or_notify("Composing")
+        if accounts is None:
             return
         mirror = self._mirrors.get(msg.message_ref.account_name)
         if mirror is None:
@@ -1790,7 +1773,7 @@ class MainScreen(Screen[None]):
                 continue
             if name:
                 try:
-                    self._launch_file(dest / name)
+                    launch_file(dest / name)
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open {name}: {exc}",
@@ -1899,16 +1882,6 @@ class MainScreen(Screen[None]):
 
     def _downloads_dir(self) -> Path:
         return self._config.downloads_path or Path.home() / "Downloads"
-
-    @staticmethod
-    def _launch_file(path: Path) -> None:
-        """Open *path* with the OS default application."""
-        if sys.platform == "win32":
-            os.startfile(path)  # noqa: S606
-        elif sys.platform == "darwin":  # pyright: ignore[reportUnreachable]
-            subprocess.run(["open", str(path)], check=False)  # noqa: S603 S607
-        else:  # pyright: ignore[reportUnreachable]
-            subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S603 S607
 
     # ------------------------------------------------------------------
     # Contacts

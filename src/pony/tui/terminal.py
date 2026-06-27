@@ -1,8 +1,21 @@
-"""OSC escape sequences for updating the terminal emulator's window title."""
+"""Terminal helpers: OSC title control and opening files in the OS viewer."""
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+from pathlib import Path
+
+
+def launch_file(path: Path) -> None:
+    """Open *path* with the OS default application."""
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    elif sys.platform == "darwin":  # pyright: ignore[reportUnreachable]
+        subprocess.run(["open", str(path)], check=False)  # noqa: S603 S607
+    else:  # pyright: ignore[reportUnreachable]
+        subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S603 S607
 
 
 def set_terminal_title(text: str) -> None:

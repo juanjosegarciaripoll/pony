@@ -14,9 +14,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DirectoryTree, Footer, Input, Label
+from textual.widgets import Button, DirectoryTree, Footer, Label
 
-from .floating_input_screen import FloatingInputScreen
+from .floating_input_screen import SimpleInputScreen
 
 # Persists the last-used directory across invocations within a session.
 _session_dir: Path | None = None
@@ -39,18 +39,11 @@ class _DirOnlyTree(DirectoryTree):
 # ---------------------------------------------------------------------------
 
 
-class _CreateFolderScreen(FloatingInputScreen[str | None]):
+class _CreateFolderScreen(SimpleInputScreen):
     """One-line prompt for the new directory name."""
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="floating-bar"):
-            yield Label("New folder name:", id="floating-label")
-            yield Input(placeholder="folder name", id="floating-input")
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        event.stop()
-        name = event.value.strip()
-        self.dismiss(name if name else None)
+    INPUT_LABEL = "New folder name:"
+    INPUT_PLACEHOLDER = "folder name"
 
 
 # ---------------------------------------------------------------------------

@@ -579,7 +579,7 @@ async def test_eml_viewer_screen_open_attachment_0_opens_all(
     from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
 
     launch_mock = MagicMock()
-    monkeypatch.setattr("pony.tui.screens.eml_viewer_screen._launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.screens.eml_viewer_screen.launch_file", launch_mock)
 
     raw = corpus.multipart_mixed_attachment()
     app = EmlViewerApp(raw_bytes=raw)

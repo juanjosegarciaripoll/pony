@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -13,6 +10,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from ..message_renderer import extract_attachment
+from ..terminal import launch_file
 from ..widgets.message_view import MessageViewPanel
 
 
@@ -134,7 +132,7 @@ class EmlViewerScreen(Screen[None]):
                     ) as f:
                         f.write(payload.data)
                         path = Path(f.name)
-                    _launch_file(path)
+                    launch_file(path)
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open attachment {idx}: {exc}", severity="error"
@@ -159,13 +157,3 @@ class EmlViewerScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Saved to {dest}: {', '.join(saved)}"
             )
-
-
-def _launch_file(path: Path) -> None:
-    """Open *path* with the OS default application."""
-    if sys.platform == "win32":
-        os.startfile(path)  # noqa: S606
-    elif sys.platform == "darwin":  # pyright: ignore[reportUnreachable]
-        subprocess.run(["open", str(path)], check=False)  # noqa: S603 S607
-    else:  # pyright: ignore[reportUnreachable]
-        subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S603 S607

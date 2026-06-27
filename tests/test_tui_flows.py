@@ -1953,9 +1953,7 @@ async def test_open_attachment_submits_index(
 ) -> None:
     """Pressing O then submitting '1' opens the first attachment."""
     launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    monkeypatch.setattr(
-        "pony.tui.screens.main_screen.MainScreen._launch_file", launch_mock
-    )
+    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-att-index",
@@ -1985,9 +1983,7 @@ async def test_open_attachment_numeric_key(
 ) -> None:
     """Pressing '1' in the message view opens attachment 1 directly."""
     launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    monkeypatch.setattr(
-        "pony.tui.screens.main_screen.MainScreen._launch_file", launch_mock
-    )
+    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-att-numeric",

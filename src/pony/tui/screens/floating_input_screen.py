@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import TypeVar
 
+from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Input
+from textual.widgets import Input, Label
 
 _R = TypeVar("_R")
 
@@ -60,3 +62,25 @@ class FloatingInputScreen(Screen[_R]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class SimpleInputScreen(FloatingInputScreen[str | None]):
+    """Floating one-line prompt that dismisses with its trimmed input.
+
+    Subclasses set :attr:`INPUT_LABEL` and :attr:`INPUT_PLACEHOLDER`.
+    Submitting dismisses with the stripped text, or ``None`` when the field
+    is empty; Escape dismisses with ``None`` (via :class:`FloatingInputScreen`).
+    """
+
+    INPUT_LABEL = ""
+    INPUT_PLACEHOLDER = ""
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="floating-bar"):
+            yield Label(self.INPUT_LABEL, id="floating-label")
+            yield Input(placeholder=self.INPUT_PLACEHOLDER, id="floating-input")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        text = event.value.strip()
+        self.dismiss(text or None)
