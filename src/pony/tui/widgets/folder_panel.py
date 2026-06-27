@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from rich.markup import escape as markup_escape
 from textual.binding import Binding
 from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
@@ -128,6 +129,10 @@ class FolderPanel(Tree[FolderRef | None]):
 
     BORDER_TITLE = "Folders"
 
+    # Deterministic spinner frames cycled by an advancing index (no
+    # time/random source) so the syncing indicator is reproducible in tests.
+    _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
     BINDINGS = [
         Binding("n", "cursor_down", "Next", show=False),
         Binding("p", "cursor_up", "Prev", show=False),
@@ -153,10 +158,36 @@ class FolderPanel(Tree[FolderRef | None]):
         self._index = index
         self._mirrors = mirrors
         self._inbox_nodes: list[TreeNode[FolderRef | None]] = []
+        self._spinner_timer: Timer | None = None
+        self._spinner_index = 0
 
     def on_mount(self) -> None:
         self.refresh_folders()
         self.call_after_refresh(self._select_first_inbox)
+
+    def set_syncing(self, active: bool) -> None:
+        """Show or hide a spinner on the border title while a sync runs.
+
+        ``active=True`` starts a ~0.2s timer cycling a fixed spinner-frame
+        tuple by an advancing index; ``active=False`` stops it and restores
+        the plain ``"Folders"`` title.  Idempotent in both directions.
+        """
+        if active:
+            if self._spinner_timer is not None:
+                return
+            self._spinner_index = 0
+            self._advance_spinner()
+            self._spinner_timer = self.set_interval(0.2, self._advance_spinner)
+        else:
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            self.border_title = "Folders"
+
+    def _advance_spinner(self) -> None:
+        frame = self._SPINNER_FRAMES[self._spinner_index % len(self._SPINNER_FRAMES)]
+        self._spinner_index += 1
+        self.border_title = f"Folders {frame} syncing…"
 
     def _select_first_inbox(self) -> None:
         if self._inbox_nodes:

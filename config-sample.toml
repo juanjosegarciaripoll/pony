@@ -104,6 +104,15 @@
 config_version = 2
 use_utf8 = true
 
+# Background synchronization (optional).
+# When background_sync_enabled is true, Pony runs a non-blocking sync on a
+# periodic timer, auto-confirming every folder (including the mass-deletion
+# guard).  A spinner appears on the Folders panel title while it runs.
+# The manual trigger (ctrl+g) always works regardless of this setting.
+# background_sync_interval_seconds must be positive (default 600 = 10 min).
+background_sync_enabled = false
+background_sync_interval_seconds = 600
+
 [[accounts]]
 name = "Personal"
 email_address = "user@example.com"

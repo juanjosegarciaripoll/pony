@@ -67,6 +67,7 @@ class MainScreen(Screen[None]):
 
     BINDINGS = [
         Binding("g", "sync", "Get mail"),
+        Binding("ctrl+g", "background_sync", "Bg sync", show=False),
         Binding("c", "compose_new", "Compose"),
         Binding("e", "edit_draft", "Edit draft"),
         Binding("r", "compose_reply", "Reply"),
@@ -161,6 +162,20 @@ class MainScreen(Screen[None]):
             yield MessageListPanel(self._index, id="message-list")
             yield MessageViewPanel(id="message-view")
         yield Footer()
+
+    def on_mount(self) -> None:
+        """Install the periodic background-sync timer when configured.
+
+        No sync runs at startup — the first automatic run fires after one
+        interval.  When disabled, no timer is installed; manual ``ctrl+g``
+        still works.  The action's in-progress guard makes overlapping
+        ticks safe.
+        """
+        if self._config.background_sync_enabled:
+            self.set_interval(
+                self._config.background_sync_interval_seconds,
+                self.action_background_sync,
+            )
 
     # ------------------------------------------------------------------
     # Message routing
@@ -312,11 +327,16 @@ class MainScreen(Screen[None]):
     # Sync
     # ------------------------------------------------------------------
 
-    def action_sync(self) -> None:
-        """Run the two-pass sync flow with in-TUI confirmation."""
+    def _build_sync_service(self) -> ImapSyncService | None:
+        """Construct an ``ImapSyncService`` for the current accounts.
+
+        Returns ``None`` (and notifies) when no credentials provider is
+        configured — matching the guard at the top of ``action_sync``.
+        Shared by the foreground and background sync entry points.
+        """
         if self._credentials is None:
             self.app.notify("No credentials provider.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
-            return
+            return None
 
         mirrors = self._mirrors
         credentials = self._credentials
@@ -324,12 +344,18 @@ class MainScreen(Screen[None]):
         def mirror_factory(acc: AccountConfig) -> MirrorRepository:
             return mirrors[acc.name]
 
-        service = ImapSyncService(
+        return ImapSyncService(
             config=self._config,
             mirror_factory=mirror_factory,
             index=self._index,
             credentials=credentials,
         )
+
+    def action_sync(self) -> None:
+        """Run the two-pass sync flow with in-TUI confirmation."""
+        service = self._build_sync_service()
+        if service is None:
+            return
         self._sync_service = service
         self._sync_plan = None
 
@@ -383,6 +409,8 @@ class MainScreen(Screen[None]):
             self._on_plan_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
         elif worker.name == "sync-exec":
             self._on_exec_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
+        elif worker.name == "sync-bg":
+            self._on_bg_sync_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
 
     def _on_plan_complete(self, worker: Worker[SyncPlan]) -> None:
         """Planning finished — show the confirm screen or report error."""
@@ -419,29 +447,31 @@ class MainScreen(Screen[None]):
             msg = str(err) if err else "unknown error"
             self.app.notify(f"Sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
         else:
-            result = worker.result
-            parts: list[str] = []
-            if result is not None:
-                for ar in result.accounts:
-                    fetched = sum(f.fetched for f in ar.folders)
-                    merged = sum(f.flag_conflicts_merged for f in ar.folders)
-                    pushed = sum(
-                        f.appended_to_server
-                        + f.reuploaded_to_server
-                        + f.moved_to_server
-                        + f.expunged_on_server
-                        for f in ar.folders
-                    )
-                    if fetched or merged or pushed:
-                        parts.append(
-                            f"{ar.account_name}: +{fetched} msgs, "
-                            f"{merged} merged, {pushed} pushed"
-                        )
-            msg = f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
-            self.app.notify(msg)  # pyright: ignore[reportUnknownMemberType]
+            self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             dismiss_result = True if worker.state == worker.state.SUCCESS else None
             self.app.screen.dismiss(dismiss_result)  # pyright: ignore[reportUnknownMemberType]
+
+    def _sync_result_summary(self, result: SyncResult | None) -> str:
+        """Build the human-readable "Sync complete. …" notification text."""
+        parts: list[str] = []
+        if result is not None:
+            for ar in result.accounts:
+                fetched = sum(f.fetched for f in ar.folders)
+                merged = sum(f.flag_conflicts_merged for f in ar.folders)
+                pushed = sum(
+                    f.appended_to_server
+                    + f.reuploaded_to_server
+                    + f.moved_to_server
+                    + f.expunged_on_server
+                    for f in ar.folders
+                )
+                if fetched or merged or pushed:
+                    parts.append(
+                        f"{ar.account_name}: +{fetched} msgs, "
+                        f"{merged} merged, {pushed} pushed"
+                    )
+        return f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
 
     def _sync_progress(self, info: ProgressInfo) -> None:
         """Update the sync screen's status (called from worker thread)."""
@@ -449,6 +479,45 @@ class MainScreen(Screen[None]):
 
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             self.app.screen.update_progress(info)  # pyright: ignore[reportUnknownMemberType]
+
+    def _sync_in_progress(self) -> bool:
+        """True when any sync worker (plan/exec/bg) is still active."""
+        active = {"sync-plan", "sync-exec", "sync-bg"}
+        return any(
+            w.name in active and w.is_running
+            for w in self.workers  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        )
+
+    def action_background_sync(self) -> None:
+        """Run a non-blocking, auto-confirm-everything sync.
+
+        Triggered manually (``ctrl+g``) or by the periodic timer.  Unlike
+        ``action_sync`` it shows no modal and assumes "yes" to every
+        confirmation, including the mass-deletion guard — ``sync()``
+        confirms all folders internally.  A spinner on the FolderPanel
+        border title is the only visual clue.
+        """
+        if self._sync_in_progress():
+            self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
+            return
+        service = self._build_sync_service()
+        if service is None:
+            return
+        self.query_one(FolderPanel).set_syncing(True)
+        # exit_on_error=False: a background failure is reported as a toast in
+        # _on_bg_sync_complete, never an app-killing fatal error.
+        self.run_worker(service.sync, name="sync-bg", thread=True, exit_on_error=False)
+
+    def _on_bg_sync_complete(self, worker: Worker[SyncResult]) -> None:
+        """Background sync finished — stop the spinner and report."""
+        self.query_one(FolderPanel).set_syncing(False)
+        if worker.state == worker.state.ERROR:
+            err = worker.error
+            msg = str(err) if err else "unknown error"
+            self.app.notify(f"Background sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
+            return
+        self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
+        self.call_after_refresh(self._refresh_after_sync)
 
     # ------------------------------------------------------------------
     # Search

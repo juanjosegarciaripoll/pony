@@ -327,6 +327,31 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(sample_config(), base_dir=base_dir)
         self.assertIsNone(config.theme)
 
+    def test_background_sync_defaults(self) -> None:
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        self.assertFalse(config.background_sync_enabled)
+        self.assertEqual(config.background_sync_interval_seconds, 600)
+
+    def test_background_sync_parsed(self) -> None:
+        data = sample_config()
+        data["background_sync_enabled"] = True
+        data["background_sync_interval_seconds"] = 60
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        self.assertTrue(config.background_sync_enabled)
+        self.assertEqual(config.background_sync_interval_seconds, 60)
+
+    def test_background_sync_interval_non_positive_raises(self) -> None:
+        data = sample_config()
+        data["background_sync_interval_seconds"] = 0
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ConfigError):
+            parse_config(data, base_dir=base_dir)
+
     def test_archive_folder_parsed(self) -> None:
         from pony.domain import AccountConfig
 

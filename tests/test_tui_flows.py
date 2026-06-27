@@ -35,7 +35,13 @@ from pony.domain import (
     MessageFlag,
     MessageStatus,
 )
-from pony.sync import ImapSyncService, SyncPlan
+from pony.sync import (
+    AccountSyncResult,
+    FolderSyncResult,
+    ImapSyncService,
+    SyncPlan,
+    SyncResult,
+)
 from pony.tui.app import PonyApp
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
@@ -681,6 +687,180 @@ async def test_sync_nothing_to_sync_no_cancel_notification(
 
     assert "Nothing to sync." in notifications
     assert "Sync cancelled." not in notifications
+
+
+def _canned_sync_result() -> SyncResult:
+    """A non-empty SyncResult so the summary text includes a per-account line."""
+    return SyncResult(
+        accounts=(
+            AccountSyncResult(
+                account_name="acct",
+                folders=(FolderSyncResult(folder_name="INBOX", fetched=3),),
+            ),
+        )
+    )
+
+
+def _capture_notifications(app: PonyApp) -> list[str]:
+    """Patch ``app.notify`` to record every message it is handed."""
+    notifications: list[str] = []
+    original_notify = app.notify
+
+    def _capture(msg: str, **kw: object) -> None:
+        notifications.append(msg)
+        original_notify(msg, **kw)  # type: ignore[arg-type]
+
+    app.notify = _capture  # type: ignore[assignment,method-assign]
+    return notifications
+
+
+async def test_background_sync_success_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ctrl+g runs a background sync, reports a summary, clears the spinner."""
+    monkeypatch.setattr(
+        ImapSyncService, "sync", lambda _self, **_kw: _canned_sync_result()
+    )
+    app, *_ = build_pony_app(label="bg-success")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        for _ in range(5):
+            await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert panel.border_title == "Folders"
+
+    assert any("Sync complete." in n and "+3 msgs" in n for n in notifications)
+
+
+async def test_background_sync_failure_toast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing background sync reports an error toast and stops the spinner."""
+
+    def _boom(_self: ImapSyncService, **_kw: object) -> SyncResult:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(ImapSyncService, "sync", _boom)
+    app, *_ = build_pony_app(label="bg-failure")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        for _ in range(5):
+            await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert panel.border_title == "Folders"
+
+    assert any("Background sync failed" in n for n in notifications)
+
+
+async def test_background_sync_rejects_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second ctrl+g while a sync is running shows 'Sync already running.'."""
+    import threading
+
+    release = threading.Event()
+
+    def _blocking_sync(_self: ImapSyncService, **_kw: object) -> SyncResult:
+        release.wait(timeout=5)
+        return _canned_sync_result()
+
+    monkeypatch.setattr(ImapSyncService, "sync", _blocking_sync)
+    app, *_ = build_pony_app(label="bg-overlap")
+    notifications = _capture_notifications(app)
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+g")
+            await pilot.pause()
+            panel = app.screen.query_one(FolderPanel)
+            # Spinner is live while the worker is blocked.
+            assert "syncing" in str(panel.border_title)
+            await pilot.press("ctrl+g")
+            await pilot.pause()
+            assert "Sync already running." in notifications
+            release.set()
+            for _ in range(5):
+                await pilot.pause()
+            assert panel.border_title == "Folders"
+    finally:
+        release.set()
+
+
+async def test_background_sync_timer_installed_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """on_mount installs a periodic timer when background_sync_enabled is set."""
+    import dataclasses
+
+    intervals: list[float] = []
+    original_set_interval = MainScreen.set_interval
+
+    def _spy_set_interval(
+        self: MainScreen, interval: float, *args: object, **kwargs: object
+    ) -> object:
+        intervals.append(interval)
+        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
+
+    app, cfg, *_ = build_pony_app(label="bg-timer")
+    app._config = dataclasses.replace(  # type: ignore[attr-defined]
+        cfg, background_sync_enabled=True, background_sync_interval_seconds=600
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+    assert 600 in intervals
+
+
+async def test_background_sync_timer_absent_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No background-sync interval is installed under the default config."""
+    intervals: list[float] = []
+    original_set_interval = MainScreen.set_interval
+
+    def _spy_set_interval(
+        self: MainScreen, interval: float, *args: object, **kwargs: object
+    ) -> object:
+        intervals.append(interval)
+        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
+
+    app, *_ = build_pony_app(label="bg-no-timer")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+    # Default config (background_sync_enabled=False) installs no 600s
+    # background-sync timer (other short internal timers may still exist).
+    assert 600 not in intervals
+
+
+async def test_folder_panel_set_syncing_toggle() -> None:
+    """set_syncing(True/False) toggles the border title and clears the timer."""
+    app, *_ = build_pony_app(label="bg-spinner-toggle")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        panel.set_syncing(True)
+        await pilot.pause()
+        assert "syncing" in str(panel.border_title)
+        assert panel._spinner_timer is not None  # type: ignore[attr-defined]
+        # Double-start is a no-op (guarded by the stored handle).
+        panel.set_syncing(True)
+        panel.set_syncing(False)
+        await pilot.pause()
+        assert panel.border_title == "Folders"
+        assert panel._spinner_timer is None  # type: ignore[attr-defined]
 
 
 async def test_mark_all_read_notifies() -> None:

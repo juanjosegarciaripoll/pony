@@ -112,6 +112,14 @@ def _parse_app_config(raw: object) -> AppConfig:
     downloads_raw = _optional_string(data, "downloads_path")
     downloads_path = _expand_path(downloads_raw) if downloads_raw else None
     theme = _optional_string(data, "theme")
+    background_sync_enabled = _require_bool(
+        data, "background_sync_enabled", default=False
+    )
+    background_sync_interval_seconds = _require_int(
+        data, "background_sync_interval_seconds", default=600
+    )
+    if background_sync_interval_seconds <= 0:
+        raise ConfigError("'background_sync_interval_seconds' must be positive")
     return AppConfig(
         accounts=accounts,
         use_utf8=use_utf8,
@@ -120,6 +128,8 @@ def _parse_app_config(raw: object) -> AppConfig:
         bbdb_path=bbdb_path,
         downloads_path=downloads_path,
         theme=theme,
+        background_sync_enabled=background_sync_enabled,
+        background_sync_interval_seconds=background_sync_interval_seconds,
     )
 
 
