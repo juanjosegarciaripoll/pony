@@ -1354,6 +1354,22 @@ def _build_mirror(acc: AnyAccount) -> MirrorRepository:
     return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
 
 
+def _find_imap_account(config: AppConfig, name: str) -> AccountConfig | None:
+    """Return the IMAP account named ``name``, or ``None`` if absent."""
+    return next(
+        (a for a in config.accounts if isinstance(a, AccountConfig) and a.name == name),
+        None,
+    )
+
+
+def _require_imap_account(config: AppConfig, name: str) -> AccountConfig:
+    """Return the IMAP account named ``name`` or exit with an error."""
+    acc = _find_imap_account(config, name)
+    if acc is None:
+        raise SystemExit(f"No account named {name!r} in config.")
+    return acc
+
+
 def run_folder_list(
     *,
     paths: AppPaths,
@@ -1645,14 +1661,12 @@ def run_message_get(
     paths.ensure_runtime_dirs()
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    hits = _find_messages(
+    hits = _find_messages_or_fail(
         index,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
     )
-    if not hits:
-        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
     if len(hits) > 1:
         print(
             f"Warning: {len(hits)} rows match Message-ID {message_id!r}; "
@@ -1739,6 +1753,27 @@ def _find_messages(
     return []
 
 
+def _find_messages_or_fail(
+    index: SqliteIndexRepository,
+    *,
+    account_name: str,
+    folder_name: str,
+    message_id: str,
+) -> list[IndexedMessage]:
+    """Like ``_find_messages`` but exit with an error when nothing matches."""
+    hits = _find_messages(
+        index,
+        account_name=account_name,
+        folder_name=folder_name,
+        message_id=message_id,
+    )
+    if not hits:
+        raise SystemExit(
+            f"Message not found in index: {account_name}/{folder_name}/{message_id}"
+        )
+    return hits
+
+
 def _try_render_attachments(
     *,
     config_path: Path | None,
@@ -1757,14 +1792,7 @@ def _try_render_attachments(
     config = try_load_config(config_path)
     if config is None:
         return None
-    acc = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account
-        ),
-        None,
-    )
+    acc = _find_imap_account(config, account)
     if acc is None:
         return None
     mirror = _build_mirror(acc)
@@ -1793,31 +1821,19 @@ def run_message_body(
     config = require_config(config_path)
     from .tui.message_renderer import fmt_size, render_message
 
-    acc = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account
-        ),
-        None,
-    )
-    if acc is None:
-        raise SystemExit(f"No account named {account!r} in config.")
+    acc = _require_imap_account(config, account)
 
     # Users pass an RFC 5322 Message-ID (from search results); the mirror
     # keys off the backend's own storage_key.  Resolve via the index;
     # when a Message-ID has multiple matches, the most recent wins.
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    hits = _find_messages(
+    indexed = _find_messages_or_fail(
         index,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
-    )
-    if not hits:
-        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
-    indexed = hits[0]
+    )[0]
     mirror = _build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
@@ -1865,16 +1881,7 @@ def run_message_attachment(
     config = require_config(config_path)
     from .tui.message_renderer import extract_attachment
 
-    acc = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account
-        ),
-        None,
-    )
-    if acc is None:
-        raise SystemExit(f"No account named {account!r} in config.")
+    acc = _require_imap_account(config, account)
 
     idx = SqliteIndexRepository(database_path=paths.index_db_file)
     idx.initialize()
@@ -1938,28 +1945,16 @@ def run_message_mime(
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
 
-    acc = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account
-        ),
-        None,
-    )
-    if acc is None:
-        raise SystemExit(f"No account named {account!r} in config.")
+    acc = _require_imap_account(config, account)
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    hits = _find_messages(
+    indexed = _find_messages_or_fail(
         index,
         account_name=account,
         folder_name=folder,
         message_id=message_id,
-    )
-    if not hits:
-        raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
-    indexed = hits[0]
+    )[0]
     mirror = _build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
@@ -2486,6 +2481,14 @@ def _install_tui_log_handler(log_file: Path) -> None:
     logging.getLogger("imapclient").setLevel(logging.INFO)
 
 
+def _setup_tui_logging(paths: AppPaths) -> Path:
+    """Prepare runtime dirs and attach the TUI log handler; return the log path."""
+    paths.ensure_runtime_dirs()
+    log_file = paths.log_dir / "pony-tui.log"
+    _install_tui_log_handler(log_file)
+    return log_file
+
+
 def run_tui(
     *,
     paths: AppPaths,
@@ -2496,10 +2499,7 @@ def run_tui(
     """Launch the interactive terminal UI."""
     import logging
 
-    paths.ensure_runtime_dirs()
-
-    log_file = paths.log_dir / "pony-tui.log"
-    _install_tui_log_handler(log_file)
+    log_file = _setup_tui_logging(paths)
     logging.getLogger("pony").info("TUI starting; log file: %s", log_file)
 
     config = require_config(config_path)
@@ -2508,14 +2508,7 @@ def run_tui(
 
     credentials = build_credentials_provider(config, index)
 
-    def _make_mirror(acc: AnyAccount) -> MirrorRepository:
-        if acc.mirror.format == "maildir":
-            return MaildirMirrorRepository(
-                account_name=acc.name, root_dir=acc.mirror.path
-            )
-        return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-
-    mirrors = {acc.name: _make_mirror(acc) for acc in config.accounts}
+    mirrors = {acc.name: _build_mirror(acc) for acc in config.accounts}
 
     # Local accounts have no sync step, so their mirrors are the sole
     # source of truth.  Reconcile the index against the mirror before
@@ -2573,10 +2566,7 @@ def run_compose(
     theme: str | None = None,
 ) -> int:
     """Launch the composer directly for writing a new message."""
-    paths.ensure_runtime_dirs()
-
-    log_file = paths.log_dir / "pony-tui.log"
-    _install_tui_log_handler(log_file)
+    _setup_tui_logging(paths)
 
     config = require_config(config_path)
 
@@ -2609,14 +2599,7 @@ def run_compose(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
 
-    def _make_mirror(acc: AnyAccount) -> MirrorRepository:
-        if acc.mirror.format == "maildir":
-            return MaildirMirrorRepository(
-                account_name=acc.name, root_dir=acc.mirror.path
-            )
-        return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-
-    mirrors = {acc.name: _make_mirror(acc) for acc in config.accounts}
+    mirrors = {acc.name: _build_mirror(acc) for acc in config.accounts}
 
     effective_theme, err = _resolve_theme(theme, config.theme)
     if err is not None:
@@ -2666,14 +2649,7 @@ def run_account_test(
     index.initialize()
     credentials = build_credentials_provider(config, index)
 
-    account = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account_name
-        ),
-        None,
-    )
+    account = _find_imap_account(config, account_name)
     if account is None:
         print(
             f"Account {account_name!r} not found in config.",
@@ -3003,14 +2979,7 @@ def run_account_set_password(
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
 
-    account = next(
-        (
-            a
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.name == account_name
-        ),
-        None,
-    )
+    account = _find_imap_account(config, account_name)
     if account is None:
         print(f"error: account {account_name!r} not found in config", file=sys.stderr)
         return 1
