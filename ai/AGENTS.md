@@ -6,11 +6,11 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 | File | Purpose |
 |---|---|
-| `ai/SPECIFICATIONS.md` | Goals, deferred scope |
 | `ai/ARCHITECTURE.md` | Package layout, subsystems, data flow |
 | `ai/SYNCHRONIZATION.md` | Sync algorithm, schema, conflicts |
 | `ai/CONVENTIONS.md` | Quality gates, style, build |
-| `ai/STATUS.md` | Delivered + queued work |
+| `ai/STATUS.md` | Scope, goals, delivered + queued, deferred |
+| `ai/SECURITY.md` | Threat model + patched findings |
 | `config-sample.toml` | Config reference |
 | `CHANGELOG.md` | Release history |
 

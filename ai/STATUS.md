@@ -1,6 +1,15 @@
-# Project Status
+# Scope & Status
 
-Version: `src/pony/version.py` / `pyproject.toml`. Release history: `CHANGELOG.md`.
+Standalone open-source Python 3.13 MUA. Clear mail workflow, flexible local
+storage, strong offline behavior. Version: `src/pony/version.py` /
+`pyproject.toml`. Release history: `CHANGELOG.md`.
+
+## Capabilities
+
+1. Mail synchronization (IMAP)
+2. Mail reading (TUI)
+3. Mail composing (SMTP + attachments + Markdown)
+4. Mail search (FTS5)
 
 ## Delivered
 
@@ -19,17 +28,22 @@ All v1 capabilities implemented and tested:
 - Mass-deletion confirmation (`>20%` server-side) surfaced per-folder in CLI and TUI plans; `--yes` / `Y` applies them.
 - Local-mirror rescan with mtime sidecar cache and a lean storage-key projection on cold scans.
 - Scoped `pony reset --account NAME` rebuild path.
+- Background/periodic sync: non-blocking `ctrl+g` worker that auto-confirms every folder, plus a config-gated periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
 
 ## Queue
 
 - **Rebuild-from-mirrors command.** Re-index from mirror bytes (no re-download) is missing. Blocked on synthetic Message-ID rework (below).
 - **Synthetic Message-ID rework.** Hash bakes UID (`sync.py`); synthetic IDs can't survive a rebuild.
 - **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump.
-- **Background/periodic sync** (needs exclusive write lock).
-- **OAuth.**
-- **Browser UI.**
-- **POP support.**
-- **Multi-machine conflict handling** (beyond current state-based reconciliation).
-- **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **Per-folder single-transaction sync** (idempotent re-sync covers failures now).
+- **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
+- **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.
+
+## Deferred (out of scope for now)
+
+- POP support
+- OAuth
+- Browser UI
+- Multi-machine conflict handling (beyond current state-based reconciliation)
+- Aggressive auto remote mutations

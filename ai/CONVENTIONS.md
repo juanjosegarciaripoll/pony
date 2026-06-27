@@ -14,7 +14,7 @@ uv run basedpyright src/
 uv run pytest
 ```
 
-`pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`; new code must keep branch coverage at or above **85 %**. Current baseline is ~56 % — the threshold will be enforced once coverage reaches it; in the interim, run `uv run pytest --no-cov` to skip the coverage gate.
+`pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`; new code must keep combined statement+branch coverage at or above **85 %**. The gate is live — run `uv run python -m pytest` and never pass `--no-cov`. New code ships with tests; do not lower the threshold.
 
 ## Typing
 

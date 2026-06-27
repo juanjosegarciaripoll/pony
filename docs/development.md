@@ -198,11 +198,9 @@ pony/
   .github/workflows/  # CI/CD workflows
   mkdocs.yml          # MkDocs configuration
   pyproject.toml      # project metadata and tool config
-  PLAN.md             # development roadmap
-  ARCHITECTURE.md     # technical design
-  SPECIFICATIONS.md   # product goals and scope
-  MEMORY.md           # session restart context
+  ai/                 # agent-facing docs (architecture, conventions, status)
   config-sample.toml  # annotated config template
+  CHANGELOG.md        # release history
   LICENSE             # MIT license
 ```
 
