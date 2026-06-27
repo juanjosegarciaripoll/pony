@@ -39,6 +39,7 @@ from .domain import (
     FolderQuickStatus,
     FolderRef,
     FolderSyncState,
+    IndexedMessage,
     MessageFlag,
     MessageRef,
     MessageStatus,
@@ -71,6 +72,18 @@ class ProgressInfo:
 
 
 ProgressCallback = collections.abc.Callable[[ProgressInfo], None]
+
+
+@contextlib.contextmanager
+def _measure_ms(store: dict[str, int], key: str) -> collections.abc.Iterator[None]:
+    """Record the wall-clock duration of the ``with`` body into ``store[key]``.
+
+    The value is overwritten (not accumulated); on an exception inside the
+    body nothing is recorded, matching the prior inline ``perf_counter`` blocks.
+    """
+    t = time.perf_counter()
+    yield
+    store[key] = int((time.perf_counter() - t) * 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -761,9 +774,8 @@ class ImapSyncService:
 
             # Slow path: full FETCH of UIDs, mid, flags.
             try:
-                _t = time.perf_counter()
-                uid_metadata = session.fetch_uid_to_message_id(folder_name)
-                scan_ms[folder_name] = int((time.perf_counter() - _t) * 1000)
+                with _measure_ms(scan_ms, folder_name):
+                    uid_metadata = session.fetch_uid_to_message_id(folder_name)
             except (OSError, EOFError) as exc:
                 if reconnect is not None:
                     logger.info(
@@ -774,11 +786,10 @@ class ImapSyncService:
                     )
                     try:
                         session = reconnect()
-                        _t = time.perf_counter()
-                        uid_metadata = session.fetch_uid_to_message_id(
-                            folder_name,
-                        )
-                        scan_ms[folder_name] = int((time.perf_counter() - _t) * 1000)
+                        with _measure_ms(scan_ms, folder_name):
+                            uid_metadata = session.fetch_uid_to_message_id(
+                                folder_name,
+                            )
                     except (OSError, EOFError):
                         skipped.append(folder_name)
                         continue
@@ -912,9 +923,8 @@ class ImapSyncService:
     ) -> FolderQuickStatus | None:
         """Run STATUS, retrying once via *reconnect* on connection loss."""
         try:
-            _t = time.perf_counter()
-            quick = session.folder_quick_status(folder_name)
-            scan_ms[folder_name] = int((time.perf_counter() - _t) * 1000)
+            with _measure_ms(scan_ms, folder_name):
+                quick = session.folder_quick_status(folder_name)
             return quick
         except (OSError, EOFError) as exc:
             if reconnect is None:
@@ -922,9 +932,8 @@ class ImapSyncService:
                 return None
             try:
                 session = reconnect()
-                _t = time.perf_counter()
-                quick = session.folder_quick_status(folder_name)
-                scan_ms[folder_name] = int((time.perf_counter() - _t) * 1000)
+                with _measure_ms(scan_ms, folder_name):
+                    quick = session.folder_quick_status(folder_name)
                 return quick
             except (OSError, EOFError):
                 return None
@@ -1114,18 +1123,13 @@ class ImapSyncService:
         # Step: new UIDs on the server.
         for uid in new_uids:
             mid = uid_to_mid.get(uid, "")
+            server, extra = uid_to_flags.get(uid, (frozenset(), frozenset()))
             ops.append(
                 FetchNewOp(
                     uid=uid,
                     message_id=mid,
-                    server_flags=uid_to_flags.get(
-                        uid,
-                        (frozenset(), frozenset()),
-                    )[0],
-                    extra_imap_flags=uid_to_flags.get(
-                        uid,
-                        (frozenset(), frozenset()),
-                    )[1],
+                    server_flags=server,
+                    extra_imap_flags=extra,
                 )
             )
 
@@ -1730,6 +1734,39 @@ class ImapSyncService:
             ingest_ms=sum(ingest_ns) // 1_000_000,
         )
 
+    def _store_synced_flags(
+        self,
+        message_ref: MessageRef,
+        *,
+        base: frozenset[MessageFlag],
+        server: frozenset[MessageFlag],
+        extra: frozenset[str],
+        uid: int,
+        now: datetime,
+        local: frozenset[MessageFlag] | None = None,
+    ) -> None:
+        """Reconcile an indexed row's flag fields after a flag op.
+
+        Loads the row, replaces its base/server/extra/uid/synced fields, and
+        writes it back.  ``local`` updates ``local_flags`` too when given;
+        otherwise the existing local flags are preserved.  A row that has
+        since vanished is silently skipped.
+        """
+        row = self._index.get_message(message_ref=message_ref)
+        if row is None:
+            return
+        row = dataclasses.replace(
+            row,
+            base_flags=base,
+            server_flags=server,
+            extra_imap_flags=extra,
+            uid=uid,
+            synced_at=now,
+        )
+        if local is not None:
+            row = dataclasses.replace(row, local_flags=local)
+        self._index.update_message(message=row)
+
     def _execute_one(
         self,
         op: SyncOp,
@@ -1787,19 +1824,15 @@ class ImapSyncService:
                 return True
 
             case PullFlagsOp():
-                row = self._index.get_message(message_ref=op.message_ref)
-                if row is not None:
-                    self._index.update_message(
-                        message=dataclasses.replace(
-                            row,
-                            local_flags=op.new_flags,
-                            base_flags=op.new_flags,
-                            server_flags=op.new_flags,
-                            extra_imap_flags=op.extra_imap_flags,
-                            uid=op.uid,
-                            synced_at=now,
-                        )
-                    )
+                self._store_synced_flags(
+                    op.message_ref,
+                    local=op.new_flags,
+                    base=op.new_flags,
+                    server=op.new_flags,
+                    extra=op.extra_imap_flags,
+                    uid=op.uid,
+                    now=now,
+                )
                 counters["flag_updates_from_server"] += 1
                 return True
 
@@ -1810,18 +1843,14 @@ class ImapSyncService:
                     op.new_flags,
                     op.extra_imap_flags,
                 )
-                row = self._index.get_message(message_ref=op.message_ref)
-                if row is not None:
-                    self._index.update_message(
-                        message=dataclasses.replace(
-                            row,
-                            base_flags=op.new_flags,
-                            server_flags=op.new_flags,
-                            extra_imap_flags=op.extra_imap_flags,
-                            uid=op.uid,
-                            synced_at=now,
-                        )
-                    )
+                self._store_synced_flags(
+                    op.message_ref,
+                    base=op.new_flags,
+                    server=op.new_flags,
+                    extra=op.extra_imap_flags,
+                    uid=op.uid,
+                    now=now,
+                )
                 counters["flag_pushes_to_server"] += 1
                 return True
 
@@ -1833,19 +1862,15 @@ class ImapSyncService:
                         op.merged_flags,
                         op.extra_imap_flags,
                     )
-                row = self._index.get_message(message_ref=op.message_ref)
-                if row is not None:
-                    self._index.update_message(
-                        message=dataclasses.replace(
-                            row,
-                            local_flags=op.merged_flags,
-                            base_flags=op.merged_flags,
-                            server_flags=op.merged_flags,
-                            extra_imap_flags=op.extra_imap_flags,
-                            uid=op.uid,
-                            synced_at=now,
-                        )
-                    )
+                self._store_synced_flags(
+                    op.message_ref,
+                    local=op.merged_flags,
+                    base=op.merged_flags,
+                    server=op.merged_flags,
+                    extra=op.extra_imap_flags,
+                    uid=op.uid,
+                    now=now,
+                )
                 counters["flag_conflicts_merged"] += 1
                 return True
 
@@ -1984,6 +2009,28 @@ class ImapSyncService:
         )
         return True
 
+    def _finalize_after_new_uid(
+        self, row: IndexedMessage, *, new_uid: int, now: datetime
+    ) -> None:
+        """Re-key a successfully pushed row to its new server UID.
+
+        Used after APPEND/MOVE return a UID: clears the pending-move source
+        fields, promotes the row to ACTIVE, and marks base/server flags as
+        synced from the local flags.
+        """
+        self._index.update_message(
+            message=dataclasses.replace(
+                row,
+                uid=new_uid,
+                local_status=MessageStatus.ACTIVE,
+                source_folder=None,
+                source_uid=None,
+                base_flags=row.local_flags,
+                server_flags=row.local_flags,
+                synced_at=now,
+            )
+        )
+
     def _execute_push_append(
         self,
         op: PushAppendOp,
@@ -2025,18 +2072,7 @@ class ImapSyncService:
             new_uid,
         )
         if new_uid is not None:
-            self._index.update_message(
-                message=dataclasses.replace(
-                    row,
-                    uid=new_uid,
-                    local_status=MessageStatus.ACTIVE,
-                    source_folder=None,
-                    source_uid=None,
-                    base_flags=row.local_flags,
-                    server_flags=row.local_flags,
-                    synced_at=now,
-                )
-            )
+            self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
         elif row.local_status == MessageStatus.PENDING_MOVE:
             # Server didn't return APPENDUID but the APPEND succeeded.
             # Clear PENDING_MOVE so the row isn't re-uploaded every sync.
@@ -2092,18 +2128,7 @@ class ImapSyncService:
             new_uid,
         )
         if new_uid is not None:
-            self._index.update_message(
-                message=dataclasses.replace(
-                    row,
-                    uid=new_uid,
-                    local_status=MessageStatus.ACTIVE,
-                    source_folder=None,
-                    source_uid=None,
-                    base_flags=row.local_flags,
-                    server_flags=row.local_flags,
-                    synced_at=now,
-                )
-            )
+            self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
         else:
             # Server omitted COPYUID; we know the move executed but
             # not the new UID.  Mark ACTIVE so the row is visible;
