@@ -353,6 +353,9 @@ class MainScreen(Screen[None]):
 
     def action_sync(self) -> None:
         """Run the two-pass sync flow with in-TUI confirmation."""
+        if self._sync_in_progress():
+            self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
+            return
         service = self._build_sync_service()
         if service is None:
             return
@@ -481,11 +484,25 @@ class MainScreen(Screen[None]):
             self.app.screen.update_progress(info)  # pyright: ignore[reportUnknownMemberType]
 
     def _sync_in_progress(self) -> bool:
-        """True when any sync worker (plan/exec/bg) is still active."""
+        """True when a sync is active or awaiting its confirmation.
+
+        Covers both the running workers (plan/exec/bg) and the gap in the
+        foreground flow where the ``SyncConfirmScreen`` modal is open
+        waiting for the user to Proceed — during that window no worker
+        runs, but starting another sync would overlap IMAP sessions on
+        the same account.
+        """
+        from .sync_confirm_screen import SyncConfirmScreen
+
         active = {"sync-plan", "sync-exec", "sync-bg"}
-        return any(
+        if any(
             w.name in active and w.is_running
             for w in self.workers  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        ):
+            return True
+        return any(
+            isinstance(screen, SyncConfirmScreen)
+            for screen in self.app.screen_stack  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         )
 
     def action_background_sync(self) -> None:

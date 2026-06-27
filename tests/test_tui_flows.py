@@ -863,6 +863,90 @@ async def test_folder_panel_set_syncing_toggle() -> None:
         assert panel._spinner_timer is None  # type: ignore[attr-defined]
 
 
+def _main_screen(app: PonyApp) -> MainScreen:
+    """The MainScreen instance, even when a modal sits on top of it."""
+    return next(s for s in app.screen_stack if isinstance(s, MainScreen))
+
+
+async def test_background_sync_blocked_while_confirm_modal_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timer tick while the confirm modal is open does not start a sync.
+
+    Regression guard: the confirmation wait is a window where no sync
+    worker runs, yet a second sync would overlap IMAP sessions on the
+    same account.  ``_sync_in_progress`` must treat an open
+    ``SyncConfirmScreen`` as in-progress.
+    """
+    from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
+
+    sync_calls: list[int] = []
+
+    def _spy_sync(_self: ImapSyncService, **_kw: object) -> SyncResult:
+        sync_calls.append(1)
+        return _canned_sync_result()
+
+    monkeypatch.setattr(ImapSyncService, "sync", _spy_sync)
+
+    app, *_ = build_pony_app(label="bg-vs-modal")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        main = _main_screen(app)
+        # The foreground flow's confirm modal is open with no worker
+        # running — the exact gap the guard has to cover.
+        app.push_screen(SyncConfirmScreen.planning())
+        await pilot.pause()
+        assert isinstance(app.screen, SyncConfirmScreen)
+        # Simulate the periodic timer firing during the confirmation wait.
+        main.action_background_sync()
+        await pilot.pause()
+        assert "Sync already running." in notifications
+        assert sync_calls == []
+
+
+async def test_foreground_sync_blocked_while_background_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing g while a background sync runs is rejected, not overlapped."""
+    import threading
+
+    release = threading.Event()
+
+    def _blocking_sync(_self: ImapSyncService, **_kw: object) -> SyncResult:
+        release.wait(timeout=5)
+        return _canned_sync_result()
+
+    plan_calls: list[int] = []
+
+    def _spy_plan(_self: ImapSyncService, **_kw: object) -> SyncPlan:
+        plan_calls.append(1)
+        return SyncPlan(accounts=())
+
+    monkeypatch.setattr(ImapSyncService, "sync", _blocking_sync)
+    monkeypatch.setattr(ImapSyncService, "plan", _spy_plan)
+
+    app, *_ = build_pony_app(label="fg-vs-bg")
+    notifications = _capture_notifications(app)
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+g")
+            await pilot.pause()
+            # Background sync is running; the foreground flow must refuse.
+            await pilot.press("g")
+            await pilot.pause()
+            assert "Sync already running." in notifications
+            assert plan_calls == []
+            release.set()
+            for _ in range(5):
+                await pilot.pause()
+    finally:
+        release.set()
+
+
 async def test_mark_all_read_notifies() -> None:
     """Pressing C marks all messages in the current folder as read."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
