@@ -597,6 +597,23 @@ async def test_folder_tree_next_inbox() -> None:
         )
 
 
+async def test_account_mail_suffix_keeps_account_search_scope() -> None:
+    """The account label suffix is display-only, not part of the account name."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="account-mail-suffix",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        fp = app.screen.query_one(FolderPanel)
+        [account_node] = fp.root.children
+        assert account_node.data == "acct"
+        fp.move_cursor(account_node)
+        assert fp.get_search_scope() == ("acct", None)
+
+
 async def test_mcp_server_error_no_config_path() -> None:
     """PonyApp starts cleanly when no config_path is provided.
 

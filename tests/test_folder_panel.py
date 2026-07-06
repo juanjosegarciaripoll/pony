@@ -15,6 +15,8 @@ from pony.tui.widgets.folder_panel import (
     FolderTreeNode,
     _split_folder_name,
     build_folder_tree,
+    format_account_label,
+    has_inbox_mail,
 )
 
 
@@ -168,3 +170,25 @@ class BuildFolderTreeTest(unittest.TestCase):
         tree = _build(["x.c", "x.a", "x.b"])
         [x] = tree
         self.assertEqual([c.label for c in x.children], ["a", "b", "c"])
+
+
+class InboxMailIndicatorTest(unittest.TestCase):
+    """Inbox-level account indicator helpers."""
+
+    def test_has_inbox_mail_when_inbox_unread_count_positive(self) -> None:
+        self.assertTrue(has_inbox_mail({"INBOX": 1, "Archive": 4}))
+
+    def test_has_inbox_mail_is_case_insensitive(self) -> None:
+        self.assertTrue(has_inbox_mail({"Inbox": 2}))
+
+    def test_has_inbox_mail_ignores_zero_and_non_inbox_counts(self) -> None:
+        self.assertFalse(has_inbox_mail({"INBOX": 0, "Archive": 7}))
+
+    def test_format_account_label_adds_mail_suffix(self) -> None:
+        self.assertEqual(format_account_label("personal", has_mail=True), "personal ✉")
+
+    def test_format_account_label_escapes_rich_markup(self) -> None:
+        self.assertEqual(
+            format_account_label("a[b]", has_mail=True),
+            r"a\[b] ✉",
+        )

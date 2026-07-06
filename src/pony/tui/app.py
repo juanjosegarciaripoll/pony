@@ -17,7 +17,13 @@ from ..protocols import (
     MirrorRepository,
 )
 from .screens.main_screen import MainScreen
-from .terminal import pop_terminal_title, push_terminal_title, set_terminal_title
+from .terminal import (
+    format_terminal_title,
+    pop_terminal_title,
+    push_terminal_title,
+    set_terminal_title,
+)
+from .widgets.folder_panel import has_inbox_mail
 
 
 class PonyApp(App[None]):
@@ -74,7 +80,12 @@ class PonyApp(App[None]):
 
     async def on_mount(self) -> None:
         push_terminal_title()
-        set_terminal_title("Pony Express")
+        set_terminal_title(
+            format_terminal_title(
+                "Pony Express",
+                has_inbox_mail=self._has_inbox_mail(),
+            )
+        )
         self.push_screen(
             MainScreen(
                 self._config,
@@ -85,6 +96,13 @@ class PonyApp(App[None]):
             )
         )
         await self._start_mcp_tcp_server()
+
+    def _has_inbox_mail(self) -> bool:
+        """True when any configured account has unread INBOX mail."""
+        return any(
+            has_inbox_mail(self._index.unread_counts_by_folder(account_name=account.name))
+            for account in self._config.accounts
+        )
 
     async def _start_mcp_tcp_server(self) -> None:
         from ..config import ConfigError

@@ -7,6 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+MAIL_TITLE_PREFIX = "✉ "
+
+
+def format_terminal_title(text: str, *, has_inbox_mail: bool = False) -> str:
+    """Return the terminal title, prefixed when inbox mail is available."""
+    if has_inbox_mail:
+        return f"{MAIL_TITLE_PREFIX}{text}"
+    return text
+
 
 def launch_file(path: Path) -> None:
     """Open *path* with the OS default application."""

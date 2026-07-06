@@ -45,8 +45,8 @@ from ..compose_utils import (
     reply_subject,
 )
 from ..message_renderer import render_message
-from ..terminal import launch_file, set_terminal_title
-from ..widgets.folder_panel import FolderPanel
+from ..terminal import format_terminal_title, launch_file, set_terminal_title
+from ..widgets.folder_panel import FolderPanel, has_inbox_mail
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
 
@@ -185,12 +185,38 @@ class MainScreen(Screen[None]):
         self._current_folder_ref = event.folder_ref
         context = f"{event.folder_ref.account_name}/{event.folder_ref.folder_name}"
         self.app.sub_title = context
-        set_terminal_title(f"Pony Express — {context}")
+        self._set_reader_terminal_title()
         view = self.query_one(MessageViewPanel)
         view.clear()
         view.display = False
         self.query_one(MessageListPanel).load_folder(event.folder_ref)
         self.query_one(MessageListPanel).focus()
+
+    def _has_inbox_mail(self) -> bool:
+        """True when any configured account has unread INBOX mail."""
+        return any(
+            has_inbox_mail(self._index.unread_counts_by_folder(account_name=account.name))
+            for account in self._config.accounts
+        )
+
+    def _set_reader_terminal_title(self) -> None:
+        """Refresh the host terminal title for the current reader context."""
+        if self._current_folder_ref is None:
+            title = "Pony Express"
+        else:
+            context = (
+                f"{self._current_folder_ref.account_name}/"
+                f"{self._current_folder_ref.folder_name}"
+            )
+            title = f"Pony Express — {context}"
+        set_terminal_title(
+            format_terminal_title(title, has_inbox_mail=self._has_inbox_mail())
+        )
+
+    def _refresh_folder_indicators(self) -> None:
+        """Refresh folder/account unread indicators and the terminal title."""
+        self.query_one(FolderPanel).refresh_folders()
+        self._set_reader_terminal_title()
 
     def on_message_list_panel_message_selected(
         self, event: MessageListPanel.MessageSelected
@@ -598,7 +624,7 @@ class MainScreen(Screen[None]):
         self._refresh_after_sync()
 
     def _refresh_after_sync(self) -> None:
-        self.query_one(FolderPanel).refresh_folders()
+        self._refresh_folder_indicators()
         if self._current_folder_ref is not None:
             self.query_one(MessageListPanel).load_folder(self._current_folder_ref)
 
@@ -660,6 +686,7 @@ class MainScreen(Screen[None]):
         if prev_row >= 0 and msg_list.row_count > 0:
             msg_list.move_cursor(row=min(prev_row, msg_list.row_count - 1))
         self._refresh_view_after_reload()
+        self._refresh_folder_indicators()
 
     def _refresh_view_after_reload(self) -> None:
         """Sync the message view to the current cursor row.
@@ -692,7 +719,7 @@ class MainScreen(Screen[None]):
         )
         self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).update_from_indexed(updated)
-        self.query_one(FolderPanel).refresh_folders()
+        self._refresh_folder_indicators()
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -895,7 +922,7 @@ class MainScreen(Screen[None]):
             return
         count = self._index.mark_folder_read(folder=folder_ref)
         self.query_one(MessageListPanel).load_folder(folder_ref)
-        self.query_one(FolderPanel).refresh_folders()
+        self._refresh_folder_indicators()
         if count:
             suffix = "s" if count != 1 else ""
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -1346,7 +1373,7 @@ class MainScreen(Screen[None]):
                 severity="error",
             )
             return
-        self.query_one(FolderPanel).refresh_folders()
+        self._refresh_folder_indicators()
         # Local accounts have no server side: the creation is terminal.
         # IMAP accounts get the folder pushed upstream on the next sync.
         account = next(

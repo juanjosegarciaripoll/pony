@@ -25,6 +25,19 @@ class _FakeNonTTY(io.StringIO):
 
 
 class TestSetTerminalTitle(unittest.TestCase):
+    def test_format_terminal_title_without_mail(self) -> None:
+        from pony.tui.terminal import format_terminal_title
+
+        self.assertEqual(format_terminal_title("Pony Express"), "Pony Express")
+
+    def test_format_terminal_title_with_mail(self) -> None:
+        from pony.tui.terminal import format_terminal_title
+
+        self.assertEqual(
+            format_terminal_title("Pony Express", has_inbox_mail=True),
+            "✉ Pony Express",
+        )
+
     def test_emits_osc2_when_tty(self) -> None:
         from pony.tui.terminal import set_terminal_title
 

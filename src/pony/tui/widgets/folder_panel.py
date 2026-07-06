@@ -15,6 +15,11 @@ from textual.widgets._tree import TreeNode
 from ...domain import AppConfig, FolderRef
 from ...protocols import IndexRepository, MirrorRepository
 
+ACCOUNT_MAIL_SUFFIX = "✉"
+
+
+type FolderPanelNodeData = FolderRef | str | None
+
 
 @dataclass(frozen=True, slots=True)
 class FolderTreeNode:
@@ -118,7 +123,22 @@ def build_folder_tree(
     return tuple(inbox + others)
 
 
-class FolderPanel(Tree[FolderRef | None]):
+def has_inbox_mail(counts: Mapping[str, int]) -> bool:
+    """True when any INBOX-cased folder has one or more unread messages."""
+    return any(
+        name.casefold() == "inbox" and count > 0 for name, count in counts.items()
+    )
+
+
+def format_account_label(account_name: str, *, has_mail: bool) -> str:
+    """Return the Rich-markup-safe account label shown in the folder tree."""
+    label = markup_escape(account_name)
+    if has_mail:
+        return f"{label} {ACCOUNT_MAIL_SUFFIX}"
+    return label
+
+
+class FolderPanel(Tree[FolderPanelNodeData]):
     """Collapsible folder tree with per-account sections.
 
     Each root node represents one account (collapsible).  Each child node
@@ -157,7 +177,7 @@ class FolderPanel(Tree[FolderRef | None]):
         self._config = config
         self._index = index
         self._mirrors = mirrors
-        self._inbox_nodes: list[TreeNode[FolderRef | None]] = []
+        self._inbox_nodes: list[TreeNode[FolderPanelNodeData]] = []
         self._spinner_timer: Timer | None = None
         self._spinner_index = 0
 
@@ -193,7 +213,7 @@ class FolderPanel(Tree[FolderRef | None]):
         if self._inbox_nodes:
             node = self._inbox_nodes[0]
             self.move_cursor(node)
-            if node.data is not None:
+            if isinstance(node.data, FolderRef):
                 self.post_message(self.FolderSelected(folder_ref=node.data))
 
     def refresh_folders(self) -> None:
@@ -201,14 +221,24 @@ class FolderPanel(Tree[FolderRef | None]):
         self._inbox_nodes = []
         self.clear()
         for account in self._config.accounts:
-            account_node = self.root.add(account.name, data=None, expand=True)
-            self._populate_account(account_node, account.name)
+            unread_counts = self._get_unread_counts(account.name)
+            account_node = self.root.add(
+                format_account_label(
+                    account.name,
+                    has_mail=has_inbox_mail(unread_counts),
+                ),
+                data=account.name,
+                expand=True,
+            )
+            self._populate_account(account_node, account.name, unread_counts)
         self.root.expand()
 
     def _populate_account(
-        self, account_node: TreeNode[FolderRef | None], account_name: str
+        self,
+        account_node: TreeNode[FolderPanelNodeData],
+        account_name: str,
+        unread_counts: Mapping[str, int],
     ) -> None:
-        unread_counts = self._get_unread_counts(account_name)
         tree = build_folder_tree(
             folder_names=tuple(unread_counts.keys()),
             unread_counts=unread_counts,
@@ -221,9 +251,9 @@ class FolderPanel(Tree[FolderRef | None]):
 
     def _attach_tree_node(
         self,
-        parent: TreeNode[FolderRef | None],
+        parent: TreeNode[FolderPanelNodeData],
         entry: FolderTreeNode,
-    ) -> TreeNode[FolderRef | None]:
+    ) -> TreeNode[FolderPanelNodeData]:
         """Attach one FolderTreeNode (and its subtree) under *parent*.
 
         Leaves show ``name (N)`` when N > 0 and ``name`` otherwise.
@@ -308,11 +338,10 @@ class FolderPanel(Tree[FolderRef | None]):
         if node is None or node is self.root:
             return (None, None)
         data = node.data
-        if data is not None:
+        if isinstance(data, FolderRef):
             return (data.account_name, data)
-        # Account node: parent is the tree root.
-        if node.parent is self.root:
-            return (str(node.label), None)
+        if isinstance(data, str):
+            return (data, None)
         return (None, None)
 
     def select_folder_ref(self, target: FolderRef) -> None:
@@ -324,9 +353,9 @@ class FolderPanel(Tree[FolderRef | None]):
 
     def _find_node_by_ref(
         self,
-        parent: TreeNode[FolderRef | None],
+        parent: TreeNode[FolderPanelNodeData],
         target: FolderRef,
-    ) -> TreeNode[FolderRef | None] | None:
+    ) -> TreeNode[FolderPanelNodeData] | None:
         for node in parent.children:
             if node.data == target:
                 return node
@@ -335,7 +364,9 @@ class FolderPanel(Tree[FolderRef | None]):
                 return found
         return None
 
-    def on_tree_node_selected(self, event: Tree.NodeSelected[FolderRef | None]) -> None:
+    def on_tree_node_selected(
+        self, event: Tree.NodeSelected[FolderPanelNodeData]
+    ) -> None:
         event.stop()
-        if event.node.data is not None:
+        if isinstance(event.node.data, FolderRef):
             self.post_message(self.FolderSelected(folder_ref=event.node.data))
