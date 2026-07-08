@@ -56,6 +56,36 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
     def test_trailing_comma_tolerated(self) -> None:
         self.assertEqual(parse_attachment_selection("1,", total=3), [1])
 
+    def test_range_expands_inclusive(self) -> None:
+        self.assertEqual(
+            parse_attachment_selection("1-3", total=3),
+            [1, 2, 3],
+        )
+
+    def test_single_element_range(self) -> None:
+        self.assertEqual(parse_attachment_selection("2-2", total=3), [2])
+
+    def test_range_mixed_with_singles(self) -> None:
+        self.assertEqual(
+            parse_attachment_selection("1-2, 4", total=5),
+            [1, 2, 4],
+        )
+
+    def test_reversed_range_returns_none(self) -> None:
+        self.assertIsNone(parse_attachment_selection("3-1", total=3))
+
+    def test_range_out_of_bounds_returns_none(self) -> None:
+        self.assertIsNone(parse_attachment_selection("1-4", total=3))
+        self.assertIsNone(parse_attachment_selection("0-2", total=3))
+
+    def test_range_overlap_duplicates_rejected(self) -> None:
+        self.assertIsNone(parse_attachment_selection("1-3, 2", total=3))
+
+    def test_malformed_range_returns_none(self) -> None:
+        self.assertIsNone(parse_attachment_selection("1-", total=3))
+        self.assertIsNone(parse_attachment_selection("-3", total=3))
+        self.assertIsNone(parse_attachment_selection("1-2-3", total=3))
+
 
 if __name__ == "__main__":
     unittest.main()

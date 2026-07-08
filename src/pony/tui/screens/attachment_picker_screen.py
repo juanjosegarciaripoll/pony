@@ -16,19 +16,36 @@ def parse_attachment_selection(text: str, *, total: int) -> list[int] | None:
         "*"         → every attachment (``[1..total]``)
         "1"         → ``[1]``
         "1,3, 5"    → ``[1, 3, 5]`` (whitespace tolerated)
+        "1-3"       → ``[1, 2, 3]`` (inclusive range)
+        "1-3, 5"    → ``[1, 2, 3, 5]`` (ranges and singles mixed)
 
-    Returns ``None`` on empty input, non-numeric tokens, out-of-range
-    indices, or duplicates — the caller surfaces the error.
+    Returns ``None`` on empty input, non-numeric tokens, malformed or
+    reversed ranges, out-of-range indices, or duplicates — the caller
+    surfaces the error.
     """
     text = text.strip()
     if not text:
         return None
     if text == "*":
         return list(range(1, total + 1))
-    try:
-        parts = [int(p.strip()) for p in text.split(",") if p.strip()]
-    except ValueError:
-        return None
+    parts: list[int] = []
+    for token in (t.strip() for t in text.split(",")):
+        if not token:
+            continue
+        if "-" in token:
+            lo_text, _, hi_text = token.partition("-")
+            try:
+                lo, hi = int(lo_text.strip()), int(hi_text.strip())
+            except ValueError:
+                return None
+            if lo > hi:
+                return None
+            parts.extend(range(lo, hi + 1))
+        else:
+            try:
+                parts.append(int(token))
+            except ValueError:
+                return None
     if not parts:
         return None
     if any(i < 1 or i > total for i in parts):
