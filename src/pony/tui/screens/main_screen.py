@@ -12,6 +12,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
@@ -146,6 +147,7 @@ class MainScreen(Screen[None]):
         self._current_folder_ref: FolderRef | None = None
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
+        self._background_sync_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -164,15 +166,32 @@ class MainScreen(Screen[None]):
         """Install the periodic background-sync timer when configured.
 
         No sync runs at startup — the first automatic run fires after one
-        interval.  When disabled, no timer is installed; manual ``ctrl+g``
-        still works.  The action's in-progress guard makes overlapping
-        ticks safe.
+        interval.  When disabled, no timer is installed until manual
+        ``ctrl+g`` starts a sync and arms one.  The action's in-progress guard
+        makes overlapping ticks safe.
         """
         if self._config.background_sync_enabled:
-            self.set_interval(
+            self._arm_background_sync_timer()
+
+    def _arm_background_sync_timer(self) -> None:
+        """Ensure the periodic background-sync timer is running.
+
+        ``ctrl+g`` starts a sync immediately and uses this helper to schedule
+        the next automatic run one full interval later.  Config-enabled
+        startup uses the same timer, but without an immediate first sync.
+        """
+        if self._background_sync_timer is None:
+            self._background_sync_timer = self.set_interval(
                 self._config.background_sync_interval_seconds,
-                self.action_background_sync,
+                self._background_sync_tick,
+                name="background-sync",
             )
+            return
+        self._background_sync_timer.reset()
+
+    def _background_sync_tick(self) -> None:
+        """Timer callback: run sync without re-arming/resetting the timer."""
+        self._start_background_sync(arm_repeat=False)
 
     # ------------------------------------------------------------------
     # Message routing
@@ -531,11 +550,19 @@ class MainScreen(Screen[None]):
     def action_background_sync(self) -> None:
         """Run a non-blocking, auto-confirm-everything sync.
 
-        Triggered manually (``ctrl+g``) or by the periodic timer.  Unlike
-        ``action_sync`` it shows no modal and assumes "yes" to every
-        confirmation, including the mass-deletion guard — ``sync()``
-        confirms all folders internally.  A spinner on the FolderPanel
-        border title is the only visual clue.
+        Triggered manually by ``ctrl+g``.  The manual trigger starts a sync
+        now and arms/resets the periodic timer so future background syncs
+        repeat from this point.
+        """
+        self._start_background_sync(arm_repeat=True)
+
+    def _start_background_sync(self, *, arm_repeat: bool) -> None:
+        """Start one background sync, optionally arming periodic repeats.
+
+        Unlike ``action_sync`` it shows no modal and assumes "yes" to every
+        confirmation, including the mass-deletion guard — ``sync()`` confirms
+        all folders internally.  A spinner on the FolderPanel border title is
+        the only visual clue.
         """
         if self._sync_in_progress():
             self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
@@ -543,6 +570,8 @@ class MainScreen(Screen[None]):
         service = self._build_sync_service()
         if service is None:
             return
+        if arm_repeat:
+            self._arm_background_sync_timer()
         self.query_one(FolderPanel).set_syncing(True)
         # exit_on_error=False: a background failure is reported as a toast in
         # _on_bg_sync_complete, never an app-killing fatal error.

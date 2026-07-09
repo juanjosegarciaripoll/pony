@@ -105,10 +105,12 @@ config_version = 2
 use_utf8 = true
 
 # Background synchronization (optional).
-# When background_sync_enabled is true, Pony runs a non-blocking sync on a
-# periodic timer, auto-confirming every folder (including the mass-deletion
-# guard).  A spinner appears on the Folders panel title while it runs.
-# The manual trigger (ctrl+g) always works regardless of this setting.
+# When background_sync_enabled is true, Pony arms this timer at TUI startup.
+# The manual trigger (ctrl+g) always starts a non-blocking sync immediately
+# and arms/restarts the same periodic timer from that point, even when startup
+# background sync is disabled.  Background sync auto-confirms every folder
+# (including the mass-deletion guard), and a spinner appears on the Folders
+# panel title while it runs.
 # background_sync_interval_seconds must be positive (default 600 = 10 min).
 background_sync_enabled = false
 background_sync_interval_seconds = 600

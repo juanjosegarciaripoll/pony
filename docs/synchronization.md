@@ -264,12 +264,18 @@ Without this exclusion, the same message is fetched multiple times, which
 wastes bandwidth and storage. The sync engine handles the duplicates safely
 (no data loss), but performance and clarity suffer.
 
-### No background sync
+### Background sync
 
-Pony does not sync in the background. Sync only runs when you explicitly
-request it (++g++ in the TUI, or `pony sync` on the command line). This is a
-deliberate design choice for v1: it keeps the sync model simple and
-predictable, and avoids the complexity of concurrent database access.
+In the TUI, ++ctrl+g++ starts a non-blocking background sync immediately. The
+background path auto-confirms every folder, including folders that trip the
+mass-deletion guard, and shows a spinner on the Folders panel title while it
+runs.
+
+That manual trigger also arms or restarts the periodic background-sync timer.
+Set `background_sync_enabled = true` to arm the same timer at TUI startup; the
+interval is controlled by `background_sync_interval_seconds` (default 600
+seconds). Pony refuses overlapping syncs, so a timer tick during an active sync
+is skipped with a notification rather than starting a second IMAP session.
 
 ### Plan-execute time gap
 

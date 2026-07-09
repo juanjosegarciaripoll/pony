@@ -198,11 +198,12 @@ class AppConfig:
     downloads_path: Path | None = None
     # Textual theme name.  None means use Textual's built-in default.
     theme: str | None = None
-    # Run a background sync automatically on a periodic timer.  When
-    # False (the default) only the manual key triggers a background sync.
+    # Arm the background-sync timer automatically at TUI startup.  When
+    # False (the default), ctrl+g still starts a sync immediately and
+    # arms the same repeating timer from that point.
     background_sync_enabled: bool = False
     # Interval in seconds between automatic background syncs.  Must be
-    # positive; only consulted when ``background_sync_enabled`` is True.
+    # positive.
     background_sync_interval_seconds: int = 600
 
 

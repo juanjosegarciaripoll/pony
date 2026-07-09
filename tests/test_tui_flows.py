@@ -838,6 +838,52 @@ async def test_background_sync_timer_installed_when_enabled(
     assert 600 in intervals
 
 
+async def test_background_sync_manual_trigger_arms_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ctrl+g starts a sync and arms the periodic background-sync timer."""
+    sync_calls = 0
+
+    def _spy_sync(_self: ImapSyncService, **_kw: object) -> SyncResult:
+        nonlocal sync_calls
+        sync_calls += 1
+        return _canned_sync_result()
+
+    monkeypatch.setattr(ImapSyncService, "sync", _spy_sync)
+
+    intervals: list[float] = []
+    callbacks: list[object] = []
+    original_set_interval = MainScreen.set_interval
+
+    def _spy_set_interval(
+        self: MainScreen, interval: float, *args: object, **kwargs: object
+    ) -> object:
+        if kwargs.get("name") == "background-sync":
+            intervals.append(interval)
+            callbacks.append(args[0] if args else None)
+        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
+
+    app, *_ = build_pony_app(label="bg-manual-arms-repeat")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        for _ in range(5):
+            await pilot.pause()
+
+        assert intervals == [600]
+        assert len(callbacks) == 1
+        callback = callbacks[0]
+        assert callable(callback)
+        callback()
+
+        for _ in range(5):
+            await pilot.pause()
+
+    assert sync_calls == 2
+
+
 async def test_background_sync_timer_absent_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

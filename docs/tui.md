@@ -162,8 +162,14 @@ Press ++g++ to start a sync without leaving the TUI.
    After the sync completes, the folder list and message list refresh
    automatically.
 
-There is no background or periodic sync in v1; sync only runs when you
-explicitly request it.
+Press ++ctrl+g++ to start a background sync immediately. This path shows no
+confirmation screen, auto-confirms every folder, and shows a spinner on the
+Folders panel title while it runs. It also arms or restarts the periodic
+background-sync timer, so the next background run happens after
+`background_sync_interval_seconds`.
+
+Set `background_sync_enabled = true` to arm that periodic timer as soon as the
+TUI starts, without waiting for the first ++ctrl+g++.
 
 ---
 
