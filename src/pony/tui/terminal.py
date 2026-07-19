@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
+
+from textual.app import App, SuspendNotSupported
 
 MAIL_TITLE_PREFIX = "✉ "
 
@@ -25,6 +29,15 @@ def launch_file(path: Path) -> None:
         subprocess.run(["open", str(path)], check=False)  # noqa: S603 S607
     else:  # pyright: ignore[reportUnreachable]
         subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S603 S607
+
+
+@contextmanager
+def suspend_for_external_program(app: App[object]) -> Iterator[None]:
+    """Give an external program control of the terminal when supported."""
+    with ExitStack() as stack:
+        with suppress(SuspendNotSupported):
+            stack.enter_context(app.suspend())
+        yield
 
 
 def set_terminal_title(text: str) -> None:

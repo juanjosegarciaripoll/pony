@@ -46,7 +46,12 @@ from ..compose_utils import (
     reply_subject,
 )
 from ..message_renderer import render_message
-from ..terminal import format_terminal_title, launch_file, set_terminal_title
+from ..terminal import (
+    format_terminal_title,
+    launch_file,
+    set_terminal_title,
+    suspend_for_external_program,
+)
 from ..widgets.folder_panel import FolderPanel, has_inbox_mail
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
@@ -1829,7 +1834,10 @@ class MainScreen(Screen[None]):
                 continue
             if name:
                 try:
-                    launch_file(dest / name)
+                    # The default viewer may run in this terminal and alter
+                    # input modes.  Textual's suspend context restores them.
+                    with suspend_for_external_program(self.app):
+                        launch_file(dest / name)
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open {name}: {exc}",

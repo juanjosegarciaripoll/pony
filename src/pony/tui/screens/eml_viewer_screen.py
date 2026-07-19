@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from ..message_renderer import extract_attachment
-from ..terminal import launch_file
+from ..terminal import launch_file, suspend_for_external_program
 from ..widgets.message_view import MessageViewPanel
 
 
@@ -132,7 +132,10 @@ class EmlViewerScreen(Screen[None]):
                     ) as f:
                         f.write(payload.data)
                         path = Path(f.name)
-                    launch_file(path)
+                    # The default viewer may run in this terminal and alter
+                    # input modes.  Textual's suspend context restores them.
+                    with suspend_for_external_program(self.app):
+                        launch_file(path)
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open attachment {idx}: {exc}", severity="error"

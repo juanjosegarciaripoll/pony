@@ -5,7 +5,9 @@ import sys
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+from textual.app import App, SuspendNotSupported
 
 
 @contextmanager
@@ -93,3 +95,34 @@ class TestPushPopTerminalTitle(unittest.TestCase):
         with _patched_stdout(buf):
             pop_terminal_title()
         self.assertEqual(buf.getvalue(), "")
+
+
+class TestSuspendForExternalProgram(unittest.TestCase):
+    def test_suspends_and_resumes_supported_app(self) -> None:
+        from pony.tui.terminal import suspend_for_external_program
+
+        events: list[str] = []
+
+        @contextmanager
+        def suspend() -> Iterator[None]:
+            events.append("suspend")
+            yield
+            events.append("resume")
+
+        app = MagicMock(spec=App)
+        app.suspend.return_value = suspend()
+        with suspend_for_external_program(app):
+            events.append("launch")
+
+        self.assertEqual(events, ["suspend", "launch", "resume"])
+
+    def test_continues_when_suspension_is_not_supported(self) -> None:
+        from pony.tui.terminal import suspend_for_external_program
+
+        app = MagicMock(spec=App)
+        app.suspend.side_effect = SuspendNotSupported("unsupported")
+
+        with suspend_for_external_program(app):
+            launched = True
+
+        self.assertTrue(launched)

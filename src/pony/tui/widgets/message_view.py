@@ -24,6 +24,7 @@ from ..message_renderer import (
     fmt_size,
     render_message,
 )
+from ..terminal import suspend_for_external_program
 
 _log = logging.getLogger(__name__)
 
@@ -223,7 +224,10 @@ class MessageViewPanel(VerticalScroll):
         ) as f:
             f.write(html)
             path = f.name
-        webbrowser.open(Path(path).as_uri())
+        # A browser may itself be a terminal application.  Suspend Textual so
+        # it restores terminal modes (including mouse reporting) afterwards.
+        with suspend_for_external_program(self.app):
+            webbrowser.open(Path(path).as_uri())
 
     @property
     def attachment_count(self) -> int:
