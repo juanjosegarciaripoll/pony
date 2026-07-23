@@ -13,6 +13,7 @@ via ``tui_helpers.build_pony_app`` / ``build_compose_app`` — the shared
 from __future__ import annotations
 
 from email.message import EmailMessage
+from pathlib import Path
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -293,6 +294,41 @@ async def test_open_in_browser_calls_webbrowser(
     uri = open_mock.call_args.args[0]
     assert uri.startswith("file://")
     assert uri.endswith(".html")
+
+
+async def test_print_pdf_picks_folder_and_exports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pressing ``p`` picks a folder and dispatches a PDF export worker."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="pdf",
+        seed=[(folder, html_only())],
+    )
+    export_mock = Mock()
+    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export_mock)
+    # Make the folder picker default to (and confirm) the temp directory.
+    monkeypatch.setattr(
+        "pony.tui.screens.save_folder_picker_screen._session_dir", tmp_path
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")  # open the message
+        await pilot.pause()
+        await pilot.press("ctrl+p")  # push the folder picker
+        await pilot.pause()
+        await pilot.click("#select")  # confirm the default folder
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert export_mock.call_count == 1
+    _app_arg, _html, out, dest = export_mock.call_args.args
+    assert out.suffix == ".pdf"
+    assert dest == tmp_path.resolve()
+    assert out.parent == dest
 
 
 def _dated_message(subject: str, date: str, message_id: str) -> bytes:

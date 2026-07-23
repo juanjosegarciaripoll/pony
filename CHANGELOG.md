@@ -5,6 +5,16 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0]
+### Added
+
+- **Print a message to PDF**: press `Ctrl-P` in the message view (or the standalone
+  `.eml` viewer) to render the current email to a PDF in a folder you pick.
+  Pony reuses the same self-contained HTML as the browser view (`w`) and shells
+  out to whichever HTML-to-PDF converter is installed — Chromium/Chrome,
+  `wkhtmltopdf`, WeasyPrint, or LibreOffice — so no new dependency is bundled.
+  A guidance notification is shown when none is found.
+
 ## [0.8.0] - 2026-06-24
 ### Fixed
 

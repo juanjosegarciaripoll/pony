@@ -32,6 +32,7 @@ src/pony/
     bindings.py        # shared mark/motion Binding tuples
     compose_utils.py   # reply/forward quoting + signature
     message_renderer.py# RFC 5322 → plain text / browser HTML
+    pdf_export.py      # ctrl+p — HTML → PDF via a detected external converter
     search_parser.py   # query parser (from:, to:, subject:…)
     terminal.py        # OSC sequences for window-title push/pop/set
     screens/
@@ -80,7 +81,7 @@ src/pony/
 
 **MCP** (`mcp_server.py`): read-only server built on `tinymcp` (no MCP-SDK HTTP stack). When the TUI is running it serves on `127.0.0.1` over TCP behind a per-session token in a state file; `pony mcp` checks for the file and proxies stdio↔TCP, so the SDK consumer never opens a competing SQLite handle. Without a running TUI, `pony mcp` opens its own connections and serves stdio directly.
 
-**HTML rendering** (`message_renderer.py`): `render_message()` → plain text (strips `<style>`/`<script>` first). `build_browser_html()` → self-contained HTML with CID-resolved inline images (for `w` key).
+**HTML rendering** (`message_renderer.py`): `render_message()` → plain text (strips `<style>`/`<script>` first). `build_browser_html()` → self-contained HTML with CID-resolved inline images (for `w` key). `pdf_export.py` feeds that same HTML to a detected external converter (Chromium/Chrome, `wkhtmltopdf`, WeasyPrint, or LibreOffice) for the `ctrl+p` print-to-PDF action, running the blocking conversion in a Textual thread worker.
 
 ## Data flow
 

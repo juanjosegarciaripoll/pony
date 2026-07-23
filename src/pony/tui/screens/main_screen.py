@@ -77,6 +77,7 @@ class MainScreen(Screen[None]):
         Binding("R", "compose_reply_all", "Reply all"),
         Binding("f", "compose_forward", "Forward"),
         Binding("w", "open_browser", "Web view"),
+        Binding("ctrl+p", "print_pdf", "Print PDF"),
         Binding("u", "mark_unread", "Mark unread"),
         Binding("!", "toggle_flagged", "Flag"),
         Binding("D", "trash", "Trash"),
@@ -219,7 +220,9 @@ class MainScreen(Screen[None]):
     def _has_inbox_mail(self) -> bool:
         """True when any configured account has unread INBOX mail."""
         return any(
-            has_inbox_mail(self._index.unread_counts_by_folder(account_name=account.name))
+            has_inbox_mail(
+                self._index.unread_counts_by_folder(account_name=account.name)
+            )
             for account in self._config.accounts
         )
 
@@ -1744,6 +1747,51 @@ class MainScreen(Screen[None]):
 
     def open_current_in_browser(self) -> None:
         self.query_one(MessageViewPanel).open_in_browser()
+
+    def action_print_pdf(self) -> None:
+        """Render the current message to a PDF in a folder the user picks."""
+        from ..message_renderer import build_browser_html
+        from ..pdf_export import export_pdf_in_thread
+        from .save_folder_picker_screen import SaveFolderPickerScreen
+        from .save_message_screen import _proposed_body_filename
+
+        msg = self.get_current_message()
+        if msg is None:
+            return
+        mirror = self._mirrors[msg.message_ref.account_name]
+        try:
+            raw = mirror.get_message_bytes(
+                folder=FolderRef(
+                    account_name=msg.message_ref.account_name,
+                    folder_name=msg.message_ref.folder_name,
+                ),
+                storage_key=msg.storage_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Could not read message from mirror.", severity="error"
+            )
+            return
+        rendered = render_message(raw)
+        html = build_browser_html(raw)
+        filename = Path(_proposed_body_filename(rendered)).with_suffix(".pdf").name
+
+        def _on_folder(dest: Path | None) -> None:
+            if dest is None:
+                return
+            out = (dest / filename).resolve()
+            if not out.is_relative_to(dest.resolve()):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    "Invalid destination.", severity="error"
+                )
+                return
+            self.run_worker(
+                lambda: export_pdf_in_thread(self.app, html, out, dest),
+                name="print-pdf",
+                thread=True,
+            )
+
+        self.app.push_screen(SaveFolderPickerScreen(), _on_folder)  # pyright: ignore[reportUnknownMemberType]
 
     def action_attachments_open(self) -> None:
         self._prompt_attachments(action_label="Open", then=self._open_indices)

@@ -25,6 +25,7 @@ class EmlViewerScreen(Screen[None]):
     BINDINGS = [
         Binding("Q", "quit_viewer", "Close", priority=True, show=False),
         Binding("w", "open_browser", "Browser"),
+        Binding("ctrl+p", "print_pdf", "Print PDF"),
     ]
 
     def __init__(
@@ -89,6 +90,35 @@ class EmlViewerScreen(Screen[None]):
 
     def action_open_browser(self) -> None:
         self.query_one(MessageViewPanel).open_in_browser()
+
+    def action_print_pdf(self) -> None:
+        """Render this message to a PDF in a folder the user picks."""
+        from ..message_renderer import build_browser_html, render_message
+        from ..pdf_export import export_pdf_in_thread
+        from .save_folder_picker_screen import SaveFolderPickerScreen
+        from .save_message_screen import _proposed_body_filename
+
+        raw = self._raw_bytes
+        rendered = render_message(raw)
+        html = build_browser_html(raw)
+        filename = Path(_proposed_body_filename(rendered)).with_suffix(".pdf").name
+
+        def _on_folder(dest: Path | None) -> None:
+            if dest is None:
+                return
+            out = (dest / filename).resolve()
+            if not out.is_relative_to(dest.resolve()):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    "Invalid destination.", severity="error"
+                )
+                return
+            self.run_worker(
+                lambda: export_pdf_in_thread(self.app, html, out, dest),
+                name="print-pdf",
+                thread=True,
+            )
+
+        self.app.push_screen(SaveFolderPickerScreen(), _on_folder)  # pyright: ignore[reportUnknownMemberType]
 
     # ------------------------------------------------------------------
     # Attachments
