@@ -19,13 +19,13 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.pilot import Pilot
-from textual.widgets import DirectoryTree, Input
-from tui_helpers import TestDirectoryTree
+from textual.widgets import Input
+from tui_helpers import DeterministicDirectoryTree
 
 import pony.tui.screens.add_attachment_screen as aas_module
 from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
 
-aas_module.DirectoryTree = TestDirectoryTree  # type: ignore[attr-defined]
+aas_module.DirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
 
 
 def _make_tree(label: str) -> Path:
@@ -68,8 +68,12 @@ class _Host(App[str | None]):
         return iter([])
 
     def on_mount(self) -> None:
+        def record_result(result: str | None) -> None:
+            self._return_value = result
+
         self.push_screen(
-            AddAttachmentScreen(self._start_dir, home_dir=self._home_dir), self.exit
+            AddAttachmentScreen(self._start_dir, home_dir=self._home_dir),
+            record_result,
         )
 
     @asynccontextmanager
@@ -137,7 +141,7 @@ async def test_mount_focuses_tree_and_seeds_path() -> None:
     async with _Host(base).run_test() as pilot:
         await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         self_inp = screen.query_one("#path-input", Input)
         assert screen.focused is tree
         assert self_inp.value == str(base.resolve())
@@ -150,10 +154,10 @@ async def test_select_file_dismisses_with_path() -> None:
     async with _Host(base).run_test() as pilot:
         await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         # Emit the FileSelected message directly — robust against async load.
         screen.on_directory_tree_file_selected(
-            DirectoryTree.FileSelected(tree.root, target)
+            DeterministicDirectoryTree.FileSelected(tree.root, target)
         )
         await pilot.pause()
     assert pilot.app.return_value == str(target)
@@ -168,9 +172,9 @@ async def test_directory_selected_updates_path_input() -> None:
     async with _Host(base).run_test() as pilot:
         await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         screen.on_directory_tree_directory_selected(
-            DirectoryTree.DirectorySelected(tree.root, sub)
+            DeterministicDirectoryTree.DirectorySelected(tree.root, sub)
         )
         await pilot.pause()
         inp = screen.query_one("#path-input", Input)
@@ -224,7 +228,7 @@ async def test_input_submit_valid_dir_navigates() -> None:
         # Navigation re-roots the tree and rewrites the path bar.
         assert screen._root == sub
         assert screen.query_one("#path-input", Input).value == str(sub)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         assert Path(tree.path) == sub
     assert aas_module._session_dir == sub
 
@@ -263,7 +267,7 @@ async def test_typeahead_jumps_to_matching_node() -> None:
         for _ in range(5):
             await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         assert screen.focused is tree
 
         # Type "b" — should land on beta.txt; the hint reflects the buffer.
@@ -368,7 +372,7 @@ async def test_typeahead_no_match_keeps_cursor() -> None:
         for _ in range(5):
             await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         before = tree.cursor_node
         # No entry starts with "zzz".
         await pilot.press("z")
@@ -402,7 +406,7 @@ async def test_expanded_directory_is_walked_for_typeahead() -> None:
         for _ in range(5):
             await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         # Find and expand the "subdir" node so its child becomes visible.
         for child in tree.root.children:
             if child.data and child.data.path.name == "subdir":
@@ -429,7 +433,7 @@ async def test_auto_expand_to_nested_start_dir() -> None:
         # as the async directory loader populates each level.
         for _ in range(40):
             await pilot.pause()
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         # The screen should not have crashed and the tree is mounted.
         assert tree.is_mounted
 
@@ -445,7 +449,7 @@ async def test_expand_to_dir_outside_root_is_noop() -> None:
         outside = Path(base.anchor) / "definitely-not-under-base"
         screen._expand_to_dir(outside)  # ValueError -> early return
         await pilot.pause()
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         assert tree.is_mounted
 
 
@@ -458,7 +462,7 @@ async def test_expand_to_dir_equal_to_root_is_noop() -> None:
         screen = _screen(pilot.app)
         screen._expand_to_dir(base.resolve())  # empty parts -> early return
         await pilot.pause()
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         assert tree.is_mounted
 
 
@@ -469,7 +473,7 @@ async def test_run_typeahead_with_no_cursor_is_noop() -> None:
     async with _Host(base).run_test() as pilot:
         await pilot.pause()
         screen = _screen(pilot.app)
-        tree = screen.query_one("#file-tree", DirectoryTree)
+        tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         # Force a buffer, then make the tree report no cursor node via a stub
         # returned from query_one (avoids mutating the widget class).
         screen._typeahead = "a"
@@ -484,7 +488,7 @@ async def test_run_typeahead_with_no_cursor_is_noop() -> None:
             del screen.query_one  # restore the inherited method
         await pilot.pause()
         # query_one is back; sanity-check the real tree still resolves.
-        assert screen.query_one("#file-tree", DirectoryTree) is tree
+        assert screen.query_one("#file-tree", DeterministicDirectoryTree) is tree
         assert screen._typeahead == "a"
 
 

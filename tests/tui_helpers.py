@@ -70,10 +70,46 @@ class TestComposeApp(_ExecutorCleanupMixin, ComposeApp):
     __test__ = False
 
 
-class TestDirectoryTree(DirectoryTree):
-    """DirectoryTree variant without thread dispatch for fixture filesystems."""
+class DeterministicDirectoryTree(Tree[DirEntry]):
+    """Worker-free contract double for Pony's DirectoryTree interactions.
+
+    This deliberately does not inherit Textual's DirectoryTree. Real widget
+    lifecycle coverage lives in ``test_directory_tree_integration.py``.
+    """
 
     __test__ = False
+    PATH = Path
+    FileSelected = DirectoryTree.FileSelected
+    DirectorySelected = DirectoryTree.DirectorySelected
+
+    def __init__(self, path: str | Path, **kwargs: object) -> None:
+        self._path = self.PATH(path)
+        super().__init__(
+            str(self._path),
+            data=DirEntry(self._path),
+            **kwargs,  # type: ignore[arg-type]
+        )
+        self.reload()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @path.setter
+    def path(self, path: str | Path) -> None:
+        self._path = self.PATH(path)
+        if hasattr(self, "root"):
+            self.reload()
+
+    @staticmethod
+    def _safe_is_dir(path: Path) -> bool:
+        try:
+            return path.is_dir()
+        except OSError:
+            return False
+
+    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
+        return paths
 
     def _read_directory(self, node: TreeNode[DirEntry]) -> list[Path]:
         """Read fixture paths immediately on the Textual event loop."""
@@ -93,20 +129,16 @@ class TestDirectoryTree(DirectoryTree):
         return self.reload_node(self.root)
 
     def reload_node(self, node: TreeNode[DirEntry]) -> AwaitComplete:
-        """Replace a fixture subtree in one finite event-loop operation."""
-
-        async def reload() -> None:
-            assert node.data is not None
-            path = node.data.path
-            self.reset_node(node, str(path.name), DirEntry(self.PATH(path)))
-            assert node.data is not None
-            node.data.loaded = True
-            content = self._read_directory(node)
-            if content:
-                self._populate_node(node, content)
-            node.expand()
-
-        return AwaitComplete(reload())
+        """Replace a fixture subtree immediately on the event loop."""
+        path = self._path if node is self.root else node.data.path  # type: ignore[union-attr]
+        node.remove_children()
+        node.set_label(str(path))
+        node.data = DirEntry(self.PATH(path))
+        assert node.data is not None
+        node.data.loaded = True
+        self._populate_node(node, self._read_directory(node))
+        node.expand()
+        return AwaitComplete.nothing()
 
     def _add_to_load_queue(self, node: TreeNode[DirEntry]) -> AwaitComplete:
         """Load one node directly instead of waiting on a queue or worker."""
@@ -114,13 +146,16 @@ class TestDirectoryTree(DirectoryTree):
         if node.data.loaded:
             return AwaitComplete.nothing()
         node.data.loaded = True
+        self._populate_node(node, self._read_directory(node))
+        return AwaitComplete.nothing()
 
-        async def load() -> None:
-            content = self._read_directory(node)
-            if content:
-                self._populate_node(node, content)
-
-        return AwaitComplete(load())
+    def _populate_node(self, node: TreeNode[DirEntry], paths: Iterable[Path]) -> None:
+        for path in self.filter_paths(paths):
+            entry = DirEntry(self.PATH(path))
+            if self._safe_is_dir(path):
+                node.add(path.name, data=entry, allow_expand=True)
+            else:
+                node.add_leaf(path.name, data=entry)
 
     async def _on_tree_node_expanded(self, event: Tree.NodeExpanded[DirEntry]) -> None:
         event.stop()
@@ -143,8 +178,8 @@ class TestDirectoryTree(DirectoryTree):
             self.post_message(self.FileSelected(event.node, entry.path))
 
 
-class TestDirOnlyTree(TestDirectoryTree):
-    """Non-threaded directory-only tree for save-folder picker tests."""
+class DeterministicDirOnlyTree(DeterministicDirectoryTree):
+    """Directory-only variant of the deterministic contract double."""
 
     __test__ = False
 

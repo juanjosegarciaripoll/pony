@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import corpus
 import pytest
-from tui_helpers import TestDirOnlyTree
+from tui_helpers import DeterministicDirOnlyTree
 
 import pony.tui.screens.save_folder_picker_screen as save_picker_module
 from pony.domain import FolderRef
@@ -27,7 +27,7 @@ from pony.tui.screens.new_folder_screen import NewFolderScreen
 from pony.tui.screens.save_draft_screen import SaveDraftScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 
-save_picker_module._DirOnlyTree = TestDirOnlyTree  # type: ignore[attr-defined]
+save_picker_module._DirOnlyTree = DeterministicDirOnlyTree  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Minimal hosting app factory
@@ -1578,7 +1578,7 @@ async def test_save_folder_picker_escape_returns_none(tmp_path) -> None:
 
 async def test_save_folder_picker_directory_selection_updates_result(tmp_path) -> None:
     """Selecting a tree directory updates the label and selected result."""
-    from textual.widgets import DirectoryTree, Label
+    from textual.widgets import Label
 
     import pony.tui.screens.save_folder_picker_screen as picker_module
     from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
@@ -1590,9 +1590,9 @@ async def test_save_folder_picker_directory_selection_updates_result(tmp_path) -
     async with app.run_test() as pilot:
         screen = app.screen
         assert isinstance(screen, SaveFolderPickerScreen)
-        tree = screen.query_one(DirectoryTree)
+        tree = screen.query_one(DeterministicDirOnlyTree)
         screen.on_directory_tree_directory_selected(
-            DirectoryTree.DirectorySelected(tree.root, selected)
+            DeterministicDirOnlyTree.DirectorySelected(tree.root, selected)
         )
         assert str(screen.query_one("#current-path", Label).render()) == str(selected)
         await pilot.click("#select")

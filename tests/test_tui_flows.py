@@ -20,8 +20,8 @@ from uuid import uuid4
 import pytest
 from corpus import html_only, multipart_mixed_attachment, plain_text
 from tui_helpers import (
-    TestDirectoryTree,
-    TestDirOnlyTree,
+    DeterministicDirectoryTree,
+    DeterministicDirOnlyTree,
     TestPonyApp,
     build_compose_app,
     build_pony_app,
@@ -55,8 +55,8 @@ from pony.tui.widgets.folder_panel import FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
 
-add_attachment_module.DirectoryTree = TestDirectoryTree  # type: ignore[attr-defined]
-save_folder_module._DirOnlyTree = TestDirOnlyTree  # type: ignore[attr-defined]
+add_attachment_module.DirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
+save_folder_module._DirOnlyTree = DeterministicDirOnlyTree  # type: ignore[attr-defined]
 PonyApp = TestPonyApp
 
 # ---------------------------------------------------------------------------
