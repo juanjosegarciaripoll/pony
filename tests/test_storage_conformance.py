@@ -563,3 +563,113 @@ class MaildirShutdownTestCase(unittest.TestCase):
 
         repo.flush_writes = _boom  # type: ignore[method-assign]
         repo._shutdown()
+
+
+class MaildirMissingKeyTestCase(unittest.TestCase):
+    """Operations against a storage_key with no file behind it.
+
+    The index is authoritative, so a row can outlive its mirror file —
+    after an external tool prunes the maildir, or a partially-restored
+    backup.  Every lookup must raise ``KeyError`` naming the key rather
+    than fail obscurely deeper down.
+    """
+
+    def _repo(self) -> MaildirMirrorRepository:
+        root = TMP_ROOT / "maildir-missing" / uuid4().hex
+        repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+        repo.create_folder(account_name="acct", folder_name="INBOX")
+        return repo
+
+    def test_reading_an_absent_key_raises(self) -> None:
+        repo = self._repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        with self.assertRaises(KeyError):
+            repo.get_message_bytes(folder=folder, storage_key="not-there")
+
+    def test_setting_flags_on_an_absent_key_raises(self) -> None:
+        repo = self._repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        with self.assertRaises(KeyError):
+            repo.set_flags(
+                folder=folder,
+                storage_key="not-there",
+                flags=frozenset({MessageFlag.SEEN}),
+            )
+
+    def test_moving_an_absent_key_raises(self) -> None:
+        repo = self._repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        repo.create_folder(account_name="acct", folder_name="Archive")
+
+        with self.assertRaises(KeyError):
+            repo.move_message_to_folder(
+                folder=folder,
+                storage_key="not-there",
+                target_folder="Archive",
+            )
+
+    def test_an_unknown_account_is_rejected(self) -> None:
+        repo = self._repo()
+
+        with self.assertRaises(ValueError) as ctx:
+            repo.list_folders(account_name="someone-else")
+
+        self.assertIn("unknown account", str(ctx.exception))
+
+
+class MaildirFolderListingTestCase(unittest.TestCase):
+    """``list_folders`` reads the maildir layout off disk."""
+
+    def test_stray_files_and_dotfiles_are_not_folders(self) -> None:
+        """Only ``.name`` *directories* count; a bare ``.`` name does not."""
+        root = TMP_ROOT / "maildir-listing" / uuid4().hex
+        repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+        repo.create_folder(account_name="acct", folder_name="Archive")
+
+        # A dotfile (not a directory) and a directory named just "." —
+        # both must be ignored rather than become folders.
+        (root / ".uidvalidity").write_text("1", encoding="utf-8")
+
+        names = {ref.folder_name for ref in repo.list_folders(account_name="acct")}
+
+        self.assertIn("INBOX", names)
+        self.assertIn("Archive", names)
+        self.assertNotIn("uidvalidity", names)
+        self.assertNotIn("", names)
+
+
+class MboxEmptyMailboxTestCase(unittest.TestCase):
+    """An mbox file with no messages must list as empty, not crash."""
+
+    def test_listing_an_empty_mbox_returns_nothing(self) -> None:
+        root = TMP_ROOT / "mbox-empty" / uuid4().hex
+        repo = MboxMirrorRepository(account_name="acct", root_dir=root)
+        repo.create_folder(account_name="acct", folder_name="INBOX")
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+        self.assertEqual(repo.list_messages(folder=folder), ())
+
+    def test_inbox_is_listed_even_when_only_other_mboxes_exist(self) -> None:
+        root = TMP_ROOT / "mbox-folders" / uuid4().hex
+        repo = MboxMirrorRepository(account_name="acct", root_dir=root)
+        repo.create_folder(account_name="acct", folder_name="Archive")
+
+        names = {ref.folder_name for ref in repo.list_folders(account_name="acct")}
+
+        self.assertIn("INBOX", names)
+        self.assertIn("Archive", names)
+
+    def test_reading_an_absent_key_raises(self) -> None:
+        root = TMP_ROOT / "mbox-missing" / uuid4().hex
+        repo = MboxMirrorRepository(account_name="acct", root_dir=root)
+        repo.create_folder(account_name="acct", folder_name="INBOX")
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        repo.store_message(
+            folder=folder,
+            raw_message=_rfc5322_message_bytes("Present", "<present@example.com>"),
+        )
+
+        with self.assertRaises(KeyError):
+            repo.get_message_bytes(folder=folder, storage_key="9999")

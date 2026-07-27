@@ -903,3 +903,112 @@ class MarkFolderReadTestCase(unittest.TestCase):
         repo.insert_message(message=row)
         count = repo.mark_folder_read(folder=folder)
         self.assertEqual(count, 0)
+
+
+class MissingDatabaseTestCase(unittest.TestCase):
+    """Read paths must answer for a database that was never created.
+
+    ``pony doctor``, the folder panel's unread badges and the sync
+    planner all query the index before the first sync has written
+    anything.  Each read must return an empty result rather than raise
+    a "no such table" error.
+    """
+
+    def _unwritten_repo(self) -> SqliteIndexRepository:
+        temp_root = TMP_ROOT / "index"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        # Deliberately not initialize()d — the file does not exist.
+        return SqliteIndexRepository(
+            database_path=temp_root / f"absent-{uuid4().hex}.sqlite3"
+        )
+
+    def test_listing_accounts_returns_empty(self) -> None:
+        self.assertEqual(self._unwritten_repo().list_indexed_accounts(), [])
+
+    def test_unread_counts_return_empty(self) -> None:
+        repo = self._unwritten_repo()
+        self.assertEqual(repo.unread_counts_by_folder(account_name="personal"), {})
+
+    def test_folder_sync_states_return_empty(self) -> None:
+        repo = self._unwritten_repo()
+        self.assertEqual(repo.list_folder_sync_states(account_name="personal"), [])
+
+
+class QueryGuardTestCase(unittest.TestCase):
+    """Short-circuits that keep degenerate queries away from SQLite."""
+
+    def test_update_requires_a_row_id(self) -> None:
+        """``insert_message`` assigns ids; updating an unsaved row is a bug."""
+        repo = _fresh_repo()
+        unsaved = _make_message("<unsaved@example.com>")
+
+        with self.assertRaises(ValueError) as ctx:
+            repo.update_message(message=unsaved)
+
+        self.assertIn("requires a row id", str(ctx.exception))
+
+    def test_an_empty_message_id_matches_nothing(self) -> None:
+        """Rows imported without a Message-ID must not all match each other."""
+        repo = _fresh_repo()
+        repo.insert_message(message=_make_message(""))
+
+        self.assertEqual(
+            repo.find_messages_by_message_id(
+                account_name="personal",
+                folder_name="INBOX",
+                message_id="",
+            ),
+            (),
+        )
+
+    def test_message_id_lookup_can_span_every_folder(self) -> None:
+        """Omitting the folder searches the whole account."""
+        repo = _fresh_repo()
+        repo.insert_message(
+            message=_make_message("<shared@example.com>", folder_name="INBOX")
+        )
+        repo.insert_message(
+            message=_make_message(
+                "<shared@example.com>",
+                folder_name="Archive",
+                storage_key="archive-copy",
+            )
+        )
+
+        scoped = repo.find_messages_by_message_id(
+            account_name="personal",
+            folder_name="INBOX",
+            message_id="<shared@example.com>",
+        )
+        everywhere = repo.find_messages_by_message_id(
+            account_name="personal",
+            folder_name=None,
+            message_id="<shared@example.com>",
+        )
+
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(len(everywhere), 2)
+
+    def test_an_empty_uid_set_returns_no_slow_path_rows(self) -> None:
+        repo = _fresh_repo()
+
+        self.assertEqual(
+            repo.list_folder_slow_path_rows_by_uid(
+                account_name="personal",
+                folder_name="INBOX",
+                uids=(),
+            ),
+            (),
+        )
+
+    def test_a_blank_contact_prefix_returns_no_suggestions(self) -> None:
+        repo = _fresh_repo()
+
+        self.assertEqual(repo.search_contacts(prefix="   ", limit=10), [])
+
+    def test_loading_an_unknown_contact_id_raises(self) -> None:
+        """The batch loader returning nothing must not yield a bare IndexError."""
+        repo = _fresh_repo()
+
+        with self.assertRaises(KeyError):
+            repo._load_contact(99999)
