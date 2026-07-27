@@ -421,3 +421,20 @@ class MboxMessageByIdTest(unittest.TestCase):
         mirror._close_all()
         # And calling it again (empty handles) should also be fine
         mirror._close_all()
+
+    def test_repository_is_not_retained_until_process_exit(self) -> None:
+        """The cleanup registration must not keep the repository alive."""
+        import gc
+        import weakref
+        from uuid import uuid4
+
+        from pony.storage import MboxMirrorRepository
+
+        root = TMP_ROOT / "mbox-finalizer" / uuid4().hex
+        mirror = MboxMirrorRepository(account_name="acct", root_dir=root)
+        repository_ref = weakref.ref(mirror)
+
+        del mirror
+        gc.collect()
+
+        self.assertIsNone(repository_ref())

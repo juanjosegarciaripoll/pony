@@ -11,6 +11,7 @@ import re
 import socket
 import sys
 import time
+import weakref
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -304,14 +305,35 @@ class MaildirMirrorRepository(MirrorRepository):
 # ---------------------------------------------------------------------------
 
 
+def _close_mbox_handles(open_handles: dict[str, mailbox.mbox]) -> None:
+    """Flush cached handles without retaining their repository."""
+    if open_handles:
+        print(
+            "Flushing mail storage — do not interrupt…",
+            file=sys.stderr,
+            flush=True,
+        )
+    for folder_name, mbox in open_handles.items():
+        try:
+            mbox.flush()
+            mbox.close()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Warning: could not flush {folder_name}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+    open_handles.clear()
+
+
 class MboxMirrorRepository(MirrorRepository):
     """mbox-backed mirror repository.
 
     mbox files are kept open for the lifetime of the repository.  Parsing the
     table of contents on every operation is O(file size) and would make bulk
-    access quadratic.  Handles are flushed after every write and released via
-    an atexit handler and ``__del__`` so clean-up happens automatically on
-    normal process exit or garbage collection.
+    access quadratic.  Handles are flushed after every write and released by
+    a finalizer so clean-up happens automatically without retaining the
+    repository until process exit.
 
     mbox is not crash-safe: a hard kill before a flush can leave the file in
     an inconsistent state.  Prefer Maildir for accounts where durability
@@ -323,29 +345,14 @@ class MboxMirrorRepository(MirrorRepository):
         self._root_dir = root_dir
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._open_handles: dict[str, mailbox.mbox] = {}
-        atexit.register(self._close_all)
+        self._finalizer = weakref.finalize(
+            self,
+            _close_mbox_handles,
+            self._open_handles,
+        )
 
     def _close_all(self) -> None:
-        if self._open_handles:
-            print(
-                "Flushing mail storage — do not interrupt…",
-                file=sys.stderr,
-                flush=True,
-            )
-        for folder_name, mbox in self._open_handles.items():
-            try:
-                mbox.flush()
-                mbox.close()
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    f"Warning: could not flush {folder_name}: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        self._open_handles.clear()
-
-    def __del__(self) -> None:
-        self._close_all()
+        _close_mbox_handles(self._open_handles)
 
     def list_folders(self, *, account_name: str) -> tuple[FolderRef, ...]:
         self._require_account(account_name)
