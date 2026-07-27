@@ -455,7 +455,7 @@ class ConfigValidationErrorsTestCase(unittest.TestCase):
 
     def test_require_string_list_not_list_raises(self) -> None:
         data = sample_config()
-        data["accounts"][0]["folders"] = {
+        data["accounts"][0]["folders"] = {  # type: ignore[index]
             "include": "not-a-list",
             "exclude": [],
             "read_only": [],

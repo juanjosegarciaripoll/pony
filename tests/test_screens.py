@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import MagicMock
 
 import corpus
@@ -21,6 +22,8 @@ import pony.tui.screens.save_folder_picker_screen as save_picker_module
 from pony.domain import FolderRef
 from pony.tui.app import ContactsApp, EmlViewerApp
 from pony.tui.screens.confirm_screen import ConfirmScreen
+from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+from pony.tui.screens.floating_input_screen import SimpleInputScreen
 from pony.tui.screens.goto_folder_screen import GotoFolderScreen, _fuzzy_filter
 from pony.tui.screens.link_action_screen import LinkActionScreen
 from pony.tui.screens.new_folder_screen import NewFolderScreen
@@ -47,10 +50,8 @@ def _make_host(screen_cls, *args, **kwargs):
             self.push_screen(screen_cls(*args, **kwargs), self.exit)
 
         @asynccontextmanager
-        async def run_test(self, **test_kwargs: object) -> AsyncIterator[Pilot[object]]:
-            async with super().run_test(  # type: ignore[arg-type]
-                **test_kwargs
-            ) as pilot:
+        async def run_test(self, **test_kwargs: Any) -> AsyncIterator[Pilot[object]]:
+            async with super().run_test(**test_kwargs) as pilot:
                 yield pilot
             loop = asyncio.get_running_loop()
             executor = loop._default_executor  # type: ignore[attr-defined]
@@ -409,10 +410,12 @@ async def test_sync_confirm_show_plan_transitions() -> None:
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SyncConfirmScreen)
         # show_plan() mounts buttons dynamically; query_one("#proceed").focus() may
         # fail before the event loop processes the mount — suppress that.
         with contextlib.suppress(Exception):
-            app.screen.show_plan(empty_plan)
+            screen.show_plan(empty_plan)
         await pilot.pause()
         from textual.widgets import Label
 
@@ -424,7 +427,9 @@ async def test_sync_confirm_update_status() -> None:
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.screen.update_status("Syncing INBOX…")
+        screen = app.screen
+        assert isinstance(screen, SyncConfirmScreen)
+        screen.update_status("Syncing INBOX…")
         await pilot.pause()
 
 
@@ -801,7 +806,9 @@ async def test_sync_confirm_update_progress_with_total() -> None:
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.screen.update_progress(ProgressInfo("Loading…", current=3, total=10))
+        screen = app.screen
+        assert isinstance(screen, SyncConfirmScreen)
+        screen.update_progress(ProgressInfo("Loading…", current=3, total=10))
         await pilot.pause()
 
 
@@ -812,7 +819,9 @@ async def test_sync_confirm_update_progress_no_total() -> None:
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.screen.update_progress(ProgressInfo("Loading…", current=0, total=0))
+        screen = app.screen
+        assert isinstance(screen, SyncConfirmScreen)
+        screen.update_progress(ProgressInfo("Loading…", current=0, total=0))
         await pilot.pause()
 
 
@@ -1613,6 +1622,7 @@ async def test_save_folder_picker_creates_and_selects_new_folder(tmp_path) -> No
         await pilot.click("#new-folder")
         await pilot.pause()
         prompt = app.screen
+        assert isinstance(prompt, SimpleInputScreen)
         field = prompt.query_one(Input)
         field.value = "fictional-folder"
         prompt.on_input_submitted(Input.Submitted(field, field.value))
@@ -1636,6 +1646,7 @@ async def test_save_folder_picker_empty_new_folder_is_noop(tmp_path) -> None:
         await pilot.click("#new-folder")
         await pilot.pause()
         prompt = app.screen
+        assert isinstance(prompt, SimpleInputScreen)
         field = prompt.query_one(Input)
         prompt.on_input_submitted(Input.Submitted(field, ""))
         await pilot.pause()
@@ -1864,7 +1875,9 @@ async def test_contact_browser_search_submitted() -> None:
         # Trigger submitted event directly
         from textual.widgets._input import Input as TxInput
 
-        app.screen.on_input_submitted(
+        browser = app.screen
+        assert isinstance(browser, ContactBrowserScreen)
+        browser.on_input_submitted(
             TxInput.Submitted(search, value="Alice", validation_result=None)
         )
         await pilot.pause()

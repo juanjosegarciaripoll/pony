@@ -1871,14 +1871,16 @@ async def test_compose_toggle_markdown() -> None:
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="toggle-md")
     async with app.run_test() as pilot:
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
         # Check initial state (markdown off)
-        initial_mode = app.screen._markdown_mode
+        initial_mode = screen._markdown_mode
         await pilot.press("alt+m")
         await pilot.pause()
-        assert app.screen._markdown_mode != initial_mode
+        assert screen._markdown_mode != initial_mode
         await pilot.press("alt+m")
         await pilot.pause()
-        assert app.screen._markdown_mode == initial_mode
+        assert screen._markdown_mode == initial_mode
 
 
 async def test_compose_add_attachment_key_opens_picker() -> None:

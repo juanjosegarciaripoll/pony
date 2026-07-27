@@ -308,7 +308,7 @@ def build_pony_app(
     accounts: Sequence[AnyAccount] | None = None,
     seed: Sequence[tuple[FolderRef, bytes]] = (),
 ) -> tuple[
-    PonyApp,
+    TestPonyApp,
     AppConfig,
     AppPaths,
     SqliteIndexRepository,
@@ -359,7 +359,7 @@ def build_compose_app(
     body: str = "",
     markdown_mode: bool = False,
 ) -> tuple[
-    ComposeApp,
+    TestComposeApp,
     AppConfig,
     AppPaths,
     SqliteIndexRepository,

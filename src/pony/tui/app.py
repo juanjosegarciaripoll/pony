@@ -100,7 +100,9 @@ class PonyApp(App[None]):
     def _has_inbox_mail(self) -> bool:
         """True when any configured account has unread INBOX mail."""
         return any(
-            has_inbox_mail(self._index.unread_counts_by_folder(account_name=account.name))
+            has_inbox_mail(
+                self._index.unread_counts_by_folder(account_name=account.name)
+            )
             for account in self._config.accounts
         )
 

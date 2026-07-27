@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from email.message import EmailMessage
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import corpus
@@ -511,7 +512,7 @@ class ParseDraftFieldsTest(unittest.TestCase):
 
 
 class BuildEmailMessageBranchesTest(unittest.TestCase):
-    def _build_md(self, body: str, **kwargs: object) -> object:
+    def _build_md(self, body: str, **kwargs: Any) -> EmailMessage:
         return build_email_message(
             from_address="alice@example.com",
             to="bob@example.com",
@@ -528,7 +529,7 @@ class BuildEmailMessageBranchesTest(unittest.TestCase):
         body = "Hello world\n\n-- \nAlice Smith"
         msg = self._build_md(body)
         html_parts = [
-            part.get_payload(decode=True).decode()
+            str(part.get_content())
             for part in msg.walk()
             if part.get_content_type() == "text/html"
         ]
@@ -539,7 +540,7 @@ class BuildEmailMessageBranchesTest(unittest.TestCase):
         body = "My reply\n\nOn Mon wrote:\n\n> Original text"
         msg = self._build_md(body)
         html_parts = [
-            part.get_payload(decode=True).decode()
+            str(part.get_content())
             for part in msg.walk()
             if part.get_content_type() == "text/html"
         ]

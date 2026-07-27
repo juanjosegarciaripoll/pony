@@ -58,7 +58,7 @@ def _bench_one(path: Path) -> None:
     fast_toc, fast_next, fast_flen = _build_mbox_toc(path)
 
     t_stdlib, ref_toc, ref_next, ref_flen = _time_stdlib(path)
-    ok = (fast_toc == ref_toc and fast_next == ref_next and fast_flen == ref_flen)
+    ok = fast_toc == ref_toc and fast_next == ref_next and fast_flen == ref_flen
 
     fast_times: list[float] = []
     for _ in range(ITERATIONS):

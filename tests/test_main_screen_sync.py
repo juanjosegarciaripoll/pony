@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 from tui_helpers import build_pony_app
@@ -37,7 +38,8 @@ def _main(app: object) -> MainScreen:
 
 def _worker(
     *, name: str, state: _State, result: object = None, error: Exception | None = None
-) -> SimpleNamespace:
+) -> Any:
+    """Return a stand-in for a Textual ``Worker`` with just the fields read."""
     return SimpleNamespace(name=name, state=state, result=result, error=error)
 
 

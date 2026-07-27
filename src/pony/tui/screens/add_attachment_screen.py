@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DirectoryTree, Footer, Input, Label
+from textual.widgets import DirectoryTree, Footer, Input, Label, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
@@ -224,7 +224,7 @@ class AddAttachmentScreen(Screen[str | None]):
         self._update_hint()
         self._schedule_clear()
 
-    def _visible_nodes(self, tree: DirectoryTree) -> list[TreeNode[DirEntry]]:
+    def _visible_nodes(self, tree: Tree[DirEntry]) -> list[TreeNode[DirEntry]]:
         """Return all visible tree nodes in depth-first display order."""
         result: list[TreeNode[DirEntry]] = []
 
