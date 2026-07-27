@@ -192,3 +192,155 @@ class InboxMailIndicatorTest(unittest.TestCase):
             format_account_label("a[b]", has_mail=True),
             r"a\[b] ✉",
         )
+
+
+# ---------------------------------------------------------------------------
+# Mounted-widget behaviour
+#
+# The tree's cursor logic needs a real running app: the node objects it
+# compares against only exist once the tree has been built and mounted.
+# ---------------------------------------------------------------------------
+
+
+def _two_account_app(label: str):  # type: ignore[no-untyped-def]
+    """A booted app with two IMAP accounts, so there are two INBOXes."""
+    from tui_helpers import build_pony_app, make_test_account, make_tmp_paths
+
+    paths = make_tmp_paths(label)
+    return build_pony_app(
+        label=f"{label}-app",
+        accounts=(
+            make_test_account(paths, name="first"),
+            make_test_account(paths, name="second"),
+        ),
+    )
+
+
+async def test_search_scope_follows_the_cursor() -> None:
+    """A folder node scopes to that folder; an account node to the account."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-scope")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+
+        # The cursor starts on the first INBOX — a folder node.
+        account_name, folder_ref = panel.get_search_scope()
+        assert folder_ref is not None
+        assert account_name == folder_ref.account_name
+
+        # Move to the account node above it.
+        panel.action_cursor_up()
+        await pilot.pause()
+        account_name, folder_ref = panel.get_search_scope()
+        assert folder_ref is None
+        assert account_name is not None
+
+
+async def test_search_scope_at_the_root_is_unscoped() -> None:
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-scope-root")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        panel.move_cursor(panel.root)
+        await pilot.pause()
+
+        assert panel.get_search_scope() == (None, None)
+
+
+async def test_inbox_jumps_walk_between_accounts_and_stop_at_the_ends() -> None:
+    """``N``/``P`` step across each account's INBOX without wrapping."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-jump")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert len(panel._inbox_nodes) == 2
+
+        panel.move_cursor(panel._inbox_nodes[0])
+        await pilot.pause()
+
+        panel.action_next_inbox()
+        await pilot.pause()
+        assert panel.cursor_node is panel._inbox_nodes[1]
+
+        # Already on the last INBOX — no wrap.
+        panel.action_next_inbox()
+        await pilot.pause()
+        assert panel.cursor_node is panel._inbox_nodes[1]
+
+        panel.action_prev_inbox()
+        await pilot.pause()
+        assert panel.cursor_node is panel._inbox_nodes[0]
+
+        # Already on the first — no wrap backwards either.
+        panel.action_prev_inbox()
+        await pilot.pause()
+        assert panel.cursor_node is panel._inbox_nodes[0]
+
+
+async def test_a_jump_from_a_non_inbox_node_lands_on_an_inbox() -> None:
+    """From a node that is not in the INBOX list, the jump still works."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-jump-elsewhere")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        panel.move_cursor(panel.root)
+        await pilot.pause()
+
+        panel.action_next_inbox()
+        await pilot.pause()
+
+        assert panel.cursor_node in panel._inbox_nodes
+
+
+async def test_selecting_a_folder_node_posts_the_selection() -> None:
+    """Activating a folder row is what loads it into the message list."""
+    from pony.domain import FolderRef as _FolderRef
+    from pony.tui.screens.main_screen import MainScreen
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-select")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+
+        target = _FolderRef(account_name="second", folder_name="INBOX")
+        panel.select_folder_ref(target)
+        await pilot.pause()
+
+        assert screen._current_folder_ref == target
+
+
+async def test_selecting_an_unknown_folder_still_posts_it() -> None:
+    """A ref with no node — e.g. a folder created this session — still loads."""
+    from pony.domain import FolderRef as _FolderRef
+    from pony.tui.screens.main_screen import MainScreen
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, *_ = _two_account_app("fp-select-unknown")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+
+        target = _FolderRef(account_name="first", folder_name="NotInTheTree")
+        panel.select_folder_ref(target)
+        await pilot.pause()
+
+        assert screen._current_folder_ref == target

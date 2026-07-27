@@ -2174,3 +2174,165 @@ async def test_message_view_out_of_range_attachment_index_is_none() -> None:
         panel = app.screen.query_one(MessageViewPanel)
 
         assert panel.save_attachment(99, dest) is None
+
+
+# ===========================================================================
+# ContactBrowserScreen — empty-state guards and refresh callbacks
+# ===========================================================================
+
+
+def _contacts_app(label: str, contacts: list[object] | None = None):  # type: ignore[no-untyped-def]
+    """A ContactsApp over an index seeded with *contacts*."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    paths = make_tmp_paths(label)
+    index = make_index(paths)
+    for contact in contacts or []:
+        assert isinstance(contact, Contact)
+        index.upsert_contact(contact=contact)
+    return ContactsApp(contacts=index), index
+
+
+def _contact(first: str, emails: tuple[str, ...]) -> object:
+    from pony.domain import Contact
+
+    return Contact(id=None, first_name=first, last_name="Tester", emails=emails)
+
+
+async def test_contact_actions_on_an_empty_list_are_noops() -> None:
+    """Every action keyed off the cursor must tolerate having no rows."""
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    app, _index = _contacts_app("contacts-empty-actions")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ContactBrowserScreen)
+
+        assert screen._selected_contact() is None
+        screen.action_edit()
+        screen.action_delete_marked()
+        screen._toggle_mark_current()
+        await pilot.pause()
+
+        # Still on the browser, nothing raised.
+        assert isinstance(app.screen, ContactBrowserScreen)
+
+
+async def test_a_contact_with_many_addresses_shows_an_overflow_count() -> None:
+    """Only the first three addresses fit; the rest become ``(+N)``."""
+    from textual.widgets import DataTable
+
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    app, _index = _contacts_app(
+        "contacts-overflow",
+        [
+            _contact(
+                "Many",
+                (
+                    "one@example.test",
+                    "two@example.test",
+                    "three@example.test",
+                    "four@example.test",
+                    "five@example.test",
+                ),
+            )
+        ],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ContactBrowserScreen)
+        table = screen.query_one("#contact-table", DataTable)
+
+        rendered = " ".join(
+            str(cell)
+            for cell in table.get_row_at(0)  # pyright: ignore[reportUnknownArgumentType]
+        )
+
+        assert "one@example.test" in rendered
+        assert "(+2)" in rendered
+
+
+async def test_declining_the_delete_confirmation_keeps_the_contacts() -> None:
+    """Bulk delete is destructive, so a declined prompt must change nothing."""
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    app, index = _contacts_app(
+        "contacts-delete-declined",
+        [_contact("Keep", ("keep@example.test",))],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ContactBrowserScreen)
+
+        screen._toggle_mark_current()
+        await pilot.pause()
+        assert screen._marked
+
+        captured: list[object] = []
+        app.push_screen = MagicMock(
+            side_effect=lambda _s, callback=None, **_k: captured.append(callback)
+        )
+        screen.action_delete_marked()
+        on_confirm = captured[0]
+        assert callable(on_confirm)
+
+        on_confirm(None)
+        on_confirm(False)
+        await pilot.pause()
+
+    assert len(index.search_contacts(prefix="keep", limit=10)) == 1
+
+
+async def test_saving_a_new_or_edited_contact_refreshes_the_table() -> None:
+    """The editor's callback is what re-reads the index after a save."""
+    from textual.widgets import DataTable
+
+    from pony.domain import Contact
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    app, index = _contacts_app(
+        "contacts-refresh",
+        [_contact("Original", ("original@example.test",))],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ContactBrowserScreen)
+        table = screen.query_one("#contact-table", DataTable)
+        assert table.row_count == 1
+
+        captured: list[object] = []
+        app.push_screen = MagicMock(
+            side_effect=lambda _s, callback=None, **_k: captured.append(callback)
+        )
+
+        # New-contact flow: add behind the screen's back, then fire the
+        # callback the editor would have called on save.
+        screen.action_new_contact()
+        index.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name="Added",
+                last_name="Later",
+                emails=("added@example.test",),
+            )
+        )
+        on_saved = captured[0]
+        assert callable(on_saved)
+        on_saved(None)  # cancelled — no refresh
+        await pilot.pause()
+        assert table.row_count == 1
+
+        on_saved(_contact("Added", ("added@example.test",)))
+        await pilot.pause()
+        assert table.row_count == 2
