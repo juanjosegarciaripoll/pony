@@ -36,7 +36,11 @@ class MessageListPanel(DataTable[Text | str]):
     the widget's ``text-style: dim`` from CSS — the cheap path, since
     read messages dominate.  Unseen rows allocate one ``Text`` styled
     ``not dim`` so they render at full brightness.  Posts
-    ``MessageListPanel.MessageSelected`` when a row is activated.
+    ``MessageListPanel.MessageSelected`` when a row is *activated*
+    (Enter or click) — never when the cursor merely moves over it.
+    Arrow keys and ``n``/``p`` navigate the list without opening
+    anything; once a message is open, ``n``/``p`` in the reader step
+    through messages and keep it open.
 
     The panel holds ``FolderMessageSummary`` rows — a narrow
     projection of ``IndexedMessage`` that skips the datetime and
@@ -203,10 +207,14 @@ class MessageListPanel(DataTable[Text | str]):
         return self._find_summary(str(row_key.value))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Swallow the cursor-move event without opening the message.
+
+        Moving the row cursor is navigation, not activation: it must not
+        open the reader, must not steal focus from this panel, and must
+        not mark the message seen.  Opening is Enter only — see
+        :meth:`on_data_table_row_selected`.
+        """
         event.stop()
-        summary = self._summary_for_row_key(event.row_key)
-        if summary is not None:
-            self.post_message(self.MessageSelected(summary=summary))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()

@@ -17,6 +17,7 @@ from tui_helpers import build_pony_app, seed_message
 
 from pony.domain import FolderRef, MessageFlag
 from pony.tui.widgets.message_list import MessageListPanel, _format_date
+from pony.tui.widgets.message_view import MessageViewPanel
 
 _INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 
@@ -45,23 +46,28 @@ def _panel(app: object) -> MessageListPanel:
     return app.screen.query_one(MessageListPanel)  # type: ignore[attr-defined,no-any-return]
 
 
-async def _open_inbox(pilot: object) -> None:
-    await pilot.pause()  # type: ignore[attr-defined]
-    await pilot.press("enter")  # type: ignore[attr-defined]
+async def _boot(pilot: object) -> None:
+    """Settle the app.
+
+    The INBOX is already loaded and focused at startup, and the reader
+    stays closed until the user presses Enter — so list-behaviour tests
+    need no opening step at all.
+    """
     await pilot.pause()  # type: ignore[attr-defined]
 
 
 async def _press(pilot: object, panel: MessageListPanel, key: str) -> None:
-    """Send *key* to *panel*.
+    """Send *key* to *panel*, asserting the panel still owns the focus.
 
-    Highlighting a row auto-previews the message, which hands focus to
-    the reader pane — so focus has to be re-claimed immediately before
-    every key, or the next press lands on the wrong widget.
+    Moving the row cursor must never hand focus to the reader — see
+    ``test_navigating_the_list_does_not_open_the_reader``.  The assert
+    keeps that guarantee from silently regressing here.
     """
     panel.focus()
     await pilot.pause()  # type: ignore[attr-defined]
     await pilot.press(key)  # type: ignore[attr-defined]
     await pilot.pause()  # type: ignore[attr-defined]
+    assert panel.has_focus
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +80,7 @@ async def test_first_and_last_jump_to_the_ends_of_the_list() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-ends", count=4)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         await _press(pilot, panel, ">")
@@ -111,7 +117,7 @@ async def test_next_unread_stops_at_the_end_of_the_list() -> None:
     )
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         assert panel.move_cursor_to_next_unread() is None
@@ -127,7 +133,7 @@ async def test_mark_toggles_on_and_off_for_the_same_row() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-toggle", count=3)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         # ``m`` marks the cursor row and then advances.
@@ -147,7 +153,7 @@ async def test_mark_up_toggles_then_moves_the_cursor_up() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-up", count=3)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
         panel.move_cursor(row=2)
         await pilot.pause()
@@ -176,7 +182,7 @@ async def test_clear_marks_restores_the_status_icons() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-clear-marks", count=2)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         await _press(pilot, panel, "m")
@@ -197,7 +203,7 @@ async def test_summaries_to_act_on_prefers_the_marks() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-act-on", count=3)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         # Cursor row only.
@@ -218,7 +224,7 @@ async def test_q_leaves_search_mode_and_restores_the_border_title() -> None:
     app, _cfg, _paths, index, _mirrors = _app_with_rows("mlist-search-exit", count=2)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
         hits = list(index.list_folder_messages(folder=_INBOX))
         panel.load_search_results(hits, "subject")
@@ -235,7 +241,7 @@ async def test_q_outside_search_mode_is_left_to_the_app() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-q-passthrough", count=1)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
         panel.focus()
         await pilot.pause()
@@ -248,7 +254,7 @@ async def test_search_with_no_hits_says_so_in_the_border_title() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-search-empty", count=1)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
         panel.load_search_results([], "nothing")
         await pilot.pause()
@@ -266,7 +272,7 @@ async def test_resizing_rerenders_every_row_at_the_new_width() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-resize", count=3)
 
     async with app.run_test(size=(120, 30)) as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
         await pilot.pause()
         wide = panel._from_width_cached  # noqa: SLF001
@@ -300,7 +306,7 @@ async def test_lookup_of_an_unknown_row_key_returns_none() -> None:
     app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-lookup", count=1)
 
     async with app.run_test() as pilot:
-        await _open_inbox(pilot)
+        await _boot(pilot)
         panel = _panel(app)
 
         assert panel._find_summary("999999") is None  # noqa: SLF001
@@ -356,3 +362,134 @@ def test_marked_rows_render_a_star_icon() -> None:
     assert _icon_column(_summary(frozenset({MessageFlag.ANSWERED}))) == "↩"
     assert _icon_column(_summary(frozenset(), has_attachments=True)) == "+"
     assert _icon_column(_summary(frozenset())) == " "
+
+
+# ---------------------------------------------------------------------------
+# Open on command
+#
+# Moving the row cursor is navigation, not activation.  Before this was
+# fixed the reader opened on every cursor move: it was already open at
+# startup with the first message marked read, it stole focus from the
+# list, and the arrow keys then scrolled the reader instead of moving
+# the cursor — so there was no way to browse a folder without opening
+# (and implicitly reading) every message passed over.
+# ---------------------------------------------------------------------------
+
+
+async def test_the_reader_is_closed_until_a_message_is_opened() -> None:
+    """A freshly-booted app shows the list only, with focus on it."""
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("open-boot", count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        panel = _panel(app)
+
+        assert view.display is False
+        assert panel.has_focus
+
+    # Nothing was marked read just by opening the folder.
+    assert all(
+        MessageFlag.SEEN not in row.local_flags
+        for row in index.list_folder_messages(folder=_INBOX)
+    )
+
+
+async def test_navigating_the_list_does_not_open_the_reader() -> None:
+    """Arrow keys and n/p move the cursor and nothing else."""
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("open-nav", count=4)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        panel = _panel(app)
+
+        for key, expected_row in (("down", 1), ("down", 2), ("n", 3), ("p", 2)):
+            await _press(pilot, panel, key)
+            assert panel.cursor_row == expected_row
+            assert view.display is False, f"{key!r} opened the reader"
+            assert panel.has_focus, f"{key!r} stole focus from the list"
+
+    # Passing over a message must not mark it read.
+    assert all(
+        MessageFlag.SEEN not in row.local_flags
+        for row in index.list_folder_messages(folder=_INBOX)
+    )
+
+
+async def test_enter_opens_the_message_and_focuses_the_reader() -> None:
+    """Enter is the only way to open — and it marks that message read."""
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("open-enter", count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        panel = _panel(app)
+
+        await _press(pilot, panel, "down")
+        opened = panel.get_selected_summary()
+        assert opened is not None
+
+        panel.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert view.display is True
+        assert view.has_focus
+
+    seen = {
+        row.subject
+        for row in index.list_folder_messages(folder=_INBOX)
+        if MessageFlag.SEEN in row.local_flags
+    }
+    assert seen == {opened.subject}
+
+
+async def test_n_and_p_step_through_messages_while_the_reader_stays_open() -> None:
+    """With the reader open, n/p advance it without closing it."""
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("open-reader-nav", count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        panel = _panel(app)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert view.display is True
+        assert panel.cursor_row == 0
+
+        await pilot.press("n")
+        await pilot.pause()
+        assert panel.cursor_row == 1
+        assert view.display is True
+        assert view.has_focus
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert panel.cursor_row == 0
+        assert view.display is True
+
+
+async def test_closing_the_reader_returns_focus_to_the_list() -> None:
+    """After ``q`` the list is navigable again, still without opening."""
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("open-close", count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        panel = _panel(app)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert view.display is True
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert view.display is False
+        assert panel.has_focus
+
+        await _press(pilot, panel, "down")
+        assert panel.cursor_row == 1
+        assert view.display is False

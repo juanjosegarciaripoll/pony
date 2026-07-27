@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `wkhtmltopdf`, WeasyPrint, or LibreOffice — so no new dependency is bundled.
   A guidance notification is shown when none is found.
 
+### Changed
+
+- **Messages now open on command, not on cursor movement.** Moving the row
+  cursor in the message list — with the arrow keys or `n`/`p` — used to open
+  the reader, take focus, and mark the message read. That made it impossible to
+  browse a folder without reading every message you passed over, and because
+  the reader took focus, the arrow keys then scrolled it instead of moving the
+  cursor. The reader now starts closed and opens only on `Enter`; `Esc`/`q`
+  closes it and returns focus to the list. With a message open, `n`/`p` still
+  step through messages and keep the reader open.
+
 ## [0.8.0] - 2026-06-24
 ### Fixed
 

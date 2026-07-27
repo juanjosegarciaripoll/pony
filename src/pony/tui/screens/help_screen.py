@@ -34,7 +34,7 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
         "Navigation",
         (
             ("g", "Get mail (sync)"),
-            ("n / p", "Next / previous folder"),
+            ("n / p", "Next / previous row"),
             ("N / P", "Next / previous INBOX"),
             ("/", "Search current folder"),
             ("Q", "Quit"),
@@ -64,6 +64,8 @@ _RIGHT_SECTIONS: tuple[_Section, ...] = (
     _Section(
         "Messages",
         (
+            ("Enter", "Open message"),
+            ("Esc / q", "Close message"),
             ("u", "Mark unread"),
             ("C", "Mark all read"),
             ("!", "Flag / unflag"),
