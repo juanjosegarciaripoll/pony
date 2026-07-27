@@ -26,7 +26,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline after the 0.7.x series is in this range; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **91.5 %**; do not regress it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -40,13 +40,29 @@ Key test infrastructure:
 | TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
 | Compose screen | `tests/test_save_message_screen.py`, `tests/test_compose_utils.py` |
 | Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
+| Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
+| Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
 
-Modules currently below 85 % that need the most attention (in priority order):
-1. `tui/screens/` — most screens are 0 %; add smoke tests via `Pilot`
-2. `cli.py` — many subcommands untested; use `main([...])` pattern
-3. `imap_client.py` — use `FakeImapSession` or mock at the socket level
-4. `mcp_server.py` — basic tool-call round-trips
-5. `credentials.py` — env-var, command, and encrypted paths
+Every module now clears the gate, so rank by **absolute uncovered
+statements+branches**, not percentage. Regenerate the ranking rather than
+trusting this list — it is a snapshot:
+
+```bash
+uv run python -m pytest --cov-report=json:cov.json   # then sort files by missing_lines + missing_branches
+```
+
+Largest remaining gaps (in priority order):
+1. `cli.py` (91 %, ~192) — `_run_reset_account`, `_build_ops_detail_table`, and the `run_message_*` renderers; use the `main([...])` pattern
+2. `tui/screens/main_screen.py` (86 %, ~167) — spread thin across actions; drive them with `build_pony_app` + `Pilot`
+3. `sync.py` (91 %, ~100) — conflict and mass-delete edges; extend `FakeImapSession`
+4. `tui/screens/compose_screen.py` (87 %, ~64) — `action_edit_external` needs `$EDITOR` stubbed
+5. `storage.py` (88 %, ~63) — mbox/maildir error paths, via the conformance suite
+
+**Structurally unreachable — do not chase.** `credentials.py` sits at 83.5 %
+and cannot rise on Linux CI: every uncovered line is inside `_dpapi_encrypt` /
+`_dpapi_decrypt` (`sys.platform == "win32"`) or the macOS `ioreg` branch. Some
+paths elsewhere are environment-gated in the same way (`action_print_pdf`
+needs an external converter, `action_edit_external` spawns an editor).
 
 ## Local mutations
 
