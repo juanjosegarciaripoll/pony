@@ -36,31 +36,34 @@ def _make_tree(label: str) -> Path:
     return base
 
 
-def _make_home_tree(label: str) -> Path:
-    """Create a temp directory *inside* the home directory.
+def _make_home_tree(label: str) -> tuple[Path, Path]:
+    """Create a synthetic home and a nested temp directory.
 
     A screen started here exercises the branch that roots the tree at
-    ``Path.home()`` so parent folders stay navigable.
+    its configured home so parent folders stay navigable, without writing to
+    the user's real home directory.
     """
-    home_base = Path.home() / ".pony-test-attach"
-    home_base.mkdir(exist_ok=True)
-    base = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=home_base))
+    home = Path(tempfile.mkdtemp(prefix="pony-attach-home-"))
+    base = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=home))
     (base / "file.txt").write_text("x", encoding="utf-8")
-    return base
+    return home, base
 
 
 class _Host(App[str | None]):
     """Minimal host app that immediately pushes the picker screen."""
 
-    def __init__(self, start_dir: Path) -> None:
+    def __init__(self, start_dir: Path, *, home_dir: Path | None = None) -> None:
         super().__init__()
         self._start_dir = start_dir
+        self._home_dir = home_dir
 
     def compose(self) -> ComposeResult:
         return iter([])
 
     def on_mount(self) -> None:
-        self.push_screen(AddAttachmentScreen(self._start_dir), self.exit)
+        self.push_screen(
+            AddAttachmentScreen(self._start_dir, home_dir=self._home_dir), self.exit
+        )
 
 
 def _screen(pilot_app: App[str | None]) -> AddAttachmentScreen:
@@ -89,9 +92,9 @@ class ConstructionTest(unittest.TestCase):
         self.assertEqual(screen._initial_dir, base.resolve())
 
     def test_inside_home_roots_at_home(self) -> None:
-        base = _make_home_tree("ctor-in")
-        screen = AddAttachmentScreen(base)
-        self.assertEqual(screen._root, Path.home())
+        home, base = _make_home_tree("ctor-in")
+        screen = AddAttachmentScreen(base, home_dir=home)
+        self.assertEqual(screen._root, home.resolve())
         self.assertEqual(screen._initial_dir, base.resolve())
 
     def test_session_dir_used_when_no_start_dir(self) -> None:
@@ -400,24 +403,18 @@ async def test_expanded_directory_is_walked_for_typeahead() -> None:
 async def test_auto_expand_to_nested_start_dir() -> None:
     """Starting in a nested home directory auto-expands the tree to it."""
     aas_module._session_dir = None
-    base = _make_home_tree("auto-expand")
-    try:
-        async with _Host(base).run_test() as pilot:
+    home, base = _make_home_tree("auto-expand")
+    async with _Host(base, home_dir=home).run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(pilot.app)
+        assert screen._root == home.resolve()
+        # Pump refreshes so the recursive _expand_to_dir steps can run
+        # as the async directory loader populates each level.
+        for _ in range(40):
             await pilot.pause()
-            screen = _screen(pilot.app)
-            assert screen._root == Path.home()
-            # Pump refreshes so the recursive _expand_to_dir steps can run
-            # as the async directory loader populates each level.
-            for _ in range(40):
-                await pilot.pause()
-            tree = screen.query_one("#file-tree", DirectoryTree)
-            # The screen should not have crashed and the tree is mounted.
-            assert tree.is_mounted
-    finally:
-        # Clean up the home-side temp tree we created.
-        import shutil
-
-        shutil.rmtree(base, ignore_errors=True)
+        tree = screen.query_one("#file-tree", DirectoryTree)
+        # The screen should not have crashed and the tree is mounted.
+        assert tree.is_mounted
 
 
 async def test_expand_to_dir_outside_root_is_noop() -> None:

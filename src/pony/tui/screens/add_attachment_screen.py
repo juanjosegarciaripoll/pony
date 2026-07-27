@@ -89,10 +89,16 @@ class AddAttachmentScreen(Screen[str | None]):
         Binding("ctrl+l", "focus_path", "Edit path", show=False),
     ]
 
-    def __init__(self, start_dir: Path | None = None, **kwargs: object) -> None:
+    def __init__(
+        self,
+        start_dir: Path | None = None,
+        *,
+        home_dir: Path | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         initial = (start_dir or _session_dir or Path.cwd()).resolve()
-        home = Path.home()
+        home = (home_dir or Path.home()).resolve()
         # Root at home so parent directories are navigable, unless the initial
         # directory is outside home (e.g. a separate drive on Windows).
         try:
