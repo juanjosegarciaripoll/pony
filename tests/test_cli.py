@@ -2522,3 +2522,248 @@ class MessageOutputDetailTests(unittest.TestCase):
         self.assertIn("multipart/related", output)
         self.assertIn("cid=<logo@example.com>", output)
         self.assertIn("disposition=inline", output)
+
+
+class DoctorReportRenderingTests(unittest.TestCase):
+    """``render_doctor_report`` summary line across the status combinations."""
+
+    def _status(self, *checks: object) -> object:
+        from pony.paths import AppPaths
+        from pony.services import ServiceStatus
+
+        return ServiceStatus(paths=AppPaths.default(), checks=tuple(checks))  # type: ignore[arg-type]
+
+    def test_a_clean_run_reports_all_checks_passed(self) -> None:
+        from pony.cli import render_doctor_report
+        from pony.services import CheckStatus, DoctorCheck
+
+        report = render_doctor_report(
+            self._status(  # type: ignore[arg-type]
+                DoctorCheck(name="Config file", status=CheckStatus.OK),
+                DoctorCheck(name="Index DB", status=CheckStatus.OK),
+            )
+        )
+
+        self.assertIn("All 2 checks passed.", report)
+
+    def test_warnings_and_errors_are_counted_separately(self) -> None:
+        from pony.cli import render_doctor_report
+        from pony.services import CheckStatus, DoctorCheck
+
+        report = render_doctor_report(
+            self._status(  # type: ignore[arg-type]
+                DoctorCheck(name="Config file", status=CheckStatus.OK),
+                DoctorCheck(name="Mirror", status=CheckStatus.WARN, detail="missing"),
+                DoctorCheck(name="Index DB", status=CheckStatus.ERROR, detail="broken"),
+            )
+        )
+
+        self.assertIn("1 OK, 1 error, 1 warning", report)
+        self.assertIn("[WARN ] Mirror: missing", report)
+
+
+class ResetPromptTests(unittest.TestCase):
+    """The unscoped ``pony reset`` deletes everything, so it must confirm."""
+
+    def test_declining_the_prompt_deletes_nothing(self) -> None:
+        from unittest.mock import patch
+
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Keep me", body="body")
+            index_file = AppPaths.default().index_db_file
+            self.assertTrue(index_file.exists())
+
+            with patch("builtins.input", return_value="n"):
+                output = run_cli("--config", str(config_path), "reset")
+
+            self.assertIn("Reset cancelled", output)
+            self.assertTrue(index_file.exists())
+
+    def test_confirming_deletes_the_index_and_the_mirror_tree(self) -> None:
+        from pony.config import load_config
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Delete me", body="body")
+            index_file = AppPaths.default().index_db_file
+            mirror_path = next(iter(load_config(config_path).accounts)).mirror.path
+            self.assertTrue(index_file.exists())
+            self.assertTrue(mirror_path.is_dir())
+
+            output = run_cli("--config", str(config_path), "reset", "--yes")
+
+            self.assertIn("Reset complete", output)
+            self.assertFalse(index_file.exists())
+            self.assertFalse(mirror_path.exists())
+
+
+class ContactsShowDetailTests(unittest.TestCase):
+    def test_every_optional_field_is_printed_when_present(self) -> None:
+        """A fully-populated contact shows affix, aliases, org, notes, last seen."""
+        from datetime import UTC, datetime
+
+        from pony.domain import Contact
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            index.upsert_contact(
+                contact=Contact(
+                    id=None,
+                    first_name="Ada",
+                    last_name="Lovelace",
+                    emails=("ada@example.com",),
+                    affix=("Countess",),
+                    aliases=("AAL",),
+                    organization="Analytical Engines",
+                    notes="Prefers letters.",
+                    message_count=3,
+                    last_seen=datetime(2026, 4, 17, 9, 30, tzinfo=UTC),
+                )
+            )
+            output = run_cli(
+                "--config", str(config_path), "contacts", "show", "ada@example.com"
+            )
+
+        self.assertIn("Name:         Ada Lovelace", output)
+        self.assertIn("Countess", output)
+        self.assertIn("AAL", output)
+        self.assertIn("Analytical Engines", output)
+        self.assertIn("Prefers letters.", output)
+        self.assertIn("Last seen:    2026-04-17 09:30", output)
+
+
+class RescanReconciliationTests(unittest.TestCase):
+    """``pony rescan`` reconciles the index against what is on disk."""
+
+    def test_files_added_and_removed_behind_the_index_are_reported(self) -> None:
+        """A file dropped into the mirror is indexed; a deleted one is pruned."""
+        from email.message import EmailMessage
+
+        from pony.config import load_config
+        from pony.domain import FolderRef
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            doomed = _seed_one_message(
+                config_path, subject="Removed later", body="gone"
+            )
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            mirror = MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            )
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+
+            # Drop a message straight into the mirror — no index row.
+            extra = EmailMessage()
+            extra["From"] = "sender@example.com"
+            extra["To"] = account.email_address
+            extra["Subject"] = "Added behind the index"
+            extra["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+            extra["Message-ID"] = f"<added-{uuid4().hex}@example.com>"
+            extra.set_content("new arrival")
+            mirror.store_message(folder=folder, raw_message=extra.as_bytes())
+
+            # Delete the seeded message's file, leaving its row orphaned.
+            stored = index.get_message(
+                message_ref=next(
+                    m.message_ref
+                    for m in index.list_folder_messages(folder=folder)
+                    if m.message_id == doomed.rfc5322_id
+                )
+            )
+            assert stored is not None
+            mirror.delete_message(folder=folder, storage_key=stored.storage_key)
+
+            output = run_cli("--config", str(config_path), "rescan")
+
+        self.assertIn("Rescan complete:", output)
+        self.assertIn("1 added", output)
+        self.assertIn("1 removed", output)
+
+
+class SchemaResetWithoutContactsTests(unittest.TestCase):
+    """The automatic schema reset when there is nothing worth backing up."""
+
+    def test_an_empty_contacts_table_skips_the_bbdb_export(self) -> None:
+        """With no contacts there is no backup file and no restore step."""
+        import sqlite3
+
+        from pony.config import load_config
+        from pony.paths import AppPaths
+
+        with isolated_app_env() as env_root, temporary_config() as config_path:
+            account = next(iter(load_config(config_path).accounts))
+            app_paths = AppPaths.default()
+            app_paths.ensure_runtime_dirs()
+            account.mirror.path.mkdir(parents=True, exist_ok=True)
+
+            db = app_paths.index_db_file
+            db.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(db)
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE messages (account_name TEXT);
+                    CREATE TABLE contacts (
+                        id INTEGER PRIMARY KEY,
+                        first_name TEXT NOT NULL DEFAULT '',
+                        last_name TEXT NOT NULL DEFAULT '',
+                        affix TEXT NOT NULL DEFAULT '[]',
+                        organization TEXT NOT NULL DEFAULT '',
+                        notes TEXT NOT NULL DEFAULT '',
+                        message_count INTEGER NOT NULL DEFAULT 0,
+                        last_seen TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE contact_emails (
+                        contact_id INTEGER NOT NULL,
+                        email_address TEXT NOT NULL,
+                        PRIMARY KEY (email_address)
+                    );
+                    CREATE TABLE contact_aliases (
+                        contact_id INTEGER NOT NULL,
+                        alias TEXT NOT NULL,
+                        PRIMARY KEY (contact_id, alias)
+                    );
+                    PRAGMA user_version = 0;
+                    """,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("yes\n")
+            try:
+                captured, rc = run_cli_capture(
+                    "--config", str(config_path), "search", "anything"
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+            self.assertEqual(rc, 0)
+            self.assertIn("No contacts to export.", captured)
+            self.assertFalse(db.exists())
+            self.assertEqual(
+                list((env_root / "data").glob("contacts-backup-*.bbdb")), []
+            )
+            # The pre-prompt explanation always offers the import; the
+            # post-reset steps must not, because no backup was written.
+            next_steps = captured.split("Reset complete. Next steps:")[1]
+            self.assertIn("pony sync", next_steps)
+            self.assertNotIn("contacts import", next_steps)
