@@ -14,12 +14,15 @@ from __future__ import annotations
 
 from email.message import EmailMessage
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 from corpus import html_only, multipart_mixed_attachment, plain_text
 from tui_helpers import (
+    TestDirectoryTree,
+    TestDirOnlyTree,
+    TestPonyApp,
     build_compose_app,
     build_pony_app,
     make_index,
@@ -30,6 +33,8 @@ from tui_helpers import (
     seed_message,
 )
 
+import pony.tui.screens.add_attachment_screen as add_attachment_module
+import pony.tui.screens.save_folder_picker_screen as save_folder_module
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,
@@ -43,13 +48,16 @@ from pony.sync import (
     SyncPlan,
     SyncResult,
 )
-from pony.tui.app import PonyApp
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.folder_panel import FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
+
+add_attachment_module.DirectoryTree = TestDirectoryTree  # type: ignore[attr-defined]
+save_folder_module._DirOnlyTree = TestDirOnlyTree  # type: ignore[attr-defined]
+PonyApp = TestPonyApp
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -438,6 +446,7 @@ async def test_archive_moves_to_configured_folder() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
 
     async with app.run_test() as pilot:
@@ -493,6 +502,7 @@ async def test_archive_advances_view_to_remaining_message() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
 
     async with app.run_test() as pilot:
@@ -605,6 +615,7 @@ async def test_folder_tree_next_inbox() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
 
     async with app.run_test() as pilot:
@@ -650,19 +661,22 @@ async def test_account_mail_suffix_keeps_account_search_scope() -> None:
         assert fp.get_search_scope() == ("acct", None)
 
 
-async def test_mcp_server_error_no_config_path() -> None:
+async def test_mcp_server_error_no_config_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """PonyApp starts cleanly when no config_path is provided.
 
     Covers the try/except in _start_mcp_tcp_server: passing config_path=None
     causes start_tcp_mcp_server to raise ConfigError or OSError, which is
     silently swallowed so the app continues to run normally.
     """
+    start_server = AsyncMock(side_effect=OSError("no test config"))
+    monkeypatch.setattr("pony.mcp_server.start_tcp_mcp_server", start_server)
     app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mcp-no-config")
-    # build_pony_app does not pass config_path, so _config_path is None.
+    # Exercise the no-path branch only after MCP startup has been isolated.
+    app._config_path = None  # noqa: SLF001
     assert app._config_path is None  # noqa: SLF001
     async with app.run_test() as pilot:
         await pilot.pause()
-    # If we reach here without exception the test passes.
+    start_server.assert_awaited_once()
 
 
 async def test_q_key_quits_app() -> None:
@@ -1301,6 +1315,7 @@ async def test_browse_contacts_opens_contact_browser() -> None:
         mirrors=dict(mirrors),
         credentials=credentials,
         contacts=index,  # Pass index as contacts so B works
+        config_path=paths.config_file,
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -1655,6 +1670,7 @@ async def test_folder_panel_with_nested_folders() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1814,6 +1830,7 @@ async def test_harvest_contacts_with_store() -> None:
         mirrors=dict(mirrors),
         credentials=credentials,
         contacts=index,  # Pass contacts so H actually harvests
+        config_path=paths.config_file,
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -1843,6 +1860,7 @@ async def test_compose_new_no_smtp_notifies() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -1949,6 +1967,7 @@ async def test_move_cross_account_direct() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
 
     folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
@@ -1997,6 +2016,7 @@ async def test_compose_from_draft_opens_compose() -> None:
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
 
     async with app.run_test() as pilot:
@@ -2065,14 +2085,18 @@ async def test_open_attachment_submits_index(
         # Open attachments
         await pilot.press("O")
         await pilot.pause()
+        from textual.widgets import Input
+
         from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
 
-        assert any(isinstance(s, AttachmentPickerScreen) for s in app.screen_stack)
-        # Type "1" and submit
-        await pilot.press("1")
-        await pilot.press("enter")
-        await pilot.pause()
-        await pilot.pause()
+        picker = next(
+            screen
+            for screen in app.screen_stack
+            if isinstance(screen, AttachmentPickerScreen)
+        )
+        field = picker.query_one(Input)
+        picker.on_input_submitted(Input.Submitted(field, "1"))
+        await pilot.pause(0.1)
     # _launch_file should have been called for attachment 1
     assert launch_mock.call_count >= 1
 

@@ -11,10 +11,19 @@ atexit cleanup applies — no per-test teardown required.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+import dataclasses
+from collections.abc import AsyncIterator, Iterable, Sequence
+from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
+from textual import work
+from textual.pilot import Pilot
+from textual.widgets import DirectoryTree, Tree
+from textual.widgets._directory_tree import DirEntry
+from textual.widgets.tree import TreeNode
 
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
@@ -32,6 +41,82 @@ from pony.paths import AppPaths
 from pony.protocols import CredentialsProvider, IndexRepository, MirrorRepository
 from pony.storage import MaildirMirrorRepository
 from pony.tui.app import ComposeApp, PonyApp
+
+
+class _ExecutorCleanupMixin:
+    """Release Textual's executor before pytest closes the event loop."""
+
+    __test__ = False
+
+    @asynccontextmanager
+    async def run_test(self, **kwargs: object) -> AsyncIterator[Pilot[None]]:
+        async with super().run_test(**kwargs) as pilot:  # type: ignore[misc]
+            yield pilot
+        loop = asyncio.get_running_loop()
+        executor = loop._default_executor  # type: ignore[attr-defined]
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            loop._default_executor = None  # type: ignore[attr-defined]
+
+
+class TestPonyApp(_ExecutorCleanupMixin, PonyApp):
+    """PonyApp test harness with deterministic executor cleanup."""
+
+    __test__ = False
+
+
+class TestComposeApp(_ExecutorCleanupMixin, ComposeApp):
+    """ComposeApp test harness with deterministic executor cleanup."""
+
+    __test__ = False
+
+
+class TestDirectoryTree(DirectoryTree):
+    """DirectoryTree variant without thread dispatch for fixture filesystems."""
+
+    __test__ = False
+
+    @work(exit_on_error=False)
+    async def _load_directory(self, node: TreeNode[DirEntry]) -> list[Path]:
+        assert node.data is not None
+        path = node.data.path.expanduser().resolve()
+        try:
+            entries = list(path.iterdir())
+        except OSError:
+            return []
+        return sorted(
+            entries,
+            key=lambda entry: (not self._safe_is_dir(entry), entry.name.lower()),
+        )
+
+    async def _on_tree_node_expanded(self, event: Tree.NodeExpanded[DirEntry]) -> None:
+        event.stop()
+        entry = event.node.data
+        if entry is None:
+            return
+        if self._safe_is_dir(entry.path):
+            await self._add_to_load_queue(event.node)
+        else:
+            self.post_message(self.FileSelected(event.node, entry.path))
+
+    async def _on_tree_node_selected(self, event: Tree.NodeSelected[DirEntry]) -> None:
+        event.stop()
+        entry = event.node.data
+        if entry is None:
+            return
+        if self._safe_is_dir(entry.path):
+            self.post_message(self.DirectorySelected(event.node, entry.path))
+        else:
+            self.post_message(self.FileSelected(event.node, entry.path))
+
+
+class TestDirOnlyTree(TestDirectoryTree):
+    """Non-threaded directory-only tree for save-folder picker tests."""
+
+    __test__ = False
+
+    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
+        return [path for path in paths if path.is_dir()]
 
 
 def make_tmp_paths(label: str) -> AppPaths:
@@ -171,7 +256,10 @@ def build_pony_app(
     paths = make_tmp_paths(label)
     if accounts is None:
         accounts = (make_test_account(paths),)
-    config = make_test_config(accounts=accounts)
+    config = dataclasses.replace(
+        make_test_config(accounts=accounts),
+        downloads_path=paths.data_dir / "downloads",
+    )
     index = make_index(paths)
     mirrors = make_mirrors(config)
     credentials = make_credentials(config)
@@ -182,11 +270,12 @@ def build_pony_app(
             folder=folder,
             raw=raw,
         )
-    app = PonyApp(
+    app = TestPonyApp(
         config=config,
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        config_path=paths.config_file,
     )
     return app, config, paths, index, mirrors
 
@@ -212,10 +301,13 @@ def build_compose_app(
     paths = make_tmp_paths(label)
     if account is None:
         account = make_test_account(paths)
-    config = make_test_config(accounts=(account,))
+    config = dataclasses.replace(
+        make_test_config(accounts=(account,)),
+        downloads_path=paths.data_dir / "downloads",
+    )
     index = make_index(paths)
     mirrors = make_mirrors(config)
-    app = ComposeApp(
+    app = TestComposeApp(
         config=config,
         account=account,
         index=index,

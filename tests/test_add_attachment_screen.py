@@ -10,15 +10,22 @@ coroutines run directly without an explicit decorator.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from textual.app import App, ComposeResult
+from textual.pilot import Pilot
 from textual.widgets import DirectoryTree, Input
+from tui_helpers import TestDirectoryTree
 
 import pony.tui.screens.add_attachment_screen as aas_module
 from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+
+aas_module.DirectoryTree = TestDirectoryTree  # type: ignore[attr-defined]
 
 
 def _make_tree(label: str) -> Path:
@@ -64,6 +71,17 @@ class _Host(App[str | None]):
         self.push_screen(
             AddAttachmentScreen(self._start_dir, home_dir=self._home_dir), self.exit
         )
+
+    @asynccontextmanager
+    async def run_test(self, **kwargs: object) -> AsyncIterator[Pilot[str | None]]:
+        """Run the app and release DirectoryTree's executor on the same loop."""
+        async with super().run_test(**kwargs) as pilot:  # type: ignore[arg-type]
+            yield pilot
+        loop = asyncio.get_running_loop()
+        executor = loop._default_executor  # type: ignore[attr-defined]
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            loop._default_executor = None  # type: ignore[attr-defined]
 
 
 def _screen(pilot_app: App[str | None]) -> AddAttachmentScreen:

@@ -8,11 +8,16 @@ do not re-test business logic already covered by unit tests.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import corpus
 import pytest
+from tui_helpers import TestDirOnlyTree
 
+import pony.tui.screens.save_folder_picker_screen as save_picker_module
 from pony.domain import FolderRef
 from pony.tui.app import ContactsApp, EmlViewerApp
 from pony.tui.screens.confirm_screen import ConfirmScreen
@@ -22,6 +27,8 @@ from pony.tui.screens.new_folder_screen import NewFolderScreen
 from pony.tui.screens.save_draft_screen import SaveDraftScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 
+save_picker_module._DirOnlyTree = TestDirOnlyTree  # type: ignore[attr-defined]
+
 # ---------------------------------------------------------------------------
 # Minimal hosting app factory
 # ---------------------------------------------------------------------------
@@ -30,6 +37,7 @@ from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 def _make_host(screen_cls, *args, **kwargs):
     """Return a one-shot app that pushes *screen_cls* and exits with its result."""
     from textual.app import App, ComposeResult
+    from textual.pilot import Pilot
 
     class _Host(App):
         def compose(self) -> ComposeResult:
@@ -37,6 +45,18 @@ def _make_host(screen_cls, *args, **kwargs):
 
         def on_mount(self) -> None:
             self.push_screen(screen_cls(*args, **kwargs), self.exit)
+
+        @asynccontextmanager
+        async def run_test(self, **test_kwargs: object) -> AsyncIterator[Pilot[object]]:
+            async with super().run_test(  # type: ignore[arg-type]
+                **test_kwargs
+            ) as pilot:
+                yield pilot
+            loop = asyncio.get_running_loop()
+            executor = loop._default_executor  # type: ignore[attr-defined]
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+                loop._default_executor = None  # type: ignore[attr-defined]
 
     return _Host()
 
