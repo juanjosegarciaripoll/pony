@@ -26,7 +26,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **95.3 %**; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.5 %**; do not regress it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -34,59 +34,90 @@ Key test infrastructure:
 | Need | Use |
 |---|---|
 | CLI commands | `tests/test_cli.py` — call `main([...])` with a temp `AppPaths` |
+| CLI sync command | `tests/test_cli_sync_cmd.py` — patches `pony.cli.ImapSession` |
+| CLI account wizard | `tests/test_cli_account_cmds.py` — patched `input` / `getpass` |
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
+| Message projection | `tests/test_message_projection.py` |
+| Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
+| Sync failures + races | `tests/test_sync_execution_failures.py` |
+| TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
+| Main screen by concern | `tests/test_main_screen_{messages,compose,sync,io}.py` |
 | Message list widget | `tests/test_message_list_panel.py` |
 | Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
+| Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
+| Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
+| Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
+
+Three techniques unlock most of what looks untestable:
+
+- **Blocking UIs.** Patch the App class at its import site
+  (`patch("pony.tui.PonyApp")`, `pony.tui.app.ContactsApp`,
+  `pony.tui.app.EmlViewerApp`). Everything a launch command does *before*
+  `run()` — config load, index setup, local rescan, BBDB import, theme
+  resolution — is real work worth testing.
+- **Mid-sync races.** `ImapSyncService.plan()` and `.execute()` are separate
+  public calls, so a test can plan, mutate the index, then execute. That is
+  how the "row vanished" arms are reached.
+- **Interactive gates.** Several commands branch on `sys.stdin.isatty()`;
+  patch it to reach the interactive side.
 
 **Async tests are plain `async def` functions.** Do not use
 `unittest.IsolatedAsyncioTestCase`: it closes the event loop on teardown, and
 the contact-suggester tests in `tests/test_screens.py` call
 `asyncio.get_event_loop()` directly, so they fail depending on file order.
-| Message projection | `tests/test_message_projection.py` |
-| Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
-| TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
-| Compose screen | `tests/test_save_message_screen.py`, `tests/test_compose_utils.py` |
-| Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
-| Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
-| Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
 
-Every module now clears the gate, so rank by **absolute uncovered
-statements+branches**, not percentage. Regenerate the ranking rather than
-trusting this list — it is a snapshot:
+Rank by **absolute uncovered statements+branches**, not percentage. Regenerate
+the ranking rather than trusting this list — it is a snapshot:
 
 ```bash
 uv run python -m pytest --cov-report=json:cov.json   # then sort files by missing_lines + missing_branches
 ```
 
 Largest remaining gaps (in priority order):
-1. `cli.py` (95 %, ~97) — `run_sync` progress/summary arms and the interactive
-   `account add` prompts; ~45 of the rest is environment-gated (see below)
-2. `tui/screens/main_screen.py` (94 %, ~79) — spread across ~40 actions; drive them
-   with `build_pony_app` + `Pilot`
-3. `sync.py` (95 %, ~56) — remaining `_pending_push_ops` planner arms need specific
-   index row states (UIDVALIDITY reset with a pending move, slow-path restore)
-4. `storage.py` (95 %, ~29) — mbox TOC edge cases; extend the conformance suite
-5. `mcp_server.py` (89 %, ~21) and `tui/app.py` (85 %, ~21)
+1. `storage.py` (95 %, ~29) — mbox TOC edge cases; extend the conformance suite
+2. `mcp_server.py` (89 %, ~21) and `tui/app.py` (85 %, ~21)
+3. `tui/message_renderer.py` (96 %, ~22) — mostly the defensive guards below
+4. `cli.py` (98 %, ~45), `sync.py` (98 %, ~25),
+   `tui/screens/main_screen.py` (98.5 %, ~18) — see the note below before
+   spending effort here
 
-**Structurally unreachable — do not chase.** `credentials.py` sits at 83.5 %
-and cannot rise on Linux CI: every uncovered line is inside `_dpapi_encrypt` /
-`_dpapi_decrypt` (`sys.platform == "win32"`) or the macOS `ioreg` branch. Some
-paths elsewhere are environment-gated in the same way (`action_print_pdf`
-needs an external converter, `action_edit_external` spawns an editor).
+## Coverage that is not worth chasing
 
-Also defensive rather than reachable, verified by attempting them:
+**Platform-gated.** `credentials.py` sits at 83.5 % and cannot rise on Linux
+CI: every uncovered line is inside `_dpapi_encrypt` / `_dpapi_decrypt`
+(`sys.platform == "win32"`) or the macOS `ioreg` branch. `cli.py`'s
+`editor = "notepad"` is the same. `action_print_pdf` needs an external
+converter and `action_edit_external` spawns an editor.
 
-- `cli.py` — everything that ends in a blocking `.run()` or an external
-  process: `run_tui`, `run_contacts_browse`, `run_eml_viewer`, `_run_pager`,
-  `run_docs`, `run_mcp_server_command`, and the `_dispatch` arms routing to
-  them (~45 units total).
-- `folder list`'s `(no folders)` arm — both mirror backends always synthesize
-  INBOX, so the list is never empty.
-- `message_renderer.py` — the `message/rfc822` branches that assume a non-list
-  payload, and the `get_payload(decode=True)` non-bytes guards. `email.policy.default`
-  always parses `message/rfc822` into a sub-message list, including when the
-  part is base64-encoded (see `corpus.base64_rfc822_attachment`).
+**Verified unreachable** — each of these was attempted and found to be dead or
+defensive, so re-deriving it is wasted effort:
+
+- **`cli.py:411-413` — the `pony some-message.eml` shortcut is dead code.**
+  `parser.parse_known_args()` raises on an unknown subcommand choice before
+  `main()` ever inspects `extra_args`, so the bare-filename path cannot run.
+  Either the parser needs a `nargs="?"` positional or the check has to move
+  ahead of parsing. **This is a real bug, not just a coverage gap.**
+- `cli.py:621-622` — `parser.error("Unhandled command.")`. Every subcommand
+  argparse accepts is handled above it.
+- `cli.py:1403-1404` — `folder list`'s `(no folders)` arm. Both mirror
+  backends always synthesize INBOX, so the list is never empty.
+- `sync.py:1267-1272` — the `suppress_delete_ids` arm. The parameter has a
+  default and **no call site ever passes it**, so the set is always empty.
+- `sync.py:1958` — `return False` after the `match` in `_execute_one`. The
+  branch data shows no op ever fails every `case`.
+- `sync.py:486` — `_default_factory` constructs a real network `ImapSession`;
+  tests always inject a session factory.
+- `main_screen.py:724` — the cursor-restore after `_reload_folder`.
+  `load_folder` streams rows from a worker, so `row_count` is still 0 on the
+  next line and the guard never passes. **The cursor jumps to the top after
+  trash/archive instead of holding its place — a real bug the comment above
+  it says should not happen.**
+- `message_renderer.py` — the `message/rfc822` branches assuming a non-list
+  payload, and the `get_payload(decode=True)` non-bytes guards.
+  `email.policy.default` always parses `message/rfc822` into a sub-message
+  list, including when the part is base64-encoded (see
+  `corpus.base64_rfc822_attachment`).
 
 ## Local mutations
 
