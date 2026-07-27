@@ -3138,3 +3138,151 @@ class ExecuteFailureTestCase(unittest.TestCase):
         remaining = index.list_folder_messages(folder=folder)
         assert all(r.message_id != "<local@example.com>" for r in remaining)
         assert storage_key not in mirror.list_messages(folder=folder)
+
+
+class PlannerResilienceTestCase(unittest.TestCase):
+    """One unhealthy folder must not take down the whole account sync.
+
+    Both the STATUS probe and the per-folder plan are wrapped so that a
+    server that fails on a single mailbox — a common state for shared or
+    quota-exceeded folders — degrades to skipping that folder rather
+    than aborting every other one.
+    """
+
+    def _folders(
+        self,
+    ) -> dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]:
+        return {
+            "INBOX": {
+                1: (
+                    "<healthy@example.com>",
+                    frozenset(),
+                    _make_raw_message("Healthy", "<healthy@example.com>"),
+                )
+            },
+            "Archive": {
+                2: (
+                    "<sick@example.com>",
+                    frozenset(),
+                    _make_raw_message("Sick", "<sick@example.com>"),
+                )
+            },
+        }
+
+    def test_a_folder_whose_status_probe_fails_is_skipped(self) -> None:
+        service, index, _mirror, session = _setup(server_folders=self._folders())
+
+        original = session.folder_quick_status
+
+        def _status(folder_name: str) -> FolderQuickStatus:
+            if folder_name == "Archive":
+                raise OSError("STATUS failed on Archive")
+            return original(folder_name)
+
+        session.folder_quick_status = _status  # type: ignore[method-assign]
+
+        result = service.sync()
+
+        self.assertEqual(result.accounts[0].skipped_folders, ("Archive",))
+        inbox = FolderRef(account_name="personal", folder_name="INBOX")
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        self.assertEqual(len(index.list_folder_messages(folder=inbox)), 1)
+        self.assertEqual(len(index.list_folder_messages(folder=archive)), 0)
+
+    def test_a_folder_whose_scan_drops_the_connection_is_skipped(self) -> None:
+        """A mid-scan drop is retried once on a fresh session, then given up on.
+
+        The retry runs against the same fake, so it fails again — which is
+        the case that matters: the folder is reported as skipped and every
+        other folder still syncs.
+        """
+        service, index, _mirror, session = _setup(server_folders=self._folders())
+
+        original = session.fetch_uid_to_message_id
+
+        def _fetch(folder_name: str, *args: object, **kwargs: object) -> dict[int, str]:
+            if folder_name == "Archive":
+                raise OSError("connection reset scanning Archive")
+            return original(folder_name, *args, **kwargs)  # type: ignore[arg-type]
+
+        session.fetch_uid_to_message_id = _fetch  # type: ignore[method-assign]
+
+        result = service.sync()
+
+        self.assertEqual(result.accounts[0].skipped_folders, ("Archive",))
+        inbox = FolderRef(account_name="personal", folder_name="INBOX")
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        self.assertEqual(len(index.list_folder_messages(folder=inbox)), 1)
+        self.assertEqual(len(index.list_folder_messages(folder=archive)), 0)
+
+
+class ReadOnlyAppendSuppressionTestCase(unittest.TestCase):
+    """A read-only folder must never receive an APPEND."""
+
+    def test_a_local_only_row_is_not_appended_to_a_read_only_folder(self) -> None:
+        """A draft saved into a read-only folder stays local, silently.
+
+        ``uid IS NULL`` is the signal the planner uses to emit
+        ``PushAppendOp``; the read-only guard has to win over it, or the
+        sync would keep retrying an APPEND the server will always refuse.
+        """
+        from pony.domain import MessageRef
+        from pony.message_projection import project_rfc822_message
+
+        tmp = TMP_ROOT / "sync" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+
+        mirror = MaildirMirrorRepository(
+            account_name="personal", root_dir=tmp / "mirror"
+        )
+        index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
+        index.initialize()
+
+        account = AccountConfig(
+            name="personal",
+            email_address="bob@example.com",
+            imap_host="imap.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
+            username="bob",
+            credentials_source="plaintext",
+            mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
+            folders=FolderConfig(read_only=("Archive",)),
+        )
+        config = AppConfig(accounts=(account,))
+        session = FakeImapSession(folders={"INBOX": {}, "Archive": {}})
+
+        class _Creds:
+            def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
+                return "pw"
+
+        service = ImapSyncService(
+            config=config,
+            mirror_factory=lambda _acc: mirror,
+            index=index,
+            credentials=_Creds(),
+            session_factory=lambda _acc, _pw: session,
+        )
+        service.sync()
+
+        # Save a local-only message into the read-only folder.
+        folder = FolderRef(account_name="personal", folder_name="Archive")
+        raw = _make_raw_message("Local draft", "<local-draft@example.com>")
+        storage_key = mirror.store_message(folder=folder, raw_message=raw)
+        index.insert_message(
+            message=project_rfc822_message(
+                message_ref=MessageRef(
+                    account_name="personal", folder_name="Archive", id=0
+                ),
+                raw_message=raw,
+                storage_key=storage_key,
+            )
+        )
+
+        service.sync()
+
+        # Nothing was uploaded, and the row survives locally.
+        self.assertEqual(session.folders["Archive"], {})
+        self.assertNotIn("append", " ".join(session.call_log).lower())
+        rows = index.list_folder_messages(folder=folder)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0].uid)
