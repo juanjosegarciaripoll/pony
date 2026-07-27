@@ -12,7 +12,7 @@ via ``tui_helpers.build_pony_app`` / ``build_compose_app`` — the shared
 
 from __future__ import annotations
 
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -273,9 +273,12 @@ async def test_forward_sends_original_message_as_removable_eml_attachment(
         if part.get_content_type() == "message/rfc822"
     )
     assert forwarded.get_filename().endswith(".eml")
-    data = forwarded.get_payload(decode=True)
-    assert isinstance(data, bytes)
-    assert b"q1-report.pdf" in data
+    # RFC 2046 s5.2.1 — a message/rfc822 part carries the nested message
+    # directly; base64-encoding it here is what made forwards unopenable.
+    assert forwarded["Content-Transfer-Encoding"] in ("7bit", "8bit", "binary")
+    inner = forwarded.get_payload(0)
+    assert isinstance(inner, Message)
+    assert b"q1-report.pdf" in inner.as_bytes()
 
 
 async def test_forward_eml_attachment_can_be_removed(

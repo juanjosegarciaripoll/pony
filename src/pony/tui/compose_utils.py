@@ -21,6 +21,18 @@ _BLOCKQUOTE_LINE_RE = re.compile(r"(?m)^(>.*)")
 _ADDR_SPECIAL_RE = re.compile(r'[",;:<>\[\]()\\]')
 
 
+def _normalize_newlines(text: str) -> str:
+    """Convert CRLF/CR line endings to LF.
+
+    Bodies read back from the mirror keep the CRLF endings they had on the
+    wire.  Textual's ``TextArea`` adopts the line ending of the text it is
+    seeded with and returns the *whole* buffer in that style, so quoting a
+    single CRLF message turns the entire compose buffer into CRLF.  The
+    quote-boundary and signature splits are LF-anchored, so normalise first.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _add_blockquote_hardbreaks(text: str) -> str:
     """Append two spaces to blockquote lines so markdown-it emits <br> between them.
 
@@ -100,7 +112,7 @@ def build_forward_body(
         f"Subject: {rendered.subject}",
         f"To: {rendered.to}",
         "",
-        rendered.body,
+        _normalize_newlines(rendered.body),
     ]
     body = "\n".join(lines)
     if signature:
@@ -184,7 +196,7 @@ def parse_draft_fields(raw: bytes) -> dict[str, str]:
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = part.get_content_charset() or "utf-8"
-                body = payload.decode(charset, errors="replace")
+                body = _normalize_newlines(payload.decode(charset, errors="replace"))
             break
 
     return {
@@ -217,6 +229,8 @@ def build_email_message(
     Attachments are read from disk and encoded inline.  Raises
     ``FileNotFoundError`` if an attachment path does not exist.
     """
+    body = _normalize_newlines(body)
+
     msg = EmailMessage()
     msg["From"] = from_address
     msg["To"] = to
@@ -267,15 +281,35 @@ def build_email_message(
         msg.set_content(body)
 
     for path in attachment_paths:
-        ctype, encoding = mimetypes.guess_type(str(path))
-        if ctype is None or encoding is not None:
-            ctype = "application/octet-stream"
-        maintype, subtype = ctype.split("/", 1)
-        msg.add_attachment(
-            path.read_bytes(),
-            maintype=maintype,
-            subtype=subtype,
-            filename=path.name,
-        )
+        _attach_file(msg, path)
 
     return msg
+
+
+def _attach_file(msg: EmailMessage, path: Path) -> None:
+    """Attach *path* to *msg* using an encoding that is legal for its type."""
+    ctype, encoding = mimetypes.guess_type(str(path))
+    if ctype is None or encoding is not None:
+        ctype = "application/octet-stream"
+    maintype, subtype = ctype.split("/", 1)
+    data = path.read_bytes()
+
+    if maintype == "message":
+        # RFC 2046 s5.2.1 permits only 7bit/8bit/binary for message/* parts,
+        # so these bytes must not be base64-encoded like every other
+        # attachment — receiving clients refuse to descend into a base64
+        # message/rfc822 body and show it as an unopenable binary blob.
+        # Handing the content manager a parsed message makes it emit 8bit.
+        msg.add_attachment(
+            _email_from_bytes(data),
+            subtype="rfc822",
+            filename=path.name,
+        )
+        return
+
+    msg.add_attachment(
+        data,
+        maintype=maintype,
+        subtype=subtype,
+        filename=path.name,
+    )

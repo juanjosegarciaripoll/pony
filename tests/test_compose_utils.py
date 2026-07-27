@@ -581,5 +581,113 @@ class BuildEmailMessageBranchesTest(unittest.TestCase):
             tmp.unlink(missing_ok=True)
 
 
+_FORWARDED_EML = (
+    b"From: Carol <carol@example.com>\r\n"
+    b"To: Alice <alice@example.com>\r\n"
+    b"Subject: Original subject\r\n"
+    b"Content-Type: text/plain; charset=utf-8\r\n"
+    b"Content-Transfer-Encoding: 8bit\r\n"
+    b"\r\n"
+    b"Original body with \xc3\xa9 accents.\r\n"
+)
+
+
+class ForwardedMessageAttachmentTest(unittest.TestCase):
+    """A forwarded .eml must stay openable in the receiving client."""
+
+    def _forward_with_attachment(self) -> EmailMessage:
+        with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as f:
+            f.write(_FORWARDED_EML)
+            tmp = Path(f.name)
+        try:
+            return build_email_message(
+                from_address="a@example.com",
+                to="b@example.com",
+                cc="",
+                bcc="",
+                subject="Fwd: Original subject",
+                body="See below.",
+                attachment_paths=[tmp],
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def test_message_rfc822_is_not_base64_encoded(self) -> None:
+        msg = self._forward_with_attachment()
+
+        attachment = next(iter(msg.iter_attachments()))
+        assert attachment.get_content_type() == "message/rfc822"
+        # RFC 2046 s5.2.1: only 7bit/8bit/binary are legal here.
+        assert attachment["Content-Transfer-Encoding"] in ("7bit", "8bit", "binary")
+
+    def test_forwarded_message_survives_a_serialise_parse_round_trip(self) -> None:
+        import email
+        import email.policy
+
+        reparsed = email.message_from_bytes(
+            self._forward_with_attachment().as_bytes(), policy=email.policy.default
+        )
+
+        attached = next(
+            p for p in reparsed.walk() if p.get_content_type() == "message/rfc822"
+        )
+        inner = attached.get_payload(0)
+        assert isinstance(inner, EmailMessage)
+        assert str(inner["Subject"]) == "Original subject"
+        assert "Original body with é accents." in inner.get_content()
+
+
+class CrlfBodyTest(unittest.TestCase):
+    """CRLF bodies must not defeat the quote/signature splits."""
+
+    def _html_part(self, body: str) -> str:
+        msg = build_email_message(
+            from_address="a@example.com",
+            to="b@example.com",
+            cc="",
+            bcc="",
+            subject="s",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+        )
+        html = next(
+            p for p in msg.walk() if p.get_content_type() == "text/html"
+        ).get_content()
+        assert isinstance(html, str)
+        return html
+
+    def test_forward_body_normalises_crlf_from_the_source_message(self) -> None:
+        body = build_forward_body(_rendered(body="Line one.\r\nLine two.\r\n"))
+
+        assert "\r" not in body
+
+    def test_crlf_forward_still_uses_the_escaped_blockquote(self) -> None:
+        body = build_forward_body(_rendered(body="Quoted line one.\nQuoted line two."))
+
+        crlf_html = self._html_part(body.replace("\n", "\r\n"))
+
+        assert crlf_html == self._html_part(body)
+        assert "white-space:pre-wrap" in crlf_html
+        assert "---------- Forwarded message ----------<br" in crlf_html
+
+    def test_crlf_signature_block_is_still_split_off(self) -> None:
+        body = build_forward_body(_rendered(body="Quoted."), signature="Alice\nCSIC")
+
+        html = self._html_part(body.replace("\n", "\r\n"))
+
+        assert "<hr" in html
+
+    def test_parse_draft_fields_normalises_crlf(self) -> None:
+        draft = EmailMessage()
+        draft["To"] = "b@example.com"
+        draft["Subject"] = "s"
+        draft.set_content("Line one.\r\nLine two.\r\n")
+
+        fields = parse_draft_fields(draft.as_bytes())
+
+        assert "\r" not in fields["body"]
+
+
 if __name__ == "__main__":
     unittest.main()
