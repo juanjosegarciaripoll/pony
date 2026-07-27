@@ -388,3 +388,108 @@ async def test_a_sent_reply_all_marks_the_original_answered() -> None:
 
     reloaded = list(index.list_folder_messages(folder=folder))[0]
     assert MessageFlag.ANSWERED in reloaded.local_flags
+
+
+async def test_every_compose_entry_point_refuses_without_a_sendable_account() -> None:
+    """Compose, reply, reply-all, forward and edit-draft share one guard."""
+    from tui_helpers import make_tmp_paths
+
+    paths = make_tmp_paths("main-entry-no-smtp")
+    folder = FolderRef(account_name="local", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-entry-no-smtp-app",
+        accounts=(_local_account(paths),),
+        seed=[(folder, plain_text())],
+    )
+    notifications = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        app.push_screen = Mock()
+
+        screen.compose_new()
+        screen.compose_reply()
+        screen.compose_reply_all()
+        screen.compose_forward()
+        screen.compose_from_draft()
+        await pilot.pause()
+
+        app.push_screen.assert_not_called()
+
+    # One notice per entry point, each naming what it was trying to do.
+    assert sum("requires an IMAP account" in n for n in notifications) == 5
+    assert any("Composing requires" in n for n in notifications)
+    assert any("Replying requires" in n for n in notifications)
+    assert any("Forwarding requires" in n for n in notifications)
+
+
+async def test_a_sent_reply_marks_the_original_answered() -> None:
+    """The single-recipient reply shares reply-all's completion callback."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-reply-answered",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[Callable[[bool | None], None]] = []
+
+        def _capture(
+            _screen: object,
+            callback: Callable[[bool | None], None] | None = None,
+            **_kw: object,
+        ) -> None:
+            if callback is not None:
+                captured.append(callback)
+
+        app.push_screen = Mock(side_effect=_capture)
+
+        screen.compose_reply()
+        on_sent = captured[0]
+
+        on_sent(None)
+        msg = screen.get_current_message()
+        assert msg is not None
+        assert MessageFlag.ANSWERED not in msg.local_flags
+
+        on_sent(True)
+        await pilot.pause()
+
+    reloaded = list(index.list_folder_messages(folder=folder))[0]
+    assert MessageFlag.ANSWERED in reloaded.local_flags
+
+
+async def test_link_actions_ignore_the_wrong_link_kind() -> None:
+    """A mailto: link is not a web link, and vice versa."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-link-kinds",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        panel = screen.query_one(MessageViewPanel)
+        app.push_screen = Mock()
+
+        # activate_link only opens web links.
+        panel.body_link = Mock(return_value=("mail", "someone@example.test"))
+        screen.action_activate_link("1")
+        app.push_screen.assert_not_called()
+
+        # compose_link only handles mail links.
+        panel.body_link = Mock(return_value=("web", "https://example.test"))
+        screen.action_compose_link("1")
+        app.push_screen.assert_not_called()
+
+        # Nothing at that index at all.
+        panel.body_link = Mock(return_value=None)
+        screen.action_activate_link("1")
+        screen.action_compose_link("1")
+        await pilot.pause()
+
+        app.push_screen.assert_not_called()

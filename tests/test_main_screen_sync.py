@@ -12,6 +12,7 @@ from tui_helpers import build_pony_app
 from pony.sync import (
     AccountSyncPlan,
     AccountSyncResult,
+    FetchNewOp,
     FolderSyncPlan,
     FolderSyncResult,
     ProgressInfo,
@@ -219,3 +220,145 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         )
         modal.dismiss.assert_called_once_with(True)
         assert messages[-1] == "Sync complete."
+
+
+async def test_worker_completion_routes_by_worker_name() -> None:
+    """``on_worker_state_changed`` dispatches on the worker's name."""
+    app, *_ = build_pony_app(label="main-sync-dispatch")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._on_plan_complete = Mock()  # type: ignore[method-assign]
+        screen._on_exec_complete = Mock()  # type: ignore[method-assign]
+
+        for name in ("sync-plan", "sync-exec", "sync-bg", "something-else"):
+            event = SimpleNamespace(worker=_worker(name=name, state=_State.SUCCESS))
+            screen.on_worker_state_changed(event)  # type: ignore[arg-type]
+        await pilot.pause()
+
+        screen._on_plan_complete.assert_called_once()
+        screen._on_exec_complete.assert_called_once()
+
+
+async def test_sync_callbacks_are_safe_with_no_modal_on_screen() -> None:
+    """A background sync has no confirm modal, so every guard must hold."""
+    app, *_ = build_pony_app(label="main-sync-no-modal")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        assert not isinstance(app.screen, SyncConfirmScreen)
+
+        # Progress with nothing to show it in.
+        screen._sync_progress(ProgressInfo("Scanning", current=1, total=2))
+
+        # Planning failed.
+        screen._on_plan_complete(
+            _worker(
+                name="sync-plan",
+                state=_State.ERROR,
+                error=RuntimeError("fictional planning failure"),
+            )
+        )
+
+        # Planning produced nothing to do.
+        screen._on_plan_complete(
+            _worker(
+                name="sync-plan", state=_State.SUCCESS, result=SyncPlan(accounts=())
+            )
+        )
+
+        # Execution finished.
+        screen._on_exec_complete(
+            _worker(
+                name="sync-exec",
+                state=_State.SUCCESS,
+                result=SyncResult(accounts=()),
+            )
+        )
+        await pilot.pause()
+
+    assert any("fictional planning failure" in m for m in messages)
+    assert any("Nothing to sync" in m or "up to date" in m.lower() for m in messages)
+
+
+async def test_a_nonempty_plan_without_a_modal_is_still_stored() -> None:
+    """The plan is kept so a later confirm can execute it."""
+    app, *_ = build_pony_app(label="main-sync-plan-stored")
+
+    plan = SyncPlan(
+        accounts=(
+            AccountSyncPlan(
+                account_name="acct",
+                folders=(
+                    FolderSyncPlan(
+                        folder_name="INBOX",
+                        uid_validity=1,
+                        highest_uid=1,
+                        ops=(
+                            FetchNewOp(
+                                uid=1,
+                                message_id="<planned@example.com>",
+                                server_flags=frozenset(),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._on_plan_complete(
+            _worker(name="sync-plan", state=_State.SUCCESS, result=plan)
+        )
+        await pilot.pause()
+
+        assert screen._sync_plan is plan
+
+
+async def test_cancelling_the_confirmation_notifies_and_refreshes() -> None:
+    """Dismissing the modal with False means the user said no."""
+    app, *_ = build_pony_app(label="main-sync-cancelled")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        captured: list[object] = []
+
+        def _capture(_screen: object, callback: object = None, **_kw: object) -> None:
+            captured.append(callback)
+
+        app.push_screen = Mock(side_effect=_capture)
+        screen.run_worker = Mock()  # type: ignore[method-assign]
+        screen.action_sync()
+        await pilot.pause()
+
+        on_dismiss = captured[0]
+        assert callable(on_dismiss)
+        on_dismiss(False)
+        await pilot.pause()
+
+    assert any("Sync cancelled." in m for m in messages)
+
+
+async def test_starting_the_exec_worker_without_a_plan_is_a_noop() -> None:
+    """Nothing to execute when planning never produced a plan."""
+    app, *_ = build_pony_app(label="main-sync-no-plan")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._sync_service = None
+        screen._sync_plan = None
+        screen.run_worker = Mock()  # type: ignore[method-assign]
+
+        screen._start_sync_worker()
+        await pilot.pause()
+
+        screen.run_worker.assert_not_called()

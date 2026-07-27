@@ -11,6 +11,7 @@ from tui_helpers import build_pony_app
 from pony.domain import FolderRef
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.screens.save_message_screen import SaveItem
+from pony.tui.widgets.message_view import MessageViewPanel
 
 
 def _main(app: object) -> MainScreen:
@@ -192,3 +193,113 @@ async def test_save_message_callbacks_handle_cancel_success_and_traversal(
     assert (tmp_path / "message.md").is_file()
     assert not (tmp_path.parent / "outside.md").exists()
     assert messages[-1].endswith("(1 failed)")
+
+
+async def test_the_print_pdf_folder_callback_guards_the_destination(
+    tmp_path: Path,
+) -> None:
+    """Cancelling writes nothing; a filename escaping the folder is refused.
+
+    The proposed filename comes from the message subject, so a crafted
+    subject must not be able to steer the write outside the folder the
+    user picked.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-pdf-callback",
+        seed=[(folder, plain_text())],
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = _main(app)
+
+        captured: list[object] = []
+
+        def _capture(_screen: object, callback: object = None, **_kw: object) -> None:
+            captured.append(callback)
+
+        app.push_screen = Mock(side_effect=_capture)
+        screen.run_worker = Mock()  # type: ignore[method-assign]
+        screen.action_print_pdf()
+        await pilot.pause()
+
+        on_folder = captured[0]
+        assert callable(on_folder)
+
+        # Cancelled — no export worker started.
+        on_folder(None)
+        screen.run_worker.assert_not_called()
+
+        # A destination the resolved path escapes.
+        escaping = tmp_path / "sub"
+        escaping.mkdir()
+        real_resolve = Path.resolve
+
+        def _fake_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            if self.name.endswith(".pdf"):
+                return tmp_path / "outside.pdf"
+            return real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        Path.resolve = _fake_resolve  # type: ignore[method-assign]
+        try:
+            on_folder(escaping)
+        finally:
+            Path.resolve = real_resolve  # type: ignore[method-assign]
+
+        screen.run_worker.assert_not_called()
+        await pilot.pause()
+
+    assert any("Invalid destination." in m for m in messages)
+
+
+async def test_save_all_attachments_writes_every_part(tmp_path: Path) -> None:
+    """The screen-level helper delegates to the reader panel."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-save-all-helper",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = _main(app)
+
+        saved = screen.save_all_attachments(tmp_path)
+
+        assert saved == ["q1-report.pdf"]
+        assert (tmp_path / "q1-report.pdf").is_file()
+
+
+async def test_opening_attachments_without_a_loaded_message_saves_instead(
+    tmp_path: Path,
+) -> None:
+    """With no raw bytes the viewer shortcut degrades to a plain save."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-open-no-raw",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = _main(app)
+        panel = screen.query_one(MessageViewPanel)
+
+        # No raw bytes and no attachment behind the index.
+        panel._rendered = None  # type: ignore[attr-defined]
+        screen.save_attachment = Mock(return_value=None)  # type: ignore[method-assign]
+        screen._downloads_dir = Mock(return_value=tmp_path)  # type: ignore[method-assign]
+
+        screen._open_indices([1])
+        await pilot.pause()
+
+    assert any("Attachment(s) not found: 1" in m for m in messages)
