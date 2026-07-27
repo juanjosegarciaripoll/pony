@@ -113,19 +113,32 @@ class _AddrRow(Horizontal):
     DEFAULT_CSS = ""
 
     def __init__(
-        self, value: str = "", *, suggester: object = None, **kwargs: object
+        self,
+        value: str = "",
+        *,
+        contacts: ContactRepository | None = None,
+        **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._addr_value = value
-        self._suggester = suggester
+        self._contacts = contacts
 
     def compose(self) -> ComposeResult:
-        yield Input(
-            self._addr_value,
-            placeholder="(optional)",
-            suggester=self._suggester,  # type: ignore[arg-type]
-            classes="addr-input field-input",
-        )
+        if self._contacts is not None:
+            from ..widgets.contact_suggester import RecipientInput
+
+            yield RecipientInput(
+                self._contacts,
+                self._addr_value,
+                placeholder="(optional)",
+                input_classes="addr-input field-input",
+            )
+        else:
+            yield Input(
+                self._addr_value,
+                placeholder="(optional)",
+                classes="addr-input field-input",
+            )
         yield Button("×", classes="addr-remove-btn")
         yield Button("+", classes="addr-add-btn")
 
@@ -170,7 +183,11 @@ class ComposeScreen(Screen[bool]):
     }
 
     .field-row {
-        height: 1;
+        height: auto;
+    }
+
+    .field-row > .field-label {
+        content-align: right top;
     }
 
     .field-label {
@@ -251,7 +268,7 @@ class ComposeScreen(Screen[bool]):
     }
 
     .addr-row {
-        height: 1;
+        height: auto;
     }
 
     .addr-remove-btn {
@@ -331,9 +348,7 @@ class ComposeScreen(Screen[bool]):
         self._markdown_mode: bool = initial.markdown_mode
 
     def compose(self) -> ComposeResult:
-        from ..widgets.contact_suggester import ContactSuggester
-
-        suggester = ContactSuggester(self._contacts) if self._contacts else None
+        from ..widgets.contact_suggester import RecipientInput
 
         from_options: list[tuple[str, str]] = [
             (self._account_from_label(a), a.name) for a in self._accounts
@@ -350,23 +365,35 @@ class ComposeScreen(Screen[bool]):
                 )
             with Horizontal(classes="field-row"):
                 yield Label("To:", classes="field-label")
-                yield Input(
-                    self._initial.to,
-                    placeholder="recipient@example.com",
-                    suggester=suggester,
-                    id="to-input",
-                    classes="field-input",
-                )
+                if self._contacts is not None:
+                    yield RecipientInput(
+                        self._contacts,
+                        self._initial.to,
+                        placeholder="recipient@example.com",
+                        input_id="to-input",
+                        input_classes="field-input",
+                    )
+                else:
+                    yield Input(
+                        self._initial.to,
+                        placeholder="recipient@example.com",
+                        id="to-input",
+                        classes="field-input",
+                    )
             with Horizontal(classes="addr-group"):
                 yield Label("Cc:", classes="field-label")
                 with Vertical(id="cc-container", classes="addr-container"):
                     for addr in _split_addresses(self._initial.cc):
-                        yield _AddrRow(addr, suggester=suggester, classes="addr-row")
+                        yield _AddrRow(
+                            addr, contacts=self._contacts, classes="addr-row"
+                        )
             with Horizontal(classes="addr-group"):
                 yield Label("Bcc:", classes="field-label")
                 with Vertical(id="bcc-container", classes="addr-container"):
                     for addr in _split_addresses(self._initial.bcc):
-                        yield _AddrRow(addr, suggester=suggester, classes="addr-row")
+                        yield _AddrRow(
+                            addr, contacts=self._contacts, classes="addr-row"
+                        )
             with Horizontal(classes="field-row"):
                 yield Label("Subject:", classes="field-label")
                 yield Input(
@@ -704,11 +731,8 @@ class ComposeScreen(Screen[bool]):
 
     def _add_addr_row(self, container_id: str) -> None:
         """Append a new empty address row and refresh + button visibility."""
-        from ..widgets.contact_suggester import ContactSuggester
-
-        suggester = ContactSuggester(self._contacts) if self._contacts else None
         container = self.query_one(f"#{container_id}", Vertical)
-        new_row = _AddrRow(suggester=suggester, classes="addr-row")
+        new_row = _AddrRow(contacts=self._contacts, classes="addr-row")
         container.mount(new_row)
 
         def _after() -> None:

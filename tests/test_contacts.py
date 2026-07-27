@@ -193,6 +193,35 @@ class SearchContactsTests(unittest.TestCase):
         self.assertEqual(len(ascii_hits), 1)
         self.assertEqual(ascii_hits[0].first_name, "María")
 
+    def test_search_full_name_across_fts_columns(self) -> None:
+        repo = _make_repo()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Marina",
+                last_name="Núñez Robles",
+                emails=("marina@example.test",),
+            )
+        )
+
+        hits = repo.search_contacts(prefix="marina nunez rob")
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].display_name, "Marina Núñez Robles")
+
+    def test_search_multiple_tokens_can_match_different_fields(self) -> None:
+        repo = _make_repo()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Marina",
+                last_name="Núñez Robles",
+                emails=("marina@example.test",),
+            )
+        )
+
+        hits = repo.search_contacts(prefix="nunez marina")
+
+        self.assertEqual(len(hits), 1)
+
     def test_search_prefix_returns_multiple(self) -> None:
         repo = _make_repo()
         repo.upsert_contact(

@@ -1253,6 +1253,92 @@ def test_contact_suggester_no_email_returns_none() -> None:
     assert result is None
 
 
+async def test_recipient_input_lists_and_selects_multiple_matches() -> None:
+    """Recipient completion exposes alternatives instead of choosing silently."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input, OptionList
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-options"))
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Marina",
+            last_name="Núñez Robles",
+            emails=("marina@example.test",),
+        )
+    )
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Mariela",
+            last_name="Norte",
+            emails=("mariela@example.test",),
+        )
+    )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        field.focus()
+        field.value = "mari"
+        await pilot.pause()
+
+        options = app.query_one(OptionList)
+        assert options.option_count == 2
+        assert options.display
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+        assert field.value == "Marina Núñez Robles <marina@example.test>"
+        assert not options.display
+
+
+async def test_recipient_input_replaces_only_current_token() -> None:
+    """Selecting a result preserves recipients preceding the final comma."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-token"))
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Marina",
+            last_name="Núñez Robles",
+            emails=("marina@example.test",),
+        )
+    )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        field.focus()
+        field.value = "first@example.test, nunez"
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert field.value == (
+            "first@example.test, Marina Núñez Robles <marina@example.test>"
+        )
+
+
 # ===========================================================================
 # SaveFolderPickerScreen
 # ===========================================================================

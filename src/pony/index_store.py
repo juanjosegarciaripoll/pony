@@ -1236,7 +1236,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         """
         if not prefix.strip():
             return []
-        match_expr = _fts5_query(prefix, prefix=True)
+        match_expr = _contact_fts_query(prefix)
         with self._use() as conn:
             rows = conn.execute(
                 """
@@ -1490,6 +1490,23 @@ def _fts5_query(text: str, *, prefix: bool = False) -> str:
     escaped = text.replace('"', '""')
     phrase = f'"{escaped}"'
     return phrase + "*" if prefix else phrase
+
+
+def _contact_fts_query(text: str) -> str:
+    """Build a prefix query whose terms may match different FTS columns.
+
+    Contact names are stored as separate ``first_name`` and ``last_name``
+    columns.  A single FTS phrase cannot cross that column boundary, so a
+    query such as ``"Marina Nunez"*`` misses a contact whose first name is
+    Marina and whose last name is Nunez Robles.  Combining individually
+    quoted tokens lets each one match any indexed contact field while keeping
+    user-supplied FTS operators inert.  Only the final token is a prefix.
+    """
+    tokens = text.split()
+    return " AND ".join(
+        _fts5_query(token, prefix=index == len(tokens) - 1)
+        for index, token in enumerate(tokens)
+    )
 
 
 def _build_fts_match(query: SearchQuery) -> str:
