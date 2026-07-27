@@ -1979,3 +1979,182 @@ path = "mirrors/personal"
 format = "maildir"
 trash_retention_days = 30
 """.strip()
+
+
+class ResetAccountBranchesTest(unittest.TestCase):
+    """Prompt, skip and scan-cache branches of ``pony reset --account``."""
+
+    def test_prompt_declined_cancels(self) -> None:
+        """Answering anything but 'y' leaves the account untouched."""
+        from unittest.mock import patch
+
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Keep", body="body")
+            index_file = AppPaths.default().index_db_file
+            with patch("builtins.input", return_value="n"):
+                output = run_cli(
+                    "--config", str(config_path), "reset", "--account", "personal"
+                )
+            self.assertIn("Reset cancelled", output)
+            self.assertTrue(index_file.exists())
+
+    def test_prompt_accepted_resets(self) -> None:
+        """Answering 'y' at the prompt performs the reset."""
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Drop", body="body")
+            from unittest.mock import patch
+
+            with patch("builtins.input", return_value="y"):
+                output = run_cli(
+                    "--config", str(config_path), "reset", "--account", "personal"
+                )
+        self.assertIn("Reset complete", output)
+
+    def test_missing_mirror_and_index_are_skipped(self) -> None:
+        """With nothing on disk the command reports skips instead of failing."""
+        with isolated_app_env(), temporary_config() as config_path:
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "reset",
+                "--account",
+                "personal",
+                "--yes",
+            )
+        self.assertIn("not present; skipping", output)
+        self.assertIn("Index database not present", output)
+
+    def test_scan_cache_entry_is_cleared(self) -> None:
+        """A local_scan_state entry for the account is removed."""
+        import json as _json
+
+        with isolated_app_env(), temporary_config() as config_path:
+            from pony.paths import AppPaths
+
+            paths = AppPaths.default()
+            paths.ensure_runtime_dirs()
+            state_path = paths.data_dir / "local_scan_state.json"
+            state_path.write_text(
+                _json.dumps({"personal": {"INBOX": 1}, "other": {"INBOX": 2}}),
+                encoding="utf-8",
+            )
+
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "reset",
+                "--account",
+                "personal",
+                "--yes",
+            )
+            remaining = _json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertIn("Clearing scan cache entry", output)
+        self.assertNotIn("personal", remaining)
+        self.assertIn("other", remaining)
+
+
+class OpsDetailTableTest(unittest.TestCase):
+    """``_build_ops_detail_table`` renders every non-download op kind."""
+
+    def _index(self):  # type: ignore[no-untyped-def]
+        from pony.index_store import SqliteIndexRepository
+
+        root = TMP_ROOT / "ops-detail" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        index = SqliteIndexRepository(database_path=root / "index.sqlite3")
+        index.initialize()
+        return index
+
+    def test_every_op_kind_appears(self) -> None:
+        from pony.cli import _build_ops_detail_table
+        from pony.domain import MessageRef
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            MergeFlagsOp,
+            PushDeleteOp,
+            PushFlagsOp,
+            RestoreOp,
+            SyncPlan,
+        )
+
+        ref = MessageRef(account_name="personal", folder_name="INBOX", id=7)
+        ops = (
+            PushDeleteOp(server_uid=1, message_ref=ref, storage_key="k"),
+            RestoreOp(message_ref=ref),
+            MergeFlagsOp(
+                uid=1,
+                message_ref=ref,
+                merged_flags=frozenset({MessageFlag.SEEN}),
+                push_to_server=True,
+            ),
+            PushFlagsOp(
+                uid=1,
+                message_ref=ref,
+                new_flags=frozenset({MessageFlag.FLAGGED}),
+            ),
+        )
+        plan = SyncPlan(
+            accounts=(
+                AccountSyncPlan(
+                    account_name="personal",
+                    folders=(
+                        FolderSyncPlan(
+                            folder_name="INBOX",
+                            uid_validity=1,
+                            highest_uid=1,
+                            ops=ops,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        table = _build_ops_detail_table(plan, self._index())
+
+        self.assertIn("expunge", table)
+        self.assertIn("restore", table)
+        self.assertIn("merge(", table)
+        self.assertIn("push(", table)
+        # No index rows exist, so each line falls back to the row id.
+        self.assertIn("id=7", table)
+
+    def test_empty_flag_sets_render_as_dash(self) -> None:
+        from pony.cli import _build_ops_detail_table
+        from pony.domain import MessageRef
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            PushFlagsOp,
+            SyncPlan,
+        )
+
+        ref = MessageRef(account_name="personal", folder_name="INBOX", id=3)
+        plan = SyncPlan(
+            accounts=(
+                AccountSyncPlan(
+                    account_name="personal",
+                    folders=(
+                        FolderSyncPlan(
+                            folder_name="INBOX",
+                            uid_validity=1,
+                            highest_uid=1,
+                            ops=(
+                                PushFlagsOp(
+                                    uid=1,
+                                    message_ref=ref,
+                                    new_flags=frozenset(),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        table = _build_ops_detail_table(plan, self._index())
+
+        self.assertIn("push(—)", table)

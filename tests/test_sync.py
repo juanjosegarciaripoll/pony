@@ -2870,3 +2870,271 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         plan = SyncPlan(accounts=(acct,))
         detail = format_plan_detail(plan)
         self.assertIn("needs confirmation", detail)
+
+
+# ---------------------------------------------------------------------------
+# Connection loss during planning
+# ---------------------------------------------------------------------------
+
+
+def _setup_multi_session(
+    *,
+    sessions: Sequence[FakeImapSession],
+) -> tuple[ImapSyncService, SqliteIndexRepository, MaildirMirrorRepository, list[int]]:
+    """Build a service whose session_factory hands out *sessions* in order.
+
+    The last session is reused once the list is exhausted, so a test can
+    model "first connection dies, every reconnect works".
+    """
+    tmp = TMP_ROOT / "sync" / uuid4().hex
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    mirror = MaildirMirrorRepository(account_name="personal", root_dir=tmp / "mirror")
+    index = SqliteIndexRepository(database_path=tmp / "index.sqlite3")
+    index.initialize()
+
+    account = AccountConfig(
+        name="personal",
+        email_address="bob@example.com",
+        imap_host="imap.example.com",
+        smtp=SmtpConfig(host="smtp.example.com"),
+        username="bob",
+        credentials_source="plaintext",
+        mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
+    )
+
+    class _FixedCredentials:
+        def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
+            return "test-password"
+
+    handed_out = [0]
+
+    def _session_factory(_acc: AccountConfig, _password: str) -> ImapClientSession:
+        idx = min(handed_out[0], len(sessions) - 1)
+        handed_out[0] += 1
+        return sessions[idx]
+
+    service = ImapSyncService(
+        config=AppConfig(accounts=(account,)),
+        mirror_factory=lambda _acc: mirror,
+        index=index,
+        credentials=_FixedCredentials(),
+        session_factory=_session_factory,
+    )
+    return service, index, mirror, handed_out
+
+
+class _BrokenScanSession(FakeImapSession):
+    """A session whose slow-path UID scan raises a connection error."""
+
+    def fetch_uid_to_message_id(
+        self,
+        folder_name: str,  # noqa: ARG002
+    ) -> dict[int, tuple[str, tuple[frozenset[MessageFlag], frozenset[str]]]]:
+        raise OSError("connection reset by peer")
+
+
+class PlanningConnectionLossTestCase(unittest.TestCase):
+    """The planner degrades gracefully when the connection drops mid-scan."""
+
+    def _folders(
+        self,
+    ) -> dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]:
+        return {
+            "INBOX": {
+                1: (
+                    "<a@example.com>",
+                    frozenset(),
+                    _make_raw_message("A", "<a@example.com>"),
+                ),
+            }
+        }
+
+    def test_scan_failure_without_reconnect_skips_the_folder(self) -> None:
+        """With no reconnect callable the folder is dropped from the plan."""
+        service, _index, _mirror, _n = _setup_multi_session(
+            sessions=[_BrokenScanSession(folders=self._folders())],
+        )
+        account = service._config.accounts[0]
+        assert isinstance(account, AccountConfig)
+        session = _BrokenScanSession(folders=self._folders())
+
+        plan = service._plan_folders(account=account, session=session)
+
+        assert plan.folders == ()
+
+    def test_scan_failure_recovers_on_reconnect(self) -> None:
+        """A dropped connection is retried once and the scan completes."""
+        healthy = FakeImapSession(folders=self._folders())
+        service, _index, _mirror, handed_out = _setup_multi_session(
+            sessions=[_BrokenScanSession(folders=self._folders()), healthy],
+        )
+
+        plan = service.plan()
+
+        assert handed_out[0] == 2  # initial connect + one reconnect
+        folder_names = [f.folder_name for a in plan.accounts for f in a.folders]
+        assert folder_names == ["INBOX"]
+
+    def test_scan_failure_that_survives_reconnect_skips_the_folder(self) -> None:
+        """When the retry fails too, the folder is skipped, not fatal."""
+        service, _index, _mirror, handed_out = _setup_multi_session(
+            sessions=[
+                _BrokenScanSession(folders=self._folders()),
+                _BrokenScanSession(folders=self._folders()),
+            ],
+        )
+
+        plan = service.plan()
+
+        assert handed_out[0] == 2
+        assert all(a.folders == () for a in plan.accounts)
+
+    def test_changedsince_failure_falls_through_to_the_slow_path(self) -> None:
+        """A CONDSTORE fetch error degrades to a full UID scan."""
+        service, index, _mirror, session = _setup(server_folders=self._folders())
+        service.sync()
+
+        # Drift the server flags so the UID set is stable but MODSEQ moved,
+        # which is exactly the medium-path precondition.
+        session.store_flags("INBOX", 1, frozenset({MessageFlag.SEEN}))
+
+        def _boom(
+            folder_name: str,  # noqa: ARG001
+            modseq: int,  # noqa: ARG001
+        ) -> dict[int, tuple[frozenset[MessageFlag], frozenset[str]]]:
+            raise OSError("CONDSTORE unavailable")
+
+        session.fetch_flags_changed_since = _boom  # type: ignore[method-assign]
+
+        plan = service.plan()
+
+        # The slow path still produced a usable plan for the folder.
+        assert [f.folder_name for a in plan.accounts for f in a.folders] == ["INBOX"]
+        rows = index.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX")
+        )
+        assert len(rows) == 1
+
+    def test_mirror_listing_failure_still_plans(self) -> None:
+        """A mirror that cannot list folders yields no CREATE ops."""
+        service, _index, mirror, _session = _setup(server_folders=self._folders())
+
+        def _boom(*, account_name: str) -> Sequence[FolderRef]:  # noqa: ARG001
+            raise OSError("mirror unreadable")
+
+        mirror.list_folders = _boom  # type: ignore[method-assign]
+
+        plan = service.plan()
+
+        assert all(a.creates == () for a in plan.accounts)
+
+
+class ExecuteFailureTestCase(unittest.TestCase):
+    """A failing op is logged and skipped, never fatal to the run."""
+
+    def _seeded(
+        self,
+    ) -> tuple[
+        ImapSyncService,
+        SqliteIndexRepository,
+        MaildirMirrorRepository,
+        FakeImapSession,
+    ]:
+        raw = _make_raw_message("Hi", "<hi@example.com>")
+        return _setup(
+            server_folders={"INBOX": {1: ("<hi@example.com>", frozenset(), raw)}}
+        )
+
+    def test_phase1_fetch_failure_is_skipped(self) -> None:
+        """An index write blowing up during ingest does not abort the sync."""
+        service, index, _mirror, _session = self._seeded()
+
+        def _boom(*, message: object) -> object:  # noqa: ARG001
+            raise OSError("index locked")
+
+        index.insert_message = _boom  # type: ignore[method-assign]
+
+        progress: list[str] = []
+        plan = service.plan()
+        service.execute(
+            plan,
+            confirmed_folders=frozenset({"INBOX"}),
+            progress=lambda info: progress.append(info.message),
+        )
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        assert len(index.list_folder_messages(folder=folder)) == 0
+        assert progress  # the run still reported progress
+
+    def test_phase2_push_failure_is_skipped(self) -> None:
+        """A STORE that raises leaves the run alive and reports progress."""
+        service, index, _mirror, session = self._seeded()
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        [row] = index.list_folder_messages(folder=folder)
+        index.upsert_message(
+            message=dataclasses.replace(
+                row, local_flags=frozenset({MessageFlag.FLAGGED})
+            )
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise OSError("STORE rejected")
+
+        session.store_flags = _boom  # type: ignore[method-assign]
+
+        progress: list[str] = []
+        plan = service.plan()
+        result = service.execute(
+            plan,
+            confirmed_folders=frozenset({"INBOX"}),
+            progress=lambda info: progress.append(info.message),
+        )
+
+        assert result is not None
+        assert progress
+
+    def test_trashed_row_without_uid_is_purged_locally(self) -> None:
+        """A trashed row the server never saw is dropped from index + mirror."""
+        from datetime import UTC, datetime
+
+        from pony.domain import IndexedMessage, MessageRef
+
+        service, index, mirror, _session = self._seeded()
+        service.sync()
+
+        # A message composed locally and trashed before it ever reached the
+        # server: no UID, and no trashed_at to hold it for retention.
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        storage_key = mirror.store_message(
+            folder=folder,
+            raw_message=_make_raw_message("Local only", "<local@example.com>"),
+        )
+        index.insert_message(
+            message=IndexedMessage(
+                message_ref=MessageRef(
+                    account_name="personal", folder_name="INBOX", id=0
+                ),
+                message_id="<local@example.com>",
+                sender="bob@example.com",
+                recipients="alice@example.com",
+                cc="",
+                subject="Local only",
+                body_preview="",
+                storage_key=storage_key,
+                local_flags=frozenset(),
+                base_flags=frozenset(),
+                local_status=MessageStatus.TRASHED,
+                received_at=datetime.now(tz=UTC),
+                uid=None,
+                trashed_at=None,
+            )
+        )
+
+        service.sync()
+
+        remaining = index.list_folder_messages(folder=folder)
+        assert all(r.message_id != "<local@example.com>" for r in remaining)
+        assert storage_key not in mirror.list_messages(folder=folder)

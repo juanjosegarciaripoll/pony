@@ -438,3 +438,128 @@ class MboxMessageByIdTest(unittest.TestCase):
         gc.collect()
 
         self.assertIsNone(repository_ref())
+
+
+class MboxDirectLookupTestCase(unittest.TestCase):
+    """Edge cases of the mmap-based single-message lookup."""
+
+    def _mbox_path(self, body: bytes) -> object:
+        from pathlib import Path
+
+        root = TMP_ROOT / "mbox-lookup" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        path: Path = root / "folder.mbox"
+        path.write_bytes(body)
+        return path
+
+    def test_missing_file_returns_none(self) -> None:
+        from pathlib import Path
+
+        from pony.storage import _mbox_find_message_by_id
+
+        missing = Path(TMP_ROOT / "mbox-lookup" / uuid4().hex / "absent.mbox")
+        self.assertIsNone(_mbox_find_message_by_id(missing, "<a@example.com>"))
+
+    def test_empty_file_returns_none(self) -> None:
+        from pony.storage import _mbox_find_message_by_id
+
+        path = self._mbox_path(b"")
+        self.assertIsNone(_mbox_find_message_by_id(path, "<a@example.com>"))  # type: ignore[arg-type]
+
+    def test_absent_message_id_returns_none(self) -> None:
+        from pony.storage import _mbox_find_message_by_id
+
+        path = self._mbox_path(
+            b"From sender@example.com\nMessage-ID: <other@example.com>\n\nbody\n\n"
+        )
+        self.assertIsNone(_mbox_find_message_by_id(path, "<a@example.com>"))  # type: ignore[arg-type]
+
+    def test_last_message_without_trailing_blank_line(self) -> None:
+        from pony.storage import _mbox_find_message_by_id
+
+        path = self._mbox_path(
+            b"From sender@example.com\nMessage-ID: <last@example.com>\n\nbody\n"
+        )
+        found = _mbox_find_message_by_id(path, "<last@example.com>")  # type: ignore[arg-type]
+        assert found is not None
+        self.assertIn(b"<last@example.com>", found)
+        self.assertNotIn(b"From sender@example.com", found)
+
+    def test_message_followed_by_another_is_bounded(self) -> None:
+        from pony.storage import _mbox_find_message_by_id
+
+        path = self._mbox_path(
+            b"From a@example.com\nMessage-ID: <first@example.com>\n\nfirst body\n\n"
+            b"From b@example.com\nMessage-ID: <second@example.com>\n\nsecond body\n\n"
+        )
+        found = _mbox_find_message_by_id(path, "<first@example.com>")  # type: ignore[arg-type]
+        assert found is not None
+        self.assertIn(b"first body", found)
+        self.assertNotIn(b"second body", found)
+
+    def test_envelope_line_without_newline_returns_none(self) -> None:
+        from pony.storage import _mbox_find_message_by_id
+
+        # A hit with no newline terminating the "From " envelope line.
+        path = self._mbox_path(b"From x\rMessage-ID: <trunc@example.com>")
+        self.assertIsNone(_mbox_find_message_by_id(path, "<trunc@example.com>"))  # type: ignore[arg-type]
+
+
+class MboxMiscTestCase(unittest.TestCase):
+    """Small mbox repository paths not exercised by the conformance suite."""
+
+    def _repo(self) -> MboxMirrorRepository:
+        root = TMP_ROOT / "mbox-misc" / uuid4().hex
+        return MboxMirrorRepository(account_name="acct", root_dir=root)
+
+    def test_unknown_account_is_rejected(self) -> None:
+        repo = self._repo()
+        with self.assertRaises(ValueError):
+            repo.list_messages(
+                folder=FolderRef(account_name="other", folder_name="INBOX")
+            )
+
+    def test_folder_mtime_of_absent_folder_is_zero(self) -> None:
+        repo = self._repo()
+        mtime = repo.folder_mtime_ns(
+            folder=FolderRef(account_name="acct", folder_name="NeverCreated")
+        )
+        self.assertEqual(mtime, 0)
+
+    def test_folder_mtime_tracks_writes(self) -> None:
+        repo = self._repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        repo.create_folder(account_name="acct", folder_name="INBOX")
+        repo.store_message(
+            folder=folder,
+            raw_message=_rfc5322_message_bytes("Subject", "<m@example.com>"),
+        )
+        self.assertGreater(repo.folder_mtime_ns(folder=folder), 0)
+
+
+class MaildirShutdownTestCase(unittest.TestCase):
+    """The async write pool must release cleanly and be idempotent."""
+
+    def test_shutdown_is_idempotent(self) -> None:
+        root = TMP_ROOT / "maildir-shutdown" / uuid4().hex
+        repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        repo.create_folder(account_name="acct", folder_name="INBOX")
+        # The async path is what allocates the write pool that _shutdown frees.
+        repo.store_message_async(
+            folder=folder,
+            raw_message=_rfc5322_message_bytes("Subject", "<s@example.com>"),
+        )
+
+        repo._shutdown()
+        repo._shutdown()
+
+    def test_shutdown_survives_a_failing_flush(self) -> None:
+        root = TMP_ROOT / "maildir-shutdown-fail" / uuid4().hex
+        repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+
+        def _boom() -> None:
+            raise OSError("flush failed")
+
+        repo.flush_writes = _boom  # type: ignore[method-assign]
+        repo._shutdown()

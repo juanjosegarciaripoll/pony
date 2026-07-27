@@ -2713,3 +2713,165 @@ async def test_save_message_opens_save_screen() -> None:
         assert any(isinstance(s, SaveMessageScreen) for s in app.screen_stack)
         await pilot.click("#cancel")
         await pilot.pause()
+
+
+def _cross_account_app(label: str):  # type: ignore[no-untyped-def]
+    """Two IMAP accounts, one seeded message in acct1/INBOX."""
+    paths = make_tmp_paths(label)
+    account1 = make_test_account(paths, name="acct1")
+    account2 = make_test_account(paths, name="acct2")
+    config = make_test_config(accounts=(account1, account2))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+
+    folder1 = FolderRef(account_name="acct1", folder_name="INBOX")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct1"],
+        folder=folder1,
+        raw=plain_text(),
+        message_id="<cross@example.com>",
+    )
+    mirrors["acct2"].create_folder(account_name="acct2", folder_name="INBOX")
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+    return app, index, mirrors, folder1, source_ref
+
+
+async def test_move_cross_account_unreadable_source_is_reported() -> None:
+    """A source mirror that cannot produce bytes aborts that message."""
+    app, index, mirrors, folder1, source_ref = _cross_account_app("cross-unreadable")
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+    notifications = _capture_notifications(app)
+
+    def _boom(*, folder: FolderRef, storage_key: str) -> bytes:  # noqa: ARG001
+        raise OSError("mirror unreadable")
+
+    mirrors["acct1"].get_message_bytes = _boom  # type: ignore[method-assign]
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+        screen._move_to_folder([msg], folder1, folder2)
+
+    assert any("Could not read source message" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=folder2)) == 0
+
+
+async def test_move_cross_account_unwritable_target_is_reported() -> None:
+    """A target mirror that rejects the write leaves the source in place."""
+    app, index, mirrors, folder1, source_ref = _cross_account_app("cross-unwritable")
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+    notifications = _capture_notifications(app)
+
+    def _boom(*, folder: FolderRef, raw_message: bytes) -> str:  # noqa: ARG001
+        raise OSError("target read-only")
+
+    mirrors["acct2"].store_message = _boom  # type: ignore[method-assign]
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+        screen._move_to_folder([msg], folder1, folder2)
+
+    assert any("Failed to write copy to INBOX" in n for n in notifications)
+    # Source row survives so the user can retry.
+    assert len(index.list_folder_messages(folder=folder1)) == 1
+
+
+async def test_move_from_read_only_folder_is_refused() -> None:
+    """Move refuses to touch a read-only source folder."""
+    import dataclasses as _dc
+
+    from pony.domain import FolderConfig
+
+    paths = make_tmp_paths("cross-readonly-src")
+    account1 = _dc.replace(
+        make_test_account(paths, name="acct1"),
+        folders=FolderConfig(read_only=("INBOX",)),
+    )
+    account2 = make_test_account(paths, name="acct2")
+    config = make_test_config(accounts=(account1, account2))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    folder1 = FolderRef(account_name="acct1", folder_name="INBOX")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct1"],
+        folder=folder1,
+        raw=plain_text(),
+        message_id="<ro@example.com>",
+    )
+    mirrors["acct2"].create_folder(account_name="acct2", folder_name="INBOX")
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+    notifications = _capture_notifications(app)
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+        screen._move_to_folder([msg], folder1, folder2)
+
+    assert any("read-only folder" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=folder2)) == 0
+
+
+async def test_next_unread_request_advances_the_reader() -> None:
+    """The reader's next-unread jump loads the following unread message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="next-unread",
+        seed=[(folder, plain_text()), (folder, multipart_mixed_attachment())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        view = screen.query_one(MessageViewPanel)
+        view.post_message(MessageViewPanel.NextUnreadRequested())
+        await pilot.pause()
+        await pilot.pause()
+
+        rows = index.list_folder_messages(folder=folder)
+        seen = [r for r in rows if MessageFlag.SEEN in r.local_flags]
+        assert len(seen) >= 1
+
+
+async def test_next_unread_request_at_the_end_is_a_noop() -> None:
+    """With nothing unread after the cursor the reader stays put."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="next-unread-end",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        view = screen.query_one(MessageViewPanel)
+        view.post_message(MessageViewPanel.NextUnreadRequested())
+        await pilot.pause()
+        await pilot.pause()
+        # Still on the main screen, nothing raised.
+        assert isinstance(app.screen, MainScreen)
