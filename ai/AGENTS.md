@@ -26,7 +26,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **94.7 %**; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **95.3 %**; do not regress it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -36,7 +36,13 @@ Key test infrastructure:
 | CLI commands | `tests/test_cli.py` — call `main([...])` with a temp `AppPaths` |
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
-| Message list widget | `tests/test_message_list_panel.py` — re-focus the panel before every key |
+| Message list widget | `tests/test_message_list_panel.py` |
+| Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
+
+**Async tests are plain `async def` functions.** Do not use
+`unittest.IsolatedAsyncioTestCase`: it closes the event loop on teardown, and
+the contact-suggester tests in `tests/test_screens.py` call
+`asyncio.get_event_loop()` directly, so they fail depending on file order.
 | Message projection | `tests/test_message_projection.py` |
 | Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
 | TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
@@ -60,8 +66,8 @@ Largest remaining gaps (in priority order):
    with `build_pony_app` + `Pilot`
 3. `sync.py` (95 %, ~56) — remaining `_pending_push_ops` planner arms need specific
    index row states (UIDVALIDITY reset with a pending move, slow-path restore)
-4. `tui/screens/compose_screen.py` (92 %, ~40) — remaining send/draft failure arms
-5. `storage.py` (93 %, ~37) — mbox TOC edge cases; extend the conformance suite
+4. `storage.py` (95 %, ~29) — mbox TOC edge cases; extend the conformance suite
+5. `mcp_server.py` (89 %, ~21) and `tui/app.py` (85 %, ~21)
 
 **Structurally unreachable — do not chase.** `credentials.py` sits at 83.5 %
 and cannot rise on Linux CI: every uncovered line is inside `_dpapi_encrypt` /
