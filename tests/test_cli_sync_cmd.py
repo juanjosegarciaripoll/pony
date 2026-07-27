@@ -320,3 +320,69 @@ class RunSyncTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncSummaryTestCase(unittest.TestCase):
+    """The post-run summary block and its auxiliary passes."""
+
+    def test_a_failed_account_is_reported_in_the_summary(self) -> None:
+        """Fewer results than configured accounts means one blew up."""
+        folders = _seeded_inbox()
+
+        def _factory(*_args: object, **_kwargs: object) -> FakeImapSession:
+            session = FakeImapSession(folders)
+
+            def _boom(*_a: object, **_k: object) -> None:
+                raise OSError("connection refused")
+
+            session.list_folders = _boom  # type: ignore[method-assign]
+            return session
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.cli.ImapSession", _factory),
+            self.assertRaises(SystemExit),
+        ):
+            run_cli_capture("--config", str(config_path), "sync", "--yes")
+
+    def test_a_folder_with_no_changes_is_left_out_of_the_summary(self) -> None:
+        """A second sync has nothing to report for the same folder."""
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.cli.ImapSession", _fake_factory(_seeded_inbox())),
+        ):
+            run_cli_capture("--config", str(config_path), "sync", "--yes")
+            output, rc = run_cli_capture("--config", str(config_path), "sync", "--yes")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("up to date", output.lower())
+
+    def test_bbdb_contacts_are_synced_after_a_run(self) -> None:
+        """A configured bbdb_path is imported once the sync finishes."""
+        with isolated_app_env() as env_root, temporary_config() as config_path:
+            bbdb_file = env_root / "data" / "sync-contacts.bbdb"
+            bbdb_file.parent.mkdir(parents=True, exist_ok=True)
+            bbdb_file.write_text(
+                ";; -*-coding: utf-8-emacs;-*-\n"
+                '["Grace" "Hopper" nil nil nil nil nil'
+                ' ("grace@example.com") nil nil]\n',
+                encoding="utf-8",
+            )
+            original = config_path.read_text(encoding="utf-8")
+            config_path.write_text(
+                f'bbdb_path = "{bbdb_file}"\n' + original, encoding="utf-8"
+            )
+
+            with patch("pony.cli.ImapSession", _fake_factory(_seeded_inbox())):
+                _output, rc = run_cli_capture(
+                    "--config", str(config_path), "sync", "--yes"
+                )
+            self.assertEqual(rc, 0)
+
+            shown, _rc = run_cli_capture(
+                "--config", str(config_path), "contacts", "show", "grace@example.com"
+            )
+
+        self.assertIn("Grace", shown)

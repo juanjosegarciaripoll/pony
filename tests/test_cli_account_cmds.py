@@ -487,3 +487,115 @@ class AccountAddWizardTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccountAddWizardEdgeCaseTestCase(unittest.TestCase):
+    """Wizard paths reached only by unusual input or a broken config."""
+
+    def test_a_broken_config_is_appended_to_rather_than_read(self) -> None:
+        """The wizard exists to fix setups, so it must survive invalid TOML."""
+        inputs = _prompt_inputs(
+            [
+                "Rescue",  # account name
+                "me@rescue.example",  # email
+                "",  # imap host -> default
+                "",  # imap ssl
+                "",  # imap port
+                "",  # smtp host -> default
+                "",  # smtp ssl
+                "",  # smtp port
+                "",  # username -> default
+                "1",  # plaintext
+                "",  # mirror format -> default
+            ]
+        )
+        with isolated_app_env():
+            paths = AppPaths.default()
+            config_file = paths.config_file
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text("this is not valid toml [[[", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                mock.patch("builtins.input", lambda *_a, **_k: next(inputs)),
+                mock.patch("getpass.getpass", return_value="pw"),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = run_account_add_interactive(paths=paths, config_path=None)
+
+            text = config_file.read_text(encoding="utf-8")
+
+        self.assertEqual(rc, 0)
+        self.assertIn('name             = "Rescue"', text)
+
+    def test_an_unrecognised_mirror_format_falls_back_to_maildir(self) -> None:
+        inputs = _prompt_inputs(
+            [
+                "Odd",  # account name
+                "me@odd.example",  # email
+                "",  # imap host
+                "",  # imap ssl
+                "",  # imap port
+                "",  # smtp host
+                "",  # smtp ssl
+                "",  # smtp port
+                "",  # username
+                "1",  # plaintext
+                "sqlite",  # mirror format -> not a real option
+            ]
+        )
+        with isolated_app_env():
+            paths = AppPaths.default()
+            out = io.StringIO()
+
+            with (
+                mock.patch("builtins.input", lambda *_a, **_k: next(inputs)),
+                mock.patch("getpass.getpass", return_value="pw"),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = run_account_add_interactive(paths=paths, config_path=None)
+
+            text = paths.config_file.read_text(encoding="utf-8")
+
+        self.assertEqual(rc, 0)
+        self.assertIn('format = "maildir"', text)
+
+    def test_account_add_without_a_name_starts_the_wizard(self) -> None:
+        """``pony account add`` on a terminal runs the wizard, not the template.
+
+        Off a terminal it prints a config block instead — hence the
+        patched ``isatty``.
+        """
+        from pony.cli import run_account_add
+
+        inputs = _prompt_inputs(
+            [
+                "Wizard",
+                "me@wizard.example",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "",
+            ]
+        )
+        with isolated_app_env():
+            paths = AppPaths.default()
+            out = io.StringIO()
+
+            with (
+                mock.patch("builtins.input", lambda *_a, **_k: next(inputs)),
+                mock.patch("getpass.getpass", return_value="pw"),
+                mock.patch("sys.stdin.isatty", return_value=True),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = run_account_add(paths=paths, config_path=None, account_name=None)
+
+            text = paths.config_file.read_text(encoding="utf-8")
+
+        self.assertEqual(rc, 0)
+        self.assertIn('name             = "Wizard"', text)

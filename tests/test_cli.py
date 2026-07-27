@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+import corpus
 from conftest import TMP_ROOT
 
 from pony.cli import main
@@ -2767,3 +2768,365 @@ class SchemaResetWithoutContactsTests(unittest.TestCase):
             next_steps = captured.split("Reset complete. Next steps:")[1]
             self.assertIn("pony sync", next_steps)
             self.assertNotIn("contacts import", next_steps)
+
+
+class AppLaunchingCommandTests(unittest.TestCase):
+    """Commands whose last act is to start a blocking UI.
+
+    Everything these do *before* ``run()`` — config loading, index
+    setup, local rescan, BBDB import, theme resolution — is real work
+    worth testing.  Patching the App class at its import site lets the
+    wiring run without a terminal.
+    """
+
+    def test_the_tui_command_wires_the_app_from_config(self) -> None:
+        from unittest.mock import patch
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Waiting", body="body")
+            with patch("pony.tui.PonyApp") as app_cls:
+                rc = run_cli_ret("--config", str(config_path), "tui")
+
+        self.assertEqual(rc, 0)
+        app_cls.assert_called_once()
+        kwargs = app_cls.call_args.kwargs
+        self.assertEqual(kwargs["config_path"], config_path)
+        self.assertIsNotNone(kwargs["index"])
+        self.assertIn("personal", kwargs["mirrors"])
+        app_cls.return_value.run.assert_called_once()
+
+    def test_a_bad_theme_is_rejected_before_the_tui_starts(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.tui.PonyApp") as app_cls,
+        ):
+            rc = run_cli_ret(
+                "--config", str(config_path), "--theme", "no-such-theme", "tui"
+            )
+
+        self.assertEqual(rc, 1)
+        app_cls.assert_not_called()
+
+    def test_the_tui_rescans_local_accounts_and_imports_bbdb(self) -> None:
+        """Local mirrors are the only source of truth, so they are rescanned."""
+        from unittest.mock import patch
+
+        with isolated_app_env() as env_root, temporary_config() as config_path:
+            mirror_dir = env_root / "data" / "local-archive"
+            (mirror_dir / "INBOX" / "cur").mkdir(parents=True, exist_ok=True)
+            (mirror_dir / "INBOX" / "new").mkdir(parents=True, exist_ok=True)
+            (mirror_dir / "INBOX" / "tmp").mkdir(parents=True, exist_ok=True)
+
+            bbdb_file = env_root / "data" / "contacts.bbdb"
+            bbdb_file.write_text(
+                ";; -*-coding: utf-8-emacs;-*-\n"
+                '["Ada" "Lovelace" nil nil nil nil nil'
+                ' ("ada@example.com") nil nil]\n',
+                encoding="utf-8",
+            )
+
+            # Top-level keys must precede every table, so bbdb_path goes
+            # first — appending it would land it inside [accounts.mirror].
+            config_path.write_text(
+                f'bbdb_path = "{bbdb_file}"\n'
+                + sample_config_toml()
+                + "\n\n[[accounts]]\n"
+                'account_type = "local"\n'
+                'name = "archive"\n'
+                'email_address = "archive@example.com"\n'
+                "\n[accounts.mirror]\n"
+                f'path = "{mirror_dir}"\n'
+                'format = "maildir"\n',
+                encoding="utf-8",
+            )
+
+            with patch("pony.tui.PonyApp") as app_cls:
+                rc = run_cli_ret("--config", str(config_path), "tui")
+
+            self.assertEqual(rc, 0)
+            app_cls.return_value.run.assert_called_once()
+            # The BBDB contact was imported into the index on the way in.
+            output = run_cli(
+                "--config", str(config_path), "contacts", "show", "ada@example.com"
+            )
+            self.assertIn("Ada", output)
+
+    def test_the_contacts_browser_command_opens_the_app(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.tui.app.ContactsApp") as app_cls,
+        ):
+            rc = run_cli_ret("--config", str(config_path), "contacts", "browse")
+
+        self.assertEqual(rc, 0)
+        app_cls.return_value.run.assert_called_once()
+
+    def test_the_view_command_opens_an_eml_file(self) -> None:
+        from unittest.mock import patch
+
+        with isolated_app_env():
+            eml = TMP_ROOT / f"view-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.plain_text())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 0)
+        app_cls.return_value.run.assert_called_once()
+
+    def test_no_command_at_all_launches_the_tui(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.tui.PonyApp") as app_cls,
+        ):
+            rc = run_cli_ret("--config", str(config_path))
+
+        self.assertEqual(rc, 0)
+        app_cls.return_value.run.assert_called_once()
+
+    def test_the_view_command_rejects_an_unknown_theme(self) -> None:
+        from unittest.mock import patch
+
+        with isolated_app_env():
+            eml = TMP_ROOT / f"theme-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.plain_text())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("--theme", "nope", "view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 1)
+        app_cls.assert_not_called()
+
+    def test_the_docs_command_opens_a_browser(self) -> None:
+        from unittest.mock import patch
+
+        with isolated_app_env(), patch("webbrowser.open") as opener:
+            output, rc = run_cli_capture("docs")
+
+        self.assertEqual(rc, 0)
+        opener.assert_called_once()
+        self.assertIn("docs:", output)
+
+    def test_the_mcp_command_starts_the_server(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch("pony.mcp_server.run_mcp_server") as serve,
+        ):
+            rc = run_cli_ret("--config", str(config_path), "mcp")
+
+        self.assertEqual(rc, 0)
+        serve.assert_called_once()
+
+
+class PagerFallbackTests(unittest.TestCase):
+    """The built-in pager used when ``less`` is unavailable."""
+
+    def test_long_text_pages_until_the_user_quits(self) -> None:
+        from unittest.mock import patch
+
+        from pony.cli import _run_pager
+
+        text = "\n".join(f"line {i}" for i in range(200))
+        with (
+            patch("shutil.which", return_value=None),
+            patch("builtins.input", return_value="q"),
+        ):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _run_pager(text)
+
+        printed = buffer.getvalue()
+        self.assertIn("line 0", printed)
+        # Quitting at the first prompt means the tail was never printed.
+        self.assertNotIn("line 199", printed)
+
+    def test_a_closed_stdin_ends_the_pager(self) -> None:
+        from unittest.mock import patch
+
+        from pony.cli import _run_pager
+
+        text = "\n".join(f"line {i}" for i in range(200))
+        with (
+            patch("shutil.which", return_value=None),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _run_pager(text)
+
+        self.assertIn("line 0", buffer.getvalue())
+
+    def test_short_text_never_prompts(self) -> None:
+        from unittest.mock import patch
+
+        from pony.cli import _run_pager
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _run_pager("one\ntwo")
+
+        self.assertIn("one", buffer.getvalue())
+
+
+class FormattingHelperTests(unittest.TestCase):
+    """Human-readable formatters used across the summary commands."""
+
+    def test_durations_switch_to_seconds_past_a_thousand_ms(self) -> None:
+        from pony.cli import _fmt_ms
+
+        self.assertEqual(_fmt_ms(999), "999ms")
+        self.assertEqual(_fmt_ms(1500), "1.5s")
+
+    def test_sizes_climb_to_terabytes(self) -> None:
+        from pony.cli import _fmt_size
+
+        self.assertEqual(_fmt_size(512), "512 B")
+        self.assertEqual(_fmt_size(3 * 1024**4), "3.0 TB")
+
+
+class CorruptIndexQueryTests(unittest.TestCase):
+    """``local-summary`` reads the index directly and must survive a bad file."""
+
+    def test_a_corrupt_database_yields_empty_results(self) -> None:
+        from pony.cli import _query_index, _query_pending
+
+        bad = TMP_ROOT / f"corrupt-{uuid4().hex}.sqlite3"
+        bad.write_bytes(b"this is definitely not a sqlite database")
+        try:
+            self.assertEqual(_query_index(bad, "personal"), {})
+            self.assertEqual(_query_pending(bad, "personal"), {})
+        finally:
+            bad.unlink(missing_ok=True)
+
+
+class RemainingCommandArmTests(unittest.TestCase):
+    """Small arms of commands whose main paths are covered elsewhere."""
+
+    def test_docs_prefers_a_bundled_copy_when_frozen(self) -> None:
+        """A frozen build ships HTML next to the binary; use it over the web."""
+        from unittest.mock import patch
+
+        with isolated_app_env():
+            bundled = TMP_ROOT / f"docs-{uuid4().hex}"
+            bundled.mkdir(parents=True, exist_ok=True)
+            (bundled / "index.html").write_text("<html></html>", encoding="utf-8")
+            try:
+                with (
+                    patch("pony.paths.bundled_docs_path", return_value=bundled),
+                    patch("webbrowser.open") as opener,
+                ):
+                    output, rc = run_cli_capture("docs")
+            finally:
+                (bundled / "index.html").unlink(missing_ok=True)
+                bundled.rmdir()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("bundled docs", output)
+        opener.assert_called_once()
+
+    def test_compose_without_any_configured_account_exits(self) -> None:
+        with isolated_app_env() as env_root:
+            config_path = env_root / "config" / "empty.toml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text("config_version = 2\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli("--config", str(config_path), "compose")
+
+        self.assertIn("No accounts configured", str(ctx.exception))
+
+    def test_mbox_folders_are_listed_without_counting_them(self) -> None:
+        """Counting an mbox means parsing it, so the summary shows paths only."""
+        from pony.cli import _mbox_folders
+
+        root = TMP_ROOT / f"mbox-summary-{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            (root / "INBOX.mbox").write_bytes(b"")
+            (root / "Archive.Work.mbox").write_bytes(b"")
+            listed = _mbox_folders(root)
+        finally:
+            for name in ("INBOX.mbox", "Archive.Work.mbox"):
+                (root / name).unlink(missing_ok=True)
+            root.rmdir()
+
+        # Dots in the filename encode the folder hierarchy.
+        self.assertEqual(listed, {"INBOX": None, "Archive/Work": None})
+
+    def test_an_empty_mbox_root_still_reports_an_inbox(self) -> None:
+        from pony.cli import _mbox_folders
+
+        root = TMP_ROOT / f"mbox-empty-{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.assertEqual(_mbox_folders(root), {"INBOX": None})
+        finally:
+            root.rmdir()
+
+    def test_the_index_query_reports_counts_and_last_sync(self) -> None:
+        """``local-summary`` reads the index directly rather than via the repo."""
+        from pony.cli import _query_index
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Counted", body="body")
+            db = AppPaths.default().index_db_file
+
+            counts = _query_index(db, "personal")
+
+        self.assertIn("INBOX", counts)
+        self.assertEqual(counts["INBOX"][0], 1)
+
+    def test_the_schema_reset_skips_targets_that_do_not_exist(self) -> None:
+        """A mirror listed in config but never created is not an error."""
+        import sqlite3
+
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            app_paths = AppPaths.default()
+            app_paths.ensure_runtime_dirs()
+            db = app_paths.index_db_file
+            db.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(db)
+            try:
+                conn.executescript(
+                    "CREATE TABLE messages (account_name TEXT);PRAGMA user_version = 0;"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            # The configured mirror directory is deliberately absent.
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("y\n")
+            try:
+                captured, rc = run_cli_capture(
+                    "--config", str(config_path), "search", "anything"
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+        self.assertEqual(rc, 0)
+        self.assertIn("(not found)", captured)
+        self.assertFalse(db.exists())
