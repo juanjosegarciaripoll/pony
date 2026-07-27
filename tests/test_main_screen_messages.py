@@ -173,3 +173,110 @@ async def test_copy_move_and_folder_creation_error_guards() -> None:
         "Unknown account 'missing'.",
         "Failed to create folder 'Fictional'.",
     ]
+
+
+def _local_account(paths: object, name: str = "local"):  # type: ignore[no-untyped-def]
+    """A local (non-IMAP) account backed by a maildir mirror."""
+    from pony.domain import LocalAccountConfig, MirrorConfig
+
+    mirror_dir = paths.data_dir / "mirrors" / name  # type: ignore[attr-defined]
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    return LocalAccountConfig(
+        name=name,
+        email_address=f"{name}@example.test",
+        mirror=MirrorConfig(path=mirror_dir, format="maildir"),
+    )
+
+
+async def test_archive_requires_an_imap_account() -> None:
+    """A local account has no server to archive to."""
+    paths = make_tmp_paths("main-archive-local")
+    folder = FolderRef(account_name="local", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-archive-local-app",
+        accounts=(_local_account(paths),),
+        seed=[(folder, plain_text())],
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        _main(app).archive_current_message()
+        await pilot.pause()
+
+    assert any("requires an IMAP account" in message for message in messages)
+
+
+async def test_archiving_from_the_archive_folder_is_a_noop() -> None:
+    """Source and target being the same folder means there is nothing to do."""
+    paths = make_tmp_paths("main-archive-same")
+    account = make_test_account(paths, archive_folder="INBOX")
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-archive-same-app",
+        accounts=(account,),
+        seed=[(folder, plain_text())],
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        _main(app).archive_current_message()
+        await pilot.pause()
+
+    # No warning, and the row stays exactly where it was.
+    assert messages == []
+    assert len(list(index.list_folder_messages(folder=folder))) == 1
+
+
+async def test_cross_account_move_from_a_local_source_deletes_the_original() -> None:
+    """Local sources have no sync to relay a deletion, so the row goes away.
+
+    The IMAP path instead marks the source TRASHED and lets the next sync
+    EXPUNGE it; a local mirror would keep that tombstone forever.
+    """
+    paths = make_tmp_paths("main-move-local-src")
+    local = _local_account(paths, name="local")
+    remote = make_test_account(paths, name="remote")
+    source = FolderRef(account_name="local", folder_name="INBOX")
+    target = FolderRef(account_name="remote", folder_name="INBOX")
+
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="main-move-local-src-app",
+        accounts=(local, remote),
+        seed=[(source, plain_text())],
+    )
+    mirrors["remote"].create_folder(account_name="remote", folder_name="INBOX")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        msg = list(index.list_folder_messages(folder=source))[0]
+
+        screen._move_to_folder([msg], source, target)
+        await pilot.pause()
+
+    # Target gained the message; the local source row is gone outright
+    # rather than left behind as a TRASHED tombstone.
+    assert len(list(index.list_folder_messages(folder=target))) == 1
+    assert index.get_message(message_ref=msg.message_ref) is None
+
+
+async def test_new_folder_falls_back_to_the_only_configured_account() -> None:
+    """With exactly one account there is no ambiguity to resolve."""
+    from pony.tui.screens.new_folder_screen import NewFolderScreen
+
+    app, *_ = build_pony_app(label="main-new-folder-single")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._current_folder_ref = None
+
+        assert screen._account_for_new_folder() is not None
+        screen.action_new_folder()
+        await pilot.pause()
+
+        assert isinstance(app.screen, NewFolderScreen)
+        app.screen.dismiss(None)
+        await pilot.pause()

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from email.message import EmailMessage
 from unittest.mock import Mock
 
 from corpus import plain_text
 from tui_helpers import build_pony_app
 
-from pony.domain import Contact, FolderRef, MessageStatus
+from pony.domain import Contact, FolderRef, MessageFlag, MessageStatus
 from pony.tui.screens.contact_edit_screen import ContactEditScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
@@ -203,3 +204,187 @@ async def test_remote_draft_completion_marks_original_trashed() -> None:
         updated = index.get_message(message_ref=current.message_ref)
         assert updated is not None
         assert updated.local_status == MessageStatus.TRASHED
+
+
+def _local_account(paths: object, name: str = "local"):  # type: ignore[no-untyped-def]
+    """A local (non-IMAP) account with no SMTP block — it cannot send."""
+    from pony.domain import LocalAccountConfig, MirrorConfig
+
+    mirror_dir = paths.data_dir / "mirrors" / name  # type: ignore[attr-defined]
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    return LocalAccountConfig(
+        name=name,
+        email_address=f"{name}@example.test",
+        mirror=MirrorConfig(path=mirror_dir, format="maildir"),
+    )
+
+
+async def test_harvest_contact_without_a_contacts_index_does_nothing() -> None:
+    """Contact harvesting is inert when the screen has no contacts store."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-harvest-no-store",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        screen._contacts = None
+        app.push_screen = Mock()
+
+        screen.action_harvest_contact("1")
+
+        app.push_screen.assert_not_called()
+
+
+async def test_harvest_contact_with_no_display_name_leaves_both_names_empty() -> None:
+    """A bare address yields a contact with only the email filled in."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-harvest-bare",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        screen._contacts = index
+        panel = screen.query_one(MessageViewPanel)
+        panel.header_address = Mock(return_value=("   ", "bare@example.test"))
+        app.push_screen = Mock()
+
+        screen.action_harvest_contact("1")
+
+        contact = app.push_screen.call_args.args[0]._contact
+        assert contact.first_name == ""
+        assert contact.last_name == ""
+        assert contact.emails == ("bare@example.test",)
+
+
+async def test_harvest_contact_with_a_single_word_name_sets_only_the_first() -> None:
+    """A mononym is a first name — inventing a surname would be wrong."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-harvest-mononym",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        screen._contacts = index
+        panel = screen.query_one(MessageViewPanel)
+        panel.header_address = Mock(return_value=("Prince", "prince@example.test"))
+        app.push_screen = Mock()
+
+        screen.action_harvest_contact("1")
+
+        contact = app.push_screen.call_args.args[0]._contact
+        assert contact.first_name == "Prince"
+        assert contact.last_name == ""
+
+
+async def test_composing_without_a_sendable_account_warns() -> None:
+    """With no SMTP anywhere, compose explains instead of opening blank."""
+    from tui_helpers import make_tmp_paths
+
+    paths = make_tmp_paths("main-no-smtp")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-no-smtp-app",
+        accounts=(_local_account(paths),),
+    )
+    notifications = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        assert screen._sendable_or_notify("Composing") is None
+
+    assert any("requires an IMAP account" in n for n in notifications)
+
+
+async def test_editing_a_draft_reports_a_mirror_read_failure() -> None:
+    """A draft whose bytes cannot be read explains rather than opening empty."""
+    folder = FolderRef(account_name="acct", folder_name="Drafts")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="main-draft-unreadable",
+        seed=[(folder, _draft_bytes())],
+    )
+    notifications = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen.query_one(MessageListPanel).load_folder(folder)
+        await pilot.pause()
+
+        def _boom(*, folder: FolderRef, storage_key: str) -> bytes:  # noqa: ARG001
+            raise OSError("draft unreadable")
+
+        mirrors["acct"].get_message_bytes = _boom  # type: ignore[method-assign]
+        screen.compose_from_draft()
+        await pilot.pause()
+
+    assert any("Could not load draft." in n for n in notifications)
+
+
+async def test_editing_a_draft_without_a_mirror_is_a_noop() -> None:
+    """An account whose mirror is missing cannot open its drafts."""
+    folder = FolderRef(account_name="acct", folder_name="Drafts")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-draft-no-mirror",
+        seed=[(folder, _draft_bytes())],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen.query_one(MessageListPanel).load_folder(folder)
+        await pilot.pause()
+        screen._mirrors = {}
+        app.push_screen = Mock()
+
+        screen.compose_from_draft()
+        await pilot.pause()
+
+        app.push_screen.assert_not_called()
+
+
+async def test_a_sent_reply_all_marks_the_original_answered() -> None:
+    """Completing the reply-all composer flags the source message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-reply-all-answered",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[Callable[[bool | None], None]] = []
+
+        def _capture(
+            _screen: object,
+            callback: Callable[[bool | None], None] | None = None,
+            **_kw: object,
+        ) -> None:
+            if callback is not None:
+                captured.append(callback)
+
+        app.push_screen = Mock(side_effect=_capture)
+
+        screen.compose_reply_all()
+        on_sent = captured[0]
+
+        # Dismissing without sending leaves the flags alone.
+        on_sent(None)
+        msg = screen.get_current_message()
+        assert msg is not None
+        assert MessageFlag.ANSWERED not in msg.local_flags
+
+        on_sent(True)
+        await pilot.pause()
+
+    reloaded = list(index.list_folder_messages(folder=folder))[0]
+    assert MessageFlag.ANSWERED in reloaded.local_flags
