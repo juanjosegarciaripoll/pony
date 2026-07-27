@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 from textual import work
+from textual.await_complete import AwaitComplete
 from textual.pilot import Pilot
 from textual.widgets import DirectoryTree, Tree
 from textual.widgets._directory_tree import DirEntry
@@ -88,6 +89,24 @@ class TestDirectoryTree(DirectoryTree):
             entries,
             key=lambda entry: (not self._safe_is_dir(entry), entry.name.lower()),
         )
+
+    def reload(self) -> AwaitComplete:
+        """Reload the root without starting Textual's infinite queue worker."""
+        return self.reload_node(self.root)
+
+    def _add_to_load_queue(self, node: TreeNode[DirEntry]) -> AwaitComplete:
+        """Load one node directly instead of waiting on a background queue."""
+        assert node.data is not None
+        if node.data.loaded:
+            return AwaitComplete.nothing()
+        node.data.loaded = True
+
+        async def load() -> None:
+            content = await self._load_directory(node).wait()
+            if content:
+                self._populate_node(node, content)
+
+        return AwaitComplete(load())
 
     async def _on_tree_node_expanded(self, event: Tree.NodeExpanded[DirEntry]) -> None:
         event.stop()
