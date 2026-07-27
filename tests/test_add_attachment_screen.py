@@ -74,14 +74,13 @@ class _Host(App[str | None]):
 
     @asynccontextmanager
     async def run_test(self, **kwargs: object) -> AsyncIterator[Pilot[str | None]]:
-        """Run the app and release DirectoryTree's executor on the same loop."""
+        """Run the app and fully drain its executor before loop teardown."""
         async with super().run_test(**kwargs) as pilot:  # type: ignore[arg-type]
             yield pilot
         loop = asyncio.get_running_loop()
         executor = loop._default_executor  # type: ignore[attr-defined]
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
-            loop._default_executor = None  # type: ignore[attr-defined]
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _screen(pilot_app: App[str | None]) -> AddAttachmentScreen:

@@ -19,7 +19,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
-from textual import work
 from textual.await_complete import AwaitComplete
 from textual.pilot import Pilot
 from textual.widgets import DirectoryTree, Tree
@@ -56,8 +55,7 @@ class _ExecutorCleanupMixin:
         loop = asyncio.get_running_loop()
         executor = loop._default_executor  # type: ignore[attr-defined]
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
-            loop._default_executor = None  # type: ignore[attr-defined]
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 class TestPonyApp(_ExecutorCleanupMixin, PonyApp):
@@ -77,8 +75,8 @@ class TestDirectoryTree(DirectoryTree):
 
     __test__ = False
 
-    @work(exit_on_error=False)
-    async def _load_directory(self, node: TreeNode[DirEntry]) -> list[Path]:
+    def _read_directory(self, node: TreeNode[DirEntry]) -> list[Path]:
+        """Read fixture paths immediately on the Textual event loop."""
         assert node.data is not None
         path = node.data.path.expanduser().resolve()
         try:
@@ -91,18 +89,34 @@ class TestDirectoryTree(DirectoryTree):
         )
 
     def reload(self) -> AwaitComplete:
-        """Reload the root without starting Textual's infinite queue worker."""
+        """Reload the root without starting a queue or worker."""
         return self.reload_node(self.root)
 
+    def reload_node(self, node: TreeNode[DirEntry]) -> AwaitComplete:
+        """Replace a fixture subtree in one finite event-loop operation."""
+
+        async def reload() -> None:
+            assert node.data is not None
+            path = node.data.path
+            self.reset_node(node, str(path.name), DirEntry(self.PATH(path)))
+            assert node.data is not None
+            node.data.loaded = True
+            content = self._read_directory(node)
+            if content:
+                self._populate_node(node, content)
+            node.expand()
+
+        return AwaitComplete(reload())
+
     def _add_to_load_queue(self, node: TreeNode[DirEntry]) -> AwaitComplete:
-        """Load one node directly instead of waiting on a background queue."""
+        """Load one node directly instead of waiting on a queue or worker."""
         assert node.data is not None
         if node.data.loaded:
             return AwaitComplete.nothing()
         node.data.loaded = True
 
         async def load() -> None:
-            content = await self._load_directory(node).wait()
+            content = self._read_directory(node)
             if content:
                 self._populate_node(node, content)
 
