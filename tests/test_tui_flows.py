@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from email.message import EmailMessage, Message
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 from corpus import html_only, multipart_mixed_attachment, plain_text
+from textual.app import App
 from tui_helpers import (
     DeterministicDirectoryTree,
     DeterministicDirOnlyTree,
@@ -810,7 +812,7 @@ def _canned_sync_result() -> SyncResult:
     )
 
 
-def _capture_notifications(app: PonyApp) -> list[str]:
+def _capture_notifications(app: App[Any]) -> list[str]:
     """Patch ``app.notify`` to record every message it is handed."""
     notifications: list[str] = []
     original_notify = app.notify
@@ -1260,6 +1262,187 @@ async def test_compose_send_smtp_error_notifies(
     # The compose screen should still be accessible (send failed, did not dismiss)
 
 
+async def _fill_and_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
+    """Fill the minimum compose fields and press the send chord."""
+    from textual.widgets import Input, TextArea
+
+    app.screen.query_one("#to-input", Input).value = "bob@example.com"
+    app.screen.query_one("#subject-input", Input).value = "Subject"
+    app.screen.query_one("#body-area", TextArea).load_text("Body")
+    await pilot.pause()
+    await pilot.press("ctrl+s")
+    await pilot.pause()
+
+
+async def test_compose_send_discards_pre_send_draft_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The draft written before SMTP is removed once the send succeeds."""
+    app, _cfg, _paths, index, mirrors = build_compose_app(label="send-draft-cleanup")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
+    sent = FolderRef(account_name="acct", folder_name="Sent")
+    assert len(mirrors["acct"].list_messages(folder=drafts)) == 0
+    assert len(mirrors["acct"].list_messages(folder=sent)) == 1
+    assert len(index.list_folder_messages(folder=drafts)) == 0
+
+
+async def test_compose_send_failure_keeps_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An SMTP failure leaves the pre-send draft in place and says so."""
+    from pony.smtp_sender import SMTPError
+
+    app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-draft-kept")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
+    assert len(mirrors["acct"].list_messages(folder=drafts)) == 1
+    assert any("message saved to Drafts" in n for n in notifications)
+
+
+async def test_compose_send_survives_a_failed_draft_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mirror that cannot delete the pre-send draft does not break the send."""
+    app, _cfg, _paths, _index, mirrors = build_compose_app(
+        label="send-draft-undeletable"
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+    monkeypatch.setattr(
+        mirrors["acct"],
+        "delete_message",
+        Mock(side_effect=OSError("mirror is read-only")),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+
+    sent = FolderRef(account_name="acct", folder_name="Sent")
+    assert len(mirrors["acct"].list_messages(folder=sent)) == 1
+
+
+async def test_compose_send_reports_a_failed_sent_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mirror write error is surfaced instead of silently losing the copy."""
+    app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-store-fails")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+    monkeypatch.setattr(
+        mirrors["acct"],
+        "store_message",
+        Mock(side_effect=OSError("disk full")),
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+
+    assert any("Could not save to Sent: disk full" in n for n in notifications)
+
+
+async def test_compose_send_without_a_mirror_still_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no mirror for the account, the send proceeds and files nothing."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="send-no-mirror")
+    send_mock = Mock()
+    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen._mirrors = {}
+        await _fill_and_send(pilot, app)
+
+    assert send_mock.call_count == 1
+
+
+async def test_compose_paste_file_path_attaches_it(tmp_path: Path) -> None:
+    """Pasting a path into the attachments bar attaches that file."""
+    from textual.events import Paste
+
+    from pony.tui.screens.compose_screen import AttachmentsBar
+
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"%PDF-1.4 fictional")
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-attach")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one(AttachmentsBar)
+        bar.on_paste(Paste(str(attachment)))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        assert screen._attachment_paths == [attachment]
+
+
+async def test_compose_paste_file_url_is_unquoted(tmp_path: Path) -> None:
+    """A file:// URL with percent-escapes resolves to the real path."""
+    from textual.events import Paste
+
+    from pony.tui.screens.compose_screen import AttachmentsBar
+
+    attachment = tmp_path / "quarterly report.pdf"
+    attachment.write_bytes(b"%PDF-1.4 fictional")
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-file-url")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one(AttachmentsBar)
+        bar.on_paste(Paste(f"'file://{str(attachment).replace(' ', '%20')}'"))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        assert screen._attachment_paths == [attachment]
+
+
+async def test_compose_paste_non_path_attaches_nothing() -> None:
+    """Pasting ordinary text warns and leaves the attachment list untouched."""
+    from textual.events import Paste
+
+    from pony.tui.screens.compose_screen import AttachmentsBar
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-text")
+    notifications = _capture_notifications(app)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one(AttachmentsBar)
+        bar.on_paste(Paste("just some pasted prose"))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        assert screen._attachment_paths == []
+
+    assert any("Not a file:" in n for n in notifications)
+
+
 async def test_compose_with_to_focuses_body() -> None:
     """When compose is initialized with a To address, body gets focus."""
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
@@ -1630,6 +1813,67 @@ async def test_move_shortcut_opens_folder_picker() -> None:
         await pilot.pause()
         assert any(isinstance(s, PickFolderScreen) for s in app.screen_stack)
         await pilot.press("escape")
+        await pilot.pause()
+        assert not any(isinstance(s, PickFolderScreen) for s in app.screen_stack)
+
+
+async def test_folder_picker_enter_on_account_row_does_nothing() -> None:
+    """Enter on an account node (no folder data) leaves the picker open."""
+    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="picker-account-row",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("M")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, PickFolderScreen)
+
+        from textual.widgets import Tree
+
+        tree = picker.query_one("#folder-tree", Tree)
+        tree.cursor_line = 0  # the account node itself
+        await pilot.pause()
+        picker.action_select()
+        await pilot.pause()
+        assert app.screen is picker
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_folder_picker_selecting_a_folder_dismisses_with_it() -> None:
+    """Selecting a folder leaf dismisses the picker with that FolderRef."""
+    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="picker-select-leaf",
+        seed=[(folder, plain_text())],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Archive")
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("M")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, PickFolderScreen)
+
+        from textual.widgets import Tree
+
+        tree = picker.query_one("#folder-tree", Tree)
+        leaf = next(
+            node
+            for node in tree.root.children[0].children
+            if node.data is not None and node.data.folder_name == "Archive"
+        )
+        tree.select_node(leaf)
+        tree.action_select_cursor()
         await pilot.pause()
         assert not any(isinstance(s, PickFolderScreen) for s in app.screen_stack)
 

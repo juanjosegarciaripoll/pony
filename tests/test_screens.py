@@ -479,6 +479,73 @@ async def test_eml_viewer_app_multipart_attachment() -> None:
         assert panel.display is True
 
 
+async def test_eml_viewer_panel_close_request_dismisses() -> None:
+    """The panel's CloseRequested message tears the viewer down."""
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+        panel.post_message(MessageViewPanel.CloseRequested())
+        await pilot.pause()
+    # Reaching here means the viewer dismissed without raising.
+
+
+async def test_eml_viewer_print_pdf_cancelled_picker_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dismissing the folder picker without a path exports nothing."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    export = MagicMock()
+    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export)
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        viewer = app.screen
+        assert isinstance(viewer, EmlViewerScreen)
+        viewer.action_print_pdf()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, SaveFolderPickerScreen)
+        picker.dismiss(None)
+        await pilot.pause()
+
+    export.assert_not_called()
+
+
+async def test_eml_viewer_print_pdf_exports_to_chosen_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Choosing a folder starts the export worker for a PDF inside it."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    export = MagicMock()
+    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export)
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        viewer = app.screen
+        assert isinstance(viewer, EmlViewerScreen)
+        viewer.action_print_pdf()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, SaveFolderPickerScreen)
+        picker.dismiss(tmp_path)
+        await pilot.pause()
+        await pilot.pause()
+
+    assert export.call_count == 1
+    out = export.call_args.args[2]
+    assert out.parent == tmp_path.resolve()
+    assert out.suffix == ".pdf"
+
+
 # ===========================================================================
 # EmlViewerScreen action coverage
 # ===========================================================================
@@ -1842,6 +1909,155 @@ async def test_contact_browser_delete_shows_confirm() -> None:
     # Contact should be deleted from index
     result = index.find_contact_by_email(email_address="del@x.com")
     assert result is None
+
+
+def _contacts_index(label: str, *names: str):  # type: ignore[no-untyped-def]
+    """Return an index seeded with one contact per ``First Last`` name."""
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+
+    index = make_index(make_tmp_paths(label))
+    for name in names:
+        first, _, last = name.partition(" ")
+        index.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name=first,
+                last_name=last,
+                emails=(f"{first.lower()}@x.com",),
+            )
+        )
+    return index
+
+
+async def test_contact_browser_delete_unmarked_deletes_the_cursor_row() -> None:
+    """With no marks, D deletes the contact under the cursor."""
+    from textual.widgets import DataTable
+
+    from pony.tui.screens.confirm_screen import ConfirmScreen
+
+    index = _contacts_index("cb-del-single", "Solo User")
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        assert any(isinstance(s, ConfirmScreen) for s in app.screen_stack)
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert index.find_contact_by_email(email_address="solo@x.com") is None
+
+
+async def test_contact_browser_delete_unmarked_declined_keeps_contact() -> None:
+    """Answering no to the single-delete prompt leaves the contact alone."""
+    from textual.widgets import DataTable
+
+    index = _contacts_index("cb-del-declined", "Keep Me")
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+    assert index.find_contact_by_email(email_address="keep@x.com") is not None
+
+
+async def test_contact_browser_delete_many_marked_truncates_the_list() -> None:
+    """More than ten marked contacts collapse into an 'and N more' line."""
+    from textual.widgets import DataTable
+
+    names = [f"User{i:02d} Test" for i in range(12)]
+    index = _contacts_index("cb-del-many", *names)
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        for _ in names:
+            await pilot.press("m")
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        from textual.widgets import Static
+
+        body = str(app.screen.query_one("#body", Static).render())
+        assert "and 2 more" in body
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert index.list_all_contacts() == []
+
+
+async def test_contact_browser_merge_needs_two_marks() -> None:
+    """M with fewer than two marks warns instead of merging."""
+    from textual.widgets import DataTable
+
+    index = _contacts_index("cb-merge-warn", "Alice Smith", "Bob Jones")
+    app = ContactsApp(contacts=index)
+    notifications: list[str] = []
+    original_notify = app.notify
+
+    def _capture(msg: str, **kw: object) -> None:
+        notifications.append(msg)
+        original_notify(msg, **kw)  # type: ignore[arg-type]
+
+    app.notify = _capture  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("m")  # one mark only
+        await pilot.press("M")
+        await pilot.pause()
+
+    assert any("at least 2 contacts" in n for n in notifications)
+    assert len(index.list_all_contacts()) == 2
+
+
+async def test_contact_browser_merge_marked_collapses_them() -> None:
+    """Two marked contacts merge into one row."""
+    from textual.widgets import DataTable
+
+    index = _contacts_index("cb-merge-ok", "Alice Smith", "Alicia Smith")
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.press("m")
+        await pilot.pause()
+        await pilot.press("M")
+        await pilot.pause()
+
+    remaining = index.list_all_contacts()
+    assert len(remaining) == 1
+    assert set(remaining[0].emails) == {"alice@x.com", "alicia@x.com"}
+
+
+async def test_contact_browser_mark_on_empty_list_is_a_noop() -> None:
+    """Marking with no contacts loaded does not raise."""
+    from textual.widgets import DataTable
+
+    index = _contacts_index("cb-mark-empty")
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.pause()
+
+    assert index.list_all_contacts() == []
 
 
 async def test_contact_browser_search_submitted() -> None:
