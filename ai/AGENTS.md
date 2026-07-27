@@ -26,7 +26,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.6 %**; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **93.8 %**; do not regress it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -52,11 +52,14 @@ uv run python -m pytest --cov-report=json:cov.json   # then sort files by missin
 ```
 
 Largest remaining gaps (in priority order):
-1. `cli.py` (93 %, ~159) — `run_message_body` / `run_message_get` / `run_message_attachment` renderers and `_dispatch` arms; use the `main([...])` pattern
-2. `tui/screens/main_screen.py` (88 %, ~145) — spread across ~40 actions; drive them with `build_pony_app` + `Pilot`
-3. `tui/screens/compose_screen.py` (87 %, ~64) — `action_edit_external` needs `$EDITOR` stubbed
-4. `sync.py` (95 %, ~61) — remaining `_pending_push_ops` planner arms need specific index row states
-5. `tui/message_renderer.py` (92 %, ~42) — exotic MIME shapes; extend `tests/corpus.py`
+1. `cli.py` (94 %, ~118) — `run_sync` progress/summary arms, `run_reset`, and the
+   interactive `account add` prompts; use the `main([...])` pattern
+2. `tui/screens/main_screen.py` (91 %, ~110) — spread across ~40 actions; drive them
+   with `build_pony_app` + `Pilot`
+3. `sync.py` (95 %, ~61) — remaining `_pending_push_ops` planner arms need specific
+   index row states
+4. `tui/screens/compose_screen.py` (92 %, ~40) — remaining send/draft failure arms
+5. `storage.py` (93 %, ~37) — mbox TOC edge cases; extend the conformance suite
 
 **Structurally unreachable — do not chase.** `credentials.py` sits at 83.5 %
 and cannot rise on Linux CI: every uncovered line is inside `_dpapi_encrypt` /

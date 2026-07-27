@@ -2158,3 +2158,367 @@ class OpsDetailTableTest(unittest.TestCase):
         table = _build_ops_detail_table(plan, self._index())
 
         self.assertIn("push(—)", table)
+
+
+def _seed_fixture(config_path: Path, raw: bytes) -> _SeedHandle:
+    """Seed arbitrary *raw* RFC 5322 bytes into the mirror and the index."""
+    import dataclasses
+
+    from pony.config import load_config
+    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    mirror = MaildirMirrorRepository(
+        account_name=account.name,
+        root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    storage_key = mirror.store_message(folder=folder, raw_message=raw)
+
+    projected = project_rfc822_message(
+        message_ref=MessageRef(account_name=account.name, folder_name="INBOX", id=0),
+        raw_message=raw,
+        storage_key=storage_key,
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
+
+
+def _seed_index_only(config_path: Path, *, storage_key: str = "") -> _SeedHandle:
+    """Insert an index row whose ``storage_key`` has no file in the mirror.
+
+    Models a headers-only row, or a mirror that was pruned behind the
+    index's back: every command that reaches for the raw bytes has to
+    cope with the lookup failing.
+    """
+    import dataclasses
+    from email.message import EmailMessage
+
+    from pony.config import load_config
+    from pony.domain import AccountConfig, MessageRef, MessageStatus
+    from pony.index_store import SqliteIndexRepository
+    from pony.message_projection import project_rfc822_message
+    from pony.paths import AppPaths
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
+    paths = AppPaths.default()
+    paths.ensure_runtime_dirs()
+
+    rfc5322_id = f"<orphan-{uuid4().hex}@example.com>"
+    msg = EmailMessage()
+    msg["From"] = "sender@example.com"
+    msg["To"] = account.email_address
+    msg["Subject"] = "Orphaned row"
+    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg["Message-ID"] = rfc5322_id
+    msg.set_content("body that never reached the mirror")
+    raw = msg.as_bytes()
+
+    projected = project_rfc822_message(
+        message_ref=MessageRef(account_name=account.name, folder_name="INBOX", id=0),
+        raw_message=raw,
+        storage_key=storage_key or f"never-stored-{uuid4().hex}",
+    )
+    stored = dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    saved = index.insert_message(message=stored)
+    return _SeedHandle(
+        account_name=saved.message_ref.account_name,
+        folder_name=saved.message_ref.folder_name,
+        id=saved.message_ref.id,
+        rfc5322_id=saved.message_id,
+    )
+
+
+def _seed_with_empty_mirror_bytes(config_path: Path) -> _SeedHandle:
+    """Seed a row whose mirror file exists but is zero bytes long."""
+    from pony.config import load_config
+    from pony.domain import AccountConfig, FolderRef
+    from pony.storage import MaildirMirrorRepository
+
+    config = load_config(config_path)
+    account = next(iter(config.accounts))
+    assert isinstance(account, AccountConfig)
+
+    mirror = MaildirMirrorRepository(
+        account_name=account.name,
+        root_dir=account.mirror.path,
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    empty_key = mirror.store_message(folder=folder, raw_message=b"")
+    return _seed_index_only(config_path, storage_key=empty_key)
+
+
+def _write_config_without_personal() -> Path:
+    """Write a valid config whose only account is *not* named ``personal``."""
+    path = TMP_ROOT / f"config-other-{uuid4().hex}.toml"
+    path.write_text(
+        sample_config_toml().replace('name = "personal"', 'name = "other"'),
+        encoding="utf-8",
+    )
+    return path
+
+
+def run_cli_bytes(*argv: str) -> bytes:
+    """Run the CLI and capture the raw bytes written to ``stdout.buffer``."""
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="utf-8", newline="")
+    previous = sys.stdout
+    sys.stdout = stream
+    try:
+        main(argv)
+    finally:
+        stream.flush()
+        sys.stdout = previous
+    return raw.getvalue()
+
+
+class MessageMirrorFallbackTests(unittest.TestCase):
+    """`pony message ...` when the mirror cannot supply the raw bytes.
+
+    Every one of these commands resolves the row through the index and
+    then reaches into the mirror.  When that second step fails the read
+    commands must exit with a clear message, and ``message get`` — which
+    only wants the attachment list — must fall back to the index's
+    yes/no flag rather than failing outright.
+    """
+
+    def test_get_falls_back_to_the_index_attachment_flag(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("Orphaned row", output)
+        # The yes/no summary, not the per-attachment listing.
+        self.assertIn("Attach.:    no", output)
+        self.assertNotIn("Attach.:    no (", output)
+
+    def test_get_falls_back_when_the_mirror_file_is_empty(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_with_empty_mirror_bytes(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("Attach.:    no", output)
+
+    def test_get_falls_back_without_a_config_file(self) -> None:
+        """No config means no mirror to consult — the flag still prints."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            # Note: no --config, and the default path holds no config file.
+            output = run_cli(
+                "message",
+                "get",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("Attach.:    no", output)
+
+    def test_get_falls_back_when_the_config_lacks_the_account(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            other = _write_config_without_personal()
+            try:
+                output = run_cli(
+                    "--config",
+                    str(other),
+                    "message",
+                    "get",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                )
+            finally:
+                other.unlink(missing_ok=True)
+        self.assertIn("Attach.:    no", output)
+
+    def test_body_exits_when_the_mirror_has_no_bytes(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "body",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                )
+        self.assertIn("not found in mirror", str(ctx.exception))
+
+    def test_attachment_exits_when_the_mirror_has_no_bytes(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "attachment",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                    "1",
+                )
+        self.assertIn("not found in mirror", str(ctx.exception))
+
+    def test_mime_exits_when_the_mirror_has_no_bytes(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_index_only(config_path)
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "mime",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                )
+        self.assertIn("not found in mirror", str(ctx.exception))
+
+    def test_attachment_exits_when_the_message_is_not_indexed(self) -> None:
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "attachment",
+                "personal",
+                "INBOX",
+                "<no-such-id@example.com>",
+                "1",
+            )
+        self.assertIn("not found in index", str(ctx.exception))
+
+
+class MessageOutputDetailTests(unittest.TestCase):
+    """Output arms of the `message` commands that need a specific message."""
+
+    def test_get_warns_when_one_message_id_has_several_rows(self) -> None:
+        """Duplicate rows are listed by row id so the user can disambiguate."""
+        message_id = f"<dup-{uuid4().hex}@example.com>"
+        with isolated_app_env(), temporary_config() as config_path:
+            handles = _seed_dup_messages(
+                config_path,
+                message_id=message_id,
+                flags_list=[frozenset(), frozenset({MessageFlag.SEEN})],
+            )
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "get",
+                handles[0].account_name,
+                handles[0].folder_name,
+                message_id,
+            )
+        self.assertIn("2 rows match", output)
+        self.assertIn("showing the most recent", output)
+        for handle in handles:
+            self.assertIn(f"id={handle.id}", output)
+
+    def test_body_lists_the_attachments_after_the_text(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "body",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("Please find the Q1 report attached.", output)
+        self.assertIn("Attachments:", output)
+        self.assertIn("1. q1-report.pdf", output)
+
+    def test_attachment_to_stdout_writes_raw_bytes(self) -> None:
+        """``--stdout`` bypasses text mode so binary payloads survive."""
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            written = run_cli_bytes(
+                "--config",
+                str(config_path),
+                "message",
+                "attachment",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+                "1",
+                "--stdout",
+            )
+        self.assertTrue(written.startswith(b"%PDF"))
+
+    def test_mime_shows_disposition_and_filename(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_message_with_attachments(config_path)
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "mime",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("disposition=attachment", output)
+        self.assertIn("filename='q1-report.pdf'", output)
+
+    def test_mime_shows_the_content_id_of_an_inline_part(self) -> None:
+        import corpus
+
+        with isolated_app_env(), temporary_config() as config_path:
+            ref = _seed_fixture(config_path, corpus.inline_image())
+            output = run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "mime",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+            )
+        self.assertIn("multipart/related", output)
+        self.assertIn("cid=<logo@example.com>", output)
+        self.assertIn("disposition=inline", output)

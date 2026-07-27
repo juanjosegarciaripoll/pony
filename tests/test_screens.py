@@ -2140,9 +2140,9 @@ async def test_message_view_out_of_range_lookups_return_none() -> None:
 
 async def test_message_view_save_all_attachments_writes_every_part() -> None:
     """Every attachment in a multipart message lands on disk."""
-    from pony.tui.widgets.message_view import MessageViewPanel
-
     from uuid import uuid4
+
+    from pony.tui.widgets.message_view import MessageViewPanel
 
     dest = TMP_ROOT / "save-all" / uuid4().hex
     dest.mkdir(parents=True, exist_ok=True)
@@ -2161,9 +2161,9 @@ async def test_message_view_save_all_attachments_writes_every_part() -> None:
 
 async def test_message_view_out_of_range_attachment_index_is_none() -> None:
     """Saving an attachment index that does not exist returns None."""
-    from pony.tui.widgets.message_view import MessageViewPanel
-
     from uuid import uuid4
+
+    from pony.tui.widgets.message_view import MessageViewPanel
 
     dest = TMP_ROOT / "save-oob" / uuid4().hex
     dest.mkdir(parents=True, exist_ok=True)

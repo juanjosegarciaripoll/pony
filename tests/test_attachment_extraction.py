@@ -12,6 +12,7 @@ import corpus
 from pony.tui.message_renderer import (
     build_browser_html,
     extract_attachment,
+    fmt_size,
     render_message,
 )
 
@@ -217,3 +218,61 @@ class InlinePartAttachmentTest(unittest.TestCase):
         raw = _calendar_message()
         html = build_browser_html(raw)
         self.assertIn("invite.ics", html)
+
+
+def _attachment_only_message() -> bytes:
+    """A message whose only part is an attachment — no text body at all."""
+    from email.mime.application import MIMEApplication
+
+    msg = MIMEMultipart("mixed")
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Subject"] = "Only a file"
+    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg["Message-ID"] = "<attachment-only@example.com>"
+    part = MIMEApplication(b"binary payload", Name="thing.bin")
+    part["Content-Disposition"] = 'attachment; filename="thing.bin"'
+    msg.attach(part)
+    return msg.as_bytes()
+
+
+class BrowserHtmlBodyVariantsTest(unittest.TestCase):
+    """``build_browser_html`` across the body shapes it has to handle."""
+
+    def test_inline_image_is_inlined_as_a_data_uri(self) -> None:
+        """A CID-referenced image must survive as a self-contained data: URI.
+
+        The exported HTML is opened straight from a temp file, so a
+        surviving ``cid:`` reference would render as a broken image.
+        """
+        html = build_browser_html(corpus.inline_image())
+
+        self.assertIn("data:image/png;base64,", html)
+        self.assertNotIn("cid:logo@example.com", html)
+
+    def test_plain_only_message_is_wrapped_in_a_pre_block(self) -> None:
+        html = build_browser_html(corpus.plain_text())
+
+        self.assertIn("<pre", html)
+
+    def test_message_without_any_text_part_says_so(self) -> None:
+        html = build_browser_html(_attachment_only_message())
+
+        self.assertIn("(no readable content)", html)
+        self.assertIn("thing.bin", html)
+
+
+class FmtSizeTest(unittest.TestCase):
+    """``fmt_size`` steps through the units until the value fits."""
+
+    def test_bytes_are_shown_whole(self) -> None:
+        self.assertEqual(fmt_size(512), "512 B")
+
+    def test_kilobytes_are_shown_with_one_decimal(self) -> None:
+        self.assertEqual(fmt_size(2048), "2.0 KB")
+
+    def test_megabytes_are_shown_with_one_decimal(self) -> None:
+        self.assertEqual(fmt_size(5 * 1024 * 1024), "5.0 MB")
+
+    def test_anything_larger_falls_through_to_gigabytes(self) -> None:
+        self.assertEqual(fmt_size(5 * 1024**3), "5.0 GB")

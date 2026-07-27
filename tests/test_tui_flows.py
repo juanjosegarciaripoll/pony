@@ -2930,9 +2930,7 @@ async def test_external_editor_round_trips_the_body(
         target.write_text("Rewritten by the editor.", encoding="utf-8")
         return None
 
-    monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.subprocess.run", _fake_run
-    )
+    monkeypatch.setattr("pony.tui.screens.compose_screen.subprocess.run", _fake_run)
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="editor-ok")
 
@@ -2951,8 +2949,7 @@ async def test_external_editor_round_trips_the_body(
 
         assert edited["before"] == "Original body."
         assert (
-            screen.query_one("#body-area", TextArea).text
-            == "Rewritten by the editor."
+            screen.query_one("#body-area", TextArea).text == "Rewritten by the editor."
         )
 
 
@@ -3000,3 +2997,259 @@ async def test_attachment_picker_accepts_a_file(tmp_path: Path) -> None:
         await pilot.pause()
 
         assert screen._attachment_paths == [chosen]
+
+
+def _two_imap_accounts(label: str, *, folders2: object = None):  # type: ignore[no-untyped-def]
+    """Two IMAP accounts with one seeded message in acct1/INBOX.
+
+    *folders2* overrides ``acct2``'s :class:`FolderConfig` so the move
+    guards that consult the target account's policy can be exercised.
+    """
+    import dataclasses as _dc
+
+    paths = make_tmp_paths(label)
+    account1 = make_test_account(paths, name="acct1")
+    account2 = make_test_account(paths, name="acct2")
+    if folders2 is not None:
+        account2 = _dc.replace(account2, folders=folders2)
+    config = make_test_config(accounts=(account1, account2))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+
+    folder1 = FolderRef(account_name="acct1", folder_name="INBOX")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct1"],
+        folder=folder1,
+        raw=plain_text(),
+        message_id=f"<{label}@example.com>",
+    )
+    mirrors["acct2"].create_folder(account_name="acct2", folder_name="INBOX")
+
+    app = TestPonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+    return app, index, mirrors, folder1, source_ref
+
+
+async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
+    """A target folder the account never syncs would strand the message."""
+    from pony.domain import FolderConfig
+
+    app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
+        "target-excluded",
+        folders2=FolderConfig(exclude=("INBOX",)),
+    )
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+        screen._move_to_folder([msg], folder1, folder2)  # noqa: SLF001
+
+    assert any("excluded from sync" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=folder2)) == 0
+    assert len(index.list_folder_messages(folder=folder1)) == 1
+
+
+async def test_move_to_a_read_only_target_is_refused() -> None:
+    """A read-only target could never push the new message back."""
+    from pony.domain import FolderConfig
+
+    app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
+        "target-readonly",
+        folders2=FolderConfig(read_only=("INBOX",)),
+    )
+    folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+        screen._move_to_folder([msg], folder1, folder2)  # noqa: SLF001
+
+    assert any("is read-only" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=folder2)) == 0
+    assert len(index.list_folder_messages(folder=folder1)) == 1
+
+
+async def test_copy_reports_an_unreadable_source_and_skips_it() -> None:
+    """A source the mirror cannot read is skipped, not half-copied."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="copy-unreadable")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<copy-unreadable@example.com>",
+    )
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+
+        def _boom(*, folder: FolderRef, storage_key: str) -> bytes:  # noqa: ARG001
+            raise OSError("mirror unreadable")
+
+        mirrors["acct"].get_message_bytes = _boom  # type: ignore[method-assign]
+        screen._copy_to_folder([msg], folder, drafts)  # noqa: SLF001
+
+    assert any("Could not read source message" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=drafts)) == 0
+    assert len(index.list_folder_messages(folder=folder)) == 1
+
+
+async def test_copy_reports_an_unwritable_target_and_skips_it() -> None:
+    """A target the mirror cannot write leaves no orphan index row."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="copy-unwritable")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    source_ref = seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<copy-unwritable@example.com>",
+    )
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test():
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        msg = index.get_message(message_ref=source_ref)
+        assert msg is not None
+
+        def _boom(*, folder: FolderRef, raw_message: bytes) -> str:  # noqa: ARG001
+            raise OSError("target full")
+
+        mirrors["acct"].store_message = _boom  # type: ignore[method-assign]
+        screen._copy_to_folder([msg], folder, drafts)  # noqa: SLF001
+
+    assert any("Failed to write copy to Drafts" in n for n in notifications)
+    assert len(index.list_folder_messages(folder=drafts)) == 0
+
+
+async def test_new_folder_without_a_selected_account_warns() -> None:
+    """With several accounts and no open folder there is no obvious target."""
+    app, index, _mirrors, _folder1, _ref = _two_imap_accounts("new-folder-ambiguous")
+    del index
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        screen._current_folder_ref = None  # noqa: SLF001
+        screen.action_new_folder()
+        await pilot.pause()
+
+    assert any("Select a folder or account first." in n for n in notifications)
+
+
+async def test_save_all_attachments_by_index_zero() -> None:
+    """The ``0`` accelerator saves every attachment on the message."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, cfg, _paths, _index, _mirrors = build_pony_app(
+        label="save-all-idx",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        screen.action_save_attachment("0")
+        await pilot.pause()
+
+    assert any("Saved 1 attachment(s)" in n for n in notifications)
+    downloads = cfg.downloads_path
+    assert downloads is not None
+    assert (downloads / "q1-report.pdf").is_file()
+
+
+async def test_open_all_attachments_on_a_message_without_any() -> None:
+    """``0`` on a plain message opens nothing and launches no viewer."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-all-none",
+        seed=[(folder, plain_text())],
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        assert screen.query_one(MessageViewPanel).attachment_count == 0
+        screen.action_open_attachment("0")
+        await pilot.pause()
+
+    # An empty index list means the loop never runs — no viewer, no warning.
+    assert notifications == []
+
+
+async def test_save_message_writes_the_body_and_an_attachment(
+    tmp_path: Path,
+) -> None:
+    """Confirming both dialogs writes each chosen item into the folder."""
+    from pony.tui.screens.save_message_screen import SaveItem, SaveMessageScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="save-msg-write",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    notifications = _capture_notifications(app)
+
+    # A directory where a file is expected makes exactly one item fail.
+    (tmp_path / "blocked.md").mkdir()
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        screen.action_save_message()
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, SaveMessageScreen)
+        picker.dismiss(
+            [
+                SaveItem(kind="body", filename="body.md"),
+                SaveItem(kind="attachment:1", filename="q1-report.pdf"),
+                # Out of range: extract_attachment returns None, nothing written.
+                SaveItem(kind="attachment:99", filename="ghost.bin"),
+                # Escapes the destination folder — refused.
+                SaveItem(kind="body", filename="../escaped.md"),
+                # Collides with a directory — the write raises.
+                SaveItem(kind="body", filename="blocked.md"),
+            ]
+        )
+        await pilot.pause()
+
+        folder_picker = app.screen
+        folder_picker.dismiss(tmp_path)
+        await pilot.pause()
+
+    assert (tmp_path / "body.md").is_file()
+    assert (tmp_path / "q1-report.pdf").read_bytes().startswith(b"%PDF")
+    assert not (tmp_path / "ghost.bin").exists()
+    assert not (tmp_path.parent / "escaped.md").exists()
+    assert any("failed" in n for n in notifications)
