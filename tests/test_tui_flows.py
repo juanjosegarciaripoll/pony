@@ -1330,6 +1330,154 @@ async def test_message_list_sort_and_filter() -> None:
         assert len(ml._summaries) == 3
 
 
+async def test_message_list_state_transitions() -> None:
+    """Selection, marking, cursor boundaries, and unread navigation cooperate."""
+    from dataclasses import replace
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="ml-state",
+        seed=[
+            (folder, _custom_plain("first")),
+            (folder, _custom_plain("second")),
+            (folder, _custom_plain("third")),
+        ],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        panel = app.screen.query_one(MessageListPanel)
+        await panel.wait_for_load_complete()
+        panel.move_cursor(row=0)
+
+        selected = panel.get_selected_summary()
+        assert selected is not None
+        assert panel.summaries_to_act_on() == [selected]
+        assert panel.move_cursor_by(-1) is None
+
+        panel._toggle_mark_current()
+        assert panel.marked_summaries() == [selected]
+        assert panel.summaries_to_act_on() == [selected]
+        panel.clear_marks()
+        assert panel.marked_summaries() == []
+
+        seen = replace(selected, local_flags=frozenset({MessageFlag.SEEN}))
+        panel.update_summary(seen)
+        panel.move_cursor(row=0)
+        next_unread = panel.move_cursor_to_next_unread()
+        assert next_unread == panel.get_selected_summary()
+        assert next_unread is not None
+        assert next_unread.message_ref != selected.message_ref
+
+
+async def test_message_list_empty_search_can_exit() -> None:
+    """An empty search advertises its state and q restores folder mode."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="ml-empty-search",
+        seed=[(folder, _custom_plain("only message"))],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        panel = app.screen.query_one(MessageListPanel)
+        panel.load_search_results([], "fictional query")
+        await pilot.pause()
+        assert "no results" in str(panel.border_title)
+        assert panel._in_search is True
+
+        panel.focus()
+        await pilot.press("q")
+        await pilot.pause()
+        assert panel._in_search is False
+        assert panel.border_title == "Messages"
+        assert len(panel._summaries) == 1
+
+
+async def test_main_screen_address_and_link_actions() -> None:
+    """Message metadata actions validate targets before composing or opening."""
+    from pony.tui.screens.link_action_screen import LinkActionScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-links",
+        seed=[(folder, plain_text())],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = _main_screen(app)
+        panel = screen.query_one(MessageViewPanel)
+        screen.compose_new = Mock()
+
+        panel.header_address = Mock(return_value=None)
+        screen.action_compose_address("1")
+        screen.compose_new.assert_not_called()
+        panel.header_address = Mock(
+            return_value=("Marina Rivera", "marina@example.test")
+        )
+        screen.action_compose_address("1")
+        screen.compose_new.assert_called_once_with(
+            to="Marina Rivera <marina@example.test>"
+        )
+
+        panel.body_link = Mock(return_value=("web", "https://example.test"))
+        screen.action_activate_link("1")
+        await pilot.pause()
+        assert isinstance(app.screen, LinkActionScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        panel.body_link = Mock(return_value=("mail", "river@example.test"))
+        screen.action_compose_link("1")
+        screen.compose_new.assert_called_with(to="river@example.test")
+
+
+async def test_main_screen_attachment_dispatch_and_open_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nested mail stays in Pony and external viewer errors stay contained."""
+    from corpus import nested_forward
+
+    from pony.tui.message_renderer import extract_attachment
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="main-attachment-dispatch",
+        seed=[(folder, nested_forward())],
+    )
+    launch_mock = Mock(side_effect=OSError("fictional viewer failure"))
+    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = _main_screen(app)
+        raw = screen.query_one(MessageViewPanel).raw_bytes
+        assert raw is not None
+        payloads = {index: extract_attachment(raw, index) for index in range(1, 4)}
+        nested_index = next(
+            index
+            for index, payload in payloads.items()
+            if payload is not None and payload.content_type == "message/rfc822"
+        )
+        file_index = next(
+            index
+            for index, payload in payloads.items()
+            if payload is not None and payload.content_type != "message/rfc822"
+        )
+        screen._open_indices([nested_index])
+        await pilot.pause()
+        assert isinstance(app.screen, EmlViewerScreen)
+        await pilot.press("Q")
+        await pilot.pause()
+
+        screen._open_indices([file_index])
+        await pilot.pause()
+        launch_mock.assert_called_once()
+
+
 async def test_browse_contacts_opens_contact_browser() -> None:
     """Pressing B opens the contact browser screen (when contacts is set)."""
     from pony.tui.screens.contact_browser_screen import ContactBrowserScreen

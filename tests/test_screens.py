@@ -626,6 +626,85 @@ async def test_eml_viewer_screen_quit_action() -> None:
         await pilot.pause()
 
 
+async def test_eml_viewer_screen_activates_only_web_links() -> None:
+    """Web links open the action dialog; non-web links are ignored."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        panel = screen.query_one(MessageViewPanel)
+        panel.body_link = MagicMock(return_value=("email", "marina@example.test"))
+        stack_size = len(app.screen_stack)
+        screen.action_activate_link("1")
+        assert len(app.screen_stack) == stack_size
+
+        panel.body_link = MagicMock(return_value=("web", "https://example.test"))
+        screen.action_activate_link("1")
+        await pilot.pause()
+        assert isinstance(app.screen, LinkActionScreen)
+
+
+async def test_eml_viewer_screen_open_browser_delegates() -> None:
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        panel = screen.query_one(MessageViewPanel)
+        panel.open_in_browser = MagicMock()
+        screen.action_open_browser()
+        panel.open_in_browser.assert_called_once_with()
+
+
+async def test_eml_viewer_screen_opens_nested_message() -> None:
+    """An RFC 822 attachment opens as another viewer on the screen stack."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    app = EmlViewerApp(raw_bytes=corpus.nested_forward())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_open_attachment("2")
+        await pilot.pause()
+        assert len(app.screen_stack) == 2
+        assert isinstance(app.screen, EmlViewerScreen)
+
+
+async def test_eml_viewer_screen_reports_attachment_io_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Opening and saving filesystem failures are reported without escaping."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    monkeypatch.setattr(
+        "pony.tui.screens.eml_viewer_screen.tempfile.NamedTemporaryFile",
+        MagicMock(side_effect=OSError("fictional open failure")),
+    )
+    app = _make_host(
+        EmlViewerScreen,
+        corpus.multipart_mixed_attachment(),
+        downloads_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_open_attachment("1")
+        panel = screen.query_one(MessageViewPanel)
+        panel.save_attachment = MagicMock(side_effect=OSError("fictional save failure"))
+        screen.action_save_attachment("1")
+        await pilot.pause()
+
+
 # ===========================================================================
 # PickFolderScreen
 # ===========================================================================

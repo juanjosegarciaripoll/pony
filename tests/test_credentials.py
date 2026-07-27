@@ -6,6 +6,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -370,14 +371,75 @@ class TestShakeEncryptDecrypt(unittest.TestCase):
 
     def test_encrypt_decrypt_mocked_non_windows(self) -> None:
         """encrypt_password / _decrypt use shake path when mocked as non-Windows."""
-        from unittest.mock import patch
-
         from pony.credentials import _decrypt
 
         with patch("pony.credentials._is_windows", return_value=False):
             blob = encrypt_password("shake-secret")
             recovered = _decrypt(blob)
         self.assertEqual(recovered, "shake-secret")
+
+
+class TestCredentialPlatformHelpers(unittest.TestCase):
+    def test_unknown_backend_is_rejected(self) -> None:
+        account = _make_account(
+            name="unknown-backend",
+            credentials_source="unsupported",
+            password=None,
+        )
+        provider = build_credentials_provider(_make_config(account), _make_index())
+
+        with self.assertRaisesRegex(ConfigError, "unknown credentials_source"):
+            provider.get_password(account_name="unknown-backend")
+
+    @patch("pony.credentials._dpapi_encrypt", return_value=b"encrypted")
+    @patch("pony.credentials._is_windows", return_value=True)
+    def test_encrypt_password_dispatches_to_dpapi(
+        self, _is_windows: Mock, dpapi_encrypt: Mock
+    ) -> None:
+        self.assertEqual(encrypt_password("fictional-secret"), b"encrypted")
+        dpapi_encrypt.assert_called_once_with("fictional-secret")
+
+    @patch("pony.credentials._dpapi_decrypt", return_value="fictional-secret")
+    @patch("pony.credentials._is_windows", return_value=True)
+    def test_decrypt_dispatches_to_dpapi(
+        self, _is_windows: Mock, dpapi_decrypt: Mock
+    ) -> None:
+        from pony.credentials import _decrypt
+
+        self.assertEqual(_decrypt(b"encrypted"), "fictional-secret")
+        dpapi_decrypt.assert_called_once_with(b"encrypted")
+
+    @patch("pony.credentials.platform.node", return_value="fallback-host")
+    @patch("pony.credentials.Path.read_text", side_effect=OSError)
+    @patch("pony.credentials.sys.platform", "linux")
+    def test_linux_machine_id_falls_back_to_hostname(
+        self, read_text: Mock, platform_node: Mock
+    ) -> None:
+        from pony.credentials import _get_machine_id
+
+        self.assertEqual(_get_machine_id(), "fallback-host")
+        self.assertEqual(read_text.call_count, 2)
+        platform_node.assert_called_once_with()
+
+    @patch("pony.credentials.subprocess.run")
+    @patch("pony.credentials.sys.platform", "darwin")
+    def test_macos_machine_id_reads_platform_uuid(self, run: Mock) -> None:
+        from pony.credentials import _get_machine_id
+
+        run.return_value.stdout = '    "IOPlatformUUID" = "TEST-UUID-123"\n'
+        self.assertEqual(_get_machine_id(), "TEST-UUID-123")
+
+    @patch("pony.credentials.platform.node", return_value="fallback-host")
+    @patch("pony.credentials.subprocess.run", side_effect=OSError)
+    @patch("pony.credentials.sys.platform", "darwin")
+    def test_macos_machine_id_failure_falls_back_to_hostname(
+        self, run: Mock, platform_node: Mock
+    ) -> None:
+        from pony.credentials import _get_machine_id
+
+        self.assertEqual(_get_machine_id(), "fallback-host")
+        run.assert_called_once()
+        platform_node.assert_called_once_with()
 
 
 if __name__ == "__main__":
