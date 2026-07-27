@@ -2875,3 +2875,128 @@ async def test_next_unread_request_at_the_end_is_a_noop() -> None:
         await pilot.pause()
         # Still on the main screen, nothing raised.
         assert isinstance(app.screen, MainScreen)
+
+
+async def test_external_editor_without_configuration_warns() -> None:
+    """Alt+E with no editor configured explains instead of failing."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="editor-unset")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen.action_edit_external()
+        await pilot.pause()
+
+    assert any("No external editor configured" in n for n in notifications)
+
+
+async def test_external_editor_path_that_is_not_a_file_warns(tmp_path: Path) -> None:
+    """A configured editor that is not an executable file is rejected."""
+    import dataclasses as _dc
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="editor-missing")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen._config = _dc.replace(screen._config, editor=str(tmp_path / "nope"))
+        screen.action_edit_external()
+        await pilot.pause()
+
+    assert any("No external editor configured" in n for n in notifications)
+
+
+async def test_external_editor_round_trips_the_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The editor's edits to the temp file are loaded back into the body."""
+    import contextlib
+    import dataclasses as _dc
+
+    from textual.widgets import TextArea
+
+    editor = tmp_path / "fake-editor"
+    editor.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    edited: dict[str, str] = {}
+
+    def _fake_run(argv: list[str], **_kw: object) -> object:
+        target = Path(argv[1])
+        edited["before"] = target.read_text(encoding="utf-8")
+        target.write_text("Rewritten by the editor.", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.subprocess.run", _fake_run
+    )
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="editor-ok")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen._config = _dc.replace(screen._config, editor=str(editor))
+        screen.query_one("#body-area", TextArea).load_text("Original body.")
+        # The headless driver cannot suspend; the editor call is what matters.
+        monkeypatch.setattr(
+            type(app), "suspend", lambda _self: contextlib.nullcontext()
+        )
+        screen.action_edit_external()
+        await pilot.pause()
+
+        assert edited["before"] == "Original body."
+        assert (
+            screen.query_one("#body-area", TextArea).text
+            == "Rewritten by the editor."
+        )
+
+
+async def test_attachment_picker_rejects_a_non_file(tmp_path: Path) -> None:
+    """Choosing a directory in the picker warns and attaches nothing."""
+    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="picker-not-file")
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen.action_add_attachment()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, AddAttachmentScreen)
+        picker.dismiss(str(tmp_path))  # a directory, not a file
+        await pilot.pause()
+
+        assert screen._attachment_paths == []
+
+    assert any("Not a file:" in n for n in notifications)
+
+
+async def test_attachment_picker_accepts_a_file(tmp_path: Path) -> None:
+    """A real file chosen in the picker lands in the attachment list."""
+    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+
+    chosen = tmp_path / "notes.txt"
+    chosen.write_text("hello", encoding="utf-8")
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="picker-file")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        screen.action_add_attachment()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, AddAttachmentScreen)
+        picker.dismiss(str(chosen))
+        await pilot.pause()
+
+        assert screen._attachment_paths == [chosen]

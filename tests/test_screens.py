@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import corpus
 import pytest
+from conftest import TMP_ROOT
 from tui_helpers import DeterministicDirOnlyTree
 
 import pony.tui.screens.save_folder_picker_screen as save_picker_module
@@ -2102,3 +2103,74 @@ async def test_contact_browser_search_submitted() -> None:
         # Table should have 1 row
         table = app.screen.query_one("#contact-table", DataTable)
         assert table.row_count == 1
+
+
+# ===========================================================================
+# MessageViewPanel accessors
+# ===========================================================================
+
+
+async def test_message_view_accessors_empty_before_any_message() -> None:
+    """With nothing rendered the accessors return empty, not exceptions."""
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+        panel._rendered = None
+
+        assert panel.raw_bytes is None
+        assert panel.save_all_attachments(TMP_ROOT) == []
+        assert panel.save_attachment(1, TMP_ROOT) is None
+
+
+async def test_message_view_out_of_range_lookups_return_none() -> None:
+    """Header and link lookups past the end are None rather than IndexError."""
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = EmlViewerApp(raw_bytes=corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+
+        assert panel.header_address(999) is None
+        assert panel.body_link(999) is None
+
+
+async def test_message_view_save_all_attachments_writes_every_part() -> None:
+    """Every attachment in a multipart message lands on disk."""
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    from uuid import uuid4
+
+    dest = TMP_ROOT / "save-all" / uuid4().hex
+    dest.mkdir(parents=True, exist_ok=True)
+
+    app = EmlViewerApp(raw_bytes=corpus.multipart_mixed_multi())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+
+        saved = panel.save_all_attachments(dest)
+
+        assert saved
+        for name in saved:
+            assert (dest / name).is_file()
+
+
+async def test_message_view_out_of_range_attachment_index_is_none() -> None:
+    """Saving an attachment index that does not exist returns None."""
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    from uuid import uuid4
+
+    dest = TMP_ROOT / "save-oob" / uuid4().hex
+    dest.mkdir(parents=True, exist_ok=True)
+
+    app = EmlViewerApp(raw_bytes=corpus.multipart_mixed_attachment())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+
+        assert panel.save_attachment(99, dest) is None
