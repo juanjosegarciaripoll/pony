@@ -220,22 +220,6 @@ class InlinePartAttachmentTest(unittest.TestCase):
         self.assertIn("invite.ics", html)
 
 
-def _attachment_only_message() -> bytes:
-    """A message whose only part is an attachment — no text body at all."""
-    from email.mime.application import MIMEApplication
-
-    msg = MIMEMultipart("mixed")
-    msg["From"] = "sender@example.com"
-    msg["To"] = "recipient@example.com"
-    msg["Subject"] = "Only a file"
-    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
-    msg["Message-ID"] = "<attachment-only@example.com>"
-    part = MIMEApplication(b"binary payload", Name="thing.bin")
-    part["Content-Disposition"] = 'attachment; filename="thing.bin"'
-    msg.attach(part)
-    return msg.as_bytes()
-
-
 class BrowserHtmlBodyVariantsTest(unittest.TestCase):
     """``build_browser_html`` across the body shapes it has to handle."""
 
@@ -256,7 +240,7 @@ class BrowserHtmlBodyVariantsTest(unittest.TestCase):
         self.assertIn("<pre", html)
 
     def test_message_without_any_text_part_says_so(self) -> None:
-        html = build_browser_html(_attachment_only_message())
+        html = build_browser_html(corpus.attachment_only())
 
         self.assertIn("(no readable content)", html)
         self.assertIn("thing.bin", html)

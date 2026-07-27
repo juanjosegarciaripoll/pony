@@ -33,6 +33,20 @@ very_long_subject           Subject exceeding typical display widths.
 Scenarios — harvesting
 ----------------------
 many_recipients             Many To/Cc addresses for contact harvesting stress.
+
+Scenarios — malformed / hostile input
+-------------------------------------
+html_rich_formatting        text/html with lists, tables, nested bold and
+                            double ``<br>`` — every stripper construct at once.
+html_first_multipart        multipart whose only text part is HTML.
+attachment_only             No readable text part; attachment only.
+base64_rfc822_attachment    message/rfc822 part carried as base64.
+no_header_body_separator    Headers with no terminating blank line.
+duplicate_headers           Repeated From/Subject; the first must win.
+invalid_date                Date header the RFC 5322 parser rejects.
+naive_date                  Date header with no UTC offset.
+corrupt_base64_body         Declares base64, body is not base64.
+oversized_body              Body larger than the preview cap.
 """
 
 from __future__ import annotations
@@ -441,3 +455,195 @@ def many_recipients() -> bytes:
     msg["Message-ID"] = "<many-recip-fixture@example.com>"
     msg.set_content("Please review the attached proposal.\n")
     return msg.as_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Malformed and hostile shapes
+#
+# Real mail is produced by decades of clients, some of them broken.  These
+# fixtures are deliberately non-conforming: the projection and renderer must
+# degrade gracefully rather than raise, because a single bad message in a
+# folder would otherwise take down the whole sync or folder open.  They are
+# built from raw bytes, not ``EmailMessage``, precisely because the stdlib
+# builders refuse to emit most of them.
+# ---------------------------------------------------------------------------
+
+
+def html_rich_formatting() -> bytes:
+    """text/html exercising every block and inline construct the stripper knows.
+
+    Lists (``<li>``) and table rows (``<tr>``) end a line without starting a
+    paragraph; ``<br><br>`` collapses to one blank separator; nested
+    ``<b>`` tags must emit a single bold span, not one per nesting level.
+    """
+    html = (
+        "<html><body>"
+        "<p>Intro paragraph.</p>"
+        "<ul><li>First item</li><li>Second item</li></ul>"
+        "<table><tr><td>Cell A</td><td>Cell B</td></tr>"
+        "<tr><td>Cell C</td></tr></table>"
+        "<p>Nested <b>bold <b>deeper</b> back</b> and <i>italic</i>.</p>"
+        "Line one<br><br>Line three"
+        "</body></html>"
+    )
+    msg = MIMEText(html, "html", "utf-8")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Rich formatting"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<rich-html-fixture@example.com>"
+    return msg.as_bytes()
+
+
+def html_first_multipart() -> bytes:
+    """multipart/mixed whose first part is text/html, with no text/plain.
+
+    The preview extractor has to fall through the parts looking for plain
+    text, find none, and settle for the stripped HTML.
+    """
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: HTML before anything else\r\n"
+        b"Date: " + DATE.encode() + b"\r\n"
+        b"Message-ID: <html-first-fixture@example.com>\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="HFB"\r\n'
+        b"\r\n"
+        b"--HFB\r\n"
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b"\r\n"
+        b"<html><body><p>Hello <b>there</b></p></body></html>\r\n"
+        b"--HFB\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b'Content-Disposition: attachment; filename="payload.bin"\r\n'
+        b"\r\n"
+        b"Zm9v\r\n"
+        b"--HFB--\r\n"
+    )
+
+
+def attachment_only() -> bytes:
+    """multipart/mixed with an attachment and no readable text part at all."""
+    msg = MIMEMultipart("mixed")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Only a file"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<attachment-only-fixture@example.com>"
+    part = MIMEApplication(b"binary payload", Name="thing.bin")
+    part["Content-Disposition"] = 'attachment; filename="thing.bin"'
+    msg.attach(part)
+    return msg.as_bytes()
+
+
+def base64_rfc822_attachment() -> bytes:
+    """An attached message whose message/rfc822 part is base64-encoded.
+
+    Mailing-list digests and some Exchange forwards do this.  The inner
+    message still has to be listed as a downloadable ``.eml``.
+    """
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Digest with an encoded forward\r\n"
+        b"Date: " + DATE.encode() + b"\r\n"
+        b"Message-ID: <b64-rfc822-fixture@example.com>\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="B64B"\r\n'
+        b"\r\n"
+        b"--B64B\r\n"
+        b'Content-Type: text/plain; charset="utf-8"\r\n'
+        b"\r\n"
+        b"See the attached message.\r\n"
+        b"--B64B\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"U3ViamVjdDogSW5uZXIgbm90ZQoKSGVsbG8u\r\n"
+        b"--B64B--\r\n"
+    )
+
+
+def no_header_body_separator() -> bytes:
+    """Headers that simply stop — no blank line, no body.
+
+    Some POP3 gateways truncate here.  The header/body split has no match
+    to work with and must treat the whole buffer as headers.
+    """
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Truncated before the body\r\n"
+        b"Message-ID: <no-separator-fixture@example.com>\r\n"
+    )
+
+
+def duplicate_headers() -> bytes:
+    """The same header repeated — the first occurrence must win."""
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"From: Impostor <mallory@example.com>\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: First subject wins\r\n"
+        b"Subject: Second subject ignored\r\n"
+        b"Date: " + DATE.encode() + b"\r\n"
+        b"Message-ID: <duplicate-headers-fixture@example.com>\r\n"
+        b"\r\n"
+        b"Body text.\r\n"
+    )
+
+
+def invalid_date() -> bytes:
+    """A Date header the RFC 5322 parser cannot make sense of."""
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Unparseable date\r\n"
+        b"Date: sometime last Tuesday\r\n"
+        b"Message-ID: <invalid-date-fixture@example.com>\r\n"
+        b"\r\n"
+        b"Body text.\r\n"
+    )
+
+
+def naive_date() -> bytes:
+    """A Date header with no UTC offset — must be assumed UTC, not dropped."""
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Timezone-less date\r\n"
+        b"Date: Fri, 17 Apr 2026 12:00:00\r\n"
+        b"Message-ID: <naive-date-fixture@example.com>\r\n"
+        b"\r\n"
+        b"Body text.\r\n"
+    )
+
+
+def corrupt_base64_body() -> bytes:
+    """Declares base64 but the body is not valid base64.
+
+    The decoder must fall back to the raw bytes rather than raise.
+    """
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Corrupt base64\r\n"
+        b"Date: " + DATE.encode() + b"\r\n"
+        b"Message-ID: <corrupt-b64-fixture@example.com>\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"!!! this is definitely not base64 !!!\r\n"
+    )
+
+
+def oversized_body(size_bytes: int = 300 * 1024) -> bytes:
+    """A body far larger than the preview cap, to prove the cap is applied."""
+    return (
+        b"From: " + FROM_ADDR.encode() + b"\r\n"
+        b"To: " + TO_ADDR.encode() + b"\r\n"
+        b"Subject: Very large body\r\n"
+        b"Date: " + DATE.encode() + b"\r\n"
+        b"Message-ID: <oversized-fixture@example.com>\r\n"
+        b"\r\n" + (b"x" * size_bytes)
+    )
