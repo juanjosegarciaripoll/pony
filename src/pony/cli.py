@@ -2265,7 +2265,7 @@ def _query_index(db_path: Path, account_name: str) -> dict[str, tuple[int, str |
         return {}
     result: dict[str, tuple[int, str | None]] = {}
     try:
-        with sqlite3.connect(db_path) as conn:
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
             for folder, count in conn.execute(
                 "SELECT folder_name, COUNT(*) FROM messages"
                 " WHERE account_name = ? GROUP BY folder_name",
@@ -2292,7 +2292,7 @@ def _query_pending(db_path: Path, account_name: str) -> dict[str, int]:
         return {}
     result: dict[str, int] = {}
     try:
-        with sqlite3.connect(db_path) as conn:
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
             for folder, count in conn.execute(
                 "SELECT folder_name, COUNT(*) FROM pending_operations"
                 " WHERE account_name = ? GROUP BY folder_name",
