@@ -26,7 +26,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **93.8 %**; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **94.7 %**; do not regress it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -35,6 +35,8 @@ Key test infrastructure:
 |---|---|
 | CLI commands | `tests/test_cli.py` — call `main([...])` with a temp `AppPaths` |
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
+| Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
+| Message list widget | `tests/test_message_list_panel.py` — re-focus the panel before every key |
 | Message projection | `tests/test_message_projection.py` |
 | Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
 | TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
@@ -52,12 +54,12 @@ uv run python -m pytest --cov-report=json:cov.json   # then sort files by missin
 ```
 
 Largest remaining gaps (in priority order):
-1. `cli.py` (94 %, ~118) — `run_sync` progress/summary arms, `run_reset`, and the
-   interactive `account add` prompts; use the `main([...])` pattern
-2. `tui/screens/main_screen.py` (91 %, ~110) — spread across ~40 actions; drive them
+1. `cli.py` (95 %, ~97) — `run_sync` progress/summary arms and the interactive
+   `account add` prompts; ~45 of the rest is environment-gated (see below)
+2. `tui/screens/main_screen.py` (94 %, ~79) — spread across ~40 actions; drive them
    with `build_pony_app` + `Pilot`
-3. `sync.py` (95 %, ~61) — remaining `_pending_push_ops` planner arms need specific
-   index row states
+3. `sync.py` (95 %, ~56) — remaining `_pending_push_ops` planner arms need specific
+   index row states (UIDVALIDITY reset with a pending move, slow-path restore)
 4. `tui/screens/compose_screen.py` (92 %, ~40) — remaining send/draft failure arms
 5. `storage.py` (93 %, ~37) — mbox TOC edge cases; extend the conformance suite
 
@@ -66,6 +68,19 @@ and cannot rise on Linux CI: every uncovered line is inside `_dpapi_encrypt` /
 `_dpapi_decrypt` (`sys.platform == "win32"`) or the macOS `ioreg` branch. Some
 paths elsewhere are environment-gated in the same way (`action_print_pdf`
 needs an external converter, `action_edit_external` spawns an editor).
+
+Also defensive rather than reachable, verified by attempting them:
+
+- `cli.py` — everything that ends in a blocking `.run()` or an external
+  process: `run_tui`, `run_contacts_browse`, `run_eml_viewer`, `_run_pager`,
+  `run_docs`, `run_mcp_server_command`, and the `_dispatch` arms routing to
+  them (~45 units total).
+- `folder list`'s `(no folders)` arm — both mirror backends always synthesize
+  INBOX, so the list is never empty.
+- `message_renderer.py` — the `message/rfc822` branches that assume a non-list
+  payload, and the `get_payload(decode=True)` non-bytes guards. `email.policy.default`
+  always parses `message/rfc822` into a sub-message list, including when the
+  part is base64-encoded (see `corpus.base64_rfc822_attachment`).
 
 ## Local mutations
 
