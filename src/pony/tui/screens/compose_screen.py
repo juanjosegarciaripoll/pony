@@ -749,9 +749,13 @@ class ComposeScreen(Screen[bool]):
         container = row.parent
         if not isinstance(container, Vertical):
             return
-        if len(list(container.query(_AddrRow))) > 1:
+        rows = list(container.query(_AddrRow))
+        if len(rows) > 1:
+            remaining_rows = [candidate for candidate in rows if candidate is not row]
+            for candidate in remaining_rows[:-1]:
+                candidate.query_one(".addr-add-btn", Button).display = False
+            remaining_rows[-1].query_one(".addr-add-btn", Button).display = True
             row.remove()
-            self.call_after_refresh(lambda: self._refresh_add_buttons(container))
         else:
             row.query_one(Input).value = ""
 

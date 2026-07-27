@@ -1359,6 +1359,102 @@ async def test_recipient_input_replaces_only_current_token() -> None:
         )
 
 
+async def test_recipient_input_hides_short_empty_and_escaped_results() -> None:
+    """Short/unmatched queries and Escape close the alternatives list."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input, OptionList
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-hide"))
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Marina",
+            last_name="Núñez Robles",
+            emails=("marina@example.test",),
+        )
+    )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        options = app.query_one(OptionList)
+        field.focus()
+
+        field.value = "mar"
+        await pilot.pause()
+        assert options.display
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not options.display
+        assert field.value == "mar"
+        assert field.has_focus
+
+        field.value = "m"
+        await pilot.pause()
+        assert not options.display
+
+        field.value = "nobody"
+        await pilot.pause()
+        assert options.option_count == 0
+        assert not options.display
+
+
+async def test_recipient_input_caps_addresses_and_ignores_invalid_selection() -> None:
+    """At most ten addresses are offered and an invalid index is harmless."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import OptionList
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-cap"))
+    for number in range(6):
+        index.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name=f"Marina{number}",
+                last_name="Fictional",
+                emails=(
+                    f"marina{number}@example.test",
+                    f"marina{number}.alt@example.test",
+                ),
+            )
+        )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient", classes="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        widget = app.query_one(RecipientInput)
+        field = widget.input
+        field.focus()
+        field.value = "mar"
+        await pilot.pause()
+
+        options = app.query_one(OptionList)
+        assert options.option_count == 10
+        original = field.value
+        widget._select(99)
+        assert field.value == original
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert field.value.endswith("<marina0@example.test>")
+        assert not options.display
+
+
 # ===========================================================================
 # SaveFolderPickerScreen
 # ===========================================================================
@@ -1399,6 +1495,75 @@ async def test_save_folder_picker_escape_returns_none(tmp_path) -> None:
         await pilot.press("escape")
         await pilot.pause()
     assert app.return_value is None
+
+
+async def test_save_folder_picker_directory_selection_updates_result(tmp_path) -> None:
+    """Selecting a tree directory updates the label and selected result."""
+    from textual.widgets import DirectoryTree, Label
+
+    import pony.tui.screens.save_folder_picker_screen as picker_module
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    picker_module._session_dir = None
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, SaveFolderPickerScreen)
+        tree = screen.query_one(DirectoryTree)
+        screen.on_directory_tree_directory_selected(
+            DirectoryTree.DirectorySelected(tree.root, selected)
+        )
+        assert str(screen.query_one("#current-path", Label).render()) == str(selected)
+        await pilot.click("#select")
+        await pilot.pause()
+
+    assert app.return_value == selected
+    assert picker_module._session_dir == selected
+
+
+async def test_save_folder_picker_creates_and_selects_new_folder(tmp_path) -> None:
+    """The New Folder prompt creates a directory and makes it current."""
+    from textual.widgets import Input, Label
+
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.click("#new-folder")
+        await pilot.pause()
+        prompt = app.screen
+        field = prompt.query_one(Input)
+        field.value = "fictional-folder"
+        prompt.on_input_submitted(Input.Submitted(field, field.value))
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, SaveFolderPickerScreen)
+        created = tmp_path / "fictional-folder"
+        assert created.is_dir()
+        assert str(picker.query_one("#current-path", Label).render()) == str(created)
+
+
+async def test_save_folder_picker_empty_new_folder_is_noop(tmp_path) -> None:
+    """Submitting an empty folder name leaves the selected path unchanged."""
+    from textual.widgets import Input, Label
+
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.click("#new-folder")
+        await pilot.pause()
+        prompt = app.screen
+        field = prompt.query_one(Input)
+        prompt.on_input_submitted(Input.Submitted(field, ""))
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, SaveFolderPickerScreen)
+        assert str(picker.query_one("#current-path", Label).render()) == str(tmp_path)
 
 
 # ===========================================================================

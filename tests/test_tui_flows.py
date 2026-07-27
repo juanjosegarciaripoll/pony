@@ -190,6 +190,45 @@ async def test_compose_send_requires_to(monkeypatch: pytest.MonkeyPatch) -> None
     assert send_mock.call_count == 0
 
 
+async def test_compose_dynamic_recipient_rows() -> None:
+    """Cc/Bcc rows can be added, collected, removed, and cleared."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="recipient-rows")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.containers import Vertical
+        from textual.widgets import Button, Input
+
+        from pony.tui.screens.compose_screen import _AddrRow
+
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        cc_container = screen.query_one("#cc-container", Vertical)
+        first_row = cc_container.query_one(_AddrRow)
+        first_row.query_one(Input).value = "alex.rivera@example.test"
+
+        add_button = first_row.query_one(".addr-add-btn", Button)
+        screen.on_button_pressed(Button.Pressed(add_button))
+        await pilot.pause()
+
+        rows = list(cc_container.query(_AddrRow))
+        assert len(rows) == 2
+        assert rows[0].query_one(".addr-add-btn", Button).display is False
+        assert rows[1].query_one(".addr-add-btn", Button).display is True
+        rows[1].query_one(Input).value = ""
+        assert screen._collect_field("cc-container") == ("alex.rivera@example.test")
+
+        remove_button = rows[1].query_one(".addr-remove-btn", Button)
+        screen.on_button_pressed(Button.Pressed(remove_button))
+        await pilot.pause()
+        assert len(list(cc_container.query(_AddrRow))) == 1
+
+        remaining_row = cc_container.query_one(_AddrRow)
+        remove_button = remaining_row.query_one(".addr-remove-btn", Button)
+        screen.on_button_pressed(Button.Pressed(remove_button))
+        assert remaining_row.query_one(Input).value == ""
+
+
 async def test_forward_sends_original_message_as_removable_eml_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
