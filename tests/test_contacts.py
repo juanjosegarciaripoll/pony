@@ -894,3 +894,86 @@ class BbdbParserInternalsTest(unittest.TestCase):
             self.assertEqual(result, [])
         finally:
             path.unlink(missing_ok=True)
+
+
+class BbdbMalformedRecordTests(unittest.TestCase):
+    """BBDB files are hand-edited in Emacs, so the parser meets bad input.
+
+    A truncated or short record must be skipped rather than take the
+    whole import down — the user's other contacts are still worth
+    having.
+    """
+
+    def _read(self, *lines: str) -> list[Contact]:
+        path = TMP_ROOT / f"bbdb-malformed-{uuid4().hex}.bbdb"
+        path.write_text(
+            ";; -*-coding: utf-8-emacs;-*-\n" + "\n".join(lines) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            return read_bbdb(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_a_record_with_too_few_fields_is_skipped(self) -> None:
+        """Under eight fields is not a BBDB record — drop it, keep the rest."""
+        good = '["Ada" "Lovelace" nil nil nil nil nil ("ada@example.com") nil nil]'
+        contacts = self._read('["Only" "TwoFields"]', good)
+
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0].first_name, "Ada")
+
+    def test_an_unterminated_list_does_not_hang_or_raise(self) -> None:
+        """A missing ``)`` ends the parse at end-of-input."""
+        contacts = self._read(
+            '["Grace" "Hopper" nil nil ("Navy" nil nil ("grace@example.com") nil nil]'
+        )
+
+        # Parsed as best it can; the point is that it returns at all.
+        self.assertIsInstance(contacts, list)
+
+    def test_a_vector_valued_field_is_parsed_as_a_list(self) -> None:
+        """BBDB writes some fields as ``[...]`` vectors rather than lists."""
+        contacts = self._read(
+            '["Alan" "Turing" nil ["alan" "at"] nil nil nil'
+            ' ("alan@example.com") nil nil]'
+        )
+
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0].aliases, ("alan", "at"))
+
+    def test_notes_are_found_inside_the_nested_xfields_alist(self) -> None:
+        """``xfields`` nests the alist one level deeper than it looks."""
+        contacts = self._read(
+            '["Katherine" "Johnson" nil nil nil nil nil'
+            ' ("katherine@example.com") ((notes . "Orbital mechanics")) nil]'
+        )
+
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0].notes, "Orbital mechanics")
+
+    def test_creation_and_update_dates_are_read_from_dotted_pairs(self) -> None:
+        """Dates arrive as ``(creation-date . "…")`` pairs, sometimes nested."""
+        contacts = self._read(
+            '["Margaret" "Hamilton" nil nil nil nil nil'
+            ' ("margaret@example.com") nil nil'
+            ' ((creation-date . "2026-04-12"))'
+            ' ((timestamp . "2026-04-13 09:27:04 +0000"))]'
+        )
+
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0].created_at.date().isoformat(), "2026-04-12")
+        self.assertEqual(contacts[0].updated_at.date().isoformat(), "2026-04-13")
+
+    def test_an_unparseable_date_falls_back_to_now(self) -> None:
+        """A date in no known format must not drop the contact."""
+        before = datetime.now(tz=UTC)
+        contacts = self._read(
+            '["Radia" "Perlman" nil nil nil nil nil'
+            ' ("radia@example.com") nil nil "not a date" "also not a date"]'
+        )
+        after = datetime.now(tz=UTC)
+
+        self.assertEqual(len(contacts), 1)
+        self.assertGreaterEqual(contacts[0].created_at, before)
+        self.assertLessEqual(contacts[0].created_at, after)
