@@ -1713,9 +1713,7 @@ class ImapSyncService:
                     folder_name,
                 )
 
-        flush = getattr(mirror, "flush_writes", None)
-        if flush is not None:
-            flush()
+        mirror.flush_writes()
 
         return FolderSyncResult(
             folder_name=folder_name,
@@ -2194,14 +2192,10 @@ class ImapSyncService:
             )
             return False
         try:
-            store = getattr(mirror, "store_message_async", None)
-            if store is not None:
-                storage_key = store(folder=folder_ref, raw_message=raw)
-            else:
-                storage_key = mirror.store_message(
-                    folder=folder_ref,
-                    raw_message=raw,
-                )
+            storage_key = mirror.store_message_async(
+                folder=folder_ref,
+                raw_message=raw,
+            )
         except Exception:
             logger.exception("Failed to store UID %d to mirror", uid)
             return False

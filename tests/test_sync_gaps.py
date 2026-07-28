@@ -442,13 +442,25 @@ def test_ingest_raw_rejects_empty_and_storage_failure() -> None:
     index.insert_message.assert_not_called()
 
 
-def test_ingest_raw_uses_synchronous_store_when_async_is_unavailable() -> None:
+def test_ingest_raw_accepts_a_backend_that_stores_synchronously() -> None:
+    """``store_message_async`` is part of the interface, not a probe.
+
+    A backend with nothing to defer satisfies it by delegating; the sync
+    engine calls it unconditionally rather than reaching around the
+    protocol with ``getattr`` and silently taking the slow path.
+    """
     service, index, _, _ = _service()
     folder = FolderRef("personal", "INBOX")
 
     class SyncMirror:
         def store_message(self, **_kwargs: object) -> str:
             return "stored-key"
+
+        def store_message_async(self, **kwargs: object) -> str:
+            return self.store_message(**kwargs)
+
+        def flush_writes(self) -> None:
+            return None
 
     assert service._ingest_raw(
         account=_account(),

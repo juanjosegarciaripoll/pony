@@ -9,7 +9,6 @@ from typing import Protocol
 from .domain import (
     AccountConfig,
     Contact,
-    DraftMessage,
     FlagSet,
     FolderMessageSummary,
     FolderQuickStatus,
@@ -44,6 +43,27 @@ class MirrorRepository(Protocol):
 
     def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         """Store one RFC 5322 message and return its storage_key."""
+        ...
+
+    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
+        """Reserve a storage_key now; the bytes may be written later.
+
+        The sync engine's ingest loop uses this so a folder's writes
+        overlap instead of serialising, then calls :meth:`flush_writes`
+        once at the end.  A backend that writes synchronously satisfies
+        this by delegating to :meth:`store_message` — the point of
+        declaring it here is that the engine can call it unconditionally
+        instead of probing for it and silently taking the slow path.
+        """
+        ...
+
+    def flush_writes(self) -> None:
+        """Complete any writes deferred by :meth:`store_message_async`.
+
+        Must raise if a deferred write failed: the sync engine treats an
+        error here as "this folder did not fully land" and declines to
+        advance its watermark.  A synchronous backend does nothing.
+        """
         ...
 
     def list_messages(self, *, folder: FolderRef) -> Sequence[str]:
@@ -219,6 +239,10 @@ class IndexRepository(Protocol):
         timestamp.  ``folder_name`` narrows the search; ``None``
         searches the whole account.  Empty Message-IDs never match.
         """
+        ...
+
+    def count_folder_messages(self, *, folder: FolderRef) -> int:
+        """Return how many messages the folder holds."""
         ...
 
     def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
@@ -522,26 +546,6 @@ class CredentialsProvider(Protocol):
 
     def get_password(self, *, account_name: str) -> str:
         """Return the password for the named account."""
-        ...
-
-
-class SyncService(Protocol):
-    """Interface for synchronization workflows."""
-
-    def sync(self, *, account_name: str | None = None) -> None:
-        """Synchronize one account or all accounts."""
-        ...
-
-
-class SendService(Protocol):
-    """Interface for SMTP sending workflows."""
-
-    def save_draft(self, *, account_name: str, draft: DraftMessage) -> str:
-        """Persist a draft and return its identifier."""
-        ...
-
-    def send(self, *, account_name: str, draft: DraftMessage) -> str:
-        """Send a draft and return a provider message identifier."""
         ...
 
 

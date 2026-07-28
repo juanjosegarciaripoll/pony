@@ -301,18 +301,6 @@ class Contact:
 
 
 @dataclass(frozen=True, slots=True)
-class DraftMessage:
-    """Draft message information for compose and send workflows."""
-
-    from_address: str
-    to_addresses: tuple[str, ...]
-    cc_addresses: tuple[str, ...]
-    subject: str
-    body_text: str
-    attachments: tuple[AttachmentRef, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class FolderSyncState:
     """Sync watermark for one IMAP folder.
 

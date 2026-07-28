@@ -375,6 +375,14 @@ class MboxMirrorRepository(MirrorRepository):
         mbox.flush()
         return key
 
+    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
+        """Store synchronously — an mbox key is the message's position.
+
+        There is nothing to defer: the key only exists once the message
+        has been appended, so there is no way to hand one back early.
+        """
+        return self.store_message(folder=folder, raw_message=raw_message)
+
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)

@@ -673,3 +673,30 @@ class MboxEmptyMailboxTestCase(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             repo.get_message_bytes(folder=folder, storage_key="9999")
+
+
+class MirrorProtocolCompletenessTest(unittest.TestCase):
+    """The deferred-write pair belongs to the interface.
+
+    The sync engine used to look for ``store_message_async`` and
+    ``flush_writes`` with ``getattr`` because the protocol did not
+    declare them.  Any backend that did not happen to have them was
+    silently downgraded to one synchronous write per message, with no
+    error and no way to notice.  Declaring them means the engine calls
+    them outright and a backend missing them fails type-checking.
+    """
+
+    def test_both_methods_are_declared_on_the_protocol(self) -> None:
+        for name in ("store_message_async", "flush_writes"):
+            with self.subTest(method=name):
+                self.assertTrue(hasattr(MirrorRepository, name))
+
+    def test_every_shipped_backend_implements_them(self) -> None:
+        for backend in (MaildirMirrorRepository, MboxMirrorRepository):
+            for name in ("store_message_async", "flush_writes"):
+                with self.subTest(backend=backend.__name__, method=name):
+                    self.assertIsNot(
+                        getattr(backend, name),
+                        getattr(MirrorRepository, name),
+                        f"{backend.__name__} must define {name}, not inherit the stub",
+                    )
