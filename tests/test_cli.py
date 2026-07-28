@@ -7,9 +7,10 @@ import io
 import os
 import sys
 import unittest
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import corpus
@@ -3435,3 +3436,103 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
         self.assertIn("Q1 report attached", meta)
         self.assertIn("multipart/mixed", mime)
         self.assertIn("archive:", folders)
+
+
+class BareFilenameShortcutTests(unittest.TestCase):
+    """``pony some-message.eml`` opens the viewer.
+
+    This is the shape a desktop file association hands over. The first
+    implementation inspected ``parse_known_args``'s leftovers, which
+    cannot work — argparse rejects an unrecognised subcommand while
+    parsing, so the check was never reached and the shortcut had never
+    once run.
+    """
+
+    def setUp(self) -> None:
+        self.dir = TMP_ROOT / "bare-filename" / uuid4().hex
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.eml = self.dir / "message.eml"
+        self.eml.write_bytes(corpus.plain_text())
+
+    def _run(self, argv: list[str]) -> tuple[Mapping[str, Any] | None, int | None]:
+        """Run main(*argv*) with the viewer stubbed; return (kwargs, rc)."""
+        from unittest.mock import patch
+
+        with patch("pony.cli.run_eml_viewer", return_value=0) as viewer:
+            try:
+                rc: int | None = main(argv)
+            except SystemExit as exc:
+                rc = exc.code if isinstance(exc.code, int) else 1
+        return (viewer.call_args.kwargs if viewer.called else None), rc
+
+    def test_a_bare_filename_opens_the_viewer(self) -> None:
+        kwargs, rc = self._run([str(self.eml)])
+        self.assertEqual(rc, 0)
+        assert kwargs is not None
+        self.assertEqual(kwargs["path"], self.eml)
+
+    def test_it_is_equivalent_to_the_view_command(self) -> None:
+        bare, _ = self._run([str(self.eml)])
+        explicit, _ = self._run(["view", str(self.eml)])
+        self.assertEqual(bare, explicit)
+
+    def test_a_path_that_is_not_a_file_is_still_an_error(self) -> None:
+        # Must not be silently swallowed into a viewer launch.
+        kwargs, rc = self._run([str(self.dir / "absent.eml")])
+        self.assertIsNone(kwargs)
+        self.assertEqual(rc, 2)
+
+    def test_a_directory_is_not_treated_as_a_message(self) -> None:
+        kwargs, rc = self._run([str(self.dir)])
+        self.assertIsNone(kwargs)
+        self.assertEqual(rc, 2)
+
+    def test_an_unknown_subcommand_still_reports_itself(self) -> None:
+        kwargs, rc = self._run(["nosuchcommand"])
+        self.assertIsNone(kwargs)
+        self.assertEqual(rc, 2)
+
+    def test_a_file_shadowing_a_subcommand_does_not_hijack_it(self) -> None:
+        # A file literally named "sync" in the working directory must not
+        # turn `pony sync` into a request to view it.
+        from unittest.mock import patch
+
+        shadow = self.dir / "sync"
+        shadow.write_bytes(corpus.plain_text())
+        with (
+            contextlib.chdir(self.dir),
+            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.run_sync", return_value=0) as sync,
+            contextlib.suppress(SystemExit),
+        ):
+            main(["sync"])
+        self.assertFalse(viewer.called)
+        self.assertTrue(sync.called)
+
+    def test_an_option_value_is_never_mistaken_for_a_message(self) -> None:
+        # `pony --config pony.toml` has a readable file in it too; only a
+        # leading argument is eligible, so the TUI still launches.
+        from unittest.mock import patch
+
+        config = self.dir / "pony.toml"
+        config.write_text("version = 2\n", encoding="utf-8")
+        with (
+            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.run_tui", return_value=0) as tui,
+            contextlib.suppress(SystemExit),
+        ):
+            main(["--config", str(config)])
+        self.assertFalse(viewer.called)
+        self.assertTrue(tui.called)
+
+    def test_no_arguments_still_launches_the_tui(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.run_tui", return_value=0) as tui,
+            contextlib.suppress(SystemExit),
+        ):
+            main([])
+        self.assertFalse(viewer.called)
+        self.assertTrue(tui.called)

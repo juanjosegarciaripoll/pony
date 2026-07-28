@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`pony some-message.eml` opens the viewer.** The shortcut had never once
+  worked: argparse rejects an unrecognised subcommand while parsing, so the
+  check that looked for a leftover filename was never reached and every such
+  invocation exited with `invalid choice`. A leading argument that names an
+  existing file is now routed through `pony view`. A file whose name happens
+  to match a subcommand does not hijack it, and a path that does not exist
+  still reports itself rather than being silently swallowed.
+
 - **Flag changes now reach the mirror.** Read, flagged and answered state
   lived only in the SQLite index, so another MUA sharing the same Maildir or
   mbox tree — the arrangement `[[local]]` accounts exist for — saw everything

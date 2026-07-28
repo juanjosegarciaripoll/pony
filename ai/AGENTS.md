@@ -93,11 +93,6 @@ converter and `action_edit_external` spawns an editor.
 **Verified unreachable** — each of these was attempted and found to be dead or
 defensive, so re-deriving it is wasted effort:
 
-- **`cli.py:411-413` — the `pony some-message.eml` shortcut is dead code.**
-  `parser.parse_known_args()` raises on an unknown subcommand choice before
-  `main()` ever inspects `extra_args`, so the bare-filename path cannot run.
-  Either the parser needs a `nargs="?"` positional or the check has to move
-  ahead of parsing. **This is a real bug, not just a coverage gap.**
 - `cli.py:621-622` — `parser.error("Unhandled command.")`. Every subcommand
   argparse accepts is handled above it.
 - `cli.py:1403-1404` — `folder list`'s `(no folders)` arm. Both mirror

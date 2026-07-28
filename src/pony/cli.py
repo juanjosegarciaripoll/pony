@@ -397,28 +397,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start the MCP server (bridges to TUI if running, else stdio).",
     )
 
+    # Recorded so the bare-filename shortcut can tell a subcommand from a
+    # path without keeping a second list of command names beside this one.
+    parser.set_defaults(_commands=frozenset(subparsers.choices))
+
     return parser
+
+
+def _expand_bare_filename(
+    argv: Sequence[str] | None, parser: argparse.ArgumentParser
+) -> Sequence[str] | None:
+    """Rewrite ``pony some-message.eml`` as ``pony view some-message.eml``.
+
+    This is the shape a desktop file association hands over: one
+    argument, the path to a message. Handling it by rewriting the
+    arguments means the shortcut goes through the ``view`` command
+    proper rather than duplicating it.
+
+    Only a leading argument is considered, and only when it names an
+    existing file that is not also a subcommand name. Rewriting a later
+    argument would be guesswork — ``pony --config pony.toml`` has a
+    readable file in it too, and turning that into a request to view the
+    config would be worse than the shortcut not firing.
+
+    The previous attempt at this inspected ``parse_known_args``'s
+    leftovers, which cannot work: argparse rejects an unrecognised
+    subcommand while parsing, so the check was never reached.
+    """
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if not tokens:
+        return argv
+    first = tokens[0]
+    commands: frozenset[str] = parser.get_default("_commands") or frozenset()
+    if first.startswith("-") or first in commands:
+        return argv
+    if not Path(first).is_file():
+        return argv
+    return ["view", *tokens]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
-    args, extra_args = parser.parse_known_args(argv)
+    args = parser.parse_args(_expand_bare_filename(argv, parser))
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
-
-    # Bare-filename invocation: pony some-message.eml
-    if (
-        args.command is None
-        and len(extra_args) == 1
-        and not extra_args[0].startswith("-")
-    ):
-        maybe_file = Path(extra_args[0])
-        if maybe_file.is_file():
-            return run_eml_viewer(path=maybe_file, theme=args.theme)
-
-    # Re-parse strictly so unknown args and bad subcommands are reported.
-    args = parser.parse_args(argv)
 
     try:
         return _dispatch(args=args, paths=paths, parser=parser)

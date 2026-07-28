@@ -481,6 +481,28 @@ pony config show
 
 ---
 
+## `pony view`
+
+Open a single RFC 5322 `.eml` file in the full-screen message viewer,
+without touching the index or any configured account. Nested
+`message/rfc822` attachments open in further viewer screens.
+
+```
+pony view archived-thread.eml
+```
+
+The subcommand can be left out when the first argument is a path to an
+existing file, so a desktop file association can invoke Pony directly:
+
+```
+pony archived-thread.eml
+```
+
+Both forms are identical. Global flags still go before the filename
+(`pony --theme nord view message.eml`).
+
+---
+
 ## `pony mcp`
 
 Run the Model Context Protocol server. Behaviour switches automatically:
