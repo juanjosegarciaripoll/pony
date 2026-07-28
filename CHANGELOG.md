@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **Local accounts work with the read commands again.** `message
+  body/get/attachment/mime` and `folder list` resolved the account with an
+  IMAP-only filter, so a configured mbox or Maildir account reported
+  "No account named 'x' in config." — while `folder mirror`, `folder dedup`,
+  the TUI and the MCP tools handled the same account fine.
+
 - **Trashing from the reader now records when it happened.** `trashed_at`
   was left unset, so a trashed message with no server UID was dropped by the
   next sync instead of being kept for the retention period, and retention

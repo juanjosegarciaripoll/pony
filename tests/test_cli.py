@@ -3335,3 +3335,103 @@ class SearchQueryLanguageTests(unittest.TestCase):
                 run_cli("--config", str(config_path), "search", "from:alice")
 
         spy.assert_called_once_with("from:alice")
+
+
+class LocalAccountReadCommandsTest(unittest.TestCase):
+    """Reading mail needs a mirror, not a server.
+
+    ``message body/get/attachment/mime`` and ``folder list`` resolved the
+    account with an IMAP-only filter, so a configured local (mbox or
+    Maildir) account produced "No account named 'x' in config." — while
+    ``folder mirror``, ``folder dedup``, the TUI and every MCP tool
+    handled the very same account fine.
+    """
+
+    def _local_config(self, env_root: Path) -> tuple[Path, Path]:
+        mirror_dir = env_root / "data" / "archive-mirror"
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        config_path = TMP_ROOT / f"config-local-{uuid4().hex}.toml"
+        config_path.write_text(
+            "config_version = 2\n"
+            "\n[[accounts]]\n"
+            'account_type = "local"\n'
+            'name = "archive"\n'
+            'email_address = "archive@example.com"\n'
+            "\n[accounts.mirror]\n"
+            f'path = "{mirror_dir}"\n'
+            'format = "maildir"\n',
+            encoding="utf-8",
+        )
+        return config_path, mirror_dir
+
+    def _seed(self, mirror_dir: Path) -> str:
+        import dataclasses
+
+        from pony.domain import FolderRef, MessageRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.message_projection import project_rfc822_message
+        from pony.paths import AppPaths
+        from pony.storage import MaildirMirrorRepository
+
+        paths = AppPaths.default()
+        paths.ensure_runtime_dirs()
+        mirror = MaildirMirrorRepository(account_name="archive", root_dir=mirror_dir)
+        folder = FolderRef(account_name="archive", folder_name="INBOX")
+        raw = corpus.multipart_mixed_attachment()
+        storage_key = mirror.store_message(folder=folder, raw_message=raw)
+
+        index = SqliteIndexRepository(database_path=paths.index_db_file)
+        index.initialize()
+        projected = project_rfc822_message(
+            message_ref=MessageRef(account_name="archive", folder_name="INBOX", id=0),
+            raw_message=raw,
+            storage_key=storage_key,
+        )
+        saved = index.insert_message(
+            message=dataclasses.replace(projected, local_status=MessageStatus.ACTIVE)
+        )
+        return saved.message_id
+
+    def test_every_read_command_accepts_a_local_account(self) -> None:
+        with isolated_app_env() as env_root:
+            config_path, mirror_dir = self._local_config(env_root)
+            try:
+                message_id = self._seed(mirror_dir)
+
+                body = run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "body",
+                    "archive",
+                    "INBOX",
+                    message_id,
+                )
+                meta = run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "get",
+                    "archive",
+                    "INBOX",
+                    message_id,
+                )
+                mime = run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "mime",
+                    "archive",
+                    "INBOX",
+                    message_id,
+                )
+                folders = run_cli(
+                    "--config", str(config_path), "folder", "list", "archive"
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+        self.assertIn("Q1 report attached", body)
+        self.assertIn("Q1 report attached", meta)
+        self.assertIn("multipart/mixed", mime)
+        self.assertIn("archive:", folders)
