@@ -1336,7 +1336,14 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return results[0]
 
     def _load_contacts_by_ids(self, ids: list[int]) -> list[Contact]:
-        """Batch-load contacts with their emails and aliases in 3 queries."""
+        """Batch-load contacts with their emails and aliases in 3 queries.
+
+        Returns them in the order *ids* were given.  Callers compute an
+        order that matters — ``search_contacts`` ranks by how often you
+        write to someone, ``list_all_contacts`` by name — and a bare
+        ``WHERE id IN (…)`` returns rowid order, which silently replaced
+        both with "whichever contact was created first".
+        """
         if not ids:
             return []
         placeholders = ",".join("?" * len(ids))
@@ -1372,17 +1379,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         for cid, alias in alias_rows:
             aliases_by_id.setdefault(int(str(cid)), []).append(str(alias))
 
-        contacts: list[Contact] = []
+        by_id: dict[int, Contact] = {}
         for row in rows:
             cid = int(str(row[0]))
-            contacts.append(
-                _build_contact(
-                    row,
-                    [(e,) for e in emails_by_id.get(cid, [])],
-                    [(a,) for a in aliases_by_id.get(cid, [])],
-                )
+            by_id[cid] = _build_contact(
+                row,
+                [(e,) for e in emails_by_id.get(cid, [])],
+                [(a,) for a in aliases_by_id.get(cid, [])],
             )
-        return contacts
+        # Restore the caller's order; SQLite returned rowid order.
+        return [by_id[cid] for cid in ids if cid in by_id]
 
     # ------------------------------------------------------------------
     # Credentials

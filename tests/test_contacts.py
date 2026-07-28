@@ -977,3 +977,52 @@ class BbdbMalformedRecordTests(unittest.TestCase):
         self.assertEqual(len(contacts), 1)
         self.assertGreaterEqual(contacts[0].created_at, before)
         self.assertLessEqual(contacts[0].created_at, after)
+
+
+class ContactOrderingTest(unittest.TestCase):
+    """The order a query asks for must survive the batch load.
+
+    ``search_contacts`` ranks by how often you write to someone and
+    ``list_all_contacts`` orders by name, but both then fetch the rows
+    with ``WHERE id IN (…)``, which returns rowid order.  Both orderings
+    were being replaced by "whichever contact was created first", so the
+    composer's autocomplete offered the least-used match first.
+    """
+
+    def _seeded_index(self) -> SqliteIndexRepository:
+        from tui_helpers import make_index, make_tmp_paths
+
+        index = make_index(make_tmp_paths("contact-order"))
+        # Inserted in the opposite order to the expected ranking.
+        for first, count in (("Aaron", 1), ("Bella", 50), ("Cyril", 10)):
+            index.upsert_contact(
+                contact=Contact(
+                    id=None,
+                    first_name=first,
+                    last_name="Zed",
+                    emails=(f"{first.lower()}@example.com",),
+                    message_count=count,
+                    last_seen=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            )
+        return index
+
+    def test_search_returns_the_most_written_to_contact_first(self) -> None:
+        results = self._seeded_index().search_contacts(prefix="zed", limit=10)
+
+        self.assertEqual(
+            [c.message_count for c in results],
+            [50, 10, 1],
+            "search_contacts ranks by message_count DESC",
+        )
+
+    def test_listing_all_contacts_is_ordered_by_name(self) -> None:
+        results = self._seeded_index().list_all_contacts()
+
+        self.assertEqual([c.first_name for c in results], ["Aaron", "Bella", "Cyril"])
+
+    def test_the_limit_keeps_the_highest_ranked(self) -> None:
+        """Truncation must drop the tail of the ranking, not an arbitrary slice."""
+        results = self._seeded_index().search_contacts(prefix="zed", limit=2)
+
+        self.assertEqual([c.message_count for c in results], [50, 10])
