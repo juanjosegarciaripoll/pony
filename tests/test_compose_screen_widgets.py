@@ -320,3 +320,84 @@ async def test_the_body_title_names_the_configured_editor(tmp_path: Path) -> Non
         screen._refresh_body_title()
         await pilot.pause()
         assert "Alt+E" not in str(screen.query_one("#body-area").border_title)
+
+
+# ---------------------------------------------------------------------------
+# Quoted display names
+#
+# Regression: replying to a message whose recipients carry quoted display
+# names ("Doe, John" <j@example.com>) produced one Cc row per comma
+# rather than per address, so a single recipient arrived as two broken
+# entries and the message went to the wrong (or no) address.
+# ---------------------------------------------------------------------------
+
+
+async def test_quoted_display_names_get_one_cc_row_each() -> None:
+    cc = (
+        '"Doe, John" <john@example.test>, '
+        '"O\'Brien, Mary" <mary@example.test>, '
+        "plain@example.test"
+    )
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="quoted-cc-rows", cc=cc
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        rows = list(screen.query_one("#cc-container", Vertical).query(_AddrRow))
+
+        values = [row.query_one(Input).value for row in rows]
+
+    assert values == [
+        '"Doe, John" <john@example.test>',
+        '"O\'Brien, Mary" <mary@example.test>',
+        "plain@example.test",
+    ]
+
+
+async def test_quoted_display_names_survive_the_round_trip() -> None:
+    """Rows are collected back into a header, which must match the input."""
+    cc = '"Lastname, Firstname" <fl@example.test>, plain@example.test'
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="quoted-cc-roundtrip", cc=cc
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+
+        assert screen._collect_field("cc-container") == cc
+
+
+async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
+    """The address that reaches SMTP must be the one the reply started with."""
+    from unittest.mock import Mock
+
+    import pony.tui.screens.compose_screen as compose_module
+
+    cc = '"Doe, John" <john@example.test>, plain@example.test'
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="quoted-cc-send",
+        to="recipient@example.test",
+        subject="Subject",
+        body="Body",
+        cc=cc,
+    )
+    sent: list[object] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+            side_effect=lambda **kwargs: sent.append(kwargs)
+        )
+        screen.action_send()
+        await pilot.pause()
+
+    assert sent, "the message was never handed to SMTP"
+    message = sent[0]["msg"]  # type: ignore[index]
+    addresses = [a.addr_spec for a in message["Cc"].addresses]
+    names = [a.display_name for a in message["Cc"].addresses]
+    assert addresses == ["john@example.test", "plain@example.test"]
+    assert names[0] == "Doe, John"

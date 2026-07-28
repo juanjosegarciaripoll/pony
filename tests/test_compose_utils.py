@@ -26,6 +26,8 @@ from pony.tui.compose_utils import (
     new_compose_body,
     parse_draft_fields,
     reply_subject,
+    split_address_list,
+    split_trailing_address,
 )
 from pony.tui.message_renderer import RenderedMessage
 
@@ -691,3 +693,100 @@ class CrlfBodyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SplitAddressListTest(unittest.TestCase):
+    """Address lists must be split on separators, not on every comma.
+
+    Regression: a display name containing a comma is quoted by the
+    sending client (``"Doe, John" <j@example.com>``).  Splitting the
+    header naively turned that one recipient into two broken entries —
+    ``"Doe`` and ``John" <j@example.com>`` — which is what the user saw
+    after a reply-all.  Such names are also the ones long enough to be
+    folded across lines, which is why the two symptoms travel together.
+    """
+
+    def test_a_quoted_comma_does_not_start_a_new_address(self) -> None:
+        self.assertEqual(
+            split_address_list('"Doe, John" <john@example.com>, plain@example.com'),
+            ['"Doe, John" <john@example.com>', "plain@example.com"],
+        )
+
+    def test_several_quoted_names_stay_intact(self) -> None:
+        header = (
+            '"Doe, John" <john@example.com>, '
+            '"O\'Brien, Mary" <mary@example.com>, '
+            "plain@example.com"
+        )
+        self.assertEqual(len(split_address_list(header)), 3)
+
+    def test_plain_lists_are_unchanged(self) -> None:
+        self.assertEqual(
+            split_address_list("a@example.com, b@example.com"),
+            ["a@example.com", "b@example.com"],
+        )
+
+    def test_an_escaped_quote_inside_a_name_is_not_a_delimiter(self) -> None:
+        self.assertEqual(
+            split_address_list(r'"a\"b, c" <x@example.com>'),
+            [r'"a\"b, c" <x@example.com>'],
+        )
+
+    def test_blank_and_empty_entries_are_dropped(self) -> None:
+        self.assertEqual(split_address_list(""), [])
+        self.assertEqual(split_address_list("   "), [])
+        self.assertEqual(
+            split_address_list("a@example.com,, b@example.com"),
+            ["a@example.com", "b@example.com"],
+        )
+
+    def test_rejoining_reproduces_the_header(self) -> None:
+        """The composer collects rows back with ``", "`` — that must round-trip."""
+        header = '"Doe, John" <john@example.com>, plain@example.com'
+        self.assertEqual(", ".join(split_address_list(header)), header)
+
+    def test_unbalanced_quotes_fall_back_to_the_old_split(self) -> None:
+        """Malformed input must not be handled worse than it used to be."""
+        header = '"Unclosed <broken@example.com>, other@example.com'
+        naive = [part.strip() for part in header.split(",") if part.strip()]
+        self.assertEqual(split_address_list(header), naive)
+
+
+class SplitTrailingAddressTest(unittest.TestCase):
+    """Autocompletion must replace only the address being typed.
+
+    Regression: with a complete quoted address already in the field, the
+    last comma is *inside* the display name, so the old ``rfind(",")``
+    treated the field as "``"Doe,`` plus a token being typed".  Accepting
+    a completion then overwrote the existing recipient, leaving
+    ``"Doe, mary@example.com``.
+    """
+
+    def test_a_complete_quoted_address_leaves_nothing_to_preserve(self) -> None:
+        prefix, typed = split_trailing_address('"Doe, John" <john@example.com>')
+        self.assertEqual(prefix, "")
+        self.assertEqual(typed, '"Doe, John" <john@example.com>')
+
+    def test_a_quoted_address_is_preserved_while_typing_the_next(self) -> None:
+        prefix, typed = split_trailing_address('"Doe, John" <john@example.com>, ma')
+        self.assertEqual(prefix, '"Doe, John" <john@example.com>, ')
+        self.assertEqual(typed, "ma")
+        self.assertEqual(
+            prefix + "mary@example.com",
+            ('"Doe, John" <john@example.com>, mary@example.com'),
+        )
+
+    def test_plain_addresses_behave_as_before(self) -> None:
+        prefix, typed = split_trailing_address("alice@example.com, ma")
+        self.assertEqual(prefix, "alice@example.com, ")
+        self.assertEqual(typed, "ma")
+
+    def test_a_single_token_has_no_prefix(self) -> None:
+        self.assertEqual(split_trailing_address("ma"), ("", "ma"))
+
+    def test_unbalanced_quotes_fall_back_to_the_last_comma(self) -> None:
+        value = '"Unclosed <broken@example.com>, ma'
+        prefix, typed = split_trailing_address(value)
+        last = value.rfind(",")
+        self.assertEqual(prefix, value[: last + 1] + " ")
+        self.assertEqual(typed, "ma")

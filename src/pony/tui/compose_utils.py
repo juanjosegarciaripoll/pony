@@ -54,6 +54,75 @@ def format_display_address(name: str, addr: str) -> str:
     return f"{name} <{addr}>"
 
 
+def _address_separator_indices(value: str) -> list[int]:
+    """Return the offsets of every comma in *value* that separates addresses.
+
+    A comma inside a quoted display name is part of the name, not a
+    separator: ``"Doe, John" <j@example.com>`` is *one* address.  Quoted
+    names like that are common — most clients quote a name the moment it
+    contains a comma, and such names are also the ones long enough to get
+    folded across lines, which is why the two symptoms travel together.
+
+    When the quotes turn out to be unbalanced the value is not a valid
+    address list at all, and the scan would treat everything after the stray
+    quote as one enormous name.  Rather than guess, fall back to every comma
+    — the historical behaviour — so malformed input is never handled *worse*
+    than before, only well-formed input better.
+    """
+    indices: list[int] = []
+    in_quotes = False
+    escaped = False
+    for i, ch in enumerate(value):
+        if escaped:
+            escaped = False
+        elif ch == "\\" and in_quotes:
+            escaped = True
+        elif ch == '"':
+            in_quotes = not in_quotes
+        elif ch == "," and not in_quotes:
+            indices.append(i)
+    if in_quotes:
+        return [i for i, ch in enumerate(value) if ch == ","]
+    return indices
+
+
+def split_address_list(value: str) -> list[str]:
+    """Split an address header into one string per address.
+
+    Splits only on separator commas (see :func:`_address_separator_indices`)
+    and returns each address exactly as written — no re-formatting, so
+    nothing can be lost or rewritten on the way through.  Empty entries are
+    dropped; the result may be empty.  Re-joining the result with ``", "``
+    reproduces the input, which is what the composer does when it collects
+    the rows back into a header.
+    """
+    if not value.strip():
+        return []
+    parts: list[str] = []
+    start = 0
+    for index in _address_separator_indices(value):
+        parts.append(value[start:index])
+        start = index + 1
+    parts.append(value[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def split_trailing_address(value: str) -> tuple[str, str]:
+    """Split *value* into (completed addresses, address being typed).
+
+    The first element keeps its trailing separator and a space, so
+    ``prefix + completion`` rebuilds the field.  Used by recipient
+    autocompletion, which must not treat a comma inside a quoted display
+    name as the start of a new address — doing so would overwrite the
+    address already in the field when a completion is accepted.
+    """
+    indices = _address_separator_indices(value)
+    if not indices:
+        return "", value.strip()
+    last = indices[-1]
+    return value[: last + 1] + " ", value[last + 1 :].strip()
+
+
 def _split_at_quote_boundary(text: str) -> tuple[str, str]:
     """Split *text* into (user_written, quoted) at the reply/forward boundary.
 

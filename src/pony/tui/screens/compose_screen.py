@@ -38,7 +38,11 @@ from ...message_projection import project_rfc822_message
 from ...protocols import ContactRepository, IndexRepository, MirrorRepository
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
-from ..compose_utils import build_email_message, format_display_address
+from ..compose_utils import (
+    build_email_message,
+    format_display_address,
+    split_address_list,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -102,8 +106,12 @@ class _AttachRow(Horizontal):
 
 
 def _split_addresses(addresses: str) -> list[str]:
-    """Split comma-separated addresses into a list, always non-empty."""
-    parts = [a.strip() for a in addresses.split(",") if a.strip()]
+    """One address per row, always non-empty so a blank row is rendered.
+
+    Delegates the actual splitting so a comma inside a quoted display
+    name does not turn one recipient into two rows.
+    """
+    parts = split_address_list(addresses)
     return parts if parts else [""]
 
 

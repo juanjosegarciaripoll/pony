@@ -2336,3 +2336,47 @@ async def test_saving_a_new_or_edited_contact_refreshes_the_table() -> None:
         on_saved(_contact("Added", ("added@example.test",)))
         await pilot.pause()
         assert table.row_count == 2
+
+
+async def test_recipient_completion_preserves_a_quoted_name_before_it() -> None:
+    """A comma inside a quoted display name is not a recipient boundary.
+
+    Regression: ``rfind(",")`` found the comma inside ``"Doe, John"`` and
+    treated everything after it as the token being typed, so accepting a
+    completion overwrote the existing recipient — the field became
+    ``"Doe, marina@example.test``.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-quoted"))
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Marina",
+            last_name="Robles",
+            emails=("marina@example.test",),
+        )
+    )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        field.focus()
+        field.value = '"Doe, John" <john@example.test>, mari'
+        await pilot.pause()
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+        assert field.value == (
+            '"Doe, John" <john@example.test>, Marina Robles <marina@example.test>'
+        )

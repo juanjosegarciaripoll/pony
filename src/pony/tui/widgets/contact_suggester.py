@@ -9,7 +9,7 @@ from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from ...protocols import ContactRepository
-from ..compose_utils import format_display_address
+from ..compose_utils import format_display_address, split_trailing_address
 
 
 class RecipientInput(Vertical):
@@ -162,10 +162,7 @@ class RecipientInput(Vertical):
 
 def _split_current_token(value: str) -> tuple[str, str]:
     """Return the preserved field prefix and stripped current token."""
-    last_comma = value.rfind(",")
-    if last_comma == -1:
-        return "", value.strip()
-    return value[: last_comma + 1] + " ", value[last_comma + 1 :].strip()
+    return split_trailing_address(value)
 
 
 # Kept as an import alias for third-party code; new code should use
