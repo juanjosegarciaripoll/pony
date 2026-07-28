@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from corpus import plain_text
 from tui_helpers import build_pony_app, seed_message
 
-from pony.domain import FolderRef, MessageFlag
+from pony.domain import FolderRef, MessageFlag, MessageStatus
 from pony.tui.widgets.message_list import MessageListPanel, _format_date
 from pony.tui.widgets.message_view import MessageViewPanel
 
@@ -493,3 +493,137 @@ async def test_closing_the_reader_returns_focus_to_the_list() -> None:
         await _press(pilot, panel, "down")
         assert panel.cursor_row == 1
         assert view.display is False
+
+
+# ---------------------------------------------------------------------------
+# Cursor restore across a reload
+# ---------------------------------------------------------------------------
+
+
+def _restore_target(
+    ids: list[int], *, row: int | None = None, key: str | None = None
+) -> int | None:
+    """Run the target resolution against a synthetic summary list.
+
+    Rows stream in from a worker, so the cursor cannot be moved after
+    ``load_folder`` returns — there is nothing to move it to yet. The
+    destination is resolved up front from the summary list, which *is*
+    known synchronously, and this is that resolution.
+    """
+    from unittest.mock import Mock
+
+    from pony.domain import FolderMessageSummary, MessageRef
+
+    summaries = [
+        FolderMessageSummary(
+            message_ref=MessageRef(
+                account_name="acct", folder_name="INBOX", id=message_id
+            ),
+            sender="a@example.com",
+            subject=f"subject {message_id}",
+            received_at=datetime(2026, 4, 17, tzinfo=UTC),
+            has_attachments=False,
+            local_flags=frozenset(),
+            local_status=MessageStatus.ACTIVE,
+            storage_key=str(message_id),
+            message_id=f"<m{message_id}@example.com>",
+        )
+        for message_id in ids
+    ]
+    panel = MessageListPanel(index=Mock())
+    return panel._restore_target(summaries, row, key)  # noqa: SLF001
+
+
+def test_restoring_into_an_empty_folder_has_no_target() -> None:
+    assert _restore_target([], row=3, key="3") is None
+
+
+def test_the_cursor_follows_the_named_message() -> None:
+    # A sync can push the message down the list; following the row
+    # number instead would silently land on a different message.
+    assert _restore_target([9, 8, 1, 2, 3], row=0, key="1") == 2
+
+
+def test_the_named_message_takes_precedence_over_the_row() -> None:
+    assert _restore_target([1, 2, 3], row=2, key="1") is None
+
+
+def test_a_vanished_message_falls_back_to_its_row() -> None:
+    # Trash and archive remove the message; the row number then names
+    # whatever took its place, which is exactly where the cursor belongs.
+    assert _restore_target([1, 2, 3], row=1, key="99") == 1
+
+
+def test_the_row_is_clamped_to_a_shrunken_folder() -> None:
+    assert _restore_target([1, 2], row=7, key=None) == 1
+
+
+def test_the_top_row_needs_no_restore() -> None:
+    assert _restore_target([1, 2, 3], row=0, key=None) is None
+
+
+def test_no_request_means_no_restore() -> None:
+    assert _restore_target([1, 2, 3]) is None
+
+
+async def test_trashing_leaves_the_cursor_where_it_was() -> None:
+    """The row that took the trashed message's place becomes current.
+
+    The restore used to run immediately after ``load_folder``, when the
+    streaming worker had added no rows yet, so the guard saw an empty
+    table and the cursor stayed at the top of the folder.
+    """
+    app, *_ = _app_with_rows("cursor-after-trash", count=6)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        for _ in range(3):
+            await _press(pilot, panel, "down")
+        before_row = panel.effective_cursor_row
+        before = panel.get_selected_summary()
+        assert before is not None
+
+        app.screen.trash_current_message()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert panel.effective_cursor_row == before_row
+        after = panel.get_selected_summary()
+        assert after is not None
+        assert after.message_ref.id != before.message_ref.id
+
+
+async def test_a_sync_refresh_keeps_the_cursor_on_its_message() -> None:
+    """New mail arriving above the cursor must not shift what is selected.
+
+    A background sync can land at any moment, so this is the difference
+    between the list staying put and it moving under the reader.
+    """
+    app, _cfg, _paths, index, mirrors = _app_with_rows("cursor-after-sync", count=6)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        for _ in range(3):
+            await _press(pilot, panel, "down")
+        before = panel.get_selected_summary()
+        assert before is not None
+        before_row = panel.effective_cursor_row
+
+        seed_message(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=_INBOX,
+            raw=_dated_message("newly arrived"),
+            message_id="<newly-arrived@example.com>",
+        )
+        app.screen.refresh_after_sync()
+        await pilot.pause()
+        await pilot.pause()
+
+        after = panel.get_selected_summary()
+        assert after is not None
+        assert after.message_ref.id == before.message_ref.id
+        # It is the same message, so the row only moved if the list did.
+        assert panel.effective_cursor_row >= before_row

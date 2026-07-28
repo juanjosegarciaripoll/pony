@@ -97,6 +97,9 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         # on the *complete* row set (cursor-last, mark-all-read) await
         # ``wait_for_load_complete()`` before running.
         self._load_worker: Worker[None] | None = None
+        # Row the cursor is heading for once the stream reaches it, set
+        # by ``load_folder(restore_row=…)``. None once applied.
+        self._pending_cursor: int | None = None
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
@@ -146,7 +149,13 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
             value=self._cell_for(summary),
         )
 
-    def load_folder(self, folder_ref: FolderRef) -> None:
+    def load_folder(
+        self,
+        folder_ref: FolderRef,
+        *,
+        restore_row: int | None = None,
+        restore_key: str | None = None,
+    ) -> None:
         """Replace the table contents with messages from *folder_ref*.
 
         The SQL path pre-filters to ``local_status='active'`` and
@@ -154,6 +163,18 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         sort is needed. Row insertion into the underlying ``DataTable``
         is streamed in batches by a worker so the UI thread isn't
         blocked on large folders.
+
+        *restore_key* names the message the cursor should follow, and
+        *restore_row* is the fallback for when that message is no longer
+        in the folder.  Both matter: after a sync the message is still
+        there but new mail may have pushed it down the list, so following
+        the row number would land on a different message; after a trash
+        or archive the message is gone, and the row number is exactly
+        right because it identifies whatever took its place.
+
+        ``clear()`` resets the cursor and the replacement rows arrive
+        later from the worker, so neither can be done by moving the
+        cursor once this returns — there is nothing to move it to yet.
         """
         self._in_search = False
         self._marked.clear()
@@ -162,7 +183,30 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self._loaded_keys.clear()
         summaries = list(self._index.list_folder_message_summaries(folder=folder_ref))
         self._summaries = summaries
+        self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
         self._load_worker = self._stream_rows(summaries)
+
+    def _restore_target(
+        self,
+        summaries: list[FolderMessageSummary],
+        restore_row: int | None,
+        restore_key: str | None,
+    ) -> int | None:
+        """Row the cursor should end on, or None to leave it at the top.
+
+        Prefers the message named by *restore_key*; falls back to
+        *restore_row*, clamped.  The full row list is known synchronously
+        even though the rows stream in, so both resolve immediately.
+        """
+        if not summaries:
+            return None
+        if restore_key is not None:
+            for index, summary in enumerate(summaries):
+                if str(summary.message_ref.id) == restore_key:
+                    return index or None
+        if restore_row is None or restore_row <= 0:
+            return None
+        return min(restore_row, len(summaries) - 1)
 
     def load_search_results(
         self, messages: list[IndexedMessage], query_raw: str
@@ -199,6 +243,13 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
                 key = str(summary.message_ref.id)
                 self.add_row(self._cell_for(summary), key=key)
                 self._loaded_keys.add(key)
+            # Restore as soon as the target row exists rather than after
+            # the whole folder has streamed in, so the cursor does not
+            # visibly sit at the top of a large folder first.
+            pending = self._pending_cursor
+            if pending is not None and self.row_count > pending:
+                self.move_cursor(row=pending)
+                self._pending_cursor = None
             # Yield to the event loop so input, render, and the
             # message-selected auto-preview can interleave with loading.
             await asyncio.sleep(0)
@@ -226,11 +277,26 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         if summary is not None:
             self.post_message(self.MessageSelected(summary=summary))
 
+    @property
+    def effective_cursor_row(self) -> int:
+        """The row the panel considers current.
+
+        While a reload is still streaming, the real cursor is still at 0
+        and the row it is heading for may not exist yet.  Every caller
+        that asks "which message is selected" has to see the destination,
+        or a trash immediately followed by another action would operate
+        on the top of the folder instead of the message under the cursor.
+        """
+        if self._pending_cursor is not None:
+            return self._pending_cursor
+        return self.cursor_row
+
     def get_selected_summary(self) -> FolderMessageSummary | None:
         """Return the summary for the highlighted row, if any."""
-        if self.cursor_row < 0 or self.cursor_row >= len(self._summaries):
+        row = self.effective_cursor_row
+        if row < 0 or row >= len(self._summaries):
             return None
-        return self._summaries[self.cursor_row]
+        return self._summaries[row]
 
     def action_cursor_first(self) -> None:
         if self._summaries:

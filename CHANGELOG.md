@@ -90,6 +90,16 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   can export, making the backend unusable for that account. Every character
   that cannot appear in a shell variable name now becomes an underscore.
 
+- **The message list keeps its place.** Trashing, archiving or moving a
+  message sent the cursor to the top of the folder instead of leaving it on
+  whichever message took the removed one's slot — so deleting a run of
+  messages meant scrolling back down each time. The restore ran while the
+  replacement rows were still being streamed in by a worker, so it always
+  found an empty table and did nothing. The cursor also now follows its
+  message across a sync rather than tracking a row number, which matters
+  because a background sync can land at any moment and new mail arrives
+  above what you are reading.
+
 - **Forwarded messages arrive readable.** Two defects compounded. The
   forwarded `.eml` was attached as raw bytes, so it was base64-encoded —
   RFC 2046 §5.2.1 allows only 7bit/8bit/binary for `message/*`, and a

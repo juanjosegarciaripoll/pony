@@ -743,7 +743,9 @@ class MainScreen(Screen[None]):
     def _refresh_after_sync(self) -> None:
         self._refresh_folder_indicators()
         if self._current_folder_ref is not None:
-            self.query_one(MessageListPanel).load_folder(self._current_folder_ref)
+            # A background sync can land at any moment; it must not move
+            # the cursor out from under someone reading their mail.
+            self._reload_keeping_cursor(self._current_folder_ref)
 
     # ------------------------------------------------------------------
     # Contextual action gating
@@ -793,15 +795,27 @@ class MainScreen(Screen[None]):
             folder_name=summary.message_ref.folder_name,
         )
 
-    def _reload_folder(self, folder_ref: FolderRef) -> None:
+    def _reload_keeping_cursor(self, folder_ref: FolderRef) -> None:
+        """Reload the message list without throwing the cursor to the top.
+
+        ``clear()`` resets the cursor and the replacement rows arrive
+        from a worker afterwards, so the panel is told where to land
+        rather than being moved once this returns — at that point there
+        is nothing to move it to.  The message under the cursor is named
+        so it can be followed when it survives (a sync may have pushed it
+        down the list) and the row number carries the case where it did
+        not (trash, archive, move) by selecting whatever took its place.
+        """
         msg_list = self.query_one(MessageListPanel)
-        prev_row = msg_list.cursor_row
-        msg_list.load_folder(folder_ref)
-        # DataTable.clear() resets the cursor to row 0; restore (clamped)
-        # so archive/trash/move leave the cursor on the row that took the
-        # removed one's slot rather than jumping to the top.
-        if prev_row >= 0 and msg_list.row_count > 0:
-            msg_list.move_cursor(row=min(prev_row, msg_list.row_count - 1))
+        summary = msg_list.get_selected_summary()
+        msg_list.load_folder(
+            folder_ref,
+            restore_row=msg_list.effective_cursor_row,
+            restore_key=None if summary is None else str(summary.message_ref.id),
+        )
+
+    def _reload_folder(self, folder_ref: FolderRef) -> None:
+        self._reload_keeping_cursor(folder_ref)
         self._refresh_view_after_reload()
         self._refresh_folder_indicators()
 
@@ -1045,7 +1059,7 @@ class MainScreen(Screen[None]):
         if folder_ref is None:
             return
         count = self._index.mark_folder_read(folder=folder_ref)
-        self.query_one(MessageListPanel).load_folder(folder_ref)
+        self._reload_keeping_cursor(folder_ref)
         self._refresh_folder_indicators()
         if count:
             suffix = "s" if count != 1 else ""
