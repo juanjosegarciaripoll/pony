@@ -18,6 +18,7 @@ src/pony/
   storage_indexing.py  # mirror → index projection (rescan_local_account)
   message_projection.py# RFC 5322 parse → metadata
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
+  mailbox_ops.py       # index-row rewrites for local moves/copies (sync contract)
   message_renderer.py  # RFC 5322 → plain text / browser HTML / attachments
   compose_utils.py     # reply/forward quoting, address lists, MIME assembly
   search_parser.py     # query parser (from:, to:, subject:…)

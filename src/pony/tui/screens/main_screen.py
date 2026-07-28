@@ -38,9 +38,9 @@ from ...domain import (
     FolderRef,
     IndexedMessage,
     MessageFlag,
-    MessageRef,
     MessageStatus,
 )
+from ...mailbox_ops import landed_in_folder, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
     render_message,
@@ -1015,21 +1015,10 @@ class MainScreen(Screen[None]):
                 # status with the original (folder, uid) recorded as the
                 # server-side source.  Sync executes UID MOVE (or
                 # APPEND+EXPUNGE) and clears the source fields.
-                updated = dataclasses.replace(
+                updated = moved_to_folder(
                     msg,
-                    message_ref=MessageRef(
-                        account_name=account.name,
-                        folder_name=target,
-                        id=msg.message_ref.id,
-                    ),
+                    target=FolderRef(account_name=account.name, folder_name=target),
                     storage_key=new_storage_key,
-                    uid=None,
-                    server_flags=frozenset(),
-                    extra_imap_flags=frozenset(),
-                    synced_at=None,
-                    local_status=MessageStatus.PENDING_MOVE,
-                    source_folder=source,
-                    source_uid=msg.uid,
                 )
                 self._index.update_message(message=updated)
                 archived += 1
@@ -1166,25 +1155,11 @@ class MainScreen(Screen[None]):
                         severity="error",
                     )
                     continue
-                new_row = dataclasses.replace(
+                new_row = landed_in_folder(
                     msg,
-                    message_ref=MessageRef(
-                        account_name=target.account_name,
-                        folder_name=target.folder_name,
-                        id=0,
-                    ),
-                    message_id=new_mid,
+                    target=target,
                     storage_key=new_key,
-                    uid=None,
-                    uid_validity=0,
-                    base_flags=frozenset(),
-                    server_flags=frozenset(),
-                    extra_imap_flags=frozenset(),
-                    local_status=MessageStatus.ACTIVE,
-                    trashed_at=None,
-                    synced_at=None,
-                    source_folder=None,
-                    source_uid=None,
+                    message_id=new_mid,
                 )
                 self._index.insert_message(message=new_row)
                 copied += 1
@@ -1331,22 +1306,7 @@ class MainScreen(Screen[None]):
             return False
         # Same-account move: keep the row, mark PENDING_MOVE so sync
         # executes UID MOVE on the server.  No delete-then-insert.
-        updated = dataclasses.replace(
-            msg,
-            message_ref=MessageRef(
-                account_name=target.account_name,
-                folder_name=target.folder_name,
-                id=msg.message_ref.id,
-            ),
-            storage_key=new_key,
-            uid=None,
-            server_flags=frozenset(),
-            extra_imap_flags=frozenset(),
-            synced_at=None,
-            local_status=MessageStatus.PENDING_MOVE,
-            source_folder=source.folder_name,
-            source_uid=msg.uid,
-        )
+        updated = moved_to_folder(msg, target=target, storage_key=new_key)
         self._index.update_message(message=updated)
         return True
 
@@ -1387,25 +1347,11 @@ class MainScreen(Screen[None]):
                 severity="error",
             )
             return False
-        new_row = dataclasses.replace(
+        new_row = landed_in_folder(
             msg,
-            message_ref=MessageRef(
-                account_name=target.account_name,
-                folder_name=target.folder_name,
-                id=0,
-            ),
-            message_id=new_mid,
+            target=target,
             storage_key=new_key,
-            uid=None,
-            uid_validity=0,
-            base_flags=frozenset(),
-            server_flags=frozenset(),
-            extra_imap_flags=frozenset(),
-            local_status=MessageStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-            source_folder=None,
-            source_uid=None,
+            message_id=new_mid,
         )
         self._index.insert_message(message=new_row)
 

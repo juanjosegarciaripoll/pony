@@ -35,7 +35,6 @@ from .domain import (
     IndexedMessage,
     LocalAccountConfig,
     MessageFlag,
-    MessageRef,
     MessageStatus,
 )
 from .fixture_flow import run_fixture_ingest
@@ -45,6 +44,7 @@ from .index_store import (
     SqliteIndexRepository,
     load_contacts_for_backup,
 )
+from .mailbox_ops import landed_in_folder
 from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .search_parser import parse_query
@@ -1633,23 +1633,7 @@ def run_mirror_folder(
             # A fresh projection starts with empty flag sets, so mirroring
             # a folder used to silently mark every message unread.
             index.insert_message(
-                message=dataclasses.replace(
-                    msg,
-                    message_ref=MessageRef(
-                        account_name=dst_account, folder_name=dst_folder, id=0
-                    ),
-                    storage_key=dst_key,
-                    uid=None,
-                    uid_validity=0,
-                    base_flags=frozenset(),
-                    server_flags=frozenset(),
-                    extra_imap_flags=frozenset(),
-                    local_status=MessageStatus.ACTIVE,
-                    trashed_at=None,
-                    synced_at=None,
-                    source_folder=None,
-                    source_uid=None,
-                )
+                message=landed_in_folder(msg, target=dst_ref, storage_key=dst_key)
             )
             copied += 1
             done = copied + skipped

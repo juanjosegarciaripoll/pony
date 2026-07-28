@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The local-mutation sync contract has one implementation.** Recording a
+  local change means rewriting the message's index row in a specific way —
+  there is no pending-operations table, so the exact field set *is* the
+  contract the sync planner reads. The "arrived in a folder" rewrite was
+  open-coded in three places and the "moved to a folder" rewrite in two, so
+  the contract held only as well as the least careful copy. Both now live in
+  `pony.mailbox_ops`. No behaviour changes.
+
 - **Account lookup and mirror construction have one implementation.** The
   CLI and the MCP server carried byte-identical mirror factories under
   different names, and "the IMAP account called X" was written three

@@ -79,7 +79,7 @@ class BuildMirrorTest(unittest.TestCase):
         mirror = build_mirror(_imap("work"))
         folders = mirror.list_folders(account_name="work")
         self.assertEqual([f.account_name for f in folders], ["work"])
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             mirror.list_folders(account_name="someone-else")
 
     def test_build_mirrors_covers_every_account(self) -> None:
