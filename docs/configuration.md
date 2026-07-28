@@ -330,15 +330,18 @@ password           = "s3cret"
 ### `env`
 
 Password read from an environment variable at runtime. The variable name
-is derived from the account `name`: uppercased, spaces replaced with
-underscores, prefixed with `PONY_PASSWORD_`.
+is derived from the account `name`: uppercased, every character that is not
+a letter or digit replaced with an underscore, prefixed with
+`PONY_PASSWORD_`.
 
 ```toml
 credentials_source = "env"
 ```
 
 For an account named `"Personal"`, set `PONY_PASSWORD_PERSONAL`. For
-`"Work Email"`, set `PONY_PASSWORD_WORK_EMAIL`.
+`"Work Email"` or `"work-email"`, set `PONY_PASSWORD_WORK_EMAIL` — both map
+to the same variable, since a hyphen cannot appear in a shell variable
+name.
 
 ### `command`
 

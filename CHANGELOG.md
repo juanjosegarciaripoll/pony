@@ -34,6 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Flag changes now reach the mirror.** Read, flagged and answered state
+  lived only in the SQLite index, so another MUA sharing the same Maildir or
+  mbox tree — the arrangement `[[local]]` accounts exist for — saw everything
+  as unread no matter what was done in Pony. Marking read, marking unread,
+  flagging and replying now write the flags onto the message file too. The
+  index stays authoritative: a mirror file that a sync moved underneath the
+  action is logged and skipped rather than surfaced as an error.
+
+  Not yet applied to the bulk paths — `mark all read`, and the flags sync
+  applies when it ingests or merges from the server. Writing flags per
+  message costs a rename on Maildir (~0.05 ms) but a full rewrite of the
+  mailbox on mbox (~3.7 ms and growing with folder size), so those need to
+  set the flags at store time rather than re-writing afterwards.
+
+- **The `env` credential backend works for hyphenated account names.** The
+  variable name replaced spaces but nothing else, so an account named
+  `work-email` mapped to `PONY_PASSWORD_WORK-EMAIL` — which no POSIX shell
+  can export, making the backend unusable for that account. Every character
+  that cannot appear in a shell variable name now becomes an underscore.
+
 - **Replies now thread.** Pony sent no `In-Reply-To` or `References` header,
   so every reply arrived in the recipient's client as the start of a new
   conversation rather than as part of the one it was answering. Replies and

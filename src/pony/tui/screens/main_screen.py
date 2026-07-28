@@ -38,7 +38,7 @@ from ...domain import (
     MessageFlag,
     MessageStatus,
 )
-from ...mailbox_ops import landed_in_folder, moved_to_folder
+from ...mailbox_ops import landed_in_folder, mirror_flags, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
     RenderedMessage,
@@ -834,9 +834,22 @@ class MainScreen(Screen[None]):
             message,
             local_flags=message.local_flags | {MessageFlag.SEEN},
         )
-        self._index.upsert_message(message=updated)
+        self._record_flags(updated)
         self.query_one(MessageListPanel).update_from_indexed(updated)
         self._refresh_folder_indicators()
+
+    def _record_flags(self, message: IndexedMessage) -> None:
+        """Persist *message*'s flags to the index and mirror them to disk.
+
+        Every flag change the user makes goes through here.  The index is
+        authoritative; the mirror write is what lets another MUA sharing
+        the same Maildir or mbox see that a message was read, flagged or
+        answered.
+        """
+        self._index.upsert_message(message=message)
+        mirror = self._mirrors.get(message.message_ref.account_name)
+        if mirror is not None:
+            mirror_flags(mirror, message)
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -873,7 +886,7 @@ class MainScreen(Screen[None]):
                 if new_flags == msg.local_flags:
                     continue
                 updated = dataclasses.replace(msg, local_flags=new_flags)
-                self._index.upsert_message(message=updated)
+                self._record_flags(updated)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
@@ -884,7 +897,7 @@ class MainScreen(Screen[None]):
             msg, local_flags=msg.local_flags | {MessageFlag.ANSWERED}
         )
         with self._index.connection():
-            self._index.upsert_message(message=updated)
+            self._record_flags(updated)
         folder_ref = FolderRef(
             account_name=msg.message_ref.account_name,
             folder_name=msg.message_ref.folder_name,
@@ -906,7 +919,7 @@ class MainScreen(Screen[None]):
                 else:
                     new_flags = msg.local_flags | {flag}
                 updated = dataclasses.replace(msg, local_flags=new_flags)
-                self._index.upsert_message(message=updated)
+                self._record_flags(updated)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 

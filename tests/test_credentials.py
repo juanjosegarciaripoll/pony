@@ -21,6 +21,7 @@ from pony.credentials import (
     _shake_encrypt,
     build_credentials_provider,
     encrypt_password,
+    env_var_name,
 )
 from pony.domain import (
     AccountConfig,
@@ -532,3 +533,53 @@ class TestLocalAccountCredentials(unittest.TestCase):
         provider = build_credentials_provider(config, _make_index())
         self.assertEqual(provider.get_password(account_name="imapacct"), "imap-pw")
         self.assertEqual(provider.get_password(account_name="localacct"), "local-pw")
+
+
+class TestEnvVarNameMapping(unittest.TestCase):
+    """An account name has to survive translation into a shell variable.
+
+    Only spaces used to be replaced, so a hyphenated account mapped to
+    ``PONY_PASSWORD_WORK-EMAIL`` — a name no POSIX shell can export,
+    leaving the ``env`` backend unusable for those accounts.
+    """
+
+    def test_a_plain_name_is_just_uppercased(self) -> None:
+        self.assertEqual(env_var_name("personal"), "PONY_PASSWORD_PERSONAL")
+
+    def test_a_space_becomes_an_underscore(self) -> None:
+        self.assertEqual(env_var_name("Work Email"), "PONY_PASSWORD_WORK_EMAIL")
+
+    def test_a_hyphen_becomes_an_underscore(self) -> None:
+        self.assertEqual(env_var_name("work-email"), "PONY_PASSWORD_WORK_EMAIL")
+
+    def test_a_dot_becomes_an_underscore(self) -> None:
+        self.assertEqual(env_var_name("me@work.com"), "PONY_PASSWORD_ME_WORK_COM")
+
+    def test_digits_are_kept(self) -> None:
+        self.assertEqual(env_var_name("acct2"), "PONY_PASSWORD_ACCT2")
+
+    def test_non_ascii_letters_are_replaced(self) -> None:
+        # 'Ñ' is alphanumeric but not usable in a shell variable name.
+        self.assertEqual(env_var_name("españa"), "PONY_PASSWORD_ESPA_A")
+
+    def test_every_generated_name_is_a_valid_identifier(self) -> None:
+        for name in ("work-email", "me@work.com", "a b", "españa", "x/y"):
+            with self.subTest(name=name):
+                self.assertTrue(env_var_name(name).isidentifier())
+
+    def test_a_hyphenated_account_can_now_resolve_its_password(self) -> None:
+        account = _make_account("work-email", credentials_source="env", password=None)
+        provider = build_credentials_provider(_make_config(account), _make_index())
+        with patch.dict(os.environ, {"PONY_PASSWORD_WORK_EMAIL": "resolved"}):
+            self.assertEqual(
+                provider.get_password(account_name="work-email"), "resolved"
+            )
+
+    def test_the_error_names_the_variable_to_set(self) -> None:
+        provider = EnvVarCredentialsProvider()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(ConfigError) as ctx,
+        ):
+            provider.get_password(account_name="work-email")
+        self.assertIn("PONY_PASSWORD_WORK_EMAIL", str(ctx.exception))

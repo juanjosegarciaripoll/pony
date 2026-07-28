@@ -61,15 +61,31 @@ class PlaintextCredentialsProvider:
 # ---------------------------------------------------------------------------
 
 
+def env_var_name(account_name: str) -> str:
+    """The environment variable holding *account_name*'s password.
+
+    The name is uppercased and every character that cannot appear in a
+    shell variable name becomes an underscore, so ``work email`` and
+    ``work-email`` both map to ``PONY_PASSWORD_WORK_EMAIL``.  Translating
+    only spaces, as this used to, produced ``PONY_PASSWORD_WORK-EMAIL``
+    for a hyphenated account — a name no POSIX shell can export, so the
+    ``env`` backend was unusable for those accounts.
+    """
+    sanitized = "".join(
+        char if char.isascii() and char.isalnum() else "_"
+        for char in account_name.upper()
+    )
+    return "PONY_PASSWORD_" + sanitized
+
+
 class EnvVarCredentialsProvider:
     """Reads passwords from ``PONY_PASSWORD_<ACCOUNT_NAME>``.
 
-    The account name is uppercased and spaces are replaced with underscores,
-    so an account named ``work email`` maps to ``PONY_PASSWORD_WORK_EMAIL``.
+    See :func:`env_var_name` for how an account name maps to a variable.
     """
 
     def get_password(self, *, account_name: str) -> str:
-        env_key = "PONY_PASSWORD_" + account_name.upper().replace(" ", "_")
+        env_key = env_var_name(account_name)
         value = os.environ.get(env_key)
         if not value:
             raise ConfigError(

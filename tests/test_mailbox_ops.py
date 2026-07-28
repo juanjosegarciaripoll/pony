@@ -168,3 +168,94 @@ class MovedToFolderTest(unittest.TestCase):
         row = moved_to_folder(local_only, target=TARGET, storage_key="k")
         self.assertIsNone(row.source_uid)
         self.assertEqual(row.source_folder, "INBOX")
+
+
+class MirrorFlagsTest(unittest.TestCase):
+    """Flag changes must reach the mirror, not just the index.
+
+    A Maildir or mbox tree is routinely shared with another MUA. Nothing
+    ever wrote flags to disk, so anything Pony marked read still looked
+    unread to everything else reading the same mirror.
+    """
+
+    def _mirror(self, fmt: str) -> tuple[object, FolderRef, IndexedMessage]:
+        import dataclasses
+        import tempfile
+        from email.message import EmailMessage
+        from pathlib import Path
+
+        from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
+
+        cls = MaildirMirrorRepository if fmt == "maildir" else MboxMirrorRepository
+        mirror = cls(account_name="work", root_dir=Path(tempfile.mkdtemp()))
+        folder = FolderRef(account_name="work", folder_name="INBOX")
+        raw = EmailMessage()
+        raw["Subject"] = "flagged"
+        raw["Message-ID"] = "<flag@example.com>"
+        raw.set_content("body")
+        key = mirror.store_message(folder=folder, raw_message=raw.as_bytes())
+        message = dataclasses.replace(
+            _synced_message(),
+            message_ref=MessageRef(account_name="work", folder_name="INBOX", id=1),
+            storage_key=key,
+            local_flags=frozenset({MessageFlag.SEEN}),
+        )
+        return mirror, folder, message
+
+    def test_maildir_records_the_flag_in_the_filename(self) -> None:
+        from pony.mailbox_ops import mirror_flags
+
+        mirror, _folder, message = self._mirror("maildir")
+        self.assertTrue(mirror_flags(mirror, message))  # type: ignore[arg-type]
+        names = [p.name for p in (mirror._root_dir / "cur").iterdir()]  # type: ignore[attr-defined]
+        self.assertEqual(len(names), 1)
+        self.assertTrue(names[0].endswith("!2,S"), names[0])
+
+    def test_the_storage_key_survives_the_write(self) -> None:
+        # The file is renamed to carry the flags; if that changed the key
+        # the index row would point at nothing and a rescan would treat
+        # the message as deleted-and-re-added.
+        from pony.mailbox_ops import mirror_flags
+
+        mirror, folder, message = self._mirror("maildir")
+        mirror_flags(mirror, message)  # type: ignore[arg-type]
+        self.assertIn(message.storage_key, mirror.list_messages(folder=folder))  # type: ignore[attr-defined]
+        self.assertTrue(
+            mirror.get_message_bytes(  # type: ignore[attr-defined]
+                folder=folder, storage_key=message.storage_key
+            )
+        )
+
+    def test_mbox_records_the_flag_in_the_status_header(self) -> None:
+        from pony.mailbox_ops import mirror_flags
+
+        mirror, folder, message = self._mirror("mbox")
+        self.assertTrue(mirror_flags(mirror, message))  # type: ignore[arg-type]
+        raw = mirror.get_message_bytes(  # type: ignore[attr-defined]
+            folder=folder, storage_key=message.storage_key
+        )
+        self.assertIn(b"Status:", raw)
+
+    def test_clearing_a_flag_is_written_too(self) -> None:
+        import dataclasses
+
+        from pony.mailbox_ops import mirror_flags
+
+        mirror, _folder, message = self._mirror("maildir")
+        mirror_flags(mirror, message)  # type: ignore[arg-type]
+        cleared = dataclasses.replace(message, local_flags=frozenset())
+        self.assertTrue(mirror_flags(mirror, cleared))  # type: ignore[arg-type]
+        names = [p.name for p in (mirror._root_dir / "cur").iterdir()]  # type: ignore[attr-defined]
+        self.assertTrue(names[0].endswith("!2,"), names[0])
+
+    def test_a_missing_file_is_reported_not_raised(self) -> None:
+        # The index row is authoritative and already written; a sync
+        # racing the same message must not turn a successful flag change
+        # into an error the user sees.
+        import dataclasses
+
+        from pony.mailbox_ops import mirror_flags
+
+        mirror, _folder, message = self._mirror("maildir")
+        vanished = dataclasses.replace(message, storage_key="not-a-real-key")
+        self.assertFalse(mirror_flags(mirror, vanished))  # type: ignore[arg-type]

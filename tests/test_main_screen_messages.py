@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from unittest.mock import Mock
 
 import pytest
@@ -15,6 +16,7 @@ from tui_helpers import (
 )
 
 from pony.domain import FolderConfig, FolderRef, MessageFlag, MessageStatus
+from pony.storage import MaildirMirrorRepository
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
 
@@ -718,3 +720,107 @@ async def test_a_local_account_folder_is_created_without_a_sync_hint() -> None:
 
     assert "Kept" in names
     assert any("created locally." in message for message in messages)
+
+
+def _maildir_names(
+    mirrors: Mapping[str, MaildirMirrorRepository], account: str = "acct"
+) -> list[str]:
+    """Filenames in the account's INBOX cur/ directory."""
+    root = mirrors[account]._root_dir  # noqa: SLF001
+    return sorted(p.name for p in (root / "cur").iterdir())
+
+
+async def test_marking_a_message_read_reaches_the_mirror() -> None:
+    """Another MUA sharing the Maildir must see the flag change.
+
+    Flags lived only in the index, so anything Pony marked read still
+    looked unread to every other reader of the same mirror.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="flags-to-mirror", seed=[(folder, plain_text())]
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not any(n.endswith("!2,S") for n in _maildir_names(mirrors))
+        await _select_inbox(pilot)  # opening marks it seen
+
+    names = _maildir_names(mirrors)
+    assert len(names) == 1
+    assert names[0].endswith("!2,S"), names
+
+
+async def test_flagging_and_unflagging_round_trips_through_the_mirror() -> None:
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="flags-toggle-mirror", seed=[(folder, plain_text())]
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+
+        screen.toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+        assert _maildir_names(mirrors)[0].endswith("!2,FS"), _maildir_names(mirrors)
+
+        screen.toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+        assert _maildir_names(mirrors)[0].endswith("!2,S"), _maildir_names(mirrors)
+
+
+async def test_marking_unread_clears_the_flag_on_disk() -> None:
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="flags-unread-mirror", seed=[(folder, plain_text())]
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        assert _maildir_names(mirrors)[0].endswith("!2,S")
+
+        _main(app).set_flag(MessageFlag.SEEN, present=False)
+        await pilot.pause()
+
+    assert _maildir_names(mirrors)[0].endswith("!2,"), _maildir_names(mirrors)
+
+
+async def test_the_storage_key_survives_a_flag_write() -> None:
+    """Renaming the file must not orphan the index row that points at it."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="flags-key-stable", seed=[(folder, plain_text())]
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+
+    row = list(index.list_folder_messages(folder=folder))[0]
+    mirror = mirrors["acct"]
+    assert row.storage_key in mirror.list_messages(folder=folder)
+    assert mirror.get_message_bytes(folder=folder, storage_key=row.storage_key)
+
+
+async def test_a_mirror_that_cannot_be_written_does_not_break_the_action() -> None:
+    """The index is authoritative; a racing sync must not surface an error."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="flags-mirror-fails", seed=[(folder, plain_text())]
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notices = _notifications(app)
+        mirrors["acct"].set_flags = Mock(  # type: ignore[method-assign]
+            side_effect=OSError("read-only filesystem")
+        )
+        await _select_inbox(pilot)
+        screen = _main(app)
+        screen.toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+
+    # The flag change still took effect where it counts.
+    row = list(index.list_folder_messages(folder=folder))[0]
+    assert MessageFlag.FLAGGED in row.local_flags
+    assert not any("read-only filesystem" in n for n in notices), notices
