@@ -103,7 +103,7 @@ class SaveAttachmentTest(unittest.TestCase):
         mock_path.write_bytes.side_effect = OSError("disk full")
         with (
             patch(
-                "pony.tui.widgets.message_view.unique_destination",
+                "pony.message_renderer.unique_destination",
                 return_value=mock_path,
             ),
             self.assertRaises(OSError, msg="disk full"),

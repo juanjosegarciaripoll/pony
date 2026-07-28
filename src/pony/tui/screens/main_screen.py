@@ -40,7 +40,11 @@ from ...domain import (
     MessageStatus,
 )
 from ...message_copy import copy_message_bytes
-from ...message_renderer import render_message
+from ...message_renderer import (
+    render_message,
+    save_every_attachment,
+    save_one_attachment,
+)
 from ...protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -1542,6 +1546,25 @@ class MainScreen(Screen[None]):
             return None
         return accounts
 
+    def _current_message_bytes(
+        self, *, noun: str
+    ) -> tuple[IndexedMessage, bytes] | None:
+        """The highlighted message and its bytes, or None after notifying.
+
+        Every message action resolves its target here.  The reader pane
+        holds whatever was last opened with Enter, which is not
+        necessarily what the cursor is on — reading bytes off the panel
+        made ``w``/``O``/``S`` act on a different message than
+        ``s``/``ctrl+p``, silently.
+        """
+        msg = self.get_current_message()
+        if msg is None:
+            return None
+        raw = self._load_current_raw_or_notify(msg, noun=noun)
+        if raw is None:
+            return None
+        return msg, raw
+
     def _load_current_raw_or_notify(
         self, msg: IndexedMessage, *, noun: str
     ) -> bytes | None:
@@ -1826,7 +1849,24 @@ class MainScreen(Screen[None]):
         self.open_current_in_browser()
 
     def open_current_in_browser(self) -> None:
-        self.query_one(MessageViewPanel).open_in_browser()
+        import tempfile
+        import webbrowser
+
+        from ...message_renderer import build_browser_html
+
+        current = self._current_message_bytes(noun="browser view")
+        if current is None:
+            return
+        _msg, raw = current
+        with tempfile.NamedTemporaryFile(
+            suffix=".html", delete=False, mode="w", encoding="utf-8"
+        ) as handle:
+            handle.write(build_browser_html(raw))
+            path = handle.name
+        # A browser may itself be a terminal application.  Suspend Textual
+        # so it restores terminal modes (including mouse reporting) after.
+        with suspend_for_external_program(self.app):
+            webbrowser.open(Path(path).as_uri())
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
@@ -1885,7 +1925,11 @@ class MainScreen(Screen[None]):
         action_label: str,
         then: collections.abc.Callable[[list[int]], None],
     ) -> None:
-        count = self.query_one(MessageViewPanel).attachment_count
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return
+        _msg, raw = current
+        count = len(render_message(raw).attachments)
         if count == 0:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 "No attachments on this message.",
@@ -1908,13 +1952,20 @@ class MainScreen(Screen[None]):
         )
 
     def _save_indices(self, indices: list[int]) -> None:
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return
+        _msg, raw = current
+        self._save_indices_from(raw, indices)
+
+    def _save_indices_from(self, raw: bytes, indices: list[int]) -> None:
         dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
         saved: list[str] = []
         missing: list[int] = []
         for idx in indices:
             try:
-                name = self.save_attachment(idx, dest)
+                name = save_one_attachment(raw, idx, dest)
             except OSError as exc:
                 self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                     f"Could not save attachment {idx}: {exc}",
@@ -1936,11 +1987,16 @@ class MainScreen(Screen[None]):
             )
 
     def _open_indices(self, indices: list[int]) -> None:
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return
+        _msg, raw = current
+        self._open_indices_from(raw, indices)
+
+    def _open_indices_from(self, raw: bytes, indices: list[int]) -> None:
         from ...message_renderer import extract_attachment as _extract_attachment
         from .eml_viewer_screen import EmlViewerScreen
 
-        panel = self.query_one(MessageViewPanel)
-        raw = panel.raw_bytes
         dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
         missing: list[int] = []
@@ -1953,7 +2009,7 @@ class MainScreen(Screen[None]):
                     )
                     continue
             try:
-                name = self.save_attachment(idx, dest)
+                name = save_one_attachment(raw, idx, dest)
             except OSError as exc:
                 self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                     f"Could not save attachment {idx}: {exc}",
@@ -2049,28 +2105,43 @@ class MainScreen(Screen[None]):
         self.app.push_screen(SaveMessageScreen(rendered), _on_items)  # pyright: ignore[reportUnknownMemberType]
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
-        return self.query_one(MessageViewPanel).save_attachment(index, dest_dir)
+        """Save one attachment of the highlighted message."""
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return None
+        _msg, raw = current
+        return save_one_attachment(raw, index, dest_dir)
 
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
-        return self.query_one(MessageViewPanel).save_all_attachments(dest_dir)
+        """Save every attachment of the highlighted message."""
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return []
+        _msg, raw = current
+        return save_every_attachment(raw, dest_dir)
+
+    def _indices_for(self, raw: bytes, index: str) -> list[int]:
+        """``0`` means every attachment; anything else is that one."""
+        idx = int(index)
+        if idx != 0:
+            return [idx]
+        return list(range(1, len(render_message(raw).attachments) + 1))
 
     def action_open_attachment(self, index: str) -> None:
         """Open attachment by 1-based index; 0 means open all."""
-        idx = int(index)
-        if idx == 0:
-            count = self.query_one(MessageViewPanel).attachment_count
-            self._open_indices(list(range(1, count + 1)))
-        else:
-            self._open_indices([idx])
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return
+        _msg, raw = current
+        self._open_indices_from(raw, self._indices_for(raw, index))
 
     def action_save_attachment(self, index: str) -> None:
         """Save attachment by 1-based index; 0 means save all."""
-        idx = int(index)
-        if idx == 0:
-            count = self.query_one(MessageViewPanel).attachment_count
-            self._save_indices(list(range(1, count + 1)))
-        else:
-            self._save_indices([idx])
+        current = self._current_message_bytes(noun="attachments")
+        if current is None:
+            return
+        _msg, raw = current
+        self._save_indices_from(raw, self._indices_for(raw, index))
 
     def _downloads_dir(self) -> Path:
         return self._config.downloads_path or Path.home() / "Downloads"

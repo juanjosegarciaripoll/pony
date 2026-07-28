@@ -19,10 +19,10 @@ from ...domain import FolderMessageSummary, FolderRef
 from ...message_renderer import (
     RenderedMessage,
     build_browser_html,
-    extract_attachment,
     fmt_size,
     render_message,
-    unique_destination,
+    save_every_attachment,
+    save_one_attachment,
 )
 from ...protocols import MirrorRepository
 from ..terminal import suspend_for_external_program
@@ -235,23 +235,13 @@ class MessageViewPanel(VerticalScroll):
         """
         if self._rendered is None:
             return None
-        payload = extract_attachment(self._rendered.raw_bytes, index)
-        if payload is None:
-            return None
-        dest = unique_destination(dest_dir, payload.filename)
-        dest.write_bytes(payload.data)
-        return dest.name
+        return save_one_attachment(self._rendered.raw_bytes, index, dest_dir)
 
     def save_all_attachments(self, dest_dir: Path) -> list[str]:
         """Save all attachments to *dest_dir*."""
         if self._rendered is None:
             return []
-        saved: list[str] = []
-        for att in self._rendered.attachments:
-            result = self.save_attachment(att.index, dest_dir)
-            if result:
-                saved.append(result)
-        return saved
+        return save_every_attachment(self._rendered.raw_bytes, dest_dir)
 
     def header_address(self, idx: int) -> tuple[str, str] | None:
         """Return the (display_name, email) pair at *idx*, or None if out of range."""

@@ -800,6 +800,31 @@ def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None
     return None
 
 
+def save_one_attachment(raw_bytes: bytes, index: int, dest_dir: Path) -> str | None:
+    """Write attachment *index* (1-based) of *raw_bytes* into *dest_dir*.
+
+    Returns the filename actually written — it differs from the sender's
+    when that name was unsafe or already taken — or ``None`` when the
+    index is out of range.  Raises ``OSError`` on write failure.
+    """
+    payload = extract_attachment(raw_bytes, index)
+    if payload is None:
+        return None
+    dest = unique_destination(dest_dir, payload.filename)
+    dest.write_bytes(payload.data)
+    return dest.name
+
+
+def save_every_attachment(raw_bytes: bytes, dest_dir: Path) -> list[str]:
+    """Write every attachment of *raw_bytes* into *dest_dir*."""
+    saved: list[str] = []
+    for att in render_message(raw_bytes).attachments:
+        name = save_one_attachment(raw_bytes, att.index, dest_dir)
+        if name:
+            saved.append(name)
+    return saved
+
+
 def fmt_size(n: int) -> str:
     for unit in ("B", "KB", "MB"):
         if n < 1024:

@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **Every message action now acts on the highlighted message.** `w`, `O`, `S`
+  and the number keys read their bytes from the reader pane — the message last
+  opened with Enter — while `s` and `ctrl+p` used the highlighted row. With the
+  reader on one message and the cursor on another they operated on different
+  mail without saying so.
+
 - **Local accounts work with the read commands again.** `message
   body/get/attachment/mime` and `folder list` resolved the account with an
   IMAP-only filter, so a configured mbox or Maildir account reported
