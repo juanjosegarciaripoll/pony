@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Account lookup and mirror construction have one implementation.** The
+  CLI and the MCP server carried byte-identical mirror factories under
+  different names, and "the IMAP account called X" was written three
+  different ways across the CLI, the sync engine and the TUI. All of it now
+  lives in `pony.accounts`. No behaviour changes; the duplication is the
+  same shape as the bugs that came from splitting one rule across several
+  copies.
+
 - **Saved attachment filenames are cleaned the same way everywhere.** The
   reader, the save dialog and `pony message attachment` each had their own
   rules, so the same attachment could be written under different names

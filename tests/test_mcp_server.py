@@ -196,12 +196,12 @@ def _build_mcp_from_env(paths: AppPaths, config: AppConfig) -> object:
     """Build an McpServer from an in-memory config (bypassing disk config load)."""
     from unittest.mock import patch
 
-    from pony.mcp_server import _make_mirror
+    from pony.accounts import build_mirrors
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     # mirrors is built by build_mcp_server internally; local var unused here
-    _ = {acc.name: _make_mirror(acc) for acc in config.accounts}
+    _ = build_mirrors(config)
 
     with (
         patch("pony.mcp_server.load_config", return_value=config),

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import SimpleQueue
 
+from .accounts import find_imap_account, select_imap_accounts
 from .domain import (
     AccountConfig,
     AppConfig,
@@ -505,7 +506,7 @@ class ImapSyncService:
         account_name: str | None = None,
         progress: ProgressCallback | None = None,
     ) -> SyncPlan:
-        accounts = self._select_accounts(account_name)
+        accounts = select_imap_accounts(self._config, account_name)
         account_plans: list[AccountSyncPlan] = []
         errors: list[str] = []
         for account in accounts:
@@ -533,7 +534,7 @@ class ImapSyncService:
         self._run_cleanup()
         results: list[AccountSyncResult] = []
         for account_plan in plan.accounts:
-            account = self._find_account(account_plan.account_name)
+            account = find_imap_account(self._config, account_plan.account_name)
             if account is None:
                 logger.warning(
                     "Account %r in plan not found — skipping",
@@ -2260,18 +2261,3 @@ class ImapSyncService:
                         len(purged),
                         account.name,
                     )
-
-    def _select_accounts(
-        self,
-        account_name: str | None,
-    ) -> list[AccountConfig]:
-        imap = [a for a in self._config.accounts if isinstance(a, AccountConfig)]
-        if account_name is not None:
-            return [a for a in imap if a.name == account_name]
-        return imap
-
-    def _find_account(self, name: str) -> AccountConfig | None:
-        for a in self._config.accounts:
-            if isinstance(a, AccountConfig) and a.name == name:
-                return a
-        return None

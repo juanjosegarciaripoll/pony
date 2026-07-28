@@ -10,6 +10,7 @@ src/pony/
   cli.py               # argparse command dispatch
   config.py            # TOML loader → domain objects
   domain.py            # frozen dataclasses (core types)
+  accounts.py          # account lookup + mirror construction (all front ends)
   protocols.py         # repository/service interfaces
   paths.py             # platform-specific dir resolution
   storage.py           # Maildir + mbox mirror repos

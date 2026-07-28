@@ -17,6 +17,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
+from ...accounts import find_imap_account
 from ...compose_utils import (
     build_forward_body,
     build_reply_all_recipients,
@@ -1223,17 +1224,6 @@ class MainScreen(Screen[None]):
         """
         self._prompt_folder_picker(verb="Move", on_chosen=self._move_to_folder)
 
-    def _find_account(self, account_name: str) -> AccountConfig | None:
-        """Return the IMAP AccountConfig for *account_name*, or None.
-
-        Local accounts (``LocalAccountConfig``) return ``None`` — they
-        don't carry the folder-policy fields the move guards consult.
-        """
-        for acc in self._config.accounts:
-            if acc.name == account_name and isinstance(acc, AccountConfig):
-                return acc
-        return None
-
     def _move_to_folder(
         self,
         targets: list[IndexedMessage],
@@ -1256,8 +1246,8 @@ class MainScreen(Screen[None]):
             )
             return
 
-        source_account = self._find_account(source.account_name)
-        target_account = self._find_account(target.account_name)
+        source_account = find_imap_account(self._config, source.account_name)
+        target_account = find_imap_account(self._config, target.account_name)
 
         # IMAP-policy guards.  Move is destructive on the source side, so
         # we refuse when either end can't reconcile server-side.
@@ -1489,7 +1479,7 @@ class MainScreen(Screen[None]):
         # the planner only issues CREATE for names it would sync.  Making
         # an excluded folder would leave it local forever, and anything
         # moved into it stranded, with nothing said at any point.
-        account = self._find_account(account_name)
+        account = find_imap_account(self._config, account_name)
         if account is not None and not account.folders.should_sync(folder_name):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Folder {folder_name!r} is excluded from sync; "

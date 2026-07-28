@@ -17,6 +17,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .message_renderer import AttachmentInfo
 
+from .accounts import (
+    build_mirror,
+    build_mirrors,
+    find_account,
+    find_imap_account,
+)
 from .config import ConfigError, load_config
 from .credentials import build_credentials_provider, encrypt_password
 from .domain import (
@@ -43,7 +49,6 @@ from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
 from .search_parser import parse_query
 from .services import CheckStatus, ServiceStatus, build_service_status
-from .storage import MaildirMirrorRepository, MboxMirrorRepository
 from .storage_indexing import RescanResult, ScanState, rescan_local_account
 from .sync import (
     ImapSyncService,
@@ -759,7 +764,7 @@ def run_sync(
 
     service = ImapSyncService(
         config=config,
-        mirror_factory=_build_mirror,
+        mirror_factory=build_mirror,
         index=index,
         credentials=credentials,
         session_factory=session_factory,
@@ -1305,7 +1310,7 @@ def run_rescan(
     total_added = 0
     total_removed = 0
     for acc in accounts:
-        mirror = _build_mirror(acc)
+        mirror = build_mirror(acc)
         print(f"Rescanning {acc.name}...")
         if force:
             scan_state_by_account[acc.name] = {}
@@ -1348,20 +1353,6 @@ def _rescan_progress(folder_name: str, done: int, total: int) -> None:
     )
 
 
-def _build_mirror(acc: AnyAccount) -> MirrorRepository:
-    if acc.mirror.format == "maildir":
-        return MaildirMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-    return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-
-
-def _find_imap_account(config: AppConfig, name: str) -> AccountConfig | None:
-    """Return the IMAP account named ``name``, or ``None`` if absent."""
-    return next(
-        (a for a in config.accounts if isinstance(a, AccountConfig) and a.name == name),
-        None,
-    )
-
-
 def _require_imap_account(config: AppConfig, name: str) -> AccountConfig:
     """Return the IMAP account named ``name`` or exit with an error.
 
@@ -1369,15 +1360,10 @@ def _require_imap_account(config: AppConfig, name: str) -> AccountConfig:
     :func:`_require_account` — a local (mbox/Maildir) account is a
     perfectly good source of mail to read.
     """
-    acc = _find_imap_account(config, name)
+    acc = find_imap_account(config, name)
     if acc is None:
         raise SystemExit(f"No account named {name!r} in config.")
     return acc
-
-
-def _find_account(config: AppConfig, name: str) -> AnyAccount | None:
-    """Return the account named ``name`` whatever its type, or ``None``."""
-    return next((a for a in config.accounts if a.name == name), None)
 
 
 def _require_account(config: AppConfig, name: str) -> AnyAccount:
@@ -1387,7 +1373,7 @@ def _require_account(config: AppConfig, name: str) -> AnyAccount:
     server.  Commands that genuinely need IMAP fields — credentials,
     sync, folder policy — use :func:`_require_imap_account` instead.
     """
-    acc = _find_account(config, name)
+    acc = find_account(config, name)
     if acc is None:
         raise SystemExit(f"No account named {name!r} in config.")
     return acc
@@ -1412,7 +1398,7 @@ def run_folder_list(
             raise SystemExit(f"No account named {account!r} in config.")
 
     for acc in accounts:
-        mirror = _build_mirror(acc)
+        mirror = build_mirror(acc)
         sync_by_folder = {
             s.folder_name: s
             for s in index.list_folder_sync_states(account_name=acc.name)
@@ -1572,8 +1558,8 @@ def run_mirror_folder(
     if dst_account not in all_accounts:
         raise SystemExit(f"No account named {dst_account!r} in config.")
 
-    src_mirror = _build_mirror(all_accounts[src_account])
-    dst_mirror = _build_mirror(all_accounts[dst_account])
+    src_mirror = build_mirror(all_accounts[src_account])
+    dst_mirror = build_mirror(all_accounts[dst_account])
 
     src_ref = FolderRef(account_name=src_account, folder_name=src_folder)
     dst_ref = FolderRef(account_name=dst_account, folder_name=dst_folder)
@@ -1815,10 +1801,10 @@ def _try_render_attachments(
     config = try_load_config(config_path)
     if config is None:
         return None
-    acc = _find_account(config, account)
+    acc = find_account(config, account)
     if acc is None:
         return None
-    mirror = _build_mirror(acc)
+    mirror = build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
             folder=FolderRef(account_name=account, folder_name=folder),
@@ -1857,7 +1843,7 @@ def run_message_body(
         folder_name=folder,
         message_id=message_id,
     )[0]
-    mirror = _build_mirror(acc)
+    mirror = build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
             folder=FolderRef(account_name=account, folder_name=folder),
@@ -1917,7 +1903,7 @@ def run_message_attachment(
     if not hits:
         raise SystemExit(f"Message not found in index: {account}/{folder}/{message_id}")
     indexed = hits[0]
-    mirror = _build_mirror(acc)
+    mirror = build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
             folder=FolderRef(account_name=account, folder_name=folder),
@@ -1985,7 +1971,7 @@ def run_message_mime(
         folder_name=folder,
         message_id=message_id,
     )[0]
-    mirror = _build_mirror(acc)
+    mirror = build_mirror(acc)
     try:
         raw = mirror.get_message_bytes(
             folder=FolderRef(account_name=account, folder_name=folder),
@@ -2513,7 +2499,7 @@ def run_tui(
 
     credentials = build_credentials_provider(config, index)
 
-    mirrors = {acc.name: _build_mirror(acc) for acc in config.accounts}
+    mirrors = build_mirrors(config)
 
     # Local accounts have no sync step, so their mirrors are the sole
     # source of truth.  Reconcile the index against the mirror before
@@ -2605,7 +2591,7 @@ def run_compose(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
 
-    mirrors = {acc.name: _build_mirror(acc) for acc in config.accounts}
+    mirrors = build_mirrors(config)
 
     effective_theme, err = _resolve_theme(theme, config.theme)
     if err is not None:
@@ -2656,7 +2642,7 @@ def run_account_test(
     index.initialize()
     credentials = build_credentials_provider(config, index)
 
-    account = _find_imap_account(config, account_name)
+    account = find_imap_account(config, account_name)
     if account is None:
         print(
             f"Account {account_name!r} not found in config.",
@@ -2986,7 +2972,7 @@ def run_account_set_password(
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
 
-    account = _find_imap_account(config, account_name)
+    account = find_imap_account(config, account_name)
     if account is None:
         print(f"error: account {account_name!r} not found in config", file=sys.stderr)
         return 1

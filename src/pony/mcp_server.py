@@ -23,13 +23,13 @@ from typing import Any
 
 from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
 
+from .accounts import build_mirrors
 from .config import load_config
-from .domain import AccountConfig, AnyAccount, SearchQuery
+from .domain import AccountConfig, SearchQuery
 from .index_store import SqliteIndexRepository
 from .message_renderer import AttachmentPayload, extract_attachment, render_message
 from .paths import AppPaths
 from .protocols import MirrorRepository
-from .storage import MaildirMirrorRepository, MboxMirrorRepository
 
 # ---------------------------------------------------------------------------
 # MCP state (TUI ↔ bridge IPC)
@@ -65,12 +65,6 @@ def clear_mcp_state(state_file: Path) -> None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_mirror(acc: AnyAccount) -> MirrorRepository:
-    if acc.mirror.format == "maildir":
-        return MaildirMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
-    return MboxMirrorRepository(account_name=acc.name, root_dir=acc.mirror.path)
 
 
 def _msg_to_dict(msg: Any) -> dict[str, Any]:
@@ -166,9 +160,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
     config = load_config(config_path or paths.config_file)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    mirrors: dict[str, MirrorRepository] = {
-        acc.name: _make_mirror(acc) for acc in config.accounts
-    }
+    mirrors: dict[str, MirrorRepository] = build_mirrors(config)
 
     mcp = McpServer("Pony Express")
 
