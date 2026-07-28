@@ -2,17 +2,22 @@
 
 Supported syntax
 ----------------
-    bare words            → body field
+    bare words            → subject or body (the broad default)
     from:alice            → from_address
     to:bob                → to_address
     cc:carol              → cc_address
     subject:hello         → subject
-    body:world            → body (explicit)
+    body:world            → body only (narrower than a bare word)
     "quoted string"       → single token; field prefix still applies
     case:yes / case:no    → case-sensitive toggle (default: insensitive)
 
 Multiple tokens for the same field are space-joined.
-Unknown field prefixes are treated as bare body words.
+Unknown field prefixes are treated as bare words.
+
+A bare word searches subject *and* body: someone typing "invoice"
+expects to find a message titled "Invoice #3".  ``body:`` is how you ask
+for the body alone — without that distinction the prefix would be a
+synonym for typing the word plainly.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ def parse_query(raw: str) -> SearchQuery:
         tokens = raw.split()
 
     buckets: dict[str, list[str]] = {f: [] for f in _FIELD_ALIASES.values()}
+    buckets["text"] = []
     case_sensitive = False
 
     for token in tokens:
@@ -52,10 +58,11 @@ def parse_query(raw: str) -> SearchQuery:
             if field is not None:
                 buckets[field].append(value)
                 continue
-        # Bare word or unknown prefix → body.
-        buckets["body"].append(token)
+        # Bare word or unknown prefix → the broad subject-or-body field.
+        buckets["text"].append(token)
 
     return SearchQuery(
+        text=" ".join(buckets["text"]),
         from_address=" ".join(buckets["from_address"]),
         to_address=" ".join(buckets["to_address"]),
         cc_address=" ".join(buckets["cc_address"]),

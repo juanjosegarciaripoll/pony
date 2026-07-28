@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **`pony search` now understands its own query language.** The parser lived
+  under `tui/`, so `pony search "from:alice"` searched for the literal text
+  `from:alice` while typing the same thing at `/` in the TUI did a sender
+  search. Both go through one parser now.
+
 - **Recipients with a comma in their name are no longer split in two.** A
   display name containing a comma is quoted by the sending client
   (`"Doe, John" <j@example.com>`). Replying to such a message split the
@@ -51,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a contact completion after one could overwrite it.
 
 ### Changed
+
+- **A bare search word now matches the subject as well as the body.** It
+  previously searched the body alone in the TUI, so a message titled
+  "Invoice #3" did not come up for `invoice`. Use `body:invoice` to search
+  the body only — which is what that prefix is for.
 
 - **Messages now open on command, not on cursor movement.** Moving the row
   cursor in the message list — with the arrow keys or `n`/`p` — used to open

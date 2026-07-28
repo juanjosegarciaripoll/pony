@@ -31,7 +31,6 @@ from .domain import (
     MessageFlag,
     MessageRef,
     MessageStatus,
-    SearchQuery,
 )
 from .fixture_flow import run_fixture_ingest
 from .imap_client import ImapAuthError, ImapSession
@@ -42,6 +41,7 @@ from .index_store import (
 )
 from .paths import AppPaths
 from .protocols import ImapClientSession, MirrorRepository
+from .search_parser import parse_query
 from .services import CheckStatus, ServiceStatus, build_service_status
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
 from .storage_indexing import RescanResult, ScanState, rescan_local_account
@@ -2024,7 +2024,9 @@ def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) 
     repository = SqliteIndexRepository(database_path=paths.index_db_file)
     repository.initialize()
     requested_query = query or ""
-    compiled_query = SearchQuery(text=requested_query)
+    # Same parser the TUI's "/" search uses, so "from:alice" means the
+    # same thing in both places.
+    compiled_query = parse_query(requested_query)
 
     lines: list[str] = [
         "Search results",

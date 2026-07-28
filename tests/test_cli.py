@@ -3210,3 +3210,63 @@ class AttachmentDestinationSafetyTests(unittest.TestCase):
             )
 
             self.assertEqual(target.read_bytes(), b"payload-bytes")
+
+
+class SearchQueryLanguageTests(unittest.TestCase):
+    """``pony search`` speaks the same query language as the TUI's ``/``.
+
+    The parser used to live under ``tui/``, so the CLI passed the raw
+    string straight into the ``text`` field and ``pony search
+    "from:alice"`` looked for the literal characters ``from:alice``.
+    """
+
+    def test_a_field_prefix_scopes_the_search(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(
+                config_path, subject="Quarterly report", body="nothing special"
+            )
+            from_hit = run_cli(
+                "--config", str(config_path), "search", "from:sender@example.com"
+            )
+            from_miss = run_cli(
+                "--config", str(config_path), "search", "from:nobody@example.com"
+            )
+
+        self.assertIn("Total hits: 1", from_hit)
+        self.assertIn("Total hits: 0", from_miss)
+
+    def test_a_bare_word_still_matches_the_subject(self) -> None:
+        """The pre-existing behaviour: bare words are the broad default."""
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(
+                config_path, subject="Quarterly report", body="nothing special"
+            )
+            output = run_cli("--config", str(config_path), "search", "Quarterly")
+
+        self.assertIn("Total hits: 1", output)
+
+    def test_the_body_prefix_narrows_to_the_body(self) -> None:
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(
+                config_path, subject="Quarterly report", body="nothing special"
+            )
+            in_body = run_cli("--config", str(config_path), "search", "body:special")
+            subject_only = run_cli(
+                "--config", str(config_path), "search", "body:Quarterly"
+            )
+
+        self.assertIn("Total hits: 1", in_body)
+        self.assertIn("Total hits: 0", subject_only)
+
+    def test_the_search_command_routes_through_the_shared_parser(self) -> None:
+        """Not just "prefixes happen to work" — the same parser is called."""
+        from unittest.mock import patch
+
+        from pony.search_parser import parse_query
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Subject", body="body")
+            with patch("pony.cli.parse_query", side_effect=parse_query) as spy:
+                run_cli("--config", str(config_path), "search", "from:alice")
+
+        spy.assert_called_once_with("from:alice")
