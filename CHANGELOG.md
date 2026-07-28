@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.9.0]
 ### Added
 
+- **Background synchronization.** `Ctrl-G` starts a sync that does not block
+  the reader: it auto-confirms every folder, still honours the mass-deletion
+  guard, and shows a spinner on the folder pane's border title as its only
+  visual footprint. It can also run on a timer — `background_sync_enabled`
+  and `background_sync_interval_seconds` (default off, 600s). Starting a
+  foreground sync while one is running, or vice versa, is refused rather than
+  overlapping two IMAP sessions on one account.
+
+- **New-mail indicator.** An icon appears against any account whose INBOX has
+  unread mail, and in the terminal window title, so a minimised Pony still
+  tells you something arrived.
+
 - **Print a message to PDF**: press `Ctrl-P` in the message view (or the standalone
   `.eml` viewer) to render the current email to a PDF in a folder you pick.
   Pony reuses the same self-contained HTML as the browser view (`w`) and shells
@@ -61,6 +73,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `work-email` mapped to `PONY_PASSWORD_WORK-EMAIL` — which no POSIX shell
   can export, making the backend unusable for that account. Every character
   that cannot appear in a shell variable name now becomes an underscore.
+
+- **Forwarded messages arrive readable.** Two defects compounded. The
+  forwarded `.eml` was attached as raw bytes, so it was base64-encoded —
+  RFC 2046 §5.2.1 allows only 7bit/8bit/binary for `message/*`, and a
+  compliant reader descends into the part without decoding it, showing an
+  unopenable blob. Separately, the forwarded body kept the CRLF line endings
+  it had on the wire, which the composer's editor then adopted for the whole
+  buffer; both of the composer's body splits are LF-anchored, so they failed
+  silently and the entire message went through the Markdown renderer,
+  collapsing the quoted text into paragraphs.
+
+- **Contact autocomplete offers the best match first.** Both the
+  frequency-ranked search and the alphabetical listing loaded their rows with
+  `WHERE id IN (…)`, which returns them in rowid order — so whichever contact
+  was created first won, and the least-used match was offered ahead of the
+  one you write to daily. Suggestions can also be selected properly now.
+
+- **The terminal is left as it was found.** Opening an attachment or a
+  message in an external viewer could return to a terminal with its title and
+  modes still altered.
+
+- **`Ctrl-G` re-arms its repeat timer.** The periodic background sync stopped
+  rescheduling after a manual trigger.
+
+- **Attachment selection in the picker.** Choosing an attachment by number
+  was unreliable for entries the list had scrolled past.
+
+- **mbox files are closed before exit,** and the CLI's summary commands close
+  their database connections rather than relying on interpreter shutdown.
+
+- **The TUI keybindings in the documentation match the program.** Four keys
+  were documented wrongly — reply-all was listed as "mark as read", the flag
+  toggle as `F` rather than `!`, and trash as `d` rather than `D` — and
+  mark-all-read, copy, move, edit-draft and the row-marking keys were absent
+  entirely.
 
 - **Replies now thread.** Pony sent no `In-Reply-To` or `References` header,
   so every reply arrived in the recipient's client as the start of a new

@@ -46,6 +46,16 @@
 #                  pushes the move to the server via UID MOVE.  Omit to disable
 #                  the archive action.  The folder must be synced (not matched
 #                  by folders.exclude) and not read-only.
+# - signature:     Text appended below the cursor when composing, replying or
+#                  forwarding.  Use a TOML multi-line string for several lines:
+#                      signature = """
+#                      --
+#                      Jane Smith
+#                      """
+#                  If omitted, no signature is added.
+# - markdown_compose:
+#                  Open the composer in Markdown mode for this account
+#                  (default: false).  Overrides the global markdown_compose.
 #
 # Accounts are defined as an array of tables. Two account types are supported:
 #
