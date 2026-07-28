@@ -6,7 +6,6 @@ import contextlib
 import logging
 import subprocess
 import tempfile
-from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import getaddresses
 from pathlib import Path
@@ -31,6 +30,7 @@ from ...compose_utils import (
     format_display_address,
     split_address_list,
 )
+from ...composer import DraftSpec
 from ...contact_naming import harvested_name
 from ...domain import (
     AnyAccount,
@@ -156,30 +156,6 @@ class _AddrRow(Horizontal):
             )
         yield Button("×", classes="addr-remove-btn")
         yield Button("+", classes="addr-add-btn")
-
-
-@dataclass
-class ComposeInitial:
-    """Pre-filled values passed to the compose form."""
-
-    account_name: str
-    to: str = ""
-    cc: str = ""
-    bcc: str = ""
-    subject: str = ""
-    body: str = ""
-    attachment_paths: tuple[Path, ...] = ()
-    markdown_mode: bool = False
-    # Threading (RFC 5322 s3.6.4).  Set by the reply entry points and by a
-    # resumed draft; empty for a fresh compose or a forward, which start
-    # their own thread.
-    in_reply_to: str = ""
-    references: str = ""
-    # Files the composer owns and must delete once it closes — the forward
-    # entry point materialises the original message here.  Kept separate
-    # from ``attachment_paths`` so a user-chosen attachment is never
-    # removed from their filesystem.
-    owned_paths: tuple[Path, ...] = ()
 
 
 class ComposeScreen(Screen[bool]):
@@ -352,7 +328,7 @@ class ComposeScreen(Screen[bool]):
         accounts: list[AnyAccount],
         index: IndexRepository,
         mirrors: dict[str, MirrorRepository],
-        initial: ComposeInitial,
+        initial: DraftSpec,
         contacts: ContactRepository | None = None,
         source_draft: IndexedMessage | None = None,
         credentials: CredentialsProvider | None = None,

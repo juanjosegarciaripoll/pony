@@ -8,6 +8,7 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
+from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig
 from ..paths import AppPaths
 from ..protocols import (
@@ -183,7 +184,7 @@ class ComposeApp(App[None]):
     def on_mount(self) -> None:
         push_terminal_title()
         set_terminal_title("Pony Express — Compose")
-        from .screens.compose_screen import ComposeInitial, ComposeScreen
+        from .screens.compose_screen import ComposeScreen
 
         def _on_done(sent: bool | None) -> None:
             if sent:
@@ -202,7 +203,7 @@ class ComposeApp(App[None]):
                 accounts,
                 self._index,
                 self._mirrors,
-                ComposeInitial(
+                DraftSpec(
                     account_name=self._account.name,
                     to=self._to,
                     cc=self._cc,

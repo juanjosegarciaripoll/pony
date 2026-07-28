@@ -21,6 +21,7 @@ src/pony/
   mailbox_ops.py       # index-row rewrites for local moves/copies (sync contract)
   message_renderer.py  # RFC 5322 → plain text / browser HTML / attachments
   compose_utils.py     # reply/forward quoting, address lists, MIME assembly
+  composer.py          # DraftSpec: what a reply/forward/new message starts as
   search_parser.py     # query parser (from:, to:, subject:…)
   contact_naming.py    # display name → contact first/last name
   html_sanitize.py     # shared HTML→text helpers (preview + renderer)
@@ -79,7 +80,7 @@ src/pony/
 
 **Sync** (`sync.py`, `imap_client.py`): two-pass plan/execute. Three-way flag merge (union policy). Mass-delete protection at 20%. Progress via `ProgressInfo`. TUI mutations set `uid IS NULL`; planner emits `PushMoveOp` or `PushAppendOp`; new UIDs captured via APPENDUID/COPYUID. Folder creation: mirror exposes new dir → `IMAP CREATE` at execute start. No pending-operations queue. Full algorithm: `ai/SYNCHRONIZATION.md`.
 
-**Send** (`smtp_sender.py`, `compose_utils.py`): SSL + STARTTLS. Reply/forward preserves quote levels. Markdown → `multipart/alternative`. Sent/draft folders discovered by fuzzy name match.
+**Send** (`smtp_sender.py`, `compose_utils.py`, `composer.py`): SSL + STARTTLS. Reply/forward preserves quote levels. Markdown → `multipart/alternative`. Sent/draft folders discovered by fuzzy name match. `composer.py` decides what a draft *is* — sending identity, subject prefix, reply-all recipients, RFC 5322 threading headers — and hands the UI a `DraftSpec` to render; it does no I/O and imports nothing from `tui/`.
 
 **TUI** (`tui/`): three `App` subclasses. Each screen owns `BINDINGS`; the footer shows only that screen's bindings. `MainScreen` owns all mail bindings + sync workflow. Screens use public Textual API (`push_screen`, `notify`) only. `SyncConfirmScreen` takes `on_confirm` callback. Alongside the modal `g` flow there is a non-blocking background sync (`ctrl+g`, `sync-bg` worker) that auto-confirms every folder and shows a spinner on the `FolderPanel` border title; it can also run on a config-gated periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`). `MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and streams rows back to the UI thread in batches so opening a folder never freezes the event loop. Theme is selectable via `theme=` in `config.toml`, the `--theme NAME` CLI flag, or `--list-themes`. `tui/terminal.py` updates the host terminal title via OSC 2; `tui/bindings.py` exposes the shared mark/motion `Binding` tuples reused by the message list and contact browser.
 

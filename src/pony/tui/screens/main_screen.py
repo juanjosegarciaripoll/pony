@@ -18,15 +18,13 @@ from textual.widgets import Footer, Header
 from textual.worker import Worker
 
 from ...accounts import find_imap_account
-from ...compose_utils import (
-    build_forward_body,
-    build_reply_all_recipients,
-    build_reply_body,
-    forward_subject,
-    new_compose_body,
-    parse_draft_fields,
-    reply_subject,
-    reply_thread_headers,
+from ...composer import (
+    DraftSpec,
+    forward_attachment_name,
+    forward_draft,
+    new_draft,
+    reply_draft,
+    resumed_draft,
 )
 from ...contact_naming import harvested_name
 from ...domain import (
@@ -43,8 +41,8 @@ from ...domain import (
 from ...mailbox_ops import landed_in_folder, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
+    RenderedMessage,
     render_message,
-    safe_attachment_filename,
     save_every_attachment,
     save_one_attachment,
 )
@@ -1533,201 +1531,126 @@ class MainScreen(Screen[None]):
             )
             return None
 
+    def _open_composer(
+        self,
+        spec: DraftSpec,
+        accounts: list[AnyAccount],
+        on_done: collections.abc.Callable[[bool | None], None] | None = None,
+    ) -> None:
+        """Push a ComposeScreen for *spec*.
+
+        Every compose entry point ends here, so the wiring the composer
+        needs — index, mirrors, contacts, credentials — is stated once.
+        """
+        from .compose_screen import ComposeScreen
+
+        screen = ComposeScreen(
+            self._config,
+            accounts,
+            self._index,
+            self._mirrors,
+            spec,
+            contacts=self._contacts,
+            credentials=self._credentials,
+        )
+        if on_done is None:
+            self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
+        else:
+            self.app.push_screen(screen, on_done)  # pyright: ignore[reportUnknownMemberType]
+
+    def _reply_context(
+        self, *, verb: str, noun: str
+    ) -> tuple[IndexedMessage, RenderedMessage, list[AnyAccount]] | None:
+        """Resolve the message, its rendering and the sendable accounts.
+
+        Reply, reply-all and forward all need exactly this much before
+        they can build anything, and each failure is silent-or-notify in
+        the same way.
+        """
+        msg = self.get_current_message()
+        if msg is None:
+            return None
+        accounts = self._sendable_or_notify(verb)
+        if accounts is None:
+            return None
+        raw = self._load_current_raw_or_notify(msg, noun=noun)
+        if raw is None:
+            return None
+        return msg, render_message(raw), accounts
+
     def compose_new(self, to: str = "") -> None:
         """Open a blank compose screen, optionally pre-filled with *to*."""
-        from .compose_screen import ComposeInitial, ComposeScreen
-
         accounts = self._sendable_or_notify("Composing")
         if accounts is None:
             return
-        # Prefer the current message's account when it's sendable; otherwise
-        # default to the first IMAP account.
         msg = self.get_current_message()
-        account = next(
-            (
-                a
-                for a in accounts
-                if msg is not None and a.name == msg.message_ref.account_name
+        self._open_composer(
+            new_draft(
+                accounts=accounts,
+                config=self._config,
+                prefer_name=None if msg is None else msg.message_ref.account_name,
+                to=to,
             ),
-            accounts[0],
-        )
-        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ComposeScreen(
-                self._config,
-                accounts,
-                self._index,
-                self._mirrors,
-                ComposeInitial(
-                    account_name=account.name,
-                    to=to,
-                    body=new_compose_body(account.signature),
-                    markdown_mode=(
-                        account.markdown_compose or self._config.markdown_compose
-                    ),
-                ),
-                contacts=self._contacts,
-                credentials=self._credentials,
-            )
+            accounts,
         )
 
     def compose_reply(self) -> None:
         """Open compose pre-filled as a reply to the current message."""
-        from .compose_screen import ComposeInitial, ComposeScreen
-
-        msg = self.get_current_message()
-        if msg is None:
-            return
-        accounts = self._sendable_or_notify("Replying")
-        if accounts is None:
-            return
-        raw = self._load_current_raw_or_notify(msg, noun="reply")
-        if raw is None:
-            return
-        rendered = render_message(raw)
-        # Source may be a local account; fall back to the first IMAP account
-        # when that's the case so the dropdown has a valid default.
-        account = next(
-            (a for a in accounts if a.name == msg.message_ref.account_name),
-            accounts[0],
-        )
-        in_reply_to, references = reply_thread_headers(rendered)
-
-        def _on_reply_sent(result: bool | None) -> None:
-            if result:
-                self._mark_answered(msg)
-
-        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ComposeScreen(
-                self._config,
-                accounts,
-                self._index,
-                self._mirrors,
-                ComposeInitial(
-                    account_name=account.name,
-                    to=rendered.from_,
-                    subject=reply_subject(rendered.subject),
-                    body=build_reply_body(rendered, signature=account.signature),
-                    markdown_mode=(
-                        account.markdown_compose or self._config.markdown_compose
-                    ),
-                    in_reply_to=in_reply_to,
-                    references=references,
-                ),
-                contacts=self._contacts,
-                credentials=self._credentials,
-            ),
-            _on_reply_sent,
-        )
+        self._compose_reply(reply_all=False)
 
     def compose_reply_all(self) -> None:
         """Open compose pre-filled as a reply-all to the current message."""
-        from .compose_screen import ComposeInitial, ComposeScreen
+        self._compose_reply(reply_all=True)
 
-        msg = self.get_current_message()
-        if msg is None:
+    def _compose_reply(self, *, reply_all: bool) -> None:
+        context = self._reply_context(verb="Replying", noun="reply")
+        if context is None:
             return
-        accounts = self._sendable_or_notify("Replying")
-        if accounts is None:
-            return
-        raw = self._load_current_raw_or_notify(msg, noun="reply")
-        if raw is None:
-            return
-        rendered = render_message(raw)
-        account = next(
-            (a for a in accounts if a.name == msg.message_ref.account_name),
-            accounts[0],
-        )
-        to, cc = build_reply_all_recipients(
-            rendered,
-            self_address=account.email_address,
-        )
-        in_reply_to, references = reply_thread_headers(rendered)
+        msg, rendered, accounts = context
 
-        def _on_reply_all_sent(result: bool | None) -> None:
+        def _on_sent(result: bool | None) -> None:
             if result:
                 self._mark_answered(msg)
 
-        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ComposeScreen(
-                self._config,
-                accounts,
-                self._index,
-                self._mirrors,
-                ComposeInitial(
-                    account_name=account.name,
-                    to=to,
-                    cc=cc,
-                    subject=reply_subject(rendered.subject),
-                    body=build_reply_body(rendered, signature=account.signature),
-                    markdown_mode=(
-                        account.markdown_compose or self._config.markdown_compose
-                    ),
-                    in_reply_to=in_reply_to,
-                    references=references,
-                ),
-                contacts=self._contacts,
-                credentials=self._credentials,
+        self._open_composer(
+            reply_draft(
+                accounts=accounts,
+                config=self._config,
+                rendered=rendered,
+                prefer_name=msg.message_ref.account_name,
+                reply_all=reply_all,
             ),
-            _on_reply_all_sent,
+            accounts,
+            _on_sent,
         )
 
     def compose_forward(self) -> None:
         """Open compose pre-filled as a forward of the current message."""
-        from .compose_screen import ComposeInitial, ComposeScreen
-
-        msg = self.get_current_message()
-        if msg is None:
+        context = self._reply_context(verb="Forwarding", noun="forward")
+        if context is None:
             return
-        accounts = self._sendable_or_notify("Forwarding")
-        if accounts is None:
-            return
-        raw = self._load_current_raw_or_notify(msg, noun="forward")
-        if raw is None:
-            return
-        rendered = render_message(raw)
-        account = next(
-            (a for a in accounts if a.name == msg.message_ref.account_name),
-            accounts[0],
-        )
-        # The forwarded copy has to exist as a file because attachments are
-        # read from disk, but it is scratch space, not something the user
-        # chose: it goes in a private directory that the composer deletes
-        # when it closes, and is handed over as an owned path so that
-        # cancelling a forward does not strand it in the temp directory.
-        # The name is derived from the subject because the recipient sees
-        # it — a bare mkstemp name arrives as "forwarded-message-dn1nwh3p".
+        msg, rendered, accounts = context
+        # The forwarded copy has to exist as a file because attachments
+        # are read from disk, but it is scratch space, not something the
+        # user chose: it goes in a private directory that the composer
+        # deletes when it closes, handed over as an owned path so that
+        # cancelling a forward does not strand it.
         tmp_dir = Path(tempfile.mkdtemp(prefix="pony-forward-"))
-        forwarded_path = tmp_dir / safe_attachment_filename(
-            f"{rendered.subject.strip() or 'forwarded message'}.eml",
-            fallback="forwarded message.eml",
-        )
-        forwarded_path.write_bytes(raw)
-
-        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ComposeScreen(
-                self._config,
-                accounts,
-                self._index,
-                self._mirrors,
-                ComposeInitial(
-                    account_name=account.name,
-                    subject=forward_subject(rendered.subject),
-                    body=build_forward_body(rendered, signature=account.signature),
-                    attachment_paths=(forwarded_path,),
-                    owned_paths=(forwarded_path,),
-                    markdown_mode=(
-                        account.markdown_compose or self._config.markdown_compose
-                    ),
-                ),
-                contacts=self._contacts,
-                credentials=self._credentials,
-            )
+        attachment = tmp_dir / forward_attachment_name(rendered.subject)
+        attachment.write_bytes(rendered.raw_bytes)
+        self._open_composer(
+            forward_draft(
+                accounts=accounts,
+                config=self._config,
+                rendered=rendered,
+                attachment=attachment,
+                prefer_name=msg.message_ref.account_name,
+            ),
+            accounts,
         )
 
     def compose_from_draft(self) -> None:
         """Open a draft message for editing in ComposeScreen."""
-        from .compose_screen import ComposeInitial, ComposeScreen
-
         msg = self.get_current_message()
         if msg is None:
             return
@@ -1737,26 +1660,18 @@ class MainScreen(Screen[None]):
         mirror = self._mirrors.get(msg.message_ref.account_name)
         if mirror is None:
             return
+        folder_ref = FolderRef(
+            account_name=msg.message_ref.account_name,
+            folder_name=msg.message_ref.folder_name,
+        )
         try:
             raw = mirror.get_message_bytes(
-                folder=FolderRef(
-                    account_name=msg.message_ref.account_name,
-                    folder_name=msg.message_ref.folder_name,
-                ),
+                folder=folder_ref,
                 storage_key=msg.storage_key,
             )
         except Exception:  # noqa: BLE001
             self.app.notify("Could not load draft.", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return
-        fields = parse_draft_fields(raw)
-        account = next(
-            (a for a in accounts if a.name == msg.message_ref.account_name),
-            accounts[0],
-        )
-        folder_ref = FolderRef(
-            account_name=msg.message_ref.account_name,
-            folder_name=msg.message_ref.folder_name,
-        )
 
         def _on_draft_done(result: bool | None) -> None:
             if result is None:
@@ -1779,24 +1694,19 @@ class MainScreen(Screen[None]):
                 self._index.delete_message(message_ref=msg.message_ref)
             self._reload_folder(folder_ref)
 
+        from .compose_screen import ComposeScreen
+
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
                 self._config,
                 accounts,
                 self._index,
                 self._mirrors,
-                ComposeInitial(
-                    account_name=account.name,
-                    to=fields["to"],
-                    cc=fields["cc"],
-                    bcc=fields["bcc"],
-                    subject=fields["subject"],
-                    body=fields["body"],
-                    markdown_mode=(
-                        account.markdown_compose or self._config.markdown_compose
-                    ),
-                    in_reply_to=fields["in_reply_to"],
-                    references=fields["references"],
+                resumed_draft(
+                    accounts=accounts,
+                    config=self._config,
+                    raw=raw,
+                    prefer_name=msg.message_ref.account_name,
                 ),
                 contacts=self._contacts,
                 credentials=self._credentials,

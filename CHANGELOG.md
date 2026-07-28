@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The composer no longer decides how a reply is assembled.** Which
+  identity sends it, how the subject is prefixed, which recipients survive a
+  reply-all and how the message threads were inlined at each of the five
+  entry points that open the composer, so the same identity fallback and
+  Markdown-default lookup were repeated five times and a rule added to one
+  was missing from the others. The composer now asks `pony.composer` for a
+  `DraftSpec` and renders it. No behaviour changes.
+
 - **The local-mutation sync contract has one implementation.** Recording a
   local change means rewriting the message's index row in a specific way —
   there is no pending-operations table, so the exact field set *is* the
