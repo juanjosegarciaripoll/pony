@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from email.message import EmailMessage
 from html.parser import HTMLParser
+from pathlib import Path
 
 from pony.html_sanitize import strip_invisible_blocks
 
@@ -57,10 +58,67 @@ _INLINE_ATTACHMENT_FILENAMES: dict[str, str] = {
 }
 
 
+# Most filesystems cap a single path component at 255 bytes.
+_FILENAME_MAX = 255
+
+
 def _safe_filename_stem(text: str, fallback: str = "message") -> str:
-    """Sanitize *text* for use as a filename stem (no extension, no path)."""
+    """Sanitize arbitrary *text* for use as a filename stem.
+
+    For turning a subject line into part of a name.  Distinct from
+    :func:`safe_attachment_filename`, which cleans a name the sender
+    already chose and must preserve its extension.
+    """
     stem = _UNSAFE_FILENAME_CHARS_RE.sub("_", text).strip(". ")
     return stem[:80] if stem else fallback
+
+
+def safe_attachment_filename(filename: str, *, fallback: str = "attachment") -> str:
+    """Reduce a sender-supplied filename to a safe, bare filename.
+
+    ``Content-Disposition`` filenames are chosen by whoever sent the
+    message, so they are untrusted input to every code path that writes
+    one to disk.  Three things have to happen and every caller needs all
+    three, which is why this lives in one place:
+
+    - drop any directory component, so the name cannot steer a write out
+      of the directory the caller picked;
+    - replace characters that are illegal or dangerous in a filename on
+      some supported platform (Windows rejects ``<>:"|?*``);
+    - refuse names that are empty or only dots, which would otherwise
+      resolve to the destination directory itself.
+    """
+    name = _UNSAFE_FILENAME_CHARS_RE.sub("_", Path(filename).name).strip()
+    if not name.strip("."):
+        return fallback
+    return name[:_FILENAME_MAX]
+
+
+def unique_destination(
+    dest_dir: Path,
+    filename: str,
+    *,
+    fallback: str = "attachment",
+) -> Path:
+    """Return a path under *dest_dir* that does not overwrite anything.
+
+    The name is sanitized first (see :func:`safe_attachment_filename`),
+    then ``-1``, ``-2``… is inserted before the extension until the path
+    is free.  Saving the same attachment twice yields two files rather
+    than one silently replaced.
+    """
+    safe = safe_attachment_filename(filename, fallback=fallback)
+    candidate = dest_dir / safe
+    if not candidate.exists():
+        return candidate
+    stem = Path(safe).stem
+    suffix = Path(safe).suffix
+    n = 1
+    while True:
+        candidate = dest_dir / f"{stem}-{n}{suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
 
 
 @dataclass(frozen=True, slots=True)

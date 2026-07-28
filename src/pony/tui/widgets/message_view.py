@@ -22,6 +22,7 @@ from ...message_renderer import (
     extract_attachment,
     fmt_size,
     render_message,
+    unique_destination,
 )
 from ...protocols import MirrorRepository
 from ..terminal import suspend_for_external_program
@@ -80,24 +81,6 @@ def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
         else:
             parts.append(_escape(seg))
     return "".join(parts)
-
-
-def _unique_path(dest_dir: Path, filename: str) -> Path:
-    """Return dest_dir/filename, appending -N before the extension if it exists."""
-    # Strip path traversal components and control chars from an untrusted filename.
-    safe = Path(filename).name
-    safe = "".join(ch for ch in safe if ch >= " ") or "attachment"
-    candidate = dest_dir / safe
-    if not candidate.exists():
-        return candidate
-    stem = Path(safe).stem
-    suffix = Path(safe).suffix
-    n = 1
-    while True:
-        candidate = dest_dir / f"{stem}-{n}{suffix}"
-        if not candidate.exists():
-            return candidate
-        n += 1
 
 
 class MessageViewPanel(VerticalScroll):
@@ -255,7 +238,7 @@ class MessageViewPanel(VerticalScroll):
         payload = extract_attachment(self._rendered.raw_bytes, index)
         if payload is None:
             return None
-        dest = _unique_path(dest_dir, payload.filename)
+        dest = unique_destination(dest_dir, payload.filename)
         dest.write_bytes(payload.data)
         return dest.name
 

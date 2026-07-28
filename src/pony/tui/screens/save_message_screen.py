@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Checkbox, Footer, Input, Label
 
-from ...message_renderer import RenderedMessage
+from ...message_renderer import RenderedMessage, safe_attachment_filename
 from .dialog_screen import DialogScreen
 
 # Maximum length (chars) for the subject slug in a proposed filename.
@@ -19,20 +18,6 @@ _SLUG_MAX = 50
 
 # Characters that are valid in cross-platform filenames.
 _SAFE_FILENAME_RE = re.compile(r"[^\w\-.]")
-
-
-def _sanitize_attachment_filename(filename: str) -> str:
-    """Strip path components and dangerous chars from an untrusted filename."""
-    # Drop any directory component supplied by the sender.
-    name = Path(filename).name
-    # Belt-and-suspenders: replace separators that survive cross-platform extraction.
-    name = name.replace("/", "_").replace("\\", "_")
-    # Drop control characters (NUL, etc.).
-    name = re.sub(r"[\x00-\x1f]", "", name)
-    # Avoid bare dot-only names that act as directory references.
-    if name in ("", ".", ".."):
-        name = "attachment"
-    return name[:255]
 
 
 def _subject_slug(subject: str) -> str:
@@ -63,7 +48,7 @@ def _proposed_body_filename(rendered: RenderedMessage) -> str:
 
 def _proposed_attachment_filename(filename: str, index: int) -> str:
     """Return a sanitized attachment filename, or a numeric fallback."""
-    safe = _sanitize_attachment_filename(filename) if filename else ""
+    safe = safe_attachment_filename(filename) if filename else ""
     return safe if safe else f"attachment-{index}"
 
 

@@ -1889,7 +1889,7 @@ def run_message_attachment(
     """Write one attachment's bytes to a file or to stdout."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .message_renderer import extract_attachment
+    from .message_renderer import extract_attachment, safe_attachment_filename
 
     acc = _require_account(config, account)
 
@@ -1932,11 +1932,10 @@ def run_message_attachment(
         # An explicit -o path is the user's own choice; honour it as given.
         dest = Path(output)
     else:
-        # The filename comes from the message's Content-Disposition and is
-        # therefore chosen by the sender: "../../.bashrc" would otherwise
-        # be written outside the working directory.  Keep the final
-        # component only, so the result can never leave the cwd.
-        dest = Path.cwd() / (Path(payload.filename).name or "attachment")
+        # The filename comes from the message's Content-Disposition and
+        # is therefore chosen by the sender: "../../.bashrc" would
+        # otherwise be written outside the working directory.
+        dest = Path.cwd() / safe_attachment_filename(payload.filename)
     if dest.exists() and not force:
         raise SystemExit(
             f"Refusing to overwrite existing file: {dest}\n"

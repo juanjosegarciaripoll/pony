@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Saved attachment filenames are cleaned the same way everywhere.** The
+  reader, the save dialog and `pony message attachment` each had their own
+  rules, so the same attachment could be written under different names
+  depending on which one you used. Characters Windows rejects (`<>:"|?*`)
+  are now replaced on every route, not just some, and a very long filename
+  is capped.
+
 - **`pony local-summary` no longer shows a Pending column.** It queried a
   `pending_operations` table that the current design removed — pending work
   is `uid IS NULL` on the index row — so the column was always empty.
