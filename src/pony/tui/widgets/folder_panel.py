@@ -14,6 +14,7 @@ from textual.widgets._tree import TreeNode
 
 from ...domain import AppConfig, FolderRef
 from ...protocols import IndexRepository, MirrorRepository
+from .edge_drag import DraggableEdgeMixin
 
 ACCOUNT_MAIL_SUFFIX = "✉"
 
@@ -138,7 +139,7 @@ def format_account_label(account_name: str, *, has_mail: bool) -> str:
     return label
 
 
-class FolderPanel(Tree[FolderPanelNodeData]):
+class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
     """Collapsible folder tree with per-account sections.
 
     Each root node represents one account (collapsible).  Each child node
@@ -152,6 +153,9 @@ class FolderPanel(Tree[FolderPanelNodeData]):
     # Deterministic spinner frames cycled by an advancing index (no
     # time/random source) so the syncing indicator is reproducible in tests.
     _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    # The right border doubles as the resize handle for this pane.
+    DRAG_EDGE = "right"
 
     BINDINGS = [
         Binding("n", "cursor_down", "Next", show=False),

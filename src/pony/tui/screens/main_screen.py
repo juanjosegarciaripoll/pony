@@ -53,6 +53,7 @@ from ..terminal import (
     suspend_for_external_program,
 )
 from ..ui_state import RESIZE_STEP, load_pane_sizes, save_pane_sizes
+from ..widgets.edge_drag import PaneDragged
 from ..widgets.folder_panel import FolderPanel, has_inbox_mail
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
@@ -221,6 +222,32 @@ class MainScreen(Screen[None]):
         self._pane_sizes = proposed
         self._apply_pane_sizes()
         save_pane_sizes(self._ui_state_path, proposed)
+
+    def on_pane_dragged(self, event: PaneDragged) -> None:
+        """Apply a border drag, persisting only once the mouse is released.
+
+        The drag reports a size in cells; the layout is stored as a share
+        of the available space so it survives a terminal resize.
+        """
+        event.stop()
+        if event.edge == "right":
+            total = max(1, self.size.width)
+            proposed = dataclasses.replace(
+                self._pane_sizes,
+                folder_width_pct=round(event.size * 100 / total),
+            ).clamped()
+        else:
+            total = max(1, self.query_one("#right-pane", Vertical).size.height)
+            proposed = dataclasses.replace(
+                self._pane_sizes,
+                list_share=round(event.size * 100 / total),
+            ).clamped()
+
+        if proposed != self._pane_sizes:
+            self._pane_sizes = proposed
+            self._apply_pane_sizes()
+        if event.final:
+            save_pane_sizes(self._ui_state_path, self._pane_sizes)
 
     def action_narrow_folders(self) -> None:
         self._resize_panes(folder_delta=-RESIZE_STEP)

@@ -21,13 +21,14 @@ from ...domain import (
 )
 from ...protocols import IndexRepository
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
+from .edge_drag import DraggableEdgeMixin
 
 # Width of the date cell. Widest format produced by ``_format_date`` is
 # ``YYYY-MM-DD`` (10 chars).
 _DATE_WIDTH = 10
 
 
-class MessageListPanel(DataTable[Text | str]):
+class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     """Single-column list of messages for the currently selected folder.
 
     The whole row is rendered as one pre-formatted line:
@@ -60,6 +61,9 @@ class MessageListPanel(DataTable[Text | str]):
     """
 
     BORDER_TITLE = "Messages"
+
+    # The bottom border doubles as the resize handle for this pane.
+    DRAG_EDGE = "bottom"
 
     BINDINGS = [
         *MOTION_BINDINGS,

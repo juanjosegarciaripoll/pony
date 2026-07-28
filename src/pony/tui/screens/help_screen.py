@@ -56,6 +56,7 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
             ("Shift+N", "New folder"),
             ("Ctrl+← / →", "Resize folder panel"),
             ("Ctrl+↑ / ↓", "Resize message list"),
+            ("Drag border", "Resize with the mouse"),
         ),
     ),
     _Section(

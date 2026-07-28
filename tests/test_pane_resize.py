@@ -261,3 +261,212 @@ async def test_a_resize_at_the_limit_does_not_rewrite_the_file() -> None:
         await pilot.pause()
 
     assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Mouse drag
+#
+# The drag handle is the border each pane already draws, so the feature
+# costs no screen space — a dedicated splitter widget would take a column
+# from the panes permanently to serve a pointer that is usually idle.
+# ---------------------------------------------------------------------------
+
+
+async def _drag_to(pilot: object, widget: object, *, screen_x: int, screen_y: int):  # type: ignore[no-untyped-def]
+    """Press the widget's drag border, move to a point, release."""
+    from textual import events
+
+    region = widget.region  # type: ignore[attr-defined]
+    edge = widget.DRAG_EDGE  # type: ignore[attr-defined]
+    if edge == "right":
+        grab = (region.width - 1, min(5, region.height - 1))
+    else:
+        grab = (min(5, region.width - 1), region.height - 1)
+
+    await pilot.mouse_down(type(widget), offset=grab)  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+
+    def _move() -> events.MouseMove:
+        return events.MouseMove(
+            widget=widget,  # type: ignore[arg-type]
+            x=0,
+            y=0,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            screen_x=screen_x,
+            screen_y=screen_y,
+        )
+
+    widget.post_message(_move())  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+
+    # A real mouse releases wherever the pointer ended up, and that
+    # position is what fixes the final size — releasing back at the
+    # original grab point would report the old border and undo the drag.
+    current = widget.region  # type: ignore[attr-defined]
+    release = (screen_x - current.x, screen_y - current.y)
+    await pilot.mouse_up(type(widget), offset=release)  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+
+
+async def test_the_panes_tile_the_screen_exactly() -> None:
+    """The drag handles must not consume a column or a row of their own."""
+    app, *_ = build_pony_app(label="drag-no-space", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        folder = app.screen.query_one(FolderPanel)
+        right = app.screen.query_one("#right-pane")
+        message_list = app.screen.query_one(MessageListPanel)
+        reader = app.screen.query_one(MessageViewPanel)
+
+        # No gap horizontally: the right pane starts where folders end.
+        assert folder.region.x + folder.region.width == right.region.x
+        assert folder.region.width + right.region.width == 120
+
+        # No gap vertically inside the right pane.
+        assert message_list.region.y + message_list.region.height == reader.region.y
+        assert message_list.region.height + reader.region.height == right.region.height
+
+
+async def test_dragging_the_folder_border_resizes_the_pane() -> None:
+    app, *_ = build_pony_app(label="drag-folders", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        folder = app.screen.query_one(FolderPanel)
+        start = folder.region.width
+
+        await _drag_to(pilot, folder, screen_x=start + 11, screen_y=5)
+
+        assert folder.region.width > start
+
+
+async def test_dragging_the_folder_border_does_not_change_the_selection() -> None:
+    """Grabbing the border must not also activate the folder under it."""
+    app, *_ = build_pony_app(label="drag-selection", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        folder = app.screen.query_one(FolderPanel)
+        before = screen._current_folder_ref
+
+        await _drag_to(pilot, folder, screen_x=folder.region.width + 11, screen_y=5)
+
+        assert screen._current_folder_ref == before
+
+
+async def test_dragging_the_list_border_resizes_it_against_the_reader() -> None:
+    app, *_ = build_pony_app(label="drag-list", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        message_list = app.screen.query_one(MessageListPanel)
+        reader = app.screen.query_one(MessageViewPanel)
+        start = message_list.region.height
+
+        await _drag_to(
+            pilot,
+            message_list,
+            screen_x=10,
+            screen_y=message_list.region.y + start + 6,
+        )
+
+        assert message_list.region.height > start
+        assert reader.region.height > 0
+
+
+async def test_a_click_inside_the_pane_does_not_start_a_drag() -> None:
+    """Only the border cell is a handle; the body still selects rows."""
+    app, *_ = build_pony_app(label="drag-body", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        folder = app.screen.query_one(FolderPanel)
+        start = folder.region.width
+
+        await pilot.click(FolderPanel, offset=(3, 3))
+        await pilot.pause()
+
+        assert folder._edge_drag_active is False
+        assert folder.region.width == start
+
+
+async def test_a_release_without_a_drag_is_ignored() -> None:
+    app, *_ = build_pony_app(label="drag-stray-up", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        folder = app.screen.query_one(FolderPanel)
+        start = folder.region.width
+
+        await pilot.mouse_up(FolderPanel, offset=(3, 3))
+        await pilot.pause()
+
+        assert folder.region.width == start
+
+
+async def test_a_drag_is_persisted_only_when_the_mouse_is_released() -> None:
+    """Intermediate moves must not hammer the disk."""
+    from textual import events
+
+    path = _state_path()
+    app, *_ = build_pony_app(label="drag-persist", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        _screen(app)._ui_state_path = path
+        folder = app.screen.query_one(FolderPanel)
+        grab = (folder.region.width - 1, 5)
+
+        await pilot.mouse_down(FolderPanel, offset=grab)
+        await pilot.pause()
+        folder.post_message(
+            events.MouseMove(
+                widget=folder,
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=folder.region.width + 11,
+                screen_y=5,
+            )
+        )
+        await pilot.pause()
+        assert not path.exists(), "mid-drag moves must not be written"
+
+        await pilot.mouse_up(FolderPanel, offset=grab)
+        await pilot.pause()
+
+    assert path.is_file()
+
+
+async def test_a_drag_beyond_the_limit_is_clamped() -> None:
+    app, *_ = build_pony_app(label="drag-clamp", seed=[(_INBOX, plain_text())])
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        folder = app.screen.query_one(FolderPanel)
+
+        await _drag_to(pilot, folder, screen_x=119, screen_y=5)
+
+        assert screen._pane_sizes.folder_width_pct == MAX_FOLDER_WIDTH_PCT
+
+        await _drag_to(pilot, folder, screen_x=1, screen_y=5)
+
+        assert screen._pane_sizes.folder_width_pct == MIN_FOLDER_WIDTH_PCT

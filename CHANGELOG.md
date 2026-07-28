@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Resizable panes**: `Ctrl-←` / `Ctrl-→` move the boundary between the folder
   list and the rest of the window, and `Ctrl-↑` / `Ctrl-↓` move the one between
-  the message list and the reader. Sizes are saved to `ui_state.json` in the
-  data directory and restored on the next launch.
+  the message list and the reader. The same boundaries can be dragged with the
+  mouse — the handle is the border each pane already draws, so no screen space
+  is given up to it. Sizes are saved to `ui_state.json` in the data directory
+  and restored on the next launch.
 
 ### Fixed
 
