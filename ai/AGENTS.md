@@ -7,7 +7,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 | File | Purpose |
 |---|---|
 | `docs/architecture.md` | Package layout, subsystems, data flow |
-| `ai/SYNCHRONIZATION.md` | Sync algorithm, schema, conflicts |
+| `docs/synchronization.md` | Sync algorithm, schema, conflicts (see its Implementation reference) |
 | `ai/CONVENTIONS.md` | Quality gates, style, build |
 | `ai/STATUS.md` | Scope, goals, delivered + queued, deferred |
 | `ai/SECURITY.md` | Threat model + patched findings |
@@ -135,7 +135,7 @@ defensive, so re-deriving it is wasted effort:
 
 ## Local mutations
 
-TUI actions that round-trip to the server (archive, compose, folder create) set `uid IS NULL` on the index row. Sync planner is the sole observer — emitting `PushMoveOp` or `PushAppendOp`. No parallel queues or status flags. See `ai/SYNCHRONIZATION.md`.
+TUI actions that round-trip to the server (archive, compose, folder create) set `uid IS NULL` on the index row. Sync planner is the sole observer — emitting `PushMoveOp` or `PushAppendOp`. No parallel queues or status flags. See `docs/synchronization.md`.
 
 ## Build
 

@@ -303,3 +303,126 @@ IMAP folder names may contain non-ASCII characters encoded in modified UTF-7.
 Pony handles encoding and decoding automatically. On disk, special characters
 in folder names (path separators, Windows-illegal characters) are replaced
 with dots.
+
+---
+
+## Implementation reference
+
+This section is the authoritative contract for `src/pony/sync.py`. Update it
+before changing the algorithm.
+
+### Principles
+
+- **State-based.** Correctness comes from the current state on each side, not
+  from a history of actions. There is no operation log to replay.
+- **Idempotent.** Syncing unchanged state produces no mutations.
+- **Non-destructive.** Nothing is permanently deleted without either explicit
+  confirmation or retention expiry.
+- **Per-row identity.** The key is the SQLite autoincrement `id` scoped to
+  `(account, folder)`. `Message-ID` is display-only and duplicates are allowed
+  — see [Message identity](#message-identity).
+- **`uid IS NULL` means "needs push."** A `PENDING_MOVE` row carries
+  `source_folder` / `source_uid`; otherwise it is a message awaiting `APPEND`.
+
+### Schema
+
+```sql
+CREATE TABLE messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_name     TEXT    NOT NULL,
+    folder_name      TEXT    NOT NULL,
+    uid              INTEGER,                       -- NULL = pending push
+    uid_validity     INTEGER NOT NULL DEFAULT 0,
+    message_id       TEXT    NOT NULL DEFAULT '',   -- display only
+    sender, recipients, cc, subject, body_preview,
+    storage_key      TEXT    NOT NULL DEFAULT '',
+    has_attachments  INTEGER NOT NULL DEFAULT 0,
+    local_flags, base_flags, server_flags, extra_imap_flags,
+    local_status     TEXT    NOT NULL,   -- ACTIVE | TRASHED | PENDING_MOVE
+    received_at      TEXT    NOT NULL,
+    trashed_at, synced_at,
+    source_folder    TEXT,               -- PENDING_MOVE only
+    source_uid       INTEGER             -- PENDING_MOVE only
+);
+CREATE UNIQUE INDEX ux_messages_uid
+    ON messages (account_name, folder_name, uid)
+    WHERE uid IS NOT NULL;
+```
+
+`MessageRef = (account_name, folder_name, id)`. The `folder_sync_state` table
+holds UIDVALIDITY, UIDNEXT, MESSAGES and HIGHESTMODSEQ as watermarks.
+
+### Per-folder path selection
+
+A folder takes the cheapest path its watermarks allow:
+
+| Path | Trigger | Cost |
+|---|---|---|
+| **Fast** | UIDVALIDITY, UIDNEXT, MESSAGES and HIGHESTMODSEQ all match | No `FETCH`; push-side operations only |
+| **Medium** | UID set stable, HIGHESTMODSEQ advanced | `UID FETCH 1:* (FLAGS) CHANGEDSINCE` |
+| **Slow** | UID set changed | `UID FETCH 1:* (FLAGS Message-ID-header)` full scan |
+
+### Slow-path steps
+
+1. STATUS gate (path selection above).
+2. UID diff: `new_uids = remote − local`, `gone_uids = local − remote`.
+3. Pending push rows:
+    - `PENDING_MOVE` + `source_*` → `PushMoveOp` (APPEND + EXPUNGE fallback when
+      the server lacks MOVE).
+    - `ACTIVE` + `uid IS NULL` → `PushAppendOp`.
+    - `TRASHED` + uid set → `PushDeleteOp`.
+    - `TRASHED` + `uid IS NULL` → `PurgeLocalOp`.
+    - Flag drift on a UID-bearing row → `PushFlagsOp`.
+4. `new_uids` → one `FetchNewOp` each.
+5. `gone_uids`: `local_flags != base_flags` and folder writable → `ReUploadOp`;
+   otherwise `ServerDeleteOp` (mark TRASHED).
+6. `remote ∩ local`: flag reconciliation → `PullFlagsOp`, `PushFlagsOp` or
+   `MergeFlagsOp`.
+7. **C-6:** more than 20% of local UIDs gone (with at least 5 known) → flag for
+   confirmation.
+
+There is no cross-folder Message-ID map. A server-side move across folders is
+seen as a delete in the source plus a fetch in the target.
+
+### Local actions
+
+There is no pending-operations table. A local mutation is recorded by
+rewriting the message's index row, and the planner is the sole observer — so
+the field sets below *are* the contract. They are implemented once, in
+`pony.mailbox_ops`: `landed_in_folder` for a message arriving in a folder,
+`moved_to_folder` for a move within one account.
+
+| Action | Index mutation | Sync op |
+|---|---|---|
+| Archive | `folder=T`, `uid=NULL`, `local_status=PENDING_MOVE`, `source_folder=F`, `source_uid` | `PushMoveOp` |
+| Move (same account) | Same, user-chosen folder | `PushMoveOp` |
+| Move (cross account) | New row in target; source → `TRASHED` | `PushAppendOp` (target) + `PushDeleteOp` (source) |
+| Trash (`D`) | `local_status=TRASHED`; keep `uid` | `PushDeleteOp` |
+| Compose / send | New row `uid=NULL`, `folder=Sent` | `PushAppendOp` |
+| Flag change | Update `local_flags` | `PushFlagsOp` if drift |
+
+Flag changes also write through to the mirror (`mailbox_ops.mirror_flags`) so
+another MUA sharing the tree sees them. The index stays authoritative: a failed
+mirror write is logged, not raised. This is not yet applied to the bulk paths
+(`mark_folder_read`, sync ingest and merge), because a per-message write costs
+a rename on Maildir but a full mailbox rewrite on mbox.
+
+### UID recovery
+
+`PushAppendOp` and `PushMoveOp` capture the new UID from APPENDUID / COPYUID
+(RFC 4315). If the server omits it, the row stays `uid IS NULL` and the next
+sync adopts it via `FetchNewOp`.
+
+### Conflict identifiers
+
+| ID | Condition | Resolution |
+|---|---|---|
+| **C-1** | UID in `gone_uids` and `local_flags != base_flags` | `ReUploadOp` |
+| **C-2** | Locally trashed, server has it in a read-only folder | Restore `ACTIVE`, pull flags |
+| **C-4** | UIDVALIDITY reset | Reset op, drop stale UID-bearing rows, refetch in the new epoch |
+| **C-6** | More than 20% of UIDs gone | Confirmation required |
+
+### Trash retention
+
+`TRASHED` rows are kept for `account.mirror.trash_retention_days` (default 30),
+then reaped by sync cleanup.

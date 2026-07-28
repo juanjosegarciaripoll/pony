@@ -2,7 +2,7 @@
 
 These two row rewrites *are* the local-mutation half of the sync
 contract: the planner has no queue to consult, only the row (see
-``ai/SYNCHRONIZATION.md``). Each was open-coded at every call site --
+``docs/synchronization.md``). Each was open-coded at every call site --
 "arrived in a folder" in three places, "moved to a folder" in two -- so
 the contract held only as well as the least careful copy.
 """

@@ -2,7 +2,7 @@
 
 Pony records a local mutation by rewriting the message's index row and
 letting the sync planner observe it — there is no pending-operations
-table (see ``ai/SYNCHRONIZATION.md``).  That makes the exact field set of
+table (see ``docs/synchronization.md``).  That makes the exact field set of
 each rewrite part of the sync contract: forget ``uid=None`` and the
 planner never notices the change; forget ``source_uid`` and a move is
 pushed as an append plus a delete of the wrong message.

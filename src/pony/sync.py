@@ -1,6 +1,6 @@
 """IMAP synchronization engine.
 
-Per-row identity, per-folder UID-set diff.  See ``ai/SYNCHRONIZATION.md``.
+Per-row identity, per-folder UID-set diff.  See ``docs/synchronization.md``.
 
 Sync is a two-pass process:
 
@@ -1062,7 +1062,7 @@ class ImapSyncService:
         pending_move_source_uids: frozenset[int],
         uidvalidity_reset_folders: frozenset[str],
     ) -> FolderSyncPlan:
-        """Full per-folder UID-set diff (§6 of SYNCHRONIZATION.md)."""
+        """Full per-folder UID-set diff (see docs/synchronization.md)."""
         uid_validity = session.get_uid_validity(folder_name)
         if uid_validity <= 0:
             logger.warning(
