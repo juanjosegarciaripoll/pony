@@ -2630,6 +2630,7 @@ def run_compose(
         index=index,
         mirrors=mirrors,
         contacts=index,
+        credentials=build_credentials_provider(config, index),
         to=to,
         cc=cc,
         bcc=bcc,

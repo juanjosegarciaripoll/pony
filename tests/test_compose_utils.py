@@ -24,6 +24,7 @@ from pony.compose_utils import (
     new_compose_body,
     parse_draft_fields,
     reply_subject,
+    reply_thread_headers,
     split_address_list,
     split_trailing_address,
 )
@@ -57,6 +58,8 @@ def _rendered(**kwargs: object) -> RenderedMessage:
         body=body_text,
         attachments=(),
         raw_bytes=raw_bytes,  # type: ignore[arg-type]
+        message_id=str(kwargs.get("message_id", "")),
+        references=str(kwargs.get("references", "")),
     )
 
 
@@ -790,3 +793,161 @@ class SplitTrailingAddressTest(unittest.TestCase):
         last = value.rfind(",")
         self.assertEqual(prefix, value[: last + 1] + " ")
         self.assertEqual(typed, "ma")
+
+
+class ReplyThreadHeadersTest(unittest.TestCase):
+    """A reply must chain itself to the message it answers (RFC 5322 s3.6.4).
+
+    Without In-Reply-To/References every reply Pony sent started a new
+    thread in the recipient's client, so a conversation arrived as a pile
+    of unrelated messages.
+    """
+
+    def test_a_first_reply_points_at_the_parent(self) -> None:
+        in_reply_to, references = reply_thread_headers(
+            _rendered(message_id="<parent@example.com>")
+        )
+        self.assertEqual(in_reply_to, "<parent@example.com>")
+        self.assertEqual(references, "<parent@example.com>")
+
+    def test_the_parents_chain_is_extended_not_replaced(self) -> None:
+        in_reply_to, references = reply_thread_headers(
+            _rendered(
+                message_id="<third@example.com>",
+                references="<first@example.com> <second@example.com>",
+            )
+        )
+        self.assertEqual(in_reply_to, "<third@example.com>")
+        self.assertEqual(
+            references,
+            "<first@example.com> <second@example.com> <third@example.com>",
+        )
+
+    def test_a_folded_references_header_is_normalised(self) -> None:
+        # Long chains arrive folded across continuation lines; the reply
+        # must not copy the embedded newlines into its own header.
+        in_reply_to, references = reply_thread_headers(
+            _rendered(
+                message_id="<third@example.com>",
+                references="<first@example.com>\r\n <second@example.com>",
+            )
+        )
+        self.assertEqual(in_reply_to, "<third@example.com>")
+        self.assertEqual(
+            references,
+            "<first@example.com> <second@example.com> <third@example.com>",
+        )
+        self.assertNotIn("\n", references)
+
+    def test_a_parent_with_no_message_id_yields_no_headers(self) -> None:
+        # Nothing legitimate to point at — inventing an id would graft the
+        # reply onto a thread that does not exist.
+        self.assertEqual(reply_thread_headers(_rendered()), ("", ""))
+
+    def test_a_parent_listing_itself_is_not_duplicated(self) -> None:
+        _, references = reply_thread_headers(
+            _rendered(
+                message_id="<self@example.com>",
+                references="<first@example.com> <self@example.com>",
+            )
+        )
+        self.assertEqual(references, "<first@example.com> <self@example.com>")
+
+    def test_a_long_chain_keeps_the_root_and_the_recent_tail(self) -> None:
+        # Unbounded growth would eventually push References past the
+        # 998-octet line limit.
+        chain = " ".join(f"<m{i}@example.com>" for i in range(40))
+        _, references = reply_thread_headers(
+            _rendered(message_id="<latest@example.com>", references=chain)
+        )
+        ids = references.split()
+        self.assertEqual(len(ids), 20)
+        self.assertEqual(ids[0], "<m0@example.com>", "thread root must survive")
+        self.assertEqual(ids[-1], "<latest@example.com>")
+        self.assertEqual(ids[-2], "<m39@example.com>")
+
+
+class BuildEmailMessageThreadingTest(unittest.TestCase):
+    """The threading headers reach the wire format."""
+
+    def _build(self, **kwargs: object) -> EmailMessage:
+        return build_email_message(
+            from_address="me@example.com",
+            to="you@example.com",
+            cc="",
+            bcc="",
+            subject="Re: Hello",
+            body="text",
+            attachment_paths=[],
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_headers_are_emitted_when_supplied(self) -> None:
+        msg = self._build(
+            in_reply_to="<parent@example.com>",
+            references="<root@example.com> <parent@example.com>",
+        )
+        self.assertEqual(msg["In-Reply-To"], "<parent@example.com>")
+        self.assertEqual(msg["References"], "<root@example.com> <parent@example.com>")
+
+    def test_a_fresh_compose_carries_neither_header(self) -> None:
+        msg = self._build()
+        self.assertIsNone(msg["In-Reply-To"])
+        self.assertIsNone(msg["References"])
+
+    def test_the_reply_still_gets_its_own_message_id(self) -> None:
+        msg = self._build(in_reply_to="<parent@example.com>")
+        self.assertIsNotNone(msg["Message-ID"])
+        self.assertNotEqual(msg["Message-ID"], msg["In-Reply-To"])
+
+
+class DraftThreadingRoundTripTest(unittest.TestCase):
+    """Saving a reply as a draft must not drop it out of its thread."""
+
+    def test_threading_headers_survive_a_draft_round_trip(self) -> None:
+        original = build_email_message(
+            from_address="me@example.com",
+            to="you@example.com",
+            cc="",
+            bcc="",
+            subject="Re: Hello",
+            body="half-written",
+            attachment_paths=[],
+            in_reply_to="<parent@example.com>",
+            references="<root@example.com> <parent@example.com>",
+        )
+        fields = parse_draft_fields(original.as_bytes())
+        self.assertEqual(fields["in_reply_to"], "<parent@example.com>")
+        self.assertEqual(
+            fields["references"], "<root@example.com> <parent@example.com>"
+        )
+        # Rebuilding from the parsed draft reproduces the same chain.
+        resumed = build_email_message(
+            from_address="me@example.com",
+            to=fields["to"],
+            cc=fields["cc"],
+            bcc=fields["bcc"],
+            subject=fields["subject"],
+            body=fields["body"],
+            attachment_paths=[],
+            in_reply_to=fields["in_reply_to"],
+            references=fields["references"],
+        )
+        self.assertEqual(resumed["In-Reply-To"], "<parent@example.com>")
+        self.assertEqual(
+            resumed["References"], "<root@example.com> <parent@example.com>"
+        )
+
+    def test_a_plain_draft_reports_empty_threading_fields(self) -> None:
+        plain = build_email_message(
+            from_address="me@example.com",
+            to="you@example.com",
+            cc="",
+            bcc="",
+            subject="Hello",
+            body="text",
+            attachment_paths=[],
+        )
+        fields = parse_draft_fields(plain.as_bytes())
+        self.assertEqual(fields["in_reply_to"], "")
+        self.assertEqual(fields["references"], "")

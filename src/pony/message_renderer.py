@@ -198,6 +198,10 @@ class RenderedMessage:
     raw_bytes: bytes  # kept for W (open in browser)
     links: tuple[tuple[str, str], ...] = ()  # (kind, target): kind="web"|"mail"
     styled_body: str = ""  # body with \x00LINK:N\x00 + format sentinels for TUI
+    # Threading identity (RFC 5322 s3.6.4).  Carried so a reply can chain
+    # itself to this message; empty when the sender omitted the header.
+    message_id: str = ""
+    references: str = ""
 
 
 def render_message(raw_bytes: bytes) -> RenderedMessage:
@@ -224,6 +228,8 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
         raw_bytes=raw_bytes,
         links=tuple(links),
         styled_body=styled_body,
+        message_id=_header(msg, "Message-ID"),
+        references=_header(msg, "References"),
     )
 
 

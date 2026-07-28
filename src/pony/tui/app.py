@@ -154,6 +154,7 @@ class ComposeApp(App[None]):
         index: IndexRepository,
         mirrors: dict[str, MirrorRepository],
         contacts: ContactRepository | None = None,
+        credentials: CredentialsProvider | None = None,
         to: str = "",
         cc: str = "",
         bcc: str = "",
@@ -169,6 +170,7 @@ class ComposeApp(App[None]):
         self._index = index
         self._mirrors = mirrors
         self._contacts = contacts
+        self._credentials = credentials
         self._to = to
         self._cc = cc
         self._bcc = bcc
@@ -210,6 +212,7 @@ class ComposeApp(App[None]):
                     markdown_mode=self._markdown_mode,
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
             ),
             _on_done,
         )

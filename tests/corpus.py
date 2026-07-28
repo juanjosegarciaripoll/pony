@@ -120,6 +120,42 @@ def plain_text() -> bytes:
     return msg.as_bytes()
 
 
+def mid_thread_message() -> bytes:
+    """A message several replies deep, with a folded ``References`` chain.
+
+    Real threads arrive with ``References`` folded across continuation
+    lines once the chain outgrows one header line, so a reply built from
+    this fixture exercises unfolding as well as chain extension.
+    """
+    msg = EmailMessage()
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Re: Tuesday meeting confirmed"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<thread-third@example.com>"
+    msg.set_content(PLAIN_BODY)
+    raw = msg.as_bytes()
+    # Inject the folded header directly: EmailMessage refuses to store a
+    # value containing newlines, but that is exactly how it arrives.
+    return raw.replace(
+        b"Message-ID:",
+        b"References: <thread-root@example.com>\r\n"
+        b" <thread-second@example.com>\r\nMessage-ID:",
+        1,
+    )
+
+
+def unthreaded_message() -> bytes:
+    """A message with no ``Message-ID`` — nothing for a reply to point at."""
+    msg = EmailMessage()
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Anonymous notice"
+    msg["Date"] = DATE
+    msg.set_content(PLAIN_BODY)
+    return msg.as_bytes()
+
+
 def multipart_alternative() -> bytes:
     """text/plain + text/html alternative — the most common real-world format.
 

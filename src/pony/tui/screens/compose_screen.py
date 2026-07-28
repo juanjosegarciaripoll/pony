@@ -7,6 +7,7 @@ import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from email.message import EmailMessage
 from email.utils import getaddresses
 from pathlib import Path
 
@@ -41,7 +42,12 @@ from ...domain import (
 )
 from ...folder_utils import find_folder
 from ...message_projection import project_rfc822_message
-from ...protocols import ContactRepository, IndexRepository, MirrorRepository
+from ...protocols import (
+    ContactRepository,
+    CredentialsProvider,
+    IndexRepository,
+    MirrorRepository,
+)
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
 
@@ -164,6 +170,16 @@ class ComposeInitial:
     body: str = ""
     attachment_paths: tuple[Path, ...] = ()
     markdown_mode: bool = False
+    # Threading (RFC 5322 s3.6.4).  Set by the reply entry points and by a
+    # resumed draft; empty for a fresh compose or a forward, which start
+    # their own thread.
+    in_reply_to: str = ""
+    references: str = ""
+    # Files the composer owns and must delete once it closes — the forward
+    # entry point materialises the original message here.  Kept separate
+    # from ``attachment_paths`` so a user-chosen attachment is never
+    # removed from their filesystem.
+    owned_paths: tuple[Path, ...] = ()
 
 
 class ComposeScreen(Screen[bool]):
@@ -339,6 +355,7 @@ class ComposeScreen(Screen[bool]):
         initial: ComposeInitial,
         contacts: ContactRepository | None = None,
         source_draft: IndexedMessage | None = None,
+        credentials: CredentialsProvider | None = None,
         **kwargs: object,
     ) -> None:
         # ``accounts`` must all satisfy ``account.can_send``; MainScreen
@@ -353,6 +370,7 @@ class ComposeScreen(Screen[bool]):
         self._initial = initial
         self._contacts = contacts
         self._source_draft = source_draft
+        self._credentials = credentials
         self._attachment_paths: list[Path] = list(initial.attachment_paths)
         self._markdown_mode: bool = initial.markdown_mode
 
@@ -429,6 +447,24 @@ class ComposeScreen(Screen[bool]):
             self.query_one("#to-input", Input).focus()
         self._maybe_prompt_missing_name()
 
+    def on_unmount(self) -> None:
+        """Delete the scratch files this composer was given ownership of.
+
+        Only paths passed as ``owned_paths`` are touched — a forward's
+        materialised copy of the original, never a file the user picked
+        from their own disk.  This runs however the screen goes away
+        (sent, cancelled, or the app shutting down), so the copy cannot
+        outlive the compose that needed it.
+        """
+        for path in self._initial.owned_paths:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            # The forward path puts its file in a directory of its own;
+            # take that with it, but never recursively and never when
+            # anything else has appeared inside.
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()
+
     def _maybe_prompt_missing_name(self) -> None:
         """Open the contact editor when the selected account has no display name."""
         account = self._get_account()
@@ -487,6 +523,55 @@ class ComposeScreen(Screen[bool]):
     # Actions
     # ------------------------------------------------------------------
 
+    def _resolve_password(self, account: AnyAccount) -> str | None:
+        """Resolve *account*'s SMTP password, or notify and return None.
+
+        Sending goes through the same credentials provider as syncing, so
+        the ``env``, ``command`` and ``encrypted`` backends work here too.
+        Reading ``account.password`` directly — as this used to — meant
+        every account not using the plaintext backend appeared in the From
+        dropdown and was then refused at send time.
+        """
+        if self._credentials is not None:
+            try:
+                password = self._credentials.get_password(account_name=account.name)
+            except Exception as exc:  # noqa: BLE001
+                self.notify(f"Could not get password: {exc}", severity="error")
+                _log.error("credential lookup failed for %r: %s", account.name, exc)
+                return None
+            if password:
+                return password
+        # No provider wired in (a bare ComposeScreen in a test, or an
+        # embedding that never built one): fall back to the config field.
+        elif account.password:
+            return account.password
+        self.notify(
+            f"No password available for account {account.name!r}.",
+            severity="error",
+        )
+        return None
+
+    def _build_message(self, account: AnyAccount) -> EmailMessage:
+        """Assemble the current form state into an ``EmailMessage``.
+
+        Sending and draft-saving both go through here so that the two can
+        never disagree about what the form contains — notably the
+        threading headers, which a draft has to carry in order to still
+        land in its thread when it is resumed and sent later.
+        """
+        return build_email_message(
+            from_address=self._account_from_address(account),
+            to=self.query_one("#to-input", Input).value.strip(),
+            cc=self._collect_field("cc-container"),
+            bcc=self._collect_field("bcc-container"),
+            subject=self.query_one("#subject-input", Input).value.strip(),
+            body=self.query_one("#body-area", TextArea).text,
+            attachment_paths=self._attachment_paths,
+            markdown_mode=self._markdown_mode,
+            in_reply_to=self._initial.in_reply_to,
+            references=self._initial.references,
+        )
+
     def action_send(self) -> None:
         """Validate fields, send via SMTP, save copy to Sent folder."""
         to = self.query_one("#to-input", Input).value.strip()
@@ -501,28 +586,15 @@ class ComposeScreen(Screen[bool]):
             return
 
         cc = self._collect_field("cc-container")
-        bcc = self._collect_field("bcc-container")
-        msg = build_email_message(
-            from_address=self._account_from_address(account),
-            to=to,
-            cc=cc,
-            bcc=bcc,
-            subject=self.query_one("#subject-input", Input).value.strip(),
-            body=self.query_one("#body-area", TextArea).text,
-            attachment_paths=self._attachment_paths,
-            markdown_mode=self._markdown_mode,
-        )
+        msg = self._build_message(account)
 
         # The dropdown only shows ``can_send`` accounts (see
-        # MainScreen._sendable_accounts), so ``smtp`` / ``username`` /
-        # ``password`` are always set here.  Assert for the type checker.
+        # MainScreen._sendable_accounts), so ``smtp`` and ``username`` are
+        # always set here.  Assert for the type checker.
         assert account.smtp is not None
         assert account.username is not None
-        if not account.password:
-            self.notify(
-                "Send requires a 'password' configured on this account.",
-                severity="error",
-            )
+        password = self._resolve_password(account)
+        if password is None:
             return
 
         raw = msg.as_bytes()
@@ -542,7 +614,7 @@ class ComposeScreen(Screen[bool]):
             smtp_send(
                 smtp=account.smtp,
                 username=account.username,
-                password=account.password,
+                password=password,
                 msg=msg,
             )
         except (SMTPError, ValueError) as exc:
@@ -591,18 +663,8 @@ class ComposeScreen(Screen[bool]):
             if save:
                 account = self._get_account()
                 if account is not None:
-                    msg = build_email_message(
-                        from_address=self._account_from_address(account),
-                        to=self.query_one("#to-input", Input).value.strip(),
-                        cc=self._collect_field("cc-container"),
-                        bcc=self._collect_field("bcc-container"),
-                        subject=self.query_one("#subject-input", Input).value.strip(),
-                        body=self.query_one("#body-area", TextArea).text,
-                        attachment_paths=self._attachment_paths,
-                        markdown_mode=self._markdown_mode,
-                    )
                     self._save_to_folder(
-                        msg.as_bytes(),
+                        self._build_message(account).as_bytes(),
                         account,
                         folder_hint="Drafts",
                         override=account.drafts_folder,

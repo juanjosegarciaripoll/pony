@@ -401,3 +401,146 @@ async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
     names = [a.display_name for a in message["Cc"].addresses]
     assert addresses == ["john@example.test", "plain@example.test"]
     assert names[0] == "Doe, John"
+
+
+async def test_a_non_plaintext_account_can_actually_send() -> None:
+    """Every backend offered in the From dropdown must reach SMTP.
+
+    ``action_send`` used to read ``account.password`` — the literal TOML
+    field — so an account using the ``env``, ``command`` or ``encrypted``
+    backend was listed as sendable and then refused at send time with a
+    request for a password it was configured never to store.
+    """
+    from unittest.mock import Mock
+
+    from tui_helpers import make_test_account, make_tmp_paths
+
+    import pony.tui.screens.compose_screen as compose_module
+
+    paths = make_tmp_paths("env-send")
+    account = dataclasses.replace(
+        make_test_account(paths),
+        credentials_source="env",
+        password=None,
+    )
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="env-send",
+        account=account,
+        to="recipient@example.test",
+        subject="Subject",
+        body="Body",
+    )
+    sent: list[object] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        screen._credentials = Mock(  # type: ignore[attr-defined]
+            get_password=Mock(return_value="resolved-from-env")
+        )
+        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+            side_effect=lambda **kwargs: sent.append(kwargs)
+        )
+        screen.action_send()
+        await pilot.pause()
+
+    assert sent, "an env-backed account was refused at send time"
+    assert sent[0]["password"] == "resolved-from-env"  # type: ignore[index]
+
+
+async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
+    """A backend that cannot produce a password must not take the app down."""
+    from unittest.mock import Mock
+
+    import pony.tui.screens.compose_screen as compose_module
+    from pony.config import ConfigError
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="cred-failure",
+        to="recipient@example.test",
+        subject="Subject",
+        body="Body",
+    )
+    sent: list[object] = []
+    notices: list[str] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        screen._credentials = Mock(  # type: ignore[attr-defined]
+            get_password=Mock(side_effect=ConfigError("keyring locked"))
+        )
+        screen.notify = Mock(  # type: ignore[method-assign]
+            side_effect=lambda message, **_kw: notices.append(str(message))
+        )
+        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+            side_effect=lambda **kwargs: sent.append(kwargs)
+        )
+        screen.action_send()
+        await pilot.pause()
+
+    assert not sent, "sent despite having no password"
+    assert any("keyring locked" in n for n in notices), notices
+
+
+async def test_without_a_provider_the_configured_password_is_used() -> None:
+    """A composer built without a provider still sends from config."""
+    from unittest.mock import Mock
+
+    import pony.tui.screens.compose_screen as compose_module
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="no-provider-send",
+        to="recipient@example.test",
+        subject="Subject",
+        body="Body",
+    )
+    sent: list[object] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        assert screen._credentials is None
+        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+            side_effect=lambda **kwargs: sent.append(kwargs)
+        )
+        screen.action_send()
+        await pilot.pause()
+
+    assert sent, "the configured password was ignored"
+
+
+async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
+    """Neither a provider nor a configured password: refuse, do not crash."""
+    from unittest.mock import Mock
+
+    from tui_helpers import make_test_account, make_tmp_paths
+
+    import pony.tui.screens.compose_screen as compose_module
+
+    paths = make_tmp_paths("no-password")
+    account = dataclasses.replace(make_test_account(paths), password=None)
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="no-password",
+        account=account,
+        to="recipient@example.test",
+        subject="Subject",
+        body="Body",
+    )
+    sent: list[object] = []
+    notices: list[str] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        screen.notify = Mock(  # type: ignore[method-assign]
+            side_effect=lambda message, **_kw: notices.append(str(message))
+        )
+        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+            side_effect=lambda **kwargs: sent.append(kwargs)
+        )
+        screen.action_send()
+        await pilot.pause()
+
+    assert not sent
+    assert any("No password available" in n for n in notices), notices

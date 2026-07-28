@@ -22,7 +22,14 @@ from pony.credentials import (
     build_credentials_provider,
     encrypt_password,
 )
-from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
+from pony.domain import (
+    AccountConfig,
+    AnyAccount,
+    AppConfig,
+    LocalAccountConfig,
+    MirrorConfig,
+    SmtpConfig,
+)
 from pony.index_store import SqliteIndexRepository
 from pony.mcp_server import McpState, clear_mcp_state, read_mcp_state, write_mcp_state
 
@@ -54,6 +61,10 @@ def _make_account(
 
 
 def _make_config(*accounts: AccountConfig) -> AppConfig:
+    return AppConfig(accounts=tuple(accounts))
+
+
+def _make_config_any(*accounts: AnyAccount) -> AppConfig:
     return AppConfig(accounts=tuple(accounts))
 
 
@@ -444,3 +455,80 @@ class TestCredentialPlatformHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Local accounts that send
+# ---------------------------------------------------------------------------
+
+
+def _make_local_account(
+    name: str = "localacct",
+    *,
+    credentials_source: str | None = "plaintext",
+    password: str | None = "local-pw",
+    password_command: list[str] | None = None,
+) -> LocalAccountConfig:
+    mirror_dir = TMP_ROOT / "creds-mirrors" / uuid4().hex
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    return LocalAccountConfig(
+        name=name,
+        email_address=f"{name}@example.com",
+        mirror=MirrorConfig(path=mirror_dir, format="maildir"),
+        smtp=SmtpConfig(host="smtp.example.com"),
+        username=name,
+        credentials_source=credentials_source,  # type: ignore[arg-type]
+        password=password,
+        password_command=tuple(password_command) if password_command else None,
+    )
+
+
+class TestLocalAccountCredentials(unittest.TestCase):
+    """A local account with an ``[smtp]`` block needs its password resolved.
+
+    Every provider used to filter for ``AccountConfig``, so a local
+    account configured to send was invisible to all of them: whatever
+    backend it named, the lookup fell through to plaintext and reported
+    "no password configured".
+    """
+
+    def test_a_local_account_resolves_its_plaintext_password(self) -> None:
+        config = _make_config_any(_make_local_account(password="local-pw"))
+        provider = build_credentials_provider(config, _make_index())
+        self.assertEqual(provider.get_password(account_name="localacct"), "local-pw")
+
+    def test_a_local_account_resolves_through_the_env_backend(self) -> None:
+        account = _make_local_account(credentials_source="env", password=None)
+        config = _make_config_any(account)
+        provider = build_credentials_provider(config, _make_index())
+        with patch.dict(os.environ, {"PONY_PASSWORD_LOCALACCT": "from-env"}):
+            self.assertEqual(
+                provider.get_password(account_name="localacct"), "from-env"
+            )
+
+    def test_a_local_account_resolves_through_the_command_backend(self) -> None:
+        account = _make_local_account(
+            credentials_source="command",
+            password=None,
+            password_command=[sys.executable, "-c", "print('from-cmd')"],
+        )
+        config = _make_config_any(account)
+        provider = build_credentials_provider(config, _make_index())
+        self.assertEqual(provider.get_password(account_name="localacct"), "from-cmd")
+
+    def test_a_local_account_without_smtp_defaults_to_plaintext(self) -> None:
+        # ``credentials_source`` is None on a read-only local account;
+        # that must not be dispatched as an unknown backend.
+        account = _make_local_account(credentials_source=None, password="pw")
+        config = _make_config_any(account)
+        provider = build_credentials_provider(config, _make_index())
+        self.assertEqual(provider.get_password(account_name="localacct"), "pw")
+
+    def test_imap_and_local_accounts_coexist(self) -> None:
+        config = _make_config_any(
+            _make_account("imapacct", password="imap-pw"),
+            _make_local_account("localacct", password="local-pw"),
+        )
+        provider = build_credentials_provider(config, _make_index())
+        self.assertEqual(provider.get_password(account_name="imapacct"), "imap-pw")
+        self.assertEqual(provider.get_password(account_name="localacct"), "local-pw")

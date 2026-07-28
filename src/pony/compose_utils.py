@@ -240,13 +240,51 @@ def forward_subject(subject: str) -> str:
     return f"Fwd: {subject}"
 
 
+# A References chain grows by one message-id per hop and is never pruned by
+# the protocol, so long threads can push the header past the 998-octet line
+# limit.  RFC 5322 s3.6.4 lets a client trim, and the conventional rule
+# (from RFC 1036bis, followed by Thunderbird and Gnus) keeps the first
+# reference — the thread root, which is what tree-builders anchor on — plus
+# the most recent ones.
+_MAX_REFERENCES = 20
+
+
+def reply_thread_headers(rendered: RenderedMessage) -> tuple[str, str]:
+    """Return ``(in_reply_to, references)`` for a reply to *rendered*.
+
+    RFC 5322 s3.6.4: the reply's ``In-Reply-To`` is the parent's
+    ``Message-ID``, and its ``References`` is the parent's ``References``
+    chain with the parent's own ``Message-ID`` appended.  Both come back
+    empty when the parent carries no ``Message-ID`` — there is nothing
+    legitimate to point at, and inventing one would graft the reply onto
+    a thread that does not exist.
+    """
+    parent_id = rendered.message_id.strip()
+    if not parent_id:
+        return "", ""
+    # Header folding means the chain arrives with newlines embedded;
+    # split() on arbitrary whitespace normalises it back to one id per item.
+    chain = [ref for ref in rendered.references.split() if ref]
+    if parent_id in chain:
+        # A malformed parent that already lists itself must not be
+        # duplicated — move it to the end where the reply expects it.
+        chain.remove(parent_id)
+    chain.append(parent_id)
+    if len(chain) > _MAX_REFERENCES:
+        chain = chain[:1] + chain[-(_MAX_REFERENCES - 1) :]
+    return parent_id, " ".join(chain)
+
+
 def parse_draft_fields(raw: bytes) -> dict[str, str]:
     """Extract editable fields from stored draft bytes.
 
-    Returns a dict with keys: ``to``, ``cc``, ``bcc``, ``subject``, ``body``.
-    The plain-text part is used for the body regardless of whether the draft
-    was composed in Markdown mode (the raw Markdown source is always stored
-    as the text/plain alternative).
+    Returns a dict with keys: ``to``, ``cc``, ``bcc``, ``subject``,
+    ``body``, ``in_reply_to`` and ``references``.  The plain-text part is
+    used for the body regardless of whether the draft was composed in
+    Markdown mode (the raw Markdown source is always stored as the
+    text/plain alternative).  The threading headers are carried through so
+    that saving a reply as a draft and resuming it later still lands the
+    message in its original thread.
     """
     import email as _email
     import email.policy as _policy
@@ -274,6 +312,8 @@ def parse_draft_fields(raw: bytes) -> dict[str, str]:
         "bcc": _hdr("Bcc"),
         "subject": _hdr("Subject"),
         "body": body,
+        "in_reply_to": _hdr("In-Reply-To"),
+        "references": " ".join(_hdr("References").split()),
     }
 
 
@@ -287,6 +327,8 @@ def build_email_message(
     body: str,
     attachment_paths: list[Path],
     markdown_mode: bool = False,
+    in_reply_to: str = "",
+    references: str = "",
 ) -> EmailMessage:
     """Build a ready-to-send :class:`EmailMessage`.
 
@@ -297,6 +339,10 @@ def build_email_message(
 
     Attachments are read from disk and encoded inline.  Raises
     ``FileNotFoundError`` if an attachment path does not exist.
+
+    *in_reply_to* and *references* thread the message under an existing
+    conversation; both are omitted when empty so a fresh compose stays
+    unthreaded.
     """
     body = _normalize_newlines(body)
 
@@ -310,6 +356,10 @@ def build_email_message(
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
 
     if markdown_mode:
         import html as _html_mod

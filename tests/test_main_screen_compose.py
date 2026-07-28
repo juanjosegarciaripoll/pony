@@ -7,7 +7,7 @@ from collections.abc import Callable
 from email.message import EmailMessage
 from unittest.mock import Mock
 
-from corpus import plain_text
+from corpus import mid_thread_message, plain_text, unthreaded_message
 from tui_helpers import build_pony_app
 
 from pony.domain import Contact, FolderRef, MessageFlag, MessageStatus
@@ -499,3 +499,132 @@ async def test_link_actions_ignore_the_wrong_link_kind() -> None:
         await pilot.pause()
 
         app.push_screen.assert_not_called()
+
+
+async def test_a_reply_threads_under_the_message_it_answers() -> None:
+    """Reply and reply-all both chain onto the parent's References.
+
+    Pony used to send neither header, so every reply landed as a new
+    thread in the recipient's client.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-reply-threading",
+        seed=[(folder, mid_thread_message())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[object] = []
+
+        def _capture(compose_screen: object, *_a: object, **_kw: object) -> None:
+            captured.append(compose_screen)
+
+        app.push_screen = Mock(side_effect=_capture)
+
+        for entry in (screen.compose_reply, screen.compose_reply_all):
+            captured.clear()
+            entry()
+            initial = captured[0]._initial  # type: ignore[attr-defined]
+            assert initial.in_reply_to == "<thread-third@example.com>"
+            # Folded chain is unfolded, and the parent is appended.
+            assert initial.references == (
+                "<thread-root@example.com> <thread-second@example.com> "
+                "<thread-third@example.com>"
+            )
+
+
+async def test_a_forward_starts_its_own_thread() -> None:
+    """A forward is not a reply — it must not claim the original's thread."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-forward-threading",
+        seed=[(folder, mid_thread_message())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[object] = []
+        app.push_screen = Mock(side_effect=lambda s, *_a, **_k: captured.append(s))
+
+        screen.compose_forward()
+        initial = captured[0]._initial  # type: ignore[attr-defined]
+        assert initial.in_reply_to == ""
+        assert initial.references == ""
+
+
+async def test_replying_to_a_message_without_a_message_id_adds_no_headers() -> None:
+    """Nothing legitimate to point at, so no threading headers are invented."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-reply-unthreaded",
+        seed=[(folder, unthreaded_message())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[object] = []
+        app.push_screen = Mock(side_effect=lambda s, *_a, **_k: captured.append(s))
+
+        screen.compose_reply()
+        initial = captured[0]._initial  # type: ignore[attr-defined]
+        assert initial.in_reply_to == ""
+        assert initial.references == ""
+
+
+async def test_a_forward_names_its_attachment_after_the_subject() -> None:
+    """The recipient sees the attachment name, so it must be meaningful.
+
+    The forwarded copy used to be a bare ``mkstemp`` name, arriving as
+    ``forwarded-message-dn1nwh3p.eml``.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-forward-naming",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        captured: list[object] = []
+        app.push_screen = Mock(side_effect=lambda s, *_a, **_k: captured.append(s))
+
+        screen.compose_forward()
+        initial = captured[0]._initial  # type: ignore[attr-defined]
+        attached = list(initial.attachment_paths)
+        assert [p.name for p in attached] == ["Tuesday meeting confirmed.eml"]
+        assert attached[0].read_bytes() == plain_text()
+        # The composer is told it owns the copy so it can clean up.
+        assert tuple(initial.owned_paths) == tuple(attached)
+        for path in attached:
+            path.unlink()
+            path.parent.rmdir()
+
+
+async def test_a_cancelled_forward_leaves_no_temporary_file_behind() -> None:
+    """The forwarded copy is scratch space tied to the composer's lifetime."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-forward-cleanup",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_message(pilot)
+        screen = _main(app)
+        screen.compose_forward()
+        await pilot.pause()
+
+        compose = app.screen
+        attached = list(compose._initial.attachment_paths)  # type: ignore[attr-defined]
+        assert attached and attached[0].exists()
+
+        app.pop_screen()
+        await pilot.pause()
+
+        assert not attached[0].exists(), "forwarded copy outlived the composer"
+        assert not attached[0].parent.exists(), "scratch directory was left behind"

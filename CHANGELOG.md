@@ -34,6 +34,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Replies now thread.** Pony sent no `In-Reply-To` or `References` header,
+  so every reply arrived in the recipient's client as the start of a new
+  conversation rather than as part of the one it was answering. Replies and
+  reply-alls now chain onto the parent's `References`, unfolding the header
+  when it arrives split across lines and keeping the thread root when a long
+  chain has to be trimmed. Saving a reply as a draft and resuming it later
+  keeps the thread. Forwards deliberately start their own thread.
+
+- **Accounts that do not store their password in `config.toml` can send
+  again.** The composer read the literal `password` field instead of asking
+  the credentials provider, so any account using the `env`, `command` or
+  `encrypted` backend was offered in the From dropdown and then refused at
+  send time, asking for a password it was configured never to store. Sending
+  now resolves credentials the same way syncing does.
+
+- **Local accounts with an `[smtp]` block could not resolve a password at
+  all.** Every credentials backend filtered for IMAP accounts, so a local
+  account configured to send fell through to the plaintext backend
+  regardless of the backend it named, and reported a missing `password`
+  field.
+
+- **Forwarding no longer leaves a copy of the message in the temp
+  directory.** Each forward wrote the original to a permanent temporary file
+  that was never removed, whether or not the forward was sent. The copy now
+  lives in a private directory the composer deletes when it closes, and is
+  named after the message's subject rather than arriving at the recipient as
+  `forwarded-message-dn1nwh3p.eml`.
+
 - **Harvested contacts no longer depend on where they were harvested from.**
   Names were split into first/last by three separate implementations that
   disagreed for any name of three or more words, so the same correspondent

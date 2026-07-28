@@ -41,11 +41,10 @@ class PlaintextCredentialsProvider:
     """Reads passwords from the ``password`` field in ``config.toml``."""
 
     def __init__(self, config: AppConfig) -> None:
-        from .domain import AccountConfig
-
-        self._by_name = {
-            a.name: a.password for a in config.accounts if isinstance(a, AccountConfig)
-        }
+        # Local accounts are included: one with an ``[smtp]`` block sends
+        # mail and therefore needs its password resolved exactly like an
+        # IMAP account's.
+        self._by_name = {a.name: a.password for a in config.accounts}
 
     def get_password(self, *, account_name: str) -> str:
         password = self._by_name.get(account_name)
@@ -93,12 +92,8 @@ class CommandCredentialsProvider:
     """
 
     def __init__(self, config: AppConfig) -> None:
-        from .domain import AccountConfig
-
         self._by_name = {
-            a.name: a.password_command
-            for a in config.accounts
-            if isinstance(a, AccountConfig) and a.password_command
+            a.name: a.password_command for a in config.accounts if a.password_command
         }
 
     def get_password(self, *, account_name: str) -> str:
@@ -177,17 +172,15 @@ class MultiProvider:
     """Dispatches ``get_password`` to the correct backend per account."""
 
     def __init__(self, config: AppConfig, index: SqliteIndexRepository) -> None:
-        from .domain import AccountConfig
-
         self._plaintext = PlaintextCredentialsProvider(config)
         self._env = EnvVarCredentialsProvider()
         self._command = CommandCredentialsProvider(config)
         self._encrypted = EncryptedCredentialsProvider(index)
 
+        # A local account leaves ``credentials_source`` unset unless it is
+        # configured to send, so treat "not stated" as plaintext.
         self._backend = {
-            a.name: a.credentials_source
-            for a in config.accounts
-            if isinstance(a, AccountConfig)
+            a.name: a.credentials_source or "plaintext" for a in config.accounts
         }
 
     def get_password(self, *, account_name: str) -> str:

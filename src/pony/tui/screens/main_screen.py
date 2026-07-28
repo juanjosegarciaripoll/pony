@@ -25,6 +25,7 @@ from ...compose_utils import (
     new_compose_body,
     parse_draft_fields,
     reply_subject,
+    reply_thread_headers,
 )
 from ...contact_naming import harvested_name
 from ...domain import (
@@ -42,6 +43,7 @@ from ...domain import (
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
     render_message,
+    safe_attachment_filename,
     save_every_attachment,
     save_one_attachment,
 )
@@ -1628,6 +1630,7 @@ class MainScreen(Screen[None]):
                     ),
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
             )
         )
 
@@ -1651,6 +1654,7 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
+        in_reply_to, references = reply_thread_headers(rendered)
 
         def _on_reply_sent(result: bool | None) -> None:
             if result:
@@ -1670,8 +1674,11 @@ class MainScreen(Screen[None]):
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
+                    in_reply_to=in_reply_to,
+                    references=references,
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
             ),
             _on_reply_sent,
         )
@@ -1698,6 +1705,7 @@ class MainScreen(Screen[None]):
             rendered,
             self_address=account.email_address,
         )
+        in_reply_to, references = reply_thread_headers(rendered)
 
         def _on_reply_all_sent(result: bool | None) -> None:
             if result:
@@ -1718,8 +1726,11 @@ class MainScreen(Screen[None]):
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
+                    in_reply_to=in_reply_to,
+                    references=references,
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
             ),
             _on_reply_all_sent,
         )
@@ -1742,13 +1753,19 @@ class MainScreen(Screen[None]):
             (a for a in accounts if a.name == msg.message_ref.account_name),
             accounts[0],
         )
-        with tempfile.NamedTemporaryFile(
-            prefix="forwarded-message-",
-            suffix=".eml",
-            delete=False,
-        ) as f:
-            f.write(raw)
-            forwarded_path = Path(f.name)
+        # The forwarded copy has to exist as a file because attachments are
+        # read from disk, but it is scratch space, not something the user
+        # chose: it goes in a private directory that the composer deletes
+        # when it closes, and is handed over as an owned path so that
+        # cancelling a forward does not strand it in the temp directory.
+        # The name is derived from the subject because the recipient sees
+        # it — a bare mkstemp name arrives as "forwarded-message-dn1nwh3p".
+        tmp_dir = Path(tempfile.mkdtemp(prefix="pony-forward-"))
+        forwarded_path = tmp_dir / safe_attachment_filename(
+            f"{rendered.subject.strip() or 'forwarded message'}.eml",
+            fallback="forwarded message.eml",
+        )
+        forwarded_path.write_bytes(raw)
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ComposeScreen(
@@ -1761,11 +1778,13 @@ class MainScreen(Screen[None]):
                     subject=forward_subject(rendered.subject),
                     body=build_forward_body(rendered, signature=account.signature),
                     attachment_paths=(forwarded_path,),
+                    owned_paths=(forwarded_path,),
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
             )
         )
 
@@ -1840,8 +1859,11 @@ class MainScreen(Screen[None]):
                     markdown_mode=(
                         account.markdown_compose or self._config.markdown_compose
                     ),
+                    in_reply_to=fields["in_reply_to"],
+                    references=fields["references"],
                 ),
                 contacts=self._contacts,
+                credentials=self._credentials,
                 source_draft=msg,
             ),
             _on_draft_done,
