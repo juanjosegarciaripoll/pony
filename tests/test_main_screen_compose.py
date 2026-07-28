@@ -121,6 +121,12 @@ async def test_harvest_contact_ignores_invalid_and_opens_new_contact() -> None:
 
 
 async def test_harvest_existing_nameless_contact_uses_display_name() -> None:
+    """A three-word name keeps its compound family name.
+
+    This path used to split on the last word alone, giving
+    ("Marina del", "Río"); the sync path already split it correctly.
+    Both now share one implementation.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, index, _mirrors = build_pony_app(
         label="main-contact-existing",
@@ -148,8 +154,8 @@ async def test_harvest_existing_nameless_contact_uses_display_name() -> None:
 
         edit_screen = app.push_screen.call_args.args[0]
         contact = edit_screen._contact
-        assert contact.first_name == "Marina del"
-        assert contact.last_name == "Río"
+        assert contact.first_name == "Marina"
+        assert contact.last_name == "del Río"
 
 
 async def test_local_draft_completion_deletes_original() -> None:

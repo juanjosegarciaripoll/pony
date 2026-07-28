@@ -25,6 +25,7 @@ from textual.widgets import (
     TextArea,
 )
 
+from ...contact_naming import harvested_name
 from ...domain import (
     AnyAccount,
     AppConfig,
@@ -625,13 +626,7 @@ class ComposeScreen(Screen[bool]):
             )
             if existing is not None:
                 continue
-            parts = display_name.strip().split()
-            if len(parts) > 1:
-                first = " ".join(parts[:-1])
-                last = parts[-1]
-            else:
-                first = parts[0] if parts else ""
-                last = ""
+            first, last = harvested_name(display_name)
             self._contacts.upsert_contact(
                 contact=Contact(
                     id=None,

@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
 
+from .contact_naming import clean_display_name, split_display_name
 from .domain import (
     Contact,
     FolderMessageSummary,
@@ -1868,24 +1869,6 @@ def _build_contact(
     )
 
 
-def _split_display_name(display_name: str) -> tuple[str, str]:
-    """Split a display name into (first_name, last_name).
-
-    Heuristic: 1-word → first only; 2-word → one first + one last;
-    3-word → one first + two last; 4-word → two first + two last.
-    This handles compound family names common in Spanish/Latin naming.
-    """
-    parts = display_name.strip().split()
-    if not parts:
-        return ("", "")
-    if len(parts) == 1:
-        return (parts[0], "")
-    if len(parts) == 2:
-        return (parts[0], parts[1])
-    last_count = 2
-    return (" ".join(parts[:-last_count]), " ".join(parts[-last_count:]))
-
-
 def _harvest_message_contacts(
     conn: sqlite3.Connection, message: IndexedMessage
 ) -> None:
@@ -1900,12 +1883,7 @@ def _harvest_message_contacts(
         addr = addr.lower().strip()
         if not addr:
             continue
-        # Some mailers echo the email address as its own display name
-        # (e.g. "alice@example.com" <alice@example.com>).  Treat that as
-        # no display name so we never store an address string as a person's
-        # name and block later, real names from filling in.
-        if "@" in display_name:
-            display_name = ""
+        display_name = clean_display_name(display_name)
         # Check if email already belongs to a contact.
         existing = conn.execute(
             "SELECT contact_id FROM contact_emails WHERE email_address = ?",
@@ -1926,7 +1904,7 @@ def _harvest_message_contacts(
             # Update name fields that are blank or still hold an email
             # address (a placeholder from a previous email-as-name harvest).
             if display_name.strip():
-                first, last = _split_display_name(display_name)
+                first, last = split_display_name(display_name)
                 conn.execute(
                     """
                     UPDATE contacts SET
@@ -1942,7 +1920,7 @@ def _harvest_message_contacts(
                 )
         else:
             # Create new contact.
-            first, last = _split_display_name(display_name)
+            first, last = split_display_name(display_name)
             cur = conn.execute(
                 """
                 INSERT INTO contacts (

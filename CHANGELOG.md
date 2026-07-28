@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Harvested contacts no longer depend on where they were harvested from.**
+  Names were split into first/last by three separate implementations that
+  disagreed for any name of three or more words, so the same correspondent
+  became a different contact record depending on whether they arrived via
+  sync, via the composer after a send, or via the reader's harvest action.
+  Compound family names ("Juan José García Ripoll" → "Juan José" /
+  "García Ripoll") are now handled the same way everywhere, and an address
+  echoed as its own display name is discarded on every path rather than only
+  during sync.
+
 - **Recipients with a comma in their name are no longer split in two.** A
   display name containing a comma is quoted by the sending client
   (`"Doe, John" <j@example.com>`). Replying to such a message split the

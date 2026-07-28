@@ -16,6 +16,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
+from ...contact_naming import harvested_name
 from ...domain import (
     AccountConfig,
     AnyAccount,
@@ -412,9 +413,7 @@ class MainScreen(Screen[None]):
         existing = self._contacts.find_contact_by_email(email_address=addr)
         if existing is not None:
             if not existing.first_name and not existing.last_name and display.strip():
-                parts = display.strip().split()
-                first = " ".join(parts[:-1]) if len(parts) > 1 else parts[0]
-                last = parts[-1] if len(parts) > 1 else ""
+                first, last = harvested_name(display)
                 existing = dataclasses.replace(
                     existing, first_name=first, last_name=last
                 )
@@ -423,14 +422,7 @@ class MainScreen(Screen[None]):
             )
             return
 
-        display = display.strip()
-        parts = display.split()
-        if not parts:
-            first, last = "", ""
-        elif len(parts) == 1:
-            first, last = parts[0], ""
-        else:
-            first, last = " ".join(parts[:-1]), parts[-1]
+        first, last = harvested_name(display)
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ContactEditScreen(
                 Contact(id=None, first_name=first, last_name=last, emails=(addr,)),
