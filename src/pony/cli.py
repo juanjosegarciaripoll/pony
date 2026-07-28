@@ -1918,7 +1918,15 @@ def run_message_attachment(
         sys.stdout.buffer.write(payload.data)
         return 0
 
-    dest = Path(output) if output else Path.cwd() / payload.filename
+    if output:
+        # An explicit -o path is the user's own choice; honour it as given.
+        dest = Path(output)
+    else:
+        # The filename comes from the message's Content-Disposition and is
+        # therefore chosen by the sender: "../../.bashrc" would otherwise
+        # be written outside the working directory.  Keep the final
+        # component only, so the result can never leave the cwd.
+        dest = Path.cwd() / (Path(payload.filename).name or "attachment")
     if dest.exists() and not force:
         raise SystemExit(
             f"Refusing to overwrite existing file: {dest}\n"

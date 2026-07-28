@@ -3130,3 +3130,83 @@ class RemainingCommandArmTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("(not found)", captured)
         self.assertFalse(db.exists())
+
+
+class AttachmentDestinationSafetyTests(unittest.TestCase):
+    """``Content-Disposition`` filenames are chosen by the sender.
+
+    ``pony message attachment`` writes into the working directory by
+    default.  Joining an unsanitised filename onto it lets a crafted
+    message steer the write anywhere the user can write — the same
+    traversal the TUI already guards against with ``is_relative_to``.
+    """
+
+    def _seed_traversal_message(self, config_path: Path) -> _SeedHandle:
+        return _seed_fixture(config_path, corpus.traversal_attachment_filename())
+
+    def test_a_traversing_filename_cannot_escape_the_working_directory(self) -> None:
+        import tempfile
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            tempfile.TemporaryDirectory() as tmpdir,
+        ):
+            ref = self._seed_traversal_message(config_path)
+            outside = Path(tmpdir) / "escaped.txt"
+            workdir = Path(tmpdir) / "deep" / "work"
+            workdir.mkdir(parents=True)
+
+            prev_cwd = os.getcwd()
+            os.chdir(workdir)
+            try:
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "message",
+                    "attachment",
+                    ref.account_name,
+                    ref.folder_name,
+                    ref.rfc5322_id,
+                    "1",
+                )
+            finally:
+                os.chdir(prev_cwd)
+
+            # Nothing was written outside the directory the user was in.
+            self.assertFalse(
+                outside.exists(), "attachment escaped the working directory"
+            )
+            self.assertFalse((Path(tmpdir) / "deep" / "escaped.txt").exists())
+            # The bytes landed under the cwd, under a bare filename.
+            written = workdir / "escaped.txt"
+            self.assertTrue(written.is_file(), output)
+            self.assertEqual(written.read_bytes(), b"payload-bytes")
+
+    def test_an_explicit_output_path_is_still_honoured(self) -> None:
+        """``-o`` is the user's own choice and must not be second-guessed."""
+        import tempfile
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            tempfile.TemporaryDirectory() as tmpdir,
+        ):
+            ref = self._seed_traversal_message(config_path)
+            target = Path(tmpdir) / "nested" / "chosen.bin"
+            target.parent.mkdir(parents=True)
+
+            run_cli(
+                "--config",
+                str(config_path),
+                "message",
+                "attachment",
+                ref.account_name,
+                ref.folder_name,
+                ref.rfc5322_id,
+                "1",
+                "-o",
+                str(target),
+            )
+
+            self.assertEqual(target.read_bytes(), b"payload-bytes")

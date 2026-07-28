@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is given up to it. Sizes are saved to `ui_state.json` in the data directory
   and restored on the next launch.
 
+### Security
+
+- **`pony message attachment` could write outside the working directory.**
+  With no `-o`, the destination was the working directory joined with the
+  filename from the message's `Content-Disposition` header — a value chosen
+  by the sender. A crafted `filename="../../.bashrc"` escaped the directory
+  the user was in. Only the final path component is used now. The TUI save
+  paths were already guarded; this was the CLI equivalent, missed when the
+  0.7.0 traversal fix landed.
+
 ### Fixed
 
 - **Harvested contacts no longer depend on where they were harvested from.**

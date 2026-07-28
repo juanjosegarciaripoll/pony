@@ -47,6 +47,9 @@ invalid_date                Date header the RFC 5322 parser rejects.
 naive_date                  Date header with no UTC offset.
 corrupt_base64_body         Declares base64, body is not base64.
 oversized_body              Body larger than the preview cap.
+traversal_attachment_filename
+                            Attachment filename that tries to escape the
+                            destination directory.
 """
 
 from __future__ import annotations
@@ -647,3 +650,23 @@ def oversized_body(size_bytes: int = 300 * 1024) -> bytes:
         b"Message-ID: <oversized-fixture@example.com>\r\n"
         b"\r\n" + (b"x" * size_bytes)
     )
+
+
+def traversal_attachment_filename() -> bytes:
+    """An attachment whose filename tries to escape the download directory.
+
+    ``Content-Disposition`` filenames are chosen by the sender, so any
+    code that joins one onto a destination path without reducing it to a
+    bare component can be steered outside that directory.
+    """
+    msg = MIMEMultipart("mixed")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Please open the attached"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<traversal-fixture@example.com>"
+    msg.attach(MIMEText("See attached.\n", "plain", "utf-8"))
+    part = MIMEApplication(b"payload-bytes", Name="escape")
+    part["Content-Disposition"] = 'attachment; filename="../../escaped.txt"'
+    msg.attach(part)
+    return msg.as_bytes()
