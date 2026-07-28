@@ -125,13 +125,24 @@ table (no separate server-state table). The `connection()` context manager
 provides batched transactions with thread-local reuse and reentrant nesting.
 
 Tables: `messages`, `contacts`, `contact_emails`, `contact_aliases`,
-`folder_sync_state`.
+`folder_sync_state`, `encrypted_passwords`.
 
 ### Sync (`pony.sync`, `pony.imap_client`)
 
 Two-pass IMAP sync engine: plan (read-only comparison) then execute (apply
-changes). Three-way flag merge with union policy. Mass-deletion protection.
-Progress callbacks report per-folder scanning and per-operation execution.
+changes). Three-way flag merge with union policy. Mass-deletion protection
+triggers at 20% of a folder's UIDs. Progress callbacks (`ProgressInfo`)
+report per-folder scanning and per-operation execution.
+
+There is no pending-operations queue. A local mutation is recorded by
+rewriting the message's index row — `uid IS NULL` is what marks it as needing
+a push — and the planner is the sole observer, emitting `PushMoveOp` or
+`PushAppendOp`. New UIDs are captured from `APPENDUID` / `COPYUID`. Folder
+creation works the same way: the mirror exposes a new directory and the
+execute phase issues `IMAP CREATE`. The row rewrites themselves live in
+`pony.mailbox_ops`.
+
+Full algorithm: [Synchronization](synchronization.md).
 
 ### Send (`pony.smtp_sender`, `pony.compose_utils`, `pony.composer`)
 
@@ -151,16 +162,55 @@ else built on top later.
 Three separate Textual `App` classes, each minimal:
 
 - **`PonyApp`** (`pony tui`): pushes `MainScreen` on mount. Owns only the
-  ++q++ (quit) binding. All mail-specific bindings (sync, compose, flags,
+  ++shift+q++ (quit) and ++f1++ (help) bindings. All mail-specific bindings (sync, compose, flags,
   attachments, search, contacts) live on `MainScreen`.
 - **`ComposeApp`** (`pony compose`): pushes `ComposeScreen` on mount, exits
   on send or cancel.
 - **`ContactsApp`** (`pony contacts browse`): pushes `ContactBrowserScreen`
   on mount, exits on dismiss.
+- **`EmlViewerApp`** (`pony view FILE`): pushes `EmlViewerScreen` for a single
+  `.eml` file, with no index or account involved.
 
 Each screen owns its own bindings and shows only its relevant keybindings in
 the footer. Screens communicate upward via Textual messages or callbacks
 passed at construction time, not by calling private App methods.
+`SyncConfirmScreen` takes an `on_confirm` callback rather than reaching back
+into the app.
+
+Alongside the modal `g` sync flow there is a non-blocking background sync
+(`ctrl+g`, the `sync-bg` worker) that auto-confirms every folder and shows a
+spinner on the `FolderPanel` border title; it can also run on a config-gated
+periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
+`MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and
+streams rows back to the UI thread in batches, so opening a 10k-row folder
+never freezes the event loop.
+
+`tui/terminal.py` updates the host terminal title via OSC 2 and restores it on
+exit. `tui/bindings.py` holds the mark/motion `Binding` tuples shared by the
+message list and the contact browser. `tui/ui_state.py` persists pane sizes to
+`ui_state.json`. Theme selection comes from `theme` in `config.toml`, the
+`--theme NAME` flag, or `--list-themes`.
+
+### MCP (`pony.mcp_server`)
+
+Read-only server built on `tinymcp` rather than the MCP SDK's HTTP stack. When
+the TUI is running it serves on `127.0.0.1` over TCP behind a per-session token
+held in a state file; `pony mcp` finds that file and proxies stdio↔TCP, so the
+consumer never opens a competing SQLite handle. With no TUI running, `pony mcp`
+opens its own connections and serves stdio directly.
+
+### Message rendering (`pony.message_renderer`, `pony.tui.pdf_export`)
+
+`render_message()` produces plain text, stripping `<style>` and `<script>`
+first. `build_browser_html()` produces self-contained HTML with CID-resolved
+inline images for the `w` key. `pdf_export.py` feeds that same HTML to whichever
+external converter is present (Chromium/Chrome, `wkhtmltopdf`, WeasyPrint or
+LibreOffice) for `ctrl+p`, running the blocking conversion in a Textual thread
+worker.
+
+One predicate decides what counts as an attachment, so the reader pane, the
+browser view, the PDF export and the CLI extractor cannot disagree about a
+message's contents.
 
 ## Data flow
 

@@ -6,7 +6,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 | File | Purpose |
 |---|---|
-| `ai/ARCHITECTURE.md` | Package layout, subsystems, data flow |
+| `docs/architecture.md` | Package layout, subsystems, data flow |
 | `ai/SYNCHRONIZATION.md` | Sync algorithm, schema, conflicts |
 | `ai/CONVENTIONS.md` | Quality gates, style, build |
 | `ai/STATUS.md` | Scope, goals, delivered + queued, deferred |
@@ -16,17 +16,17 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Rules
 
-1. **Read first.** Use `ai/ARCHITECTURE.md` to locate the right module.
+1. **Read first.** Use `docs/architecture.md` to locate the right module.
 2. **Quality gates after every change:** `ruff check`, `ruff format --check`, `mypy`, `basedpyright`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`. The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
 3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
 4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp` — new ones need approval.
-5. **Keep docs in sync:** `config-sample.toml` ↔ config model; `ai/ARCHITECTURE.md` ↔ subsystem layout.
+5. **Keep docs in sync:** `config-sample.toml` ↔ config model; `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
 6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
 7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.5 %**; do not regress it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.49 %** (measured, not rounded — the previous **96.5 %** here was never verified and read as a regression against real 96.3–96.4 % runs). Regenerate rather than trusting it.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -74,13 +74,32 @@ the ranking rather than trusting this list — it is a snapshot:
 uv run python -m pytest --cov-report=json:cov.json   # then sort files by missing_lines + missing_branches
 ```
 
-Largest remaining gaps (in priority order):
-1. `storage.py` (95 %, ~29) — mbox TOC edge cases; extend the conformance suite
-2. `mcp_server.py` (89 %, ~21) and `tui/app.py` (85 %, ~21)
-3. `tui/message_renderer.py` (96 %, ~22) — mostly the defensive guards below
-4. `cli.py` (98 %, ~45), `sync.py` (98 %, ~25),
-   `tui/screens/main_screen.py` (98.5 %, ~18) — see the note below before
-   spending effort here
+Largest remaining gaps, by absolute missing statements+branches:
+
+| Missing | File | % |
+|---:|---|---:|
+| 43 | `cli.py` | 97.97 |
+| 33 | `tui/screens/main_screen.py` | 97.50 |
+| 29 | `storage.py` | 94.61 |
+| 29 | `credentials.py` | 83.52 |
+| 25 | `message_renderer.py` | 95.87 |
+| 24 | `sync.py` | 97.86 |
+| 21 | `tui/widgets/message_view.py` | 88.59 |
+| 21 | `tui/app.py` | 85.42 |
+| 19 | `mcp_server.py` | 89.56 |
+
+`credentials.py` is platform-gated and cannot rise on Linux CI (below).
+`cli.py`, `sync.py` and `main_screen.py` are mostly the verified-unreachable
+arms below — read that section before spending effort on them.
+
+**Extraction lowers the donor file's percentage.** Collapsing N duplicated
+copies into one helper removes N-1 *covered* lines from the file they left.
+If those lines were better covered than the file's average — duplicated
+logic usually is, since one test exercises every copy — the donor's
+percentage falls even though the code improved. `main_screen.py` went
+97.62 → 97.50 while losing 25 lines for exactly this reason. Judge a
+refactor by the project total and by missing-line counts, not by the donor
+file's percentage.
 
 ## Coverage that is not worth chasing
 
