@@ -41,11 +41,29 @@ class MirrorRepository(Protocol):
         """Return all folders for one account."""
         ...
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
-        """Store one RFC 5322 message and return its storage_key."""
+    def store_message(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        flags: frozenset[MessageFlag] = frozenset(),
+    ) -> str:
+        """Store one RFC 5322 message and return its storage_key.
+
+        *flags* are recorded on the stored message as it is written.
+        Setting them afterwards would mean a second pass over the
+        message — a rename on Maildir, a whole-file rewrite on mbox —
+        for every message a sync ingests.
+        """
         ...
 
-    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
+    def store_message_async(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        flags: frozenset[MessageFlag] = frozenset(),
+    ) -> str:
         """Reserve a storage_key now; the bytes may be written later.
 
         The sync engine's ingest loop uses this so a folder's writes

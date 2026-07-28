@@ -24,12 +24,41 @@ import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
-from .domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
+from .domain import (
+    FolderRef,
+    IndexedMessage,
+    MessageFlag,
+    MessageRef,
+    MessageStatus,
+)
 
 if TYPE_CHECKING:
     from .protocols import MirrorRepository
 
 _log = logging.getLogger(__name__)
+
+
+def write_mirror_flags(
+    mirror: MirrorRepository,
+    *,
+    folder: FolderRef,
+    storage_key: str,
+    flags: frozenset[MessageFlag],
+) -> bool:
+    """Write *flags* onto the message at *storage_key* in *mirror*.
+
+    Takes the three things the write actually needs, so a caller holding
+    a ``FolderMessageSummary`` — the narrow row the message list uses —
+    does not have to re-fetch the full ``IndexedMessage`` just to record
+    a flag.  See :func:`mirror_flags` for the whole-row convenience form
+    and for why this is best-effort.
+    """
+    try:
+        mirror.set_flags(folder=folder, storage_key=storage_key, flags=flags)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not write flags to mirror for %s: %s", storage_key, exc)
+        return False
+    return True
 
 
 def mirror_flags(mirror: MirrorRepository, message: IndexedMessage) -> bool:
@@ -51,23 +80,15 @@ def mirror_flags(mirror: MirrorRepository, message: IndexedMessage) -> bool:
     mbox, so callers should apply it to messages the user actually
     selected rather than to a whole folder.
     """
-    try:
-        mirror.set_flags(
-            folder=FolderRef(
-                account_name=message.message_ref.account_name,
-                folder_name=message.message_ref.folder_name,
-            ),
-            storage_key=message.storage_key,
-            flags=frozenset(message.local_flags),
-        )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning(
-            "Could not write flags to mirror for %s: %s",
-            message.storage_key,
-            exc,
-        )
-        return False
-    return True
+    return write_mirror_flags(
+        mirror,
+        folder=FolderRef(
+            account_name=message.message_ref.account_name,
+            folder_name=message.message_ref.folder_name,
+        ),
+        storage_key=message.storage_key,
+        flags=frozenset(message.local_flags),
+    )
 
 
 def landed_in_folder(

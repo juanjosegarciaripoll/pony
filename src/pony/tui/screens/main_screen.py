@@ -38,7 +38,12 @@ from ...domain import (
     MessageFlag,
     MessageStatus,
 )
-from ...mailbox_ops import landed_in_folder, mirror_flags, moved_to_folder
+from ...mailbox_ops import (
+    landed_in_folder,
+    mirror_flags,
+    moved_to_folder,
+    write_mirror_flags,
+)
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
     RenderedMessage,
@@ -1058,7 +1063,17 @@ class MainScreen(Screen[None]):
         folder_ref = self._current_folder_ref
         if folder_ref is None:
             return
+        # Collect the unread ones before the update: the index change is a
+        # single UPDATE that materialises no rows, but the mirror has to be
+        # told message by message.  The reload below re-reads the folder
+        # anyway, so this costs no extra query.
+        unread = [
+            summary
+            for summary in self._index.list_folder_message_summaries(folder=folder_ref)
+            if MessageFlag.SEEN not in summary.local_flags
+        ]
         count = self._index.mark_folder_read(folder=folder_ref)
+        self._mirror_seen(folder_ref, unread)
         self._reload_keeping_cursor(folder_ref)
         self._refresh_folder_indicators()
         if count:
@@ -1066,6 +1081,29 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Marked {count} message{suffix} as read.",
             )
+
+    def _mirror_seen(
+        self, folder_ref: FolderRef, summaries: list[FolderMessageSummary]
+    ) -> None:
+        """Write SEEN onto *summaries* in the mirror, in one pass.
+
+        Marking a folder read is the one flag action whose size the user
+        does not choose, so it goes through the mirror in a single batch
+        and commits once: on mbox each write would otherwise rewrite the
+        whole mailbox, which made the cost quadratic in folder size.
+        """
+        mirror = self._mirrors.get(folder_ref.account_name)
+        if mirror is None or not summaries:
+            return
+        for summary in summaries:
+            write_mirror_flags(
+                mirror,
+                folder=folder_ref,
+                storage_key=summary.storage_key,
+                flags=frozenset(summary.local_flags | {MessageFlag.SEEN}),
+            )
+        with contextlib.suppress(Exception):
+            mirror.flush_writes()
 
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)

@@ -46,6 +46,7 @@ from .domain import (
     MessageStatus,
     SlowPathRow,
 )
+from .mailbox_ops import mirror_flags
 from .message_projection import project_rfc822_message
 from .protocols import (
     CredentialsProvider,
@@ -1742,6 +1743,7 @@ class ImapSyncService:
         extra: frozenset[str],
         uid: int,
         now: datetime,
+        mirror: MirrorRepository,
         local: frozenset[MessageFlag] | None = None,
     ) -> None:
         """Reconcile an indexed row's flag fields after a flag op.
@@ -1750,6 +1752,10 @@ class ImapSyncService:
         writes it back.  ``local`` updates ``local_flags`` too when given;
         otherwise the existing local flags are preserved.  A row that has
         since vanished is silently skipped.
+
+        When ``local`` changes, the new flags are also written onto the
+        message in the mirror, so a Maildir or mbox tree shared with
+        another client agrees with the index about what has been read.
         """
         row = self._index.get_message(message_ref=message_ref)
         if row is None:
@@ -1765,6 +1771,8 @@ class ImapSyncService:
         if local is not None:
             row = dataclasses.replace(row, local_flags=local)
         self._index.update_message(message=row)
+        if local is not None:
+            mirror_flags(mirror, row)
 
     def _execute_one(
         self,
@@ -1831,6 +1839,7 @@ class ImapSyncService:
                     extra=op.extra_imap_flags,
                     uid=op.uid,
                     now=now,
+                    mirror=mirror,
                 )
                 counters["flag_updates_from_server"] += 1
                 return True
@@ -1849,6 +1858,7 @@ class ImapSyncService:
                     extra=op.extra_imap_flags,
                     uid=op.uid,
                     now=now,
+                    mirror=mirror,
                 )
                 counters["flag_pushes_to_server"] += 1
                 return True
@@ -1869,6 +1879,7 @@ class ImapSyncService:
                     extra=op.extra_imap_flags,
                     uid=op.uid,
                     now=now,
+                    mirror=mirror,
                 )
                 counters["flag_conflicts_merged"] += 1
                 return True
@@ -2196,6 +2207,11 @@ class ImapSyncService:
             storage_key = mirror.store_message_async(
                 folder=folder_ref,
                 raw_message=raw,
+                # Stamp the server's flags as the message is written.
+                # Setting them afterwards would mean a second pass per
+                # ingested message, and the async write may not even have
+                # landed yet.
+                flags=server_flags,
             )
         except Exception:
             logger.exception("Failed to store UID %d to mirror", uid)

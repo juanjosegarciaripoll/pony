@@ -16,6 +16,7 @@ from corpus import plain_text
 from tui_helpers import build_pony_app, seed_message
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
+from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel, _format_date
 from pony.tui.widgets.message_view import MessageViewPanel
 
@@ -44,6 +45,13 @@ def _app_with_rows(label: str, count: int = 3):  # type: ignore[no-untyped-def]
 
 def _panel(app: object) -> MessageListPanel:
     return app.screen.query_one(MessageListPanel)  # type: ignore[attr-defined,no-any-return]
+
+
+def _main(app: object) -> MainScreen:
+    """The mail screen, typed, so screen-level actions can be called."""
+    screen = app.screen  # type: ignore[attr-defined]
+    assert isinstance(screen, MainScreen)
+    return screen
 
 
 async def _boot(pilot: object) -> None:
@@ -584,7 +592,7 @@ async def test_trashing_leaves_the_cursor_where_it_was() -> None:
         before = panel.get_selected_summary()
         assert before is not None
 
-        app.screen.trash_current_message()
+        _main(app).trash_current_message()
         await pilot.pause()
         await pilot.pause()
 
@@ -618,7 +626,7 @@ async def test_a_sync_refresh_keeps_the_cursor_on_its_message() -> None:
             raw=_dated_message("newly arrived"),
             message_id="<newly-arrived@example.com>",
         )
-        app.screen.refresh_after_sync()
+        _main(app).refresh_after_sync()
         await pilot.pause()
         await pilot.pause()
 

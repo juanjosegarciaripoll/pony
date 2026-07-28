@@ -403,9 +403,14 @@ the field sets below *are* the contract. They are implemented once, in
 
 Flag changes also write through to the mirror (`mailbox_ops.mirror_flags`) so
 another MUA sharing the tree sees them. The index stays authoritative: a failed
-mirror write is logged, not raised. This is not yet applied to the bulk paths
-(`mark_folder_read`, sync ingest and merge), because a per-message write costs
-a rename on Maildir but a full mailbox rewrite on mbox.
+mirror write is logged, not raised.
+
+Bulk paths avoid a second pass over each message rather than skipping the
+mirror. A message a sync ingests is stored with its flags already applied —
+`store_message(flags=…)` puts them in the Maildir filename or the mbox
+`Status` headers as it writes — and mbox defers its flush like it does for
+deletions, so marking a folder read commits one rewrite instead of one per
+message.
 
 ### UID recovery
 

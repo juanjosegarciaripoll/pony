@@ -78,11 +78,12 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   index stays authoritative: a mirror file that a sync moved underneath the
   action is logged and skipped rather than surfaced as an error.
 
-  Not yet applied to the bulk paths — `mark all read`, and the flags sync
-  applies when it ingests or merges from the server. Writing flags per
-  message costs a rename on Maildir (~0.05 ms) but a full rewrite of the
-  mailbox on mbox (~3.7 ms and growing with folder size), so those need to
-  set the flags at store time rather than re-writing afterwards.
+  This covers the bulk paths too: marking a folder read, and the flags a
+  sync learns from the server when it ingests a message or reconciles a
+  change made elsewhere. A message a sync downloads is written with its
+  flags already on it rather than being stored and then rewritten, and mbox
+  now defers its flush the way deletions already did — marking a folder read
+  used to rewrite the whole mailbox once per message.
 
 - **The `env` credential backend works for hyphenated account names.** The
   variable name replaced spaces but nothing else, so an account named
