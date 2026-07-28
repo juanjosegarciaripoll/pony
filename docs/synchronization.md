@@ -408,9 +408,13 @@ mirror write is logged, not raised.
 Bulk paths avoid a second pass over each message rather than skipping the
 mirror. A message a sync ingests is stored with its flags already applied —
 `store_message(flags=…)` puts them in the Maildir filename or the mbox
-`Status` headers as it writes — and mbox defers its flush like it does for
-deletions, so marking a folder read commits one rewrite instead of one per
-message.
+`Status` headers as it writes.
+
+mbox defers every mutation — stores, flag writes and deletions alike — to a
+single `flush_writes()` per folder. This matters more than an extra `fsync`
+would: `mbox.flush()` rewrites the whole mailbox whenever any change is
+outstanding, so flushing per message meant a sync that interleaved downloads
+with flag reconciliation rewrote the entire folder once per message.
 
 ### UID recovery
 

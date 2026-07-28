@@ -411,7 +411,13 @@ class MboxMirrorRepository(MirrorRepository):
         if flags:
             _set_mbox_flags(message, flags=flags)
         key = str(mbox.add(message))
-        mbox.flush()
+        # Flush is deferred, as in set_flags and delete_message.  ``add``
+        # has already appended the bytes and assigned the key, so nothing
+        # here depends on flushing.  Doing it per message was not merely
+        # an extra fsync: once a flag write or a delete is pending,
+        # ``mbox.flush()`` rewrites the entire file, so a sync that
+        # interleaves ingests with flag reconciliation paid a full rewrite
+        # per ingested message.
         return key
 
     def store_message_async(

@@ -82,8 +82,16 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   sync learns from the server when it ingests a message or reconciles a
   change made elsewhere. A message a sync downloads is written with its
   flags already on it rather than being stored and then rewritten, and mbox
-  now defers its flush the way deletions already did — marking a folder read
-  used to rewrite the whole mailbox once per message.
+  now defers its flush the way deletions already did, so marking a folder read
+  commits once instead of rewriting the whole mailbox per message.
+
+- **Syncing into an mbox mirror is faster.** Storing a message forced a flush,
+  and a flush rewrites the entire mailbox whenever a flag change or deletion
+  is outstanding — so a sync that interleaved downloads with flag
+  reconciliation, which is the normal case, paid a full rewrite per message.
+  Storing now defers like every other mbox mutation: 2000 messages in that
+  pattern took 4.5s and grew super-linearly, and now take 1.6s and scale
+  linearly.
 
 - **The `env` credential backend works for hyphenated account names.** The
   variable name replaced spaces but nothing else, so an account named
