@@ -68,6 +68,11 @@ a deterministic synthetic ID from the message content.
 
 ## Flag reconciliation
 
+Flags are recorded in the SQLite index and written onto the message in the
+local mirror as well — the filename suffix for Maildir, the `Status` /
+`X-Status` headers for mbox — so a second mail client reading the same tree
+agrees with Pony about what has been read.
+
 When both you and another client (e.g. your phone) change flags on the same
 message between syncs, Pony uses a **three-way merge**:
 

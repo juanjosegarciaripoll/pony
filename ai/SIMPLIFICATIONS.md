@@ -28,7 +28,15 @@ may need new tests). Do Tier 1 first.
 
 ### cli.py
 
-**1. Account-lookup-by-name helper (6 copies → 1, ~60 lines).**
+**1. Account-lookup-by-name helper (6 copies → 1, ~60 lines). — DONE.**
+Lives in `pony.accounts` (`find_account` / `find_imap_account` /
+`imap_accounts` / `select_imap_accounts`), shared with `sync.py`,
+`mcp_server.py` and `main_screen.py`, which each had their own copy.
+`cli.py` keeps the `_require_*` wrappers on top, since raising
+`SystemExit` is a CLI decision and the TUI notifies instead.
+
+<details><summary>Original entry</summary>
+
 The pattern below appears ~6× (approx lines 1760, 1796, 1868, 1941, 2669, 3006)
 in `_try_render_attachments`, `run_message_body`, `run_message_attachment`,
 `run_message_mime`, `run_account_test`, `run_account_set_password`:
@@ -59,11 +67,11 @@ def _require_imap_account(config: AppConfig, name: str) -> AccountConfig:
 
 Note the exact `SystemExit` message text varies slightly between call sites —
 confirm before unifying, or `test_cli.py` assertions on the message may break.
+</details>
 
-**2. `_make_mirror` duplication (~10 lines).**
-`run_tui` (~2511) and `run_compose` (~2612) each define a local `_make_mirror`
-identical to the existing module-level `_build_mirror` (~1351). Delete both
-locals; call `_build_mirror(acc)`.
+**2. `_make_mirror` duplication (~10 lines). — DONE.**
+`build_mirror` / `build_mirrors` in `pony.accounts`. `cli.py` and
+`mcp_server.py` had byte-identical factories under different names.
 
 **3. Shared TUI setup block (~20 lines).**
 `run_tui` (~2499) and `run_compose` (~2576) repeat:

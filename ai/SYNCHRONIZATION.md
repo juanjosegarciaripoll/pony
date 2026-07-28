@@ -71,6 +71,18 @@ No cross-folder Message-ID map. Cross-folder server moves = delete in source + f
 
 ## Local actions
 
+The index-row rewrites in this table are implemented once, in
+`pony.mailbox_ops` (`landed_in_folder` for a message arriving in a folder,
+`moved_to_folder` for a move within an account). The planner reads the row
+and nothing else, so these field sets *are* the contract — they were
+previously open-coded at each call site and drifted.
+
+Flag changes also write through to the mirror (`mailbox_ops.mirror_flags`)
+so another MUA sharing the tree sees them; the index stays authoritative and
+a failed mirror write is logged, not raised. Not yet applied to the bulk
+paths (`mark_folder_read`, sync ingest/merge): per-message writes cost a
+rename on Maildir but a full mailbox rewrite on mbox.
+
 | Action | Index mutation | Sync op |
 |---|---|---|
 | Archive | `folder=T`, `uid=NULL`, `local_status=PENDING_MOVE`, `source_folder=F`, `source_uid` | `PushMoveOp` |

@@ -115,6 +115,18 @@ I'll book the room for Tuesday.
 > > Could you review the Q1 plan?
 ```
 
+### Threading
+
+Replies and reply-alls carry `In-Reply-To` and `References`, so the message
+lands inside the original conversation in the recipient's mail client rather
+than starting a new one. The chain the original carried is extended, not
+replaced; when it grows long enough to risk overflowing the header, the
+thread root is kept along with the most recent entries.
+
+Saving a reply as a draft and finishing it later keeps the threading, so a
+half-written reply is not silently demoted to a new conversation. Forwards
+deliberately start their own thread.
+
 ---
 
 ## Markdown mode
@@ -219,6 +231,12 @@ explicit `sent_folder` config value).
 Local accounts can also send when they carry their own `[accounts.smtp]`
 subtable plus `username` / `credentials_source` — they show up in the
 From: dropdown alongside IMAP accounts.
+
+The password is resolved through the same credential backend as syncing, so
+every `credentials_source` works here: `plaintext`, `env`, `command` and
+`encrypted`. If the backend cannot produce a password — a locked keyring, an
+unset variable, a failing command — the composer says so and keeps the
+message rather than discarding it.
 
 If sending fails, a notification appears with the error. You can then choose
 to save the message as a draft.

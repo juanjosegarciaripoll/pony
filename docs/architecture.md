@@ -18,16 +18,26 @@ own their own keybindings.
 src/pony/
   __init__.py
   __main__.py          # python -m pony entrypoint
+  version.py           # __version__ (stamped by the release workflow)
   cli.py               # argparse command dispatch
   config.py            # TOML config loader and validator
   domain.py            # typed core data models
   protocols.py         # repository and service interfaces
   paths.py             # application directory resolution
+  accounts.py          # account lookup and mirror construction
+  credentials.py       # plaintext / env / command / encrypted backends
   storage.py           # Maildir and mbox mirror repositories
   index_store.py       # SQLite metadata index repository
   storage_indexing.py  # mirror-to-index projection (rescan_local_account)
   message_projection.py# RFC 5322 parsing and metadata projection
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
+  mailbox_ops.py       # index-row rewrites for local moves, copies and flags
+  message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
+  compose_utils.py     # quoting, address lists, MIME assembly
+  composer.py          # what a reply/forward/new message starts as
+  search_parser.py     # query language parser
+  contact_naming.py    # display name -> contact first/last name
+  folder_utils.py      # sent/drafts folder auto-discovery
   html_sanitize.py     # shared HTML→text helpers (preview + renderer)
   sync.py              # IMAP sync engine (plan/execute) + plan formatters
   imap_client.py       # ImapSession wrapper around imaplib
@@ -37,12 +47,11 @@ src/pony/
   fixture_flow.py      # deterministic fixture ingest flow
   mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
   tui/
-    app.py             # PonyApp, ComposeApp, ContactsApp
+    app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
     bindings.py        # shared mark/motion Binding tuples
-    compose_utils.py   # reply/forward quoting helpers
-    message_renderer.py# RFC 5322 -> plain text / browser HTML
-    search_parser.py   # query language parser
+    pdf_export.py      # HTML -> PDF via a detected external converter
     terminal.py        # OSC sequences for window-title push/pop/set
+    ui_state.py        # persisted pane sizes (ui_state.json)
     screens/
       main_screen.py             # three-pane mail reader
       compose_screen.py          # email composer
@@ -53,10 +62,14 @@ src/pony/
       contact_edit_screen.py     # contact editor
       confirm_screen.py          # generic yes/no dialog
       dialog_screen.py           # base class for modal yes/no dialogs
+      link_action_screen.py      # Open / Copy / Cancel dialog for body links
       floating_input_screen.py   # base class for bottom floating-input bars
       save_draft_screen.py       # draft save confirmation
+      save_message_screen.py     # save body + attachments item picker
+      save_folder_picker_screen.py # directory picker for saving files
       add_attachment_screen.py   # file picker
       attachment_picker_screen.py# pick previously-attached files by number
+      eml_viewer_screen.py       # standalone .eml viewer
       goto_folder_screen.py      # G — fuzzy jump to folder
       new_folder_screen.py       # N — create new folder
       pick_folder_screen.py      # modal (account, folder) target picker
@@ -66,6 +79,7 @@ src/pony/
       message_list.py        # async-streamed message table
       message_view.py        # scrollable message reader
       contact_suggester.py   # autocomplete dropdown
+      edge_drag.py           # mouse-draggable pane borders
 ```
 
 ## Subsystems
@@ -97,6 +111,12 @@ same `MirrorRepository` protocol: store, retrieve, list, and delete raw
 RFC 5322 message bytes. Storage location mapping connects mirror records to
 the SQL index via `storage_key`.
 
+Flag changes are written through to the mirror as well as the index, so
+another MUA sharing the same tree sees read, flagged and answered state.
+Maildir encodes them in the filename suffix and mbox in the `Status` /
+`X-Status` headers. The index remains authoritative: a mirror write that
+fails is logged and skipped rather than failing the action.
+
 ### Index (`pony.index_store`)
 
 SQLite-backed metadata store implementing `IndexRepository` and
@@ -113,11 +133,18 @@ Two-pass IMAP sync engine: plan (read-only comparison) then execute (apply
 changes). Three-way flag merge with union policy. Mass-deletion protection.
 Progress callbacks report per-folder scanning and per-operation execution.
 
-### Send (`pony.smtp_sender`, `pony.tui.compose_utils`)
+### Send (`pony.smtp_sender`, `pony.compose_utils`, `pony.composer`)
 
 SMTP submission with SSL and STARTTLS. Reply/forward quoting preserves
 existing quote levels. Markdown mode builds `multipart/alternative` messages
-via `markdown-it-py`.
+via `markdown-it-py`. Replies carry `In-Reply-To` and `References` so they
+thread in the recipient's client.
+
+`composer.py` decides what a draft *is* — the sending identity, the subject
+prefix, which recipients survive a reply-all, the threading headers — and
+returns a `DraftSpec` for the UI to render. It does no I/O and imports
+nothing from `tui/`, so the same answers serve the TUI composer and anything
+else built on top later.
 
 ### TUI (`pony.tui`)
 

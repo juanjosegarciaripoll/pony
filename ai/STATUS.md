@@ -29,6 +29,10 @@ All v1 capabilities implemented and tested:
 - Local-mirror rescan with mtime sidecar cache and a lean storage-key projection on cold scans.
 - Scoped `pony reset --account NAME` rebuild path.
 - Background/periodic sync: non-blocking `ctrl+g` worker that auto-confirms every folder, plus a config-gated periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
+- RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
+- Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
+- Flag changes written through to the mirror (Maildir filename suffix, mbox `Status`/`X-Status`) for the per-message actions.
+- Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.
 
 ## Queue
 
@@ -38,6 +42,10 @@ All v1 capabilities implemented and tested:
 - **Per-folder single-transaction sync** (idempotent re-sync covers failures now).
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
+- **Mirror flags on the bulk paths.** `mark_folder_read` and sync's ingest/merge
+  still do not write flags to the mirror. A per-message write costs a rename on
+  Maildir but a full mailbox rewrite on mbox (measured: 2000 messages = 0.09 s
+  vs 7.4 s, and quadratic), so these need the flags set at store time instead.
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.
 
 ## Deferred (out of scope for now)

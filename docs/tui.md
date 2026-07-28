@@ -36,7 +36,7 @@ folder list on the left is collapsible per account.
 |                        |  Best,                                               |
 |                        |  Alice                                               |
 +------------------------+-----------------------------------------------------+
- Q Quit  g Get mail  c Compose  r Reply  f Forward  d Trash  B Contacts
+ Q Quit  g Get mail  c Compose  r Reply  f Forward  D Trash  B Contacts
 ```
 
 | Pane | Description |
@@ -50,7 +50,7 @@ folder list on the left is collapsible per account.
 Each screen in the TUI shows only its own relevant keybindings in the footer
 bar. Mail-reader bindings (sync, compose, flags) appear only in the main
 reader. The contacts browser and compose screens show only their own
-keybindings, so pressing mail keys like `g` or `d` inside the contacts browser
+keybindings, so pressing mail keys like `g` or `D` inside the contacts browser
 does nothing.
 
 ---
@@ -76,6 +76,8 @@ does nothing.
 | ++p++ | Move to previous message |
 | ++less++ | Jump to first message |
 | ++greater++ | Jump to last message |
+| ++m++ | Mark the current row and move down (marked rows become the target of flag, move and copy actions) |
+| ++shift+down++ / ++shift+up++ | Mark and move without leaving the keyboard home row |
 | ++enter++ | Open message in the preview pane |
 
 ### Message preview
@@ -96,21 +98,28 @@ When the message view is focused (after opening a message):
 ## Flag operations
 
 Flag changes are applied immediately to the local index and pushed to the
-server on the next sync.
+server on the next sync. They are also written onto the message in the local
+mirror — as the filename suffix for Maildir, as the `Status` / `X-Status`
+headers for mbox — so another mail client reading the same tree sees the same
+read, flagged and answered state.
 
 | Key | Action |
 |---|---|
-| ++shift+r++ | Mark current message as read |
 | ++u++ | Mark current message as unread |
-| ++shift+f++ | Toggle the starred/flagged flag |
-| ++d++ | Move to trash (sets `local_status = trashed`; pushed to server on next sync) |
+| ++shift+c++ | Mark every message in the current folder as read |
+| ++exclam++ | Toggle the starred/flagged flag |
+| ++shift+d++ | Move to trash (sets `local_status = trashed`; pushed to server on next sync) |
 | ++shift+a++ | Archive to the account's `archive_folder` (local move; pushed to server on next sync) |
+| ++shift+y++ | Copy the current message to another folder |
+| ++shift+m++ | Move the current message to another folder |
 | ++shift+n++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
 
+Opening a message marks it read; there is no separate key for that.
+
 !!! info "Trash vs. delete"
-    `d` marks the message for deletion locally. It stays in the local mirror
+    `D` marks the message for deletion locally. It stays in the local mirror
     until the next sync, when Pony sends an EXPUNGE to the server and purges
-    the local copy. In a read-only folder, `d` is a no-op that self-corrects
+    the local copy. In a read-only folder, `D` is a no-op that self-corrects
     on the next sync.
 
 !!! info "Archive"
@@ -214,8 +223,10 @@ Press ++q++ in the message list to exit search and reload the original folder.
 | Key | Action |
 |---|---|
 | ++c++ | Open the composer for a new message |
-| ++r++ | Reply to the current message (top-post, quotes original) |
-| ++f++ | Forward the current message |
+| ++r++ | Reply to the current message (top-post, quotes original, threaded) |
+| ++shift+r++ | Reply to everyone the message reached, minus your own address |
+| ++f++ | Forward the current message (attached as a `.eml` named after its subject) |
+| ++e++ | Reopen the current message as a draft for editing |
 | ++shift+b++ | Open the contacts browser |
 
 See the [Composer](composer.md) page for the full composer reference and the
