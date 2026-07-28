@@ -1483,6 +1483,18 @@ class MainScreen(Screen[None]):
                 severity="error",
             )
             return
+        # The mirror directory *is* the request to create the folder, but
+        # the planner only issues CREATE for names it would sync.  Making
+        # an excluded folder would leave it local forever, and anything
+        # moved into it stranded, with nothing said at any point.
+        account = self._find_account(account_name)
+        if account is not None and not account.folders.should_sync(folder_name):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Folder {folder_name!r} is excluded from sync; "
+                "it would never be created on the server.",
+                severity="warning",
+            )
+            return
         try:
             mirror.create_folder(
                 account_name=account_name,
@@ -1497,13 +1509,7 @@ class MainScreen(Screen[None]):
         self._refresh_folder_indicators()
         # Local accounts have no server side: the creation is terminal.
         # IMAP accounts get the folder pushed upstream on the next sync.
-        account = next(
-            (a for a in self._config.accounts if a.name == account_name),
-            None,
-        )
-        suffix = (
-            "; run sync to propagate." if isinstance(account, AccountConfig) else "."
-        )
+        suffix = "; run sync to propagate." if account is not None else "."
         self.app.notify(  # pyright: ignore[reportUnknownMemberType]
             f"Folder {folder_name!r} created locally{suffix}"
         )

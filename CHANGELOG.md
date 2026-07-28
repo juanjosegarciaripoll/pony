@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **`pony folder mirror` keeps read and flagged state.** It re-projected each
+  message instead of copying the indexed row, and a fresh projection starts
+  with empty flag sets — so mirroring a folder marked everything in the copy
+  unread. The TUI's copy action already preserved them.
+
+- **Creating a folder the sync would never push is now refused.** The planner
+  only issues `CREATE` for folder names that pass the account's sync policy, so
+  a folder made under an `exclude` pattern stayed local forever and anything
+  moved into it was stranded — with nothing said at any point.
+
 - **The browser view and the PDF export now show the same message as the reader.**
   They decided what counted as an attachment with their own rule, so an inline
   part carrying a filename was renamed, silently dropped from the list, or —

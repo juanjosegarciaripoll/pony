@@ -493,3 +493,87 @@ if __name__ == "__main__":
 # Silence unused-import lint when ``sample_config_toml`` stays unreferenced
 # in a future refactor; it is part of the reusable helper surface.
 _ = sample_config_toml
+
+
+class MirrorFolderPreservesFlagsTest(unittest.TestCase):
+    """Mirroring a folder must not silently mark everything unread.
+
+    The copy re-projected the raw bytes instead of carrying the row
+    forward, and a fresh projection starts with empty flag sets — so a
+    mirrored folder came out with every message unread and unflagged,
+    while the TUI's copy action preserved both.
+    """
+
+    def test_read_and_flagged_state_survives_the_copy(self) -> None:
+        import dataclasses
+
+        from pony.domain import FolderRef, MessageFlag
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            seeded = _seed_one_message(config_path, subject="Read me", body="body")
+            index = SqliteIndexRepository(
+                database_path=AppPaths.default().index_db_file
+            )
+            index.initialize()
+            source = FolderRef(account_name="personal", folder_name="INBOX")
+            row = index.list_folder_messages(folder=source)[0]
+            index.update_message(
+                message=dataclasses.replace(
+                    row,
+                    local_flags=frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
+                )
+            )
+
+            _output, rc = run_cli_capture(
+                "--config",
+                str(config_path),
+                "folder",
+                "mirror",
+                "personal",
+                "INBOX",
+                "personal",
+                "Archive",
+            )
+            self.assertEqual(rc, 0)
+
+            target = FolderRef(account_name="personal", folder_name="Archive")
+            copied = index.list_folder_messages(folder=target)
+
+        self.assertEqual(len(copied), 1)
+        self.assertIn(MessageFlag.SEEN, copied[0].local_flags)
+        self.assertIn(MessageFlag.FLAGGED, copied[0].local_flags)
+        self.assertEqual(copied[0].subject, "Read me")
+        del seeded
+
+    def test_the_copy_is_a_fresh_unsynced_row(self) -> None:
+        """It must look like a local addition so sync APPENDs it."""
+        from pony.domain import FolderRef
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Fresh", body="body")
+            run_cli_capture(
+                "--config",
+                str(config_path),
+                "folder",
+                "mirror",
+                "personal",
+                "INBOX",
+                "personal",
+                "Archive",
+            )
+            index = SqliteIndexRepository(
+                database_path=AppPaths.default().index_db_file
+            )
+            index.initialize()
+            copied = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="Archive")
+            )[0]
+
+        self.assertIsNone(copied.uid)
+        self.assertEqual(copied.base_flags, frozenset())
+        self.assertEqual(copied.server_flags, frozenset())
+        self.assertIsNone(copied.source_folder)

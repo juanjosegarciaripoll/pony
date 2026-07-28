@@ -1560,7 +1560,6 @@ def run_mirror_folder(
     written with ``uid=NULL`` so the next ``pony sync`` uploads them to
     the destination account's IMAP server via ``PushAppendOp``.
     """
-    from .message_projection import project_rfc822_message
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -1644,14 +1643,28 @@ def run_mirror_folder(
                 skipped += 1
                 continue
             dst_key = dst_mirror.store_message(folder=dst_ref, raw_message=raw)
-            projected = project_rfc822_message(
-                message_ref=MessageRef(
-                    account_name=dst_account, folder_name=dst_folder, id=0
-                ),
-                raw_message=raw,
-                storage_key=dst_key,
+            # Carry the source row forward rather than re-projecting it.
+            # A fresh projection starts with empty flag sets, so mirroring
+            # a folder used to silently mark every message unread.
+            index.insert_message(
+                message=dataclasses.replace(
+                    msg,
+                    message_ref=MessageRef(
+                        account_name=dst_account, folder_name=dst_folder, id=0
+                    ),
+                    storage_key=dst_key,
+                    uid=None,
+                    uid_validity=0,
+                    base_flags=frozenset(),
+                    server_flags=frozenset(),
+                    extra_imap_flags=frozenset(),
+                    local_status=MessageStatus.ACTIVE,
+                    trashed_at=None,
+                    synced_at=None,
+                    source_folder=None,
+                    source_uid=None,
+                )
             )
-            index.insert_message(message=projected)
             copied += 1
             done = copied + skipped
             if done == total or done % 20 == 0:

@@ -640,3 +640,81 @@ async def test_trashing_an_already_trashed_row_keeps_the_original_time() -> None
     reloaded = index.get_message(message_ref=msg.message_ref)
     assert reloaded is not None
     assert reloaded.trashed_at == original
+
+
+async def test_creating_a_folder_the_sync_would_never_push_is_refused() -> None:
+    """The mirror directory is the request, but the planner filters it.
+
+    ``sync._plan_folders`` only issues CREATE for folder names satisfying
+    ``should_sync``.  Making one under an ``exclude`` pattern left it
+    local forever and stranded anything moved into it, silently.
+    """
+    paths = make_tmp_paths("main-create-excluded")
+    account = dataclasses.replace(
+        make_test_account(paths),
+        folders=FolderConfig(exclude=("Scratch",)),
+    )
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="main-create-excluded-app",
+        accounts=(account,),
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _main(app)._create_folder("acct", "Scratch")
+        await pilot.pause()
+
+        names = {
+            ref.folder_name for ref in mirrors["acct"].list_folders(account_name="acct")
+        }
+
+    assert any("excluded from sync" in message for message in messages)
+    assert "Scratch" not in names
+
+
+async def test_a_synced_folder_name_is_still_created() -> None:
+    paths = make_tmp_paths("main-create-allowed")
+    account = dataclasses.replace(
+        make_test_account(paths),
+        folders=FolderConfig(exclude=("Scratch",)),
+    )
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="main-create-allowed-app",
+        accounts=(account,),
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _main(app)._create_folder("acct", "Projects")
+        await pilot.pause()
+
+        names = {
+            ref.folder_name for ref in mirrors["acct"].list_folders(account_name="acct")
+        }
+
+    assert "Projects" in names
+    assert any("run sync to propagate" in message for message in messages)
+
+
+async def test_a_local_account_folder_is_created_without_a_sync_hint() -> None:
+    paths = make_tmp_paths("main-create-local")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="main-create-local-app",
+        accounts=(_local_account(paths),),
+    )
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _main(app)._create_folder("local", "Kept")
+        await pilot.pause()
+
+        names = {
+            ref.folder_name
+            for ref in mirrors["local"].list_folders(account_name="local")
+        }
+
+    assert "Kept" in names
+    assert any("created locally." in message for message in messages)
