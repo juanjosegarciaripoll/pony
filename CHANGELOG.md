@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **The browser view and the PDF export now show the same message as the reader.**
+  They decided what counted as an attachment with their own rule, so an inline
+  part carrying a filename was renamed, silently dropped from the list, or —
+  when it was HTML — rendered *as the message body*, meaning `w` and `Ctrl-P`
+  could show different text than the pane they were opened from.
+
 - **Every message action now acts on the highlighted message.** `w`, `O`, `S`
   and the number keys read their bytes from the reader pane — the message last
   opened with Enter — while `s` and `ctrl+p` used the highlighted row. With the

@@ -50,6 +50,10 @@ oversized_body              Body larger than the preview cap.
 traversal_attachment_filename
                             Attachment filename that tries to escape the
                             destination directory.
+inline_image_named          Inline image that also carries a filename.
+inline_text_named           Inline text/plain that also carries a filename.
+inline_html_named           Inline text/html that also carries a filename.
+unnamed_attachment          Content-Disposition: attachment, no filename.
 """
 
 from __future__ import annotations
@@ -668,5 +672,70 @@ def traversal_attachment_filename() -> bytes:
     msg.attach(MIMEText("See attached.\n", "plain", "utf-8"))
     part = MIMEApplication(b"payload-bytes", Name="escape")
     part["Content-Disposition"] = 'attachment; filename="../../escaped.txt"'
+    msg.attach(part)
+    return msg.as_bytes()
+
+
+def _inline_named_probe(inline_part: MIMEText | MIMEImage, message_id: str) -> bytes:
+    """Body + one *inline* part carrying a filename + one real attachment.
+
+    The inline-with-filename shape is the one that told three MIME walks
+    apart: the reader listed it, while the browser/PDF export renamed it,
+    dropped it, or promoted it to being the message body.
+    """
+    msg = MIMEMultipart("mixed")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Inline part with a filename"
+    msg["Date"] = DATE
+    msg["Message-ID"] = message_id
+    msg.attach(MIMEText("hello plain body\n", "plain", "utf-8"))
+    msg.attach(inline_part)
+    pdf = MIMEApplication(b"%PDF fake", Name="doc.pdf")
+    pdf["Content-Disposition"] = 'attachment; filename="doc.pdf"'
+    msg.attach(pdf)
+    return msg.as_bytes()
+
+
+def inline_image_named() -> bytes:
+    """Inline image that also carries ``filename="logo.png"``."""
+    part = MIMEImage(_TINY_PNG, "png")
+    part["Content-ID"] = "<logo@example.com>"
+    part["Content-Disposition"] = 'inline; filename="logo.png"'
+    return _inline_named_probe(part, "<inline-named-image@example.com>")
+
+
+def inline_text_named() -> bytes:
+    """Inline text/plain that also carries ``filename="notes.txt"``."""
+    part = MIMEText("NOTES CONTENT", "plain", "utf-8")
+    del part["Content-Disposition"]
+    part["Content-Disposition"] = 'inline; filename="notes.txt"'
+    return _inline_named_probe(part, "<inline-named-text@example.com>")
+
+
+def inline_html_named() -> bytes:
+    """Inline text/html that also carries ``filename="report.html"``.
+
+    The nastiest of the three: the export used to render this part as
+    the message body, so the browser view showed different text than the
+    reader it was opened from.
+    """
+    part = MIMEText("<p>REPORT HTML</p>", "html", "utf-8")
+    del part["Content-Disposition"]
+    part["Content-Disposition"] = 'inline; filename="report.html"'
+    return _inline_named_probe(part, "<inline-named-html@example.com>")
+
+
+def unnamed_attachment() -> bytes:
+    """``Content-Disposition: attachment`` with no ``filename`` parameter."""
+    msg = MIMEMultipart("mixed")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Attachment with no name"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<unnamed-attachment@example.com>"
+    msg.attach(MIMEText("See attached.\n", "plain", "utf-8"))
+    part = MIMEApplication(b"payload")
+    part["Content-Disposition"] = "attachment"
     msg.attach(part)
     return msg.as_bytes()

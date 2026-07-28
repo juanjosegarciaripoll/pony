@@ -260,3 +260,111 @@ class FmtSizeTest(unittest.TestCase):
 
     def test_anything_larger_falls_through_to_gigabytes(self) -> None:
         self.assertEqual(fmt_size(5 * 1024**3), "5.0 GB")
+
+
+def _browser_attachment_names(html: str) -> list[str]:
+    """Names listed in the export's attachment block."""
+    import re
+
+    return [
+        re.sub(r"<span.*?</span>", "", item).strip()
+        for item in re.findall(r"<li>(.*?)</li>", html, re.DOTALL)
+    ]
+
+
+class OneAttachmentEnumerationTest(unittest.TestCase):
+    """The reader, the extractor and the export must agree, part for part.
+
+    ``[1]`` in the reader is what ``pony message attachment 1`` writes and
+    what the MCP ``get_attachment`` tool returns, so the three MIME walks
+    that produce those lists have to enumerate identically.  They did not:
+    the export applied its own predicate, so an inline part carrying a
+    filename was renamed, dropped, or — worst — treated as the message
+    body, making ``w`` and ``ctrl+p`` show different text than the pane
+    they were opened from.
+    """
+
+    _FIXTURES = (
+        "plain_text",
+        "multipart_alternative",
+        "multipart_mixed_attachment",
+        "multipart_mixed_multi",
+        "html_only",
+        "inline_image",
+        "nested_forward",
+        "double_attached_emails",
+        "attachment_only",
+        "html_first_multipart",
+        "base64_rfc822_attachment",
+        "inline_image_named",
+        "inline_text_named",
+        "inline_html_named",
+        "unnamed_attachment",
+    )
+
+    def test_all_three_walks_list_the_same_attachments(self) -> None:
+        for name in self._FIXTURES:
+            with self.subTest(fixture=name):
+                raw = getattr(corpus, name)()
+                reader = [a.filename for a in render_message(raw).attachments]
+                exported = _browser_attachment_names(build_browser_html(raw))
+
+                self.assertEqual(
+                    reader, exported, f"{name}: reader and export disagree"
+                )
+
+    def test_extraction_matches_the_reader_index_for_index(self) -> None:
+        for name in self._FIXTURES:
+            with self.subTest(fixture=name):
+                raw = getattr(corpus, name)()
+                for listed in render_message(raw).attachments:
+                    payload = extract_attachment(raw, listed.index)
+                    self.assertIsNotNone(payload, f"{name}[{listed.index}] missing")
+                    assert payload is not None
+                    self.assertEqual(payload.filename, listed.filename)
+                    self.assertEqual(payload.content_type, listed.content_type)
+
+    def test_an_inline_part_with_a_filename_is_an_attachment_everywhere(self) -> None:
+        """Case A: it used to be renamed to a synthesized type-based name."""
+        raw = corpus.inline_image_named()
+
+        self.assertEqual(
+            [a.filename for a in render_message(raw).attachments],
+            ["logo.png", "doc.pdf"],
+        )
+        self.assertEqual(
+            _browser_attachment_names(build_browser_html(raw)),
+            ["logo.png", "doc.pdf"],
+        )
+
+    def test_a_named_inline_text_part_is_not_swallowed(self) -> None:
+        """Case B: it used to vanish from the export, shifting the numbering."""
+        raw = corpus.inline_text_named()
+
+        self.assertEqual(
+            _browser_attachment_names(build_browser_html(raw)),
+            ["notes.txt", "doc.pdf"],
+        )
+
+    def test_a_named_inline_html_part_is_never_used_as_the_body(self) -> None:
+        """Case C: the export rendered it as the body, contradicting the reader."""
+        raw = corpus.inline_html_named()
+        html = build_browser_html(raw)
+
+        self.assertIn("hello plain body", render_message(raw).body)
+        self.assertIn("hello plain body", html)
+        self.assertNotIn("REPORT HTML", html)
+        self.assertEqual(_browser_attachment_names(html), ["report.html", "doc.pdf"])
+
+    def test_an_attachment_with_no_filename_reads_the_same_everywhere(self) -> None:
+        raw = corpus.unnamed_attachment()
+
+        self.assertEqual(
+            [a.filename for a in render_message(raw).attachments], ["(unnamed)"]
+        )
+        self.assertEqual(
+            _browser_attachment_names(build_browser_html(raw)), ["(unnamed)"]
+        )
+        payload = extract_attachment(raw, 1)
+        assert payload is not None
+        self.assertEqual(payload.filename, "(unnamed)")

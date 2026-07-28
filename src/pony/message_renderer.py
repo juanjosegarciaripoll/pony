@@ -62,6 +62,49 @@ _INLINE_ATTACHMENT_FILENAMES: dict[str, str] = {
 _FILENAME_MAX = 255
 
 
+def is_attachment_part(part: EmailMessage) -> bool:
+    """True when *part* is an attachment rather than message body.
+
+    The numbering this produces is the contract the whole app exposes:
+    the ``[1]`` shown in the reader is what ``pony message attachment 1``
+    writes and what the MCP ``get_attachment`` tool returns.  Three MIME
+    walks used to answer this question independently and the browser /
+    PDF export answered it differently — an inline part carrying a
+    filename was renamed, dropped, or promoted to *body*, so ``w`` could
+    show different text than the pane it was opened from.
+
+    A part counts as an attachment when it says so, or when it carries a
+    filename (a sender who names a part means it to be saveable), or
+    when it is neither plain text nor HTML and so cannot be body.
+    """
+    if part.get_content_maintype() == "multipart":
+        return False
+    if (part.get_content_disposition() or "") == "attachment":
+        return True
+    if part.get_filename():
+        return True
+    return part.get_content_type() not in ("text/plain", "text/html")
+
+
+def attachment_display_name(part: EmailMessage) -> str:
+    """The name shown for an attachment part, and used when saving it.
+
+    A sender-supplied filename wins.  Without one, a part that declares
+    itself an attachment is honestly ``(unnamed)``; a part that is an
+    attachment only because it is not text gets a synthesized name from
+    its type, so ``text/calendar`` reads as ``invite.ics`` rather than
+    as nothing.
+    """
+    name = part.get_filename()
+    if name:
+        return name
+    if (part.get_content_disposition() or "") == "attachment":
+        return "(unnamed)"
+    content_type = part.get_content_type()
+    subtype = content_type.split("/")[-1] if "/" in content_type else content_type
+    return _INLINE_ATTACHMENT_FILENAMES.get(content_type, f"attachment.{subtype}")
+
+
 def _safe_filename_stem(text: str, fallback: str = "message") -> str:
     """Sanitize arbitrary *text* for use as a filename stem.
 
@@ -575,8 +618,6 @@ def build_browser_html(raw_bytes: bytes) -> str:
         if part.get_content_maintype() == "multipart":
             continue
 
-        disposition = part.get_content_disposition() or ""
-        filename = part.get_filename()
         content_id = part.get("Content-ID", "").strip().strip("<>")
 
         payload = part.get_payload(decode=True)
@@ -586,13 +627,14 @@ def build_browser_html(raw_bytes: bytes) -> str:
             b64 = base64.b64encode(payload).decode("ascii")
             cid_map[content_id] = f"data:{content_type};base64,{b64}"
 
-        # Real attachments go to the list.
-        if disposition == "attachment" or (filename and disposition != "inline"):
+        # Attachments go to the list — never to the body, so the export
+        # cannot render as text a part the reader is offering as a file.
+        if is_attachment_part(part):
             size = len(payload) if isinstance(payload, bytes) else 0
             attachments.append(
                 AttachmentInfo(
                     index=attach_index,
-                    filename=filename or "(unnamed)",
+                    filename=attachment_display_name(part),
                     content_type=content_type,
                     size_bytes=size,
                 )
@@ -611,24 +653,6 @@ def build_browser_html(raw_bytes: bytes) -> str:
         ):
             charset = part.get_content_charset() or "utf-8"
             plain_body = payload.decode(charset, errors="replace")
-        elif content_type not in ("text/plain", "text/html"):
-            # Inline unrecognised type — mirrors _extract_body_and_attachments.
-            size = len(payload) if isinstance(payload, bytes) else 0
-            subtype = (
-                content_type.split("/")[-1] if "/" in content_type else content_type
-            )
-            att_filename = _INLINE_ATTACHMENT_FILENAMES.get(
-                content_type, f"attachment.{subtype}"
-            )
-            attachments.append(
-                AttachmentInfo(
-                    index=attach_index,
-                    filename=att_filename,
-                    content_type=content_type,
-                    size_bytes=size,
-                )
-            )
-            attach_index += 1
 
     # Resolve cid: references in the HTML body.
     if html_body is not None:
