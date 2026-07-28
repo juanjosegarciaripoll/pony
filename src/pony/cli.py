@@ -2547,6 +2547,7 @@ def run_tui(
         contacts=index,
         config_path=config_path,
         theme_name=effective_theme,
+        ui_state_path=paths.data_dir / "ui_state.json",
     )
     app.run()
     return 0

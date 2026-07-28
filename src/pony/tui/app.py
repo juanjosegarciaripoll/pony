@@ -60,6 +60,7 @@ class PonyApp(App[None]):
         contacts: ContactRepository | None = None,
         config_path: Path | None = None,
         theme_name: str | None = None,
+        ui_state_path: Path | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -69,6 +70,7 @@ class PonyApp(App[None]):
         self._credentials = credentials
         self._contacts = contacts
         self._config_path = config_path
+        self._ui_state_path = ui_state_path
         self._mcp_tcp_task: asyncio.Task[None] | None = None
         self._mcp_state_file: Path | None = None
         if theme_name is not None:
@@ -93,6 +95,7 @@ class PonyApp(App[None]):
                 self._mirrors,
                 credentials=self._credentials,
                 contacts=self._contacts,
+                ui_state_path=self._ui_state_path,
             )
         )
         await self._start_mcp_tcp_server()

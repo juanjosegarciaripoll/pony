@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `wkhtmltopdf`, WeasyPrint, or LibreOffice — so no new dependency is bundled.
   A guidance notification is shown when none is found.
 
+- **Resizable panes**: `Ctrl-←` / `Ctrl-→` move the boundary between the folder
+  list and the rest of the window, and `Ctrl-↑` / `Ctrl-↓` move the one between
+  the message list and the reader. Sizes are saved to `ui_state.json` in the
+  data directory and restored on the next launch.
+
+### Fixed
+
+- **Recipients with a comma in their name are no longer split in two.** A
+  display name containing a comma is quoted by the sending client
+  (`"Doe, John" <j@example.com>`). Replying to such a message split the
+  recipient at the comma, producing two broken half-addresses, and accepting
+  a contact completion after one could overwrite it.
+
 ### Changed
 
 - **Messages now open on command, not on cursor movement.** Moving the row

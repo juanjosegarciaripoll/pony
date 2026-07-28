@@ -50,7 +50,14 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
             ("w", "Open in web browser"),
         ),
     ),
-    _Section("Folders", (("Shift+N", "New folder"),)),
+    _Section(
+        "Folders & layout",
+        (
+            ("Shift+N", "New folder"),
+            ("Ctrl+← / →", "Resize folder panel"),
+            ("Ctrl+↑ / ↓", "Resize message list"),
+        ),
+    ),
     _Section(
         "Contacts",
         (

@@ -52,6 +52,7 @@ from ..terminal import (
     set_terminal_title,
     suspend_for_external_program,
 )
+from ..ui_state import RESIZE_STEP, load_pane_sizes, save_pane_sizes
 from ..widgets.folder_panel import FolderPanel, has_inbox_mail
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
@@ -93,6 +94,10 @@ class MainScreen(Screen[None]):
         Binding("G", "goto_folder", "Goto folder", show=False),
         Binding("H", "harvest_contacts", "Harvest contacts", show=False),
         Binding("B", "browse_contacts", "Contacts"),
+        Binding("ctrl+left", "narrow_folders", "Narrower folders", show=False),
+        Binding("ctrl+right", "widen_folders", "Wider folders", show=False),
+        Binding("ctrl+up", "shrink_list", "Smaller list", show=False),
+        Binding("ctrl+down", "grow_list", "Bigger list", show=False),
     ]
 
     CSS = """
@@ -142,6 +147,7 @@ class MainScreen(Screen[None]):
         mirrors: dict[str, MirrorRepository],
         credentials: CredentialsProvider | None = None,
         contacts: ContactRepository | None = None,
+        ui_state_path: Path | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -154,6 +160,8 @@ class MainScreen(Screen[None]):
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
         self._background_sync_timer: Timer | None = None
+        self._ui_state_path = ui_state_path
+        self._pane_sizes = load_pane_sizes(ui_state_path)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -176,8 +184,55 @@ class MainScreen(Screen[None]):
         ``ctrl+g`` starts a sync and arms one.  The action's in-progress guard
         makes overlapping ticks safe.
         """
+        self._apply_pane_sizes()
         if self._config.background_sync_enabled:
             self._arm_background_sync_timer()
+
+    # ------------------------------------------------------------------
+    # Resizable panes
+    # ------------------------------------------------------------------
+
+    def _apply_pane_sizes(self) -> None:
+        """Push the stored boundary positions onto the widgets.
+
+        The folder/right split is a percentage of the screen.  The
+        list/reader split uses ``fr`` units rather than percentages
+        because the reader is ``display: none`` until a message is
+        opened — with ``fr`` the list expands to fill the pane on its
+        own, where a percentage would leave the reader's share blank.
+        """
+        sizes = self._pane_sizes
+        self.query_one(FolderPanel).styles.width = f"{sizes.folder_width_pct}%"
+        self.query_one(
+            "#right-pane", Vertical
+        ).styles.width = f"{100 - sizes.folder_width_pct}%"
+        self.query_one(MessageListPanel).styles.height = f"{sizes.list_share}fr"
+        self.query_one(MessageViewPanel).styles.height = f"{100 - sizes.list_share}fr"
+
+    def _resize_panes(self, *, folder_delta: int = 0, list_delta: int = 0) -> None:
+        """Move a boundary by the given deltas, clamp, apply and persist."""
+        proposed = dataclasses.replace(
+            self._pane_sizes,
+            folder_width_pct=self._pane_sizes.folder_width_pct + folder_delta,
+            list_share=self._pane_sizes.list_share + list_delta,
+        ).clamped()
+        if proposed == self._pane_sizes:
+            return  # Already at the limit — nothing to redraw or write.
+        self._pane_sizes = proposed
+        self._apply_pane_sizes()
+        save_pane_sizes(self._ui_state_path, proposed)
+
+    def action_narrow_folders(self) -> None:
+        self._resize_panes(folder_delta=-RESIZE_STEP)
+
+    def action_widen_folders(self) -> None:
+        self._resize_panes(folder_delta=RESIZE_STEP)
+
+    def action_shrink_list(self) -> None:
+        self._resize_panes(list_delta=-RESIZE_STEP)
+
+    def action_grow_list(self) -> None:
+        self._resize_panes(list_delta=RESIZE_STEP)
 
     def _arm_background_sync_timer(self) -> None:
         """Ensure the periodic background-sync timer is running.
