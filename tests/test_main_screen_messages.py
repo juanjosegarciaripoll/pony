@@ -14,7 +14,7 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import FolderConfig, FolderRef, MessageFlag
+from pony.domain import FolderConfig, FolderRef, MessageFlag, MessageStatus
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
 
@@ -575,3 +575,68 @@ async def test_goto_folder_moves_the_tree_cursor() -> None:
         await pilot.pause()
 
         assert screen._current_folder_ref == target
+
+
+async def test_trashing_records_when_it_happened() -> None:
+    """``trashed_at`` drives both retention and the sync planner.
+
+    A trashed row with no server UID and no ``trashed_at`` is given a
+    PurgeLocalOp by the planner — dropped outright instead of kept
+    recoverable — and ``purge_expired_trash`` selects on
+    ``trashed_at IS NOT NULL``, so such a row is invisible to retention
+    as well.  ``pony folder dedup`` always set it; the TUI did not.
+    """
+    from datetime import UTC, datetime
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-trash-timestamp",
+        seed=[(folder, plain_text())],
+    )
+
+    before = datetime.now(tz=UTC)
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        current = screen.get_current_message()
+        assert current is not None
+        seeded = current.message_ref
+        screen.trash_current_message()
+        await pilot.pause()
+    after = datetime.now(tz=UTC)
+
+    trashed = index.get_message(message_ref=seeded)
+    assert trashed is not None
+    assert trashed.local_status == MessageStatus.TRASHED
+    assert trashed.trashed_at is not None
+    assert before <= trashed.trashed_at <= after
+
+
+async def test_trashing_an_already_trashed_row_keeps_the_original_time() -> None:
+    """Re-trashing must not restart the retention clock."""
+    import dataclasses as _dc
+    from datetime import UTC, datetime, timedelta
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-trash-idempotent",
+        seed=[(folder, plain_text())],
+    )
+    original = datetime.now(tz=UTC) - timedelta(days=5)
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        msg = screen.get_current_message()
+        assert msg is not None
+        index.update_message(
+            message=_dc.replace(
+                msg, local_status=MessageStatus.TRASHED, trashed_at=original
+            )
+        )
+        screen.trash_current_message()
+        await pilot.pause()
+
+    reloaded = index.get_message(message_ref=msg.message_ref)
+    assert reloaded is not None
+    assert reloaded.trashed_at == original

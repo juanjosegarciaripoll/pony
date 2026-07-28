@@ -1720,20 +1720,6 @@ def run_message_get(
     return 0
 
 
-def _normalize_message_id(message_id: str) -> list[str]:
-    """Return candidate message-id strings to try against the index.
-
-    The index stores RFC 5322 Message-IDs with their angle brackets intact
-    (e.g. ``<foo@bar>``).  Users naturally omit the brackets on the command
-    line.  This returns both forms so callers can try each in turn.
-    """
-    stripped = message_id.strip("<>")
-    bracketed = f"<{stripped}>"
-    if message_id == bracketed:
-        return [message_id]
-    return [message_id, bracketed, stripped]
-
-
 def _find_messages(
     index: SqliteIndexRepository,
     *,
@@ -1741,16 +1727,17 @@ def _find_messages(
     folder_name: str,
     message_id: str,
 ) -> list[IndexedMessage]:
-    """Look up messages trying both bare and angle-bracketed message IDs."""
-    for candidate in _normalize_message_id(message_id):
-        hits = index.find_messages_by_message_id(
+    """Look up messages by Message-ID.
+
+    Bracket normalisation lives in the index so every front-end gets it.
+    """
+    return list(
+        index.find_messages_by_message_id(
             account_name=account_name,
             folder_name=folder_name,
-            message_id=candidate,
+            message_id=message_id,
         )
-        if hits:
-            return list(hits)
-    return []
+    )
 
 
 def _find_messages_or_fail(
@@ -2167,7 +2154,6 @@ def run_local_summary(
         print(f"Account: {acc.name}  ({fmt}: {acc.mirror.path})")
 
         index_rows = _query_index(paths.index_db_file, acc.name)
-        pending_counts = _query_pending(paths.index_db_file, acc.name)
 
         if fmt == "maildir":
             folder_rows = _maildir_folders(acc.mirror.path)
@@ -2181,11 +2167,8 @@ def run_local_summary(
             continue
 
         col_w = max(len(f) for f in all_folders)
-        print(
-            f"  {'Folder':<{col_w}}  {'Mirror':>7}  {'Indexed':>7}"
-            f"  {'Pending':>7}  Last sync"
-        )
-        print("  " + "-" * (col_w + 34))
+        print(f"  {'Folder':<{col_w}}  {'Mirror':>7}  {'Indexed':>7}  Last sync")
+        print("  " + "-" * (col_w + 25))
 
         for folder in all_folders:
             mirror_count = folder_rows.get(folder)
@@ -2193,13 +2176,8 @@ def run_local_summary(
             idx = index_rows.get(folder, (0, None))
             idx_count, last_sync = idx
             idx_str = str(idx_count) if idx_count else "—"
-            pending = pending_counts.get(folder, 0)
-            pending_str = str(pending) if pending else ""
             sync_str = last_sync or "—"
-            print(
-                f"  {folder:<{col_w}}  {mirror_str:>7}  {idx_str:>7}"
-                f"  {pending_str:>7}  {sync_str}"
-            )
+            print(f"  {folder:<{col_w}}  {mirror_str:>7}  {idx_str:>7}  {sync_str}")
 
     return 0
 
@@ -2291,24 +2269,6 @@ def _query_index(db_path: Path, account_name: str) -> dict[str, tuple[int, str |
                 # synced_at is ISO-8601; show date + time only
                 display = synced_at[:16] if synced_at else None
                 result[folder] = (count, display)
-    except sqlite3.Error:
-        pass
-    return result
-
-
-def _query_pending(db_path: Path, account_name: str) -> dict[str, int]:
-    """Return {folder_name: pending_op_count} from the index."""
-    if not db_path.exists():
-        return {}
-    result: dict[str, int] = {}
-    try:
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
-            for folder, count in conn.execute(
-                "SELECT folder_name, COUNT(*) FROM pending_operations"
-                " WHERE account_name = ? GROUP BY folder_name",
-                (account_name,),
-            ):
-                result[folder] = count
     except sqlite3.Error:
         pass
     return result

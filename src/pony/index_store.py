@@ -661,16 +661,28 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     ) -> Sequence[IndexedMessage]:
         """Return every row whose RFC 5322 ``Message-ID:`` matches.
 
+        Rows store the header verbatim, i.e. with its angle brackets,
+        but people type and paste the bare form.  Both are accepted, so
+        a caller does not have to know which shape it holds — the CLI
+        used to normalise and the MCP server did not, which meant the
+        same lookup succeeded on one and returned nothing on the other.
+
         Empty Message-IDs never match — they would otherwise pull up
         every row that had no header at import time.
         """
-        if not message_id:
+        if not message_id.strip():
             return ()
         sql = (
             f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
-            "WHERE account_name = ? AND message_id = ?"
+            "WHERE account_name = ? AND message_id IN (?, ?, ?)"
         )
-        params: list[object] = [account_name, message_id]
+        stripped = message_id.strip().strip("<>")
+        params: list[object] = [
+            account_name,
+            message_id.strip(),
+            f"<{stripped}>",
+            stripped,
+        ]
         if folder_name is not None:
             sql += " AND folder_name = ?"
             params.append(folder_name)

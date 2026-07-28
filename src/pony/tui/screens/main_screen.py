@@ -6,6 +6,7 @@ import collections.abc
 import contextlib
 import dataclasses
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -912,11 +913,16 @@ class MainScreen(Screen[None]):
         messages = self._resolve_targets(targets)
         if not messages:
             return
+        now = datetime.now(tz=UTC)
         with self._index.connection():
             for msg in messages:
                 updated = dataclasses.replace(
                     msg,
                     local_status=MessageStatus.TRASHED,
+                    # Retention and the sync planner both key off this.
+                    # Without it a trashed row with no server UID is
+                    # purged outright instead of being recoverable.
+                    trashed_at=msg.trashed_at or now,
                 )
                 self._index.upsert_message(message=updated)
         self.query_one(MessageListPanel).clear_marks()

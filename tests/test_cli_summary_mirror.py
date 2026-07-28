@@ -430,16 +430,6 @@ class LocalSummaryTableTest(unittest.TestCase):
 
         connection.close.assert_called_once_with()
 
-    def test_pending_query_connection_is_closed_after_database_error(self) -> None:
-        connection = mock.MagicMock()
-        connection.execute.side_effect = pony.cli.sqlite3.OperationalError("bad schema")
-
-        with mock.patch.object(pony.cli.sqlite3, "connect", return_value=connection):
-            result = pony.cli._query_pending(Path(__file__), "personal")
-
-        self.assertEqual(result, {})
-        connection.close.assert_called_once_with()
-
 
 class FolderListTableTest(unittest.TestCase):
     """``pony folder list`` once a folder exists in the mirror."""

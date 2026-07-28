@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   echoed as its own display name is discarded on every path rather than only
   during sync.
 
+- **Trashing from the reader now records when it happened.** `trashed_at`
+  was left unset, so a trashed message with no server UID was dropped by the
+  next sync instead of being kept for the retention period, and retention
+  could not see it either. `pony folder dedup` always recorded it.
+
+- **A Message-ID can be given with or without its angle brackets everywhere.**
+  The CLI accepted both; the MCP server accepted only the bracketed form and
+  silently found nothing otherwise. The lookup itself normalises now.
+
 - **`pony search` now understands its own query language.** The parser lived
   under `tui/`, so `pony search "from:alice"` searched for the literal text
   `from:alice` while typing the same thing at `/` in the TUI did a sender
@@ -56,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a contact completion after one could overwrite it.
 
 ### Changed
+
+- **`pony local-summary` no longer shows a Pending column.** It queried a
+  `pending_operations` table that the current design removed — pending work
+  is `uid IS NULL` on the index row — so the column was always empty.
 
 - **A bare search word now matches the subject as well as the body.** It
   previously searched the body alone in the TUI, so a message titled

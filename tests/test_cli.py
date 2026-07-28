@@ -1481,28 +1481,94 @@ class MessageCommandsTestCase(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(parts[1].strip())
 
-    # --- _normalize_message_id ---
 
-    def test_normalize_message_id_bracketed_returns_single_form(self) -> None:
-        """Already-bracketed id returns a single-element list unchanged."""
-        from pony.cli import _normalize_message_id
+class MessageIdBracketNormalisationTest(unittest.TestCase):
+    """Rows store the Message-ID with its angle brackets; people type it without.
 
-        result = _normalize_message_id("<foo@bar>")
-        self.assertEqual(result, ["<foo@bar>"])
+    The CLI used to normalise on its way in and the MCP server did not,
+    so the same lookup found a message from one front-end and nothing
+    from the other.  Normalisation lives in the index now, so this is a
+    property of the lookup rather than of whoever calls it.
+    """
 
-    def test_normalize_message_id_bare_contains_bracketed(self) -> None:
-        """Bare id without angle brackets also produces the bracketed form."""
-        from pony.cli import _normalize_message_id
+    def _repo_with_message(self):  # type: ignore[no-untyped-def]
+        from tui_helpers import make_index, make_tmp_paths
 
-        result = _normalize_message_id("foo@bar")
-        self.assertIn("<foo@bar>", result)
+        index = make_index(make_tmp_paths("msgid-brackets"))
+        stored = _make_indexed("<wrapped@example.com>")
+        index.insert_message(message=stored)
+        return index
 
-    def test_normalize_message_id_bare_contains_bare(self) -> None:
-        """The bare string itself appears as an element of the returned list."""
-        from pony.cli import _normalize_message_id
+    def test_both_spellings_find_the_same_row(self) -> None:
+        index = self._repo_with_message()
 
-        result = _normalize_message_id("foo@bar")
-        self.assertIn("foo@bar", result)
+        for spelling in ("<wrapped@example.com>", "wrapped@example.com"):
+            with self.subTest(spelling=spelling):
+                hits = index.find_messages_by_message_id(
+                    account_name="acct",
+                    folder_name="INBOX",
+                    message_id=spelling,
+                )
+                self.assertEqual(len(hits), 1, spelling)
+                self.assertEqual(hits[0].message_id, "<wrapped@example.com>")
+
+    def test_surrounding_whitespace_is_tolerated(self) -> None:
+        index = self._repo_with_message()
+
+        hits = index.find_messages_by_message_id(
+            account_name="acct",
+            folder_name="INBOX",
+            message_id="  wrapped@example.com  ",
+        )
+
+        self.assertEqual(len(hits), 1)
+
+    def test_an_unrelated_id_still_misses(self) -> None:
+        index = self._repo_with_message()
+
+        self.assertEqual(
+            index.find_messages_by_message_id(
+                account_name="acct",
+                folder_name="INBOX",
+                message_id="other@example.com",
+            ),
+            (),
+        )
+
+    def test_a_blank_id_matches_nothing(self) -> None:
+        index = self._repo_with_message()
+
+        for blank in ("", "   ", "<>"):
+            with self.subTest(blank=blank):
+                self.assertEqual(
+                    index.find_messages_by_message_id(
+                        account_name="acct",
+                        folder_name="INBOX",
+                        message_id=blank,
+                    ),
+                    (),
+                )
+
+
+def _make_indexed(message_id: str):  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime
+
+    from pony.domain import IndexedMessage, MessageRef, MessageStatus
+
+    return IndexedMessage(
+        message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=0),
+        message_id=message_id,
+        sender="sender@example.com",
+        recipients="acct@example.com",
+        cc="",
+        subject="Subject",
+        body_preview="Body",
+        storage_key="key",
+        local_flags=frozenset(),
+        base_flags=frozenset(),
+        local_status=MessageStatus.ACTIVE,
+        received_at=datetime(2026, 4, 17, 12, tzinfo=UTC),
+    )
 
 
 class EmlViewerCliTest(unittest.TestCase):
@@ -3008,13 +3074,12 @@ class CorruptIndexQueryTests(unittest.TestCase):
     """``local-summary`` reads the index directly and must survive a bad file."""
 
     def test_a_corrupt_database_yields_empty_results(self) -> None:
-        from pony.cli import _query_index, _query_pending
+        from pony.cli import _query_index
 
         bad = TMP_ROOT / f"corrupt-{uuid4().hex}.sqlite3"
         bad.write_bytes(b"this is definitely not a sqlite database")
         try:
             self.assertEqual(_query_index(bad, "personal"), {})
-            self.assertEqual(_query_pending(bad, "personal"), {})
         finally:
             bad.unlink(missing_ok=True)
 
