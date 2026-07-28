@@ -5,7 +5,23 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.9.0]
+## [1.0.0]
+
+First stable release. Pony Express is a terminal-first mail client: IMAP sync
+into a Maildir or mbox mirror you own, a SQLite index over it, a three-pane
+Textual reader, and SMTP out. Local accounts let it read and send from a tree
+another tool already manages.
+
+The 1.0 line commits to the on-disk shapes: the `config.toml` schema (version
+2), the mirror layout, and the SQLite index. Changes to any of them from here
+will come with a migration rather than a rebuild.
+
+**Not in 1.0**, so you know before you install: authentication is password-based
+(`plaintext`, `env`, `command` or `encrypted` credential backends) — there is no
+OAuth, which Gmail and Outlook now require for IMAP, so those accounts need an
+app password. There is no POP support. mbox mirrors rewrite the whole file on
+flush and are best kept for archives; prefer Maildir where durability matters.
+
 ### Added
 
 - **Background synchronization.** `Ctrl-G` starts a sync that does not block
