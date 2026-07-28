@@ -6,7 +6,7 @@ import unittest
 
 import corpus
 
-from pony.tui.message_renderer import render_message
+from pony.message_renderer import render_message
 from pony.tui.screens.save_message_screen import (
     SaveItem,
     SaveMessageScreen,
@@ -44,7 +44,7 @@ class ProposedBodyFilenameTest(unittest.TestCase):
         self.assertIn("2026", name)
 
     def test_fallback_when_no_date(self) -> None:
-        from pony.tui.message_renderer import RenderedMessage
+        from pony.message_renderer import RenderedMessage
 
         rendered = RenderedMessage(
             subject="Test",

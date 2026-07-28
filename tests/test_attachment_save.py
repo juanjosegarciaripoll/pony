@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import corpus
 
-from pony.tui.message_renderer import render_message
+from pony.message_renderer import render_message
 from pony.tui.widgets.message_view import MessageViewPanel, _unique_path
 
 

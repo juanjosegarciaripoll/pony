@@ -37,9 +37,9 @@ from pony.mcp_server import (
     build_mcp_server,
 )
 from pony.message_projection import project_rfc822_message
+from pony.message_renderer import AttachmentPayload
 from pony.paths import AppPaths
 from pony.storage import MaildirMirrorRepository
-from pony.tui.message_renderer import AttachmentPayload
 
 
 class AttachmentToDictTest(unittest.TestCase):

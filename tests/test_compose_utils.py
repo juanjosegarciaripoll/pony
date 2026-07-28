@@ -1,4 +1,4 @@
-"""Tests for pony.tui.compose_utils."""
+"""Tests for pony.compose_utils."""
 
 from __future__ import annotations
 
@@ -13,9 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import corpus
 
-from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
-from pony.smtp_sender import SMTPError, send_message
-from pony.tui.compose_utils import (
+from pony.compose_utils import (
     _add_blockquote_hardbreaks,
     _split_at_quote_boundary,
     build_email_message,
@@ -29,7 +27,9 @@ from pony.tui.compose_utils import (
     split_address_list,
     split_trailing_address,
 )
-from pony.tui.message_renderer import RenderedMessage
+from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
+from pony.message_renderer import RenderedMessage
+from pony.smtp_sender import SMTPError, send_message
 
 
 def _rendered(**kwargs: object) -> RenderedMessage:

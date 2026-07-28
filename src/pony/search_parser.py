@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import shlex
 
-from ..domain import SearchQuery
+from .domain import SearchQuery
 
 _FIELD_ALIASES: dict[str, str] = {
     "from": "from_address",

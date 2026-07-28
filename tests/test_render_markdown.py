@@ -1,4 +1,4 @@
-"""Tests for ``pony.tui.message_renderer.render_message_markdown``."""
+"""Tests for ``pony.message_renderer.render_message_markdown``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import unittest
 
 import corpus
 
-from pony.tui.message_renderer import render_message, render_message_markdown
+from pony.message_renderer import render_message, render_message_markdown
 
 
 class RenderMessageMarkdownTest(unittest.TestCase):

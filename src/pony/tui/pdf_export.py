@@ -2,7 +2,7 @@
 
 Pony bundles no PDF library.  Instead this module shells out to whichever
 HTML-to-PDF tool is installed, preferring higher-fidelity engines.  The HTML is
-produced by :func:`pony.tui.message_renderer.build_browser_html` — the same
+produced by :func:`pony.message_renderer.build_browser_html` — the same
 self-contained document used for the ``w`` browser view.
 """
 

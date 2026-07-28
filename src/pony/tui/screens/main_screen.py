@@ -16,6 +16,15 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
+from ...compose_utils import (
+    build_forward_body,
+    build_reply_all_recipients,
+    build_reply_body,
+    forward_subject,
+    new_compose_body,
+    parse_draft_fields,
+    reply_subject,
+)
 from ...contact_naming import harvested_name
 from ...domain import (
     AccountConfig,
@@ -30,6 +39,7 @@ from ...domain import (
     MessageStatus,
 )
 from ...message_copy import copy_message_bytes
+from ...message_renderer import render_message
 from ...protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -37,16 +47,6 @@ from ...protocols import (
     MirrorRepository,
 )
 from ...sync import ImapSyncService, ProgressInfo, SyncPlan, SyncResult
-from ..compose_utils import (
-    build_forward_body,
-    build_reply_all_recipients,
-    build_reply_body,
-    forward_subject,
-    new_compose_body,
-    parse_draft_fields,
-    reply_subject,
-)
-from ..message_renderer import render_message
 from ..terminal import (
     format_terminal_title,
     launch_file,
@@ -684,7 +684,7 @@ class MainScreen(Screen[None]):
         self.app.push_screen(SearchDialogScreen(), _on_query)  # pyright: ignore[reportUnknownMemberType]
 
     def _run_search(self, raw: str) -> None:
-        from ..search_parser import parse_query
+        from ...search_parser import parse_query
 
         folder_panel = self.query_one(FolderPanel)
         account_name, folder_ref = folder_panel.get_search_scope()
@@ -1824,7 +1824,7 @@ class MainScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
-        from ..message_renderer import build_browser_html
+        from ...message_renderer import build_browser_html
         from ..pdf_export import export_pdf_in_thread
         from .save_folder_picker_screen import SaveFolderPickerScreen
         from .save_message_screen import _proposed_body_filename
@@ -1930,7 +1930,7 @@ class MainScreen(Screen[None]):
             )
 
     def _open_indices(self, indices: list[int]) -> None:
-        from ..message_renderer import extract_attachment as _extract_attachment
+        from ...message_renderer import extract_attachment as _extract_attachment
         from .eml_viewer_screen import EmlViewerScreen
 
         panel = self.query_one(MessageViewPanel)
@@ -1980,7 +1980,7 @@ class MainScreen(Screen[None]):
         the folder-picker.  Files are written only when both dialogs are
         confirmed.
         """
-        from ..message_renderer import extract_attachment, render_message_markdown
+        from ...message_renderer import extract_attachment, render_message_markdown
         from .save_folder_picker_screen import SaveFolderPickerScreen
         from .save_message_screen import SaveItem, SaveMessageScreen
 

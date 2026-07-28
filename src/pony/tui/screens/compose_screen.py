@@ -25,6 +25,11 @@ from textual.widgets import (
     TextArea,
 )
 
+from ...compose_utils import (
+    build_email_message,
+    format_display_address,
+    split_address_list,
+)
 from ...contact_naming import harvested_name
 from ...domain import (
     AnyAccount,
@@ -39,11 +44,6 @@ from ...message_projection import project_rfc822_message
 from ...protocols import ContactRepository, IndexRepository, MirrorRepository
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
-from ..compose_utils import (
-    build_email_message,
-    format_display_address,
-    split_address_list,
-)
 
 _log = logging.getLogger(__name__)
 

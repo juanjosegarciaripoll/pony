@@ -1,4 +1,4 @@
-"""Tests for ``pony.tui.message_renderer.extract_attachment``."""
+"""Tests for ``pony.message_renderer.extract_attachment``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 
 import corpus
 
-from pony.tui.message_renderer import (
+from pony.message_renderer import (
     build_browser_html,
     extract_attachment,
     fmt_size,

@@ -1624,7 +1624,7 @@ async def test_main_screen_attachment_dispatch_and_open_error(
     """Nested mail stays in Pony and external viewer errors stay contained."""
     from corpus import nested_forward
 
-    from pony.tui.message_renderer import extract_attachment
+    from pony.message_renderer import extract_attachment
     from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")

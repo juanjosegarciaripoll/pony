@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .tui.message_renderer import AttachmentInfo
+    from .message_renderer import AttachmentInfo
 
 from .config import ConfigError, load_config
 from .credentials import build_credentials_provider, encrypt_password
@@ -1697,7 +1697,7 @@ def run_message_get(
     # Fall back to the yes/no summary when the body isn't available
     # locally (e.g. a headers-only row, or an account whose mirror is
     # unreachable).
-    from .tui.message_renderer import fmt_size
+    from .message_renderer import fmt_size
 
     rendered_attachments = _try_render_attachments(
         config_path=config_path,
@@ -1787,7 +1787,7 @@ def _try_render_attachments(
     use that as a signal to fall back to the index's yes/no flag.
     Returns an empty tuple when the message has no attachments.
     """
-    from .tui.message_renderer import render_message
+    from .message_renderer import render_message
 
     config = try_load_config(config_path)
     if config is None:
@@ -1819,7 +1819,7 @@ def run_message_body(
     """Print the full decoded body of a message from the local mirror."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .tui.message_renderer import fmt_size, render_message
+    from .message_renderer import fmt_size, render_message
 
     acc = _require_imap_account(config, account)
 
@@ -1879,7 +1879,7 @@ def run_message_attachment(
     """Write one attachment's bytes to a file or to stdout."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .tui.message_renderer import extract_attachment
+    from .message_renderer import extract_attachment
 
     acc = _require_imap_account(config, account)
 
@@ -2614,8 +2614,8 @@ def run_compose(
     if err is not None:
         return err
 
+    from .compose_utils import new_compose_body
     from .tui import ComposeApp
-    from .tui.compose_utils import new_compose_body
 
     # --markdown/--no-markdown override; fall back to account default
     effective_markdown = (

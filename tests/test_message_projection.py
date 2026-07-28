@@ -382,7 +382,7 @@ class NestedEmailRendererTest(unittest.TestCase):
     """Attached emails are listed as attachments with header separators."""
 
     def setUp(self) -> None:
-        from pony.tui.message_renderer import render_message
+        from pony.message_renderer import render_message
 
         self.rendered = render_message(corpus.double_attached_emails())
 
@@ -420,7 +420,7 @@ class NestedEmailBrowserHtmlTest(unittest.TestCase):
     """Browser HTML includes nested email headers."""
 
     def test_nested_headers_in_html(self) -> None:
-        from pony.tui.message_renderer import build_browser_html
+        from pony.message_renderer import build_browser_html
 
         html = build_browser_html(corpus.double_attached_emails())
         self.assertIn("Contract draft", html)
@@ -442,7 +442,7 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         return msg.as_bytes()
 
     def test_style_block_not_in_body(self) -> None:
-        from pony.tui.message_renderer import render_message
+        from pony.message_renderer import render_message
 
         raw = self._make_html_only_message(
             "<html><head><style>.foo { color: red; }</style></head>"
@@ -454,7 +454,7 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         self.assertNotIn(".foo", rendered.body)
 
     def test_script_block_not_in_body(self) -> None:
-        from pony.tui.message_renderer import render_message
+        from pony.message_renderer import render_message
 
         raw = self._make_html_only_message(
             "<html><body><script>var x = 1;</script><p>Visible text</p></body></html>"
@@ -464,7 +464,7 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         self.assertNotIn("var x", rendered.body)
 
     def test_multiple_style_blocks_stripped(self) -> None:
-        from pony.tui.message_renderer import render_message
+        from pony.message_renderer import render_message
 
         raw = self._make_html_only_message(
             "<style>body{margin:0}</style>"

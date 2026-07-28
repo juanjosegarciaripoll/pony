@@ -17,6 +17,10 @@ src/pony/
   storage_indexing.py  # mirror → index projection (rescan_local_account)
   message_projection.py# RFC 5322 parse → metadata
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
+  message_renderer.py  # RFC 5322 → plain text / browser HTML / attachments
+  compose_utils.py     # reply/forward quoting, address lists, MIME assembly
+  search_parser.py     # query parser (from:, to:, subject:…)
+  contact_naming.py    # display name → contact first/last name
   html_sanitize.py     # shared HTML→text helpers (preview + renderer)
   sync.py              # IMAP sync (plan/execute) + plan formatters
   imap_client.py       # ImapSession wrapper (imaplib)
@@ -30,11 +34,9 @@ src/pony/
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp
     bindings.py        # shared mark/motion Binding tuples
-    compose_utils.py   # reply/forward quoting + signature
-    message_renderer.py# RFC 5322 → plain text / browser HTML
     pdf_export.py      # ctrl+p — HTML → PDF via a detected external converter
-    search_parser.py   # query parser (from:, to:, subject:…)
     terminal.py        # OSC sequences for window-title push/pop/set
+    ui_state.py        # persisted pane sizes (ui_state.json)
     screens/
       main_screen.py             # three-pane reader (all mail bindings)
       compose_screen.py          # composer (ctrl+x chord)

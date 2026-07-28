@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Checkbox, Footer, Input, Label
 
-from ..message_renderer import RenderedMessage
+from ...message_renderer import RenderedMessage
 from .dialog_screen import DialogScreen
 
 # Maximum length (chars) for the subject slug in a proposed filename.

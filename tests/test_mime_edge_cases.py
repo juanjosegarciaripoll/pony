@@ -19,7 +19,7 @@ import corpus
 
 from pony.domain import MessageRef
 from pony.message_projection import project_rfc822_message
-from pony.tui.message_renderer import (
+from pony.message_renderer import (
     build_browser_html,
     extract_attachment,
     render_message,

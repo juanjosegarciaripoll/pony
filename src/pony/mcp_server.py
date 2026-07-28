@@ -26,10 +26,10 @@ from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
 from .config import load_config
 from .domain import AccountConfig, AnyAccount, SearchQuery
 from .index_store import SqliteIndexRepository
+from .message_renderer import AttachmentPayload, extract_attachment, render_message
 from .paths import AppPaths
 from .protocols import MirrorRepository
 from .storage import MaildirMirrorRepository, MboxMirrorRepository
-from .tui.message_renderer import AttachmentPayload, extract_attachment, render_message
 
 # ---------------------------------------------------------------------------
 # MCP state (TUI ↔ bridge IPC)

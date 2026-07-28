@@ -8,8 +8,8 @@ from textual.events import Key
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
+from ...compose_utils import format_display_address, split_trailing_address
 from ...protocols import ContactRepository
-from ..compose_utils import format_display_address, split_trailing_address
 
 
 class RecipientInput(Vertical):

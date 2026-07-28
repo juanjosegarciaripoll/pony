@@ -1,4 +1,4 @@
-"""Tests for link extraction and sentinel injection in ``pony.tui.message_renderer``."""
+"""Tests for link extraction and sentinel injection in ``pony.message_renderer``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 
 from textual.markup import _to_content
 
-from pony.tui.message_renderer import _inject_plaintext_links, render_message
+from pony.message_renderer import _inject_plaintext_links, render_message
 from pony.tui.widgets.message_view import _render_body
 
 

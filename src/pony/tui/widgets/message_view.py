@@ -16,14 +16,14 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ...domain import FolderMessageSummary, FolderRef
-from ...protocols import MirrorRepository
-from ..message_renderer import (
+from ...message_renderer import (
     RenderedMessage,
     build_browser_html,
     extract_attachment,
     fmt_size,
     render_message,
 )
+from ...protocols import MirrorRepository
 from ..terminal import suspend_for_external_program
 
 _log = logging.getLogger(__name__)
