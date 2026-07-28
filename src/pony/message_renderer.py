@@ -17,7 +17,7 @@ from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
 
-from pony.html_sanitize import strip_invisible_blocks
+from .html_sanitize import strip_invisible_blocks
 
 # Used by build_browser_html() to carry the original email's <style> blocks
 # into the self-contained view so the browser renders with the same styling.
