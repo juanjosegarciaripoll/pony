@@ -2206,6 +2206,7 @@ class ImapSyncService:
             message_id=message_id,
             server_flags=server_flags,
             extra_imap_flags=extra_imap_flags,
+            raw=raw,
         )
         if adopted:
             return True
@@ -2253,6 +2254,7 @@ class ImapSyncService:
         message_id: str,
         server_flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str],
+        raw: bytes,
     ) -> bool:
         """Give *uid* to a UID-less row for the same message, if there is one.
 
@@ -2263,8 +2265,6 @@ class ImapSyncService:
         the user's intent and the three-way merge reconciles them on the
         next pass.
         """
-        if not message_id:
-            return False
         candidates = [
             row
             for row in self._index.find_messages_by_message_id(
@@ -2276,6 +2276,15 @@ class ImapSyncService:
             and row.local_status
             in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
         ]
+        if len(candidates) != 1:
+            # No Message-ID to match on, or several messages share one —
+            # resends and list copies do, routinely.  Fall back to what
+            # the message says about itself.  Without this a reset
+            # duplicated every such message locally and then appended the
+            # orphaned row to the server on the next pass.
+            candidates = self._rows_matching_projection(
+                account=account, folder_ref=folder_ref, raw=raw
+            )
         if not candidates:
             return self._adopt_move_source(
                 account=account,
@@ -2298,6 +2307,40 @@ class ImapSyncService:
             )
         )
         return True
+
+    def _rows_matching_projection(
+        self,
+        *,
+        account: AccountConfig,
+        folder_ref: FolderRef,
+        raw: bytes,
+    ) -> list[IndexedMessage]:
+        """UID-less rows in this folder that describe the same message.
+
+        Compares what the message says about itself — sender, subject
+        and date — against the rows still waiting for a UID.  Used only
+        when the Message-ID cannot settle it, which is why it does not
+        need to be cheap.  Two genuinely indistinguishable messages stay
+        indistinguishable, and the caller inserts rather than guessing.
+        """
+        probe = project_rfc822_message(
+            message_ref=MessageRef(
+                account_name=account.name,
+                folder_name=folder_ref.folder_name,
+                id=0,
+            ),
+            raw_message=raw,
+            storage_key="",
+        )
+        return [
+            row
+            for row in self._index.list_folder_messages(folder=folder_ref)
+            if row.uid is None
+            and row.local_status in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
+            and row.sender == probe.sender
+            and row.subject == probe.subject
+            and row.received_at == probe.received_at
+        ]
 
     def _adopt_move_source(
         self,

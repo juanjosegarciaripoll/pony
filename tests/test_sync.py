@@ -3386,3 +3386,85 @@ class UidValidityResetPreservesMailTestCase(unittest.TestCase):
         service.sync()
         remaining = {v[0] for v in session.folders["INBOX"].values()}
         self.assertNotIn(row.message_id, remaining)
+
+
+class UidValidityAdoptionFallbackTestCase(unittest.TestCase):
+    """Adoption must not depend on every message having a unique Message-ID.
+
+    Matching on Message-ID alone leaves two ordinary populations
+    unmatched: messages that carry no Message-ID at all, and resends or
+    list copies that share one. Each of those was duplicated locally by a
+    reset, and the orphaned UID-less row would then have been appended to
+    the server on the next pass — turning a local duplicate into a remote
+    one.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _message(self, subject: str, message_id: str | None = None) -> bytes:
+        message = EmailMessage()
+        message["From"] = "alice@example.com"
+        message["To"] = "bob@example.com"
+        message["Subject"] = subject
+        message["Date"] = "Fri, 10 Apr 2026 10:00:00 +0000"
+        if message_id:
+            message["Message-ID"] = message_id
+        message.set_content("body")
+        return message.as_bytes()
+
+    def _reset_and_count(
+        self, folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]
+    ) -> tuple[int, int, int]:
+        service, index, mirror, session = _setup(server_folders=folders)
+        service.sync()
+        before = len(index.list_folder_messages(folder=self.folder))
+        session.uid_validity = 2
+        service.sync()
+        rows = index.list_folder_messages(folder=self.folder)
+        return before, len(rows), len(mirror.list_messages(folder=self.folder))
+
+    def test_messages_without_a_message_id_are_not_duplicated(self) -> None:
+        before, after, files = self._reset_and_count(
+            {
+                "INBOX": {
+                    1: ("", frozenset(), self._message("first")),
+                    2: ("", frozenset(), self._message("second")),
+                }
+            }
+        )
+        self.assertEqual((before, after, files), (2, 2, 2))
+
+    def test_messages_sharing_a_message_id_are_not_duplicated(self) -> None:
+        before, after, files = self._reset_and_count(
+            {
+                "INBOX": {
+                    1: (
+                        "<dup@example.com>",
+                        frozenset(),
+                        self._message("copy one", "<dup@example.com>"),
+                    ),
+                    2: (
+                        "<dup@example.com>",
+                        frozenset(),
+                        self._message("copy two", "<dup@example.com>"),
+                    ),
+                }
+            }
+        )
+        self.assertEqual((before, after, files), (2, 2, 2))
+
+    def test_every_row_regains_a_uid(self) -> None:
+        """An unadopted row would be appended to the server next pass."""
+        service, index, _mirror, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("", frozenset(), self._message("alpha")),
+                    2: ("", frozenset(), self._message("beta")),
+                }
+            }
+        )
+        service.sync()
+        session.uid_validity = 2
+        service.sync()
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertTrue(all(r.uid is not None for r in rows), "row left without a UID")
