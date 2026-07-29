@@ -50,7 +50,19 @@ in_sandbox() {
 
 die() { echo "error: $*" >&2; exit 1; }
 
+installed_ok() {
+    [[ -x "${DOVECOT}" ]] && command -v bwrap >/dev/null &&
+        in_sandbox /usr/sbin/dovecot --version >/dev/null 2>&1
+}
+
 install_dovecot() {
+    # Idempotent and cheap: the harness calls this before every run, and
+    # re-downloading and re-unpacking a working tree costs seconds each
+    # time for nothing.  Pass --force to rebuild it anyway.
+    if [[ "${1:-}" != "--force" ]] && installed_ok; then
+        echo "Already installed under ${ROOT} ($(in_sandbox /usr/sbin/dovecot --version))"
+        return 0
+    fi
     mkdir -p "${DEBS}" "${ROOT}"
     echo "Resolving dependencies…"
     # The recursive closure, minus anything dpkg already has installed.
@@ -139,8 +151,16 @@ EOF
     echo "Config written to ${CONF}"
 }
 
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; }
+
 start() {
     [[ -x "${DOVECOT}" ]] || die "not installed — run: $0 install"
+    # Idempotent: a second start is a fatal error to dovecot itself, and
+    # callers (the test harness especially) should not have to track it.
+    if port_open; then
+        echo "already listening on 127.0.0.1:${PORT}"
+        return 0
+    fi
     write_config
     # Detached from this shell's stdio: dovecot -F would otherwise hold
     # the terminal open for as long as it runs.
@@ -158,10 +178,21 @@ start() {
 }
 
 stop() {
+    # Two pids matter: the bwrap wrapper we launched, and dovecot's own
+    # master inside it.  Killing only the wrapper leaves master running
+    # and holding the port, and its pid file then makes the next start
+    # fail with "already running".
     local pidfile="${PREFIX}/dovecot.pid"
-    [[ -f "${pidfile}" ]] || { echo "not running"; return 0; }
-    kill "$(cat "${pidfile}")" 2>/dev/null || true
-    rm -f "${pidfile}"
+    [[ -f "${pidfile}" ]] && { kill "$(cat "${pidfile}")" 2>/dev/null || true; }
+    [[ -f "${RUN}/master.pid" ]] && {
+        kill "$(cat "${RUN}/master.pid")" 2>/dev/null || true
+    }
+    for _ in $(seq 40); do
+        port_open || break
+        sleep 0.2
+    done
+    rm -f "${pidfile}" "${RUN}/master.pid"
+    port_open && die "port ${PORT} still in use"
     echo "stopped"
 }
 
@@ -199,7 +230,7 @@ bump_uidvalidity() {
 }
 
 case "${1:-}" in
-    install) install_dovecot ;;
+    install) install_dovecot "${2:-}" ;;
     start)   start ;;
     stop)    stop ;;
     status)  status ;;

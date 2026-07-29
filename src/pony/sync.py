@@ -2273,8 +2273,7 @@ class ImapSyncService:
             )
             if row.message_ref.folder_name == folder_ref.folder_name
             and row.uid is None
-            and row.local_status
-            in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
+            and row.local_status in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
         ]
         if len(candidates) != 1:
             # No Message-ID to match on, or several messages share one —

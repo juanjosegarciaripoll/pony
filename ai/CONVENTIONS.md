@@ -25,6 +25,16 @@ uv run pytest
 ## Testing
 
 - `unittest` (stdlib), run via `pytest`. Files: `tests/test_*.py`.
+- **Live IMAP tests** in `tests/test_imap_live.py` skip unless `PONY_LIVE_IMAP=1`. They drive a real
+  Dovecot via `scripts/dovecot_userspace.sh`, which installs it under `~/.cache` with no root and no
+  system packages. They cover what a fake session cannot decide honestly: UID assignment, a genuine
+  UIDVALIDITY change, and what APPEND returns.
+
+  Turn them on for a checkout by writing `PONY_LIVE_IMAP=1` into a `.env` at the repo root —
+  `tests/conftest.py` loads it, a real environment variable still wins, and `.env` is gitignored.
+  The Dovecot install is cached: the first run downloads roughly 3 MB and unpacks it, later runs
+  cost milliseconds. `scripts/dovecot_userspace.sh install --force` rebuilds it. The eight
+  scenarios take about 40 s, most of it restarting the server to change a UID epoch.
 - Sync: `FakeImapSession`. Storage: conformance suite (Maildir + mbox). Contacts: real `SqliteIndexRepository`.
 - Fixture messages: `tests/corpus.py` (15 RFC 5322 types). All addresses use `@example.com`.
 

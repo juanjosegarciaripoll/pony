@@ -38,3 +38,6 @@ site/
 # testing files
 coverage
 .coverage
+
+# Local opt-in test switches (e.g. PONY_LIVE_IMAP=1); see tests/conftest.py
+.env

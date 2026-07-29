@@ -3059,9 +3059,7 @@ def run_contacts_export(
     return 0
 
 
-def _contact_by_name(
-    index: SqliteIndexRepository, contact: Contact
-) -> Contact | None:
+def _contact_by_name(index: SqliteIndexRepository, contact: Contact) -> Contact | None:
     """An existing contact with the same name and no email, if any.
 
     Only used for imported records that carry no address at all — a
