@@ -370,7 +370,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     expected=_SCHEMA_VERSION,
                 )
 
-            if has_messages and version == _MIGRATABLE_FROM:
+            migrated = has_messages and version == _MIGRATABLE_FROM
+            if migrated:
                 _migrate_v2_to_v3(conn)
 
             conn.execute(
@@ -502,6 +503,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             )
             _create_fts_tables(conn)
             _create_fts_triggers(conn)
+            if migrated:
+                # The rows were copied into the new base table before the
+                # triggers existed, so nothing populated the index.  An
+                # external-content FTS5 table has to be told to catch up;
+                # without this every search silently returns nothing and
+                # no ordinary sync ever repairs it, because unchanged rows
+                # are never rewritten.
+                conn.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+                )
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     # ------------------------------------------------------------------
@@ -832,8 +843,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         tokenizer is case- and diacritic-insensitive by construction.
         """
         match_expr = _build_fts_match(query)
-        clauses: list[str] = []
-        params: list[object] = []
+        # Trashed rows stay in the table until retention reaps them, so
+        # without this the duplicates `pony folder dedup` just hid come
+        # straight back in every search hit.  Same statuses the folder
+        # list shows: PENDING_MOVE rows are real mail awaiting a push.
+        clauses: list[str] = ["m.local_status IN (?, ?)"]
+        params: list[object] = [
+            MessageStatus.ACTIVE.value,
+            MessageStatus.PENDING_MOVE.value,
+        ]
 
         if match_expr:
             clauses.append("messages_fts MATCH ?")
@@ -841,7 +859,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         if account_name is not None:
             clauses.append("m.account_name = ?")
             params.append(account_name)
-        where_sql = " AND ".join(clauses) if clauses else "1=1"
+        where_sql = " AND ".join(clauses)
         join_sql = "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
 
         select_cols = ", ".join(f"m.{c}" for c in _FULL_COLS)
@@ -1528,6 +1546,28 @@ def _contact_fts_query(text: str) -> str:
     )
 
 
+def _fts5_terms(text: str) -> list[str]:
+    """One safely-quoted FTS5 phrase per whitespace-separated token.
+
+    Splitting matters: a single phrase requires the words to appear
+    adjacently and in the same column, so ``invoice paid`` found nothing
+    unless a message contained exactly that pair in that order.  Callers
+    combine the terms with ``AND`` instead, which is what someone typing
+    two words means.  Only the last token is a prefix, matching the
+    contact search.
+    """
+    tokens = text.split()
+    return [
+        _fts5_query(token, prefix=index == len(tokens) - 1)
+        for index, token in enumerate(tokens)
+    ]
+
+
+def _fts5_field_match(column: str, text: str) -> str:
+    """``AND`` every term in *text* against one FTS column."""
+    return " AND ".join(f"{column}:{term}" for term in _fts5_terms(text))
+
+
 def _build_fts_match(query: SearchQuery) -> str:
     """Build an FTS5 MATCH expression from a :class:`SearchQuery`.
 
@@ -1535,19 +1575,23 @@ def _build_fts_match(query: SearchQuery) -> str:
     back to a plain ``SELECT`` without a MATCH clause.
     """
     parts: list[str] = []
-    if query.from_address:
-        parts.append(f"sender:{_fts5_query(query.from_address, prefix=True)}")
-    if query.to_address:
-        parts.append(f"recipients:{_fts5_query(query.to_address, prefix=True)}")
-    if query.cc_address:
-        parts.append(f"cc:{_fts5_query(query.cc_address, prefix=True)}")
-    if query.subject:
-        parts.append(f"subject:{_fts5_query(query.subject, prefix=True)}")
-    if query.body:
-        parts.append(f"body_preview:{_fts5_query(query.body, prefix=True)}")
-    if query.text:
-        phrase = _fts5_query(query.text, prefix=True)
-        parts.append(f"(subject:{phrase} OR body_preview:{phrase})")
+    if query.from_address.strip():
+        parts.append(_fts5_field_match("sender", query.from_address))
+    if query.to_address.strip():
+        parts.append(_fts5_field_match("recipients", query.to_address))
+    if query.cc_address.strip():
+        parts.append(_fts5_field_match("cc", query.cc_address))
+    if query.subject.strip():
+        parts.append(_fts5_field_match("subject", query.subject))
+    if query.body.strip():
+        parts.append(_fts5_field_match("body_preview", query.body))
+    if query.text.strip():
+        parts.append(
+            " AND ".join(
+                f"(subject:{term} OR body_preview:{term})"
+                for term in _fts5_terms(query.text)
+            )
+        )
     return " AND ".join(parts)
 
 

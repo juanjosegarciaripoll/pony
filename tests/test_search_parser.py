@@ -99,7 +99,33 @@ def test_empty_string() -> None:
 
 
 def test_unclosed_quote_fallback() -> None:
-    # shlex raises on unclosed quote; parser falls back to split()
+    """An unbalanced quote degrades to a literal search, not a broken one.
+
+    The stray quote used to be kept in the term and passed through to
+    FTS5 as part of the phrase, where it matched nothing.  Dropping it
+    searches for what the user typed.
+    """
     q = parse_query('from:alice "unclosed')
     assert q.from_address == "alice"
-    assert '"unclosed' in q.text
+    assert q.text == "unclosed"
+
+
+def test_an_apostrophe_does_not_destroy_a_quoted_phrase() -> None:
+    """POSIX shlex treated ' as a quote, so the whole query fell back.
+
+    The phrase was then broken up and the quote characters ended up
+    inside the FTS term, so the search returned nothing.
+    """
+    q = parse_query('subject:"quarterly report" o\'brien')
+    assert q.subject == "quarterly report"
+    assert q.text == "o'brien"
+
+
+def test_backslashes_survive() -> None:
+    """They were being eaten as shell escapes."""
+    assert parse_query(r"C:\Users\bob").text == r"C:\Users\bob"
+
+
+def test_a_nul_byte_is_stripped() -> None:
+    """SQLite cannot take one in a MATCH expression; MCP/JSON can send it."""
+    assert parse_query("a\x00b").text == "ab"

@@ -36,12 +36,38 @@ _FIELD_ALIASES: dict[str, str] = {
 }
 
 
+def _tokenize(raw: str) -> list[str]:
+    """Split *raw* into terms, honouring double-quoted phrases.
+
+    ``shlex`` is configured for search text rather than for a shell.
+    Its POSIX defaults treat an apostrophe as an opening quote, so
+    ``o'brien`` raised "No closing quotation" and dropped the whole
+    query onto a fallback that understood no quoting at all — silently
+    turning a quoted phrase search into a search for stray quote
+    characters.  Backslashes were eaten as escapes, so a Windows path
+    searched for something else entirely.
+
+    Only ``"`` quotes, and nothing escapes.
+    """
+    lexer = shlex.shlex(raw, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.quotes = '"'
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        # An unbalanced double quote is the only way out of the lexer;
+        # treat the rest as literal text rather than losing the query.
+        return raw.replace('"', " ").split()
+
+
 def parse_query(raw: str) -> SearchQuery:
     """Parse *raw* into a :class:`~pony.domain.SearchQuery`."""
-    try:
-        tokens = shlex.split(raw)
-    except ValueError:
-        tokens = raw.split()
+    # A NUL cannot reach SQLite as part of a MATCH expression: it
+    # terminates the string and raises.  Reachable through the MCP tool,
+    # where JSON can encode \u0000.
+    tokens = _tokenize(raw.replace("\x00", ""))
 
     buckets: dict[str, list[str]] = {f: [] for f in _FIELD_ALIASES.values()}
     buckets["text"] = []

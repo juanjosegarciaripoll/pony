@@ -19,6 +19,7 @@ from pony.domain import (
     SearchQuery,
 )
 from pony.index_store import SqliteIndexRepository
+from pony.search_parser import parse_query
 
 
 class UpsertAndListTestCase(unittest.TestCase):
@@ -499,6 +500,28 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def test_v2_to_v3_leaves_the_search_index_usable(self) -> None:
+        """The migrated rows must be searchable afterwards.
+
+        The migration drops ``messages_fts`` and copies the rows into the
+        new table before the triggers exist, so nothing populates the
+        index.  Search then silently returned nothing for every upgraded
+        database, and no ordinary sync repaired it — unchanged rows are
+        never rewritten.
+        """
+        path = TMP_ROOT / "v2-migration-fts" / f"{uuid4().hex}.sqlite3"
+        self._build_v2_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        hits = repo.search(query=parse_query("Real"), account_name=None)
+        self.assertEqual(
+            [m.message_id for m in hits],
+            ["<real@example.com>"],
+            "migrated rows are absent from the FTS index",
+        )
 
     def test_v2_to_v3_drops_synthetic_orphans_and_backfills_validity(
         self,
@@ -1012,3 +1035,105 @@ class QueryGuardTestCase(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             repo._load_contact(99999)
+
+
+class SearchSemanticsTest(unittest.TestCase):
+    """What a typed query is expected to mean."""
+
+    def _store(self) -> SqliteIndexRepository:
+        path = TMP_ROOT / "search-semantics" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        return repo
+
+    def _seed(self, repo: SqliteIndexRepository) -> None:
+        repo.insert_message(
+            message=_make_message(
+                "<a@x>", subject="Invoice #3 paid", body_preview="thanks"
+            )
+        )
+        repo.insert_message(
+            message=_make_message(
+                "<b@x>", subject="Paid the invoice", body_preview="regards"
+            )
+        )
+        repo.insert_message(
+            message=_make_message(
+                "<c@x>",
+                subject="Meeting notes",
+                body_preview="please pay the invoice today",
+            )
+        )
+
+    def _find(self, repo: SqliteIndexRepository, raw: str) -> set[str]:
+        return {
+            m.subject for m in repo.search(query=parse_query(raw), account_name=None)
+        }
+
+    def test_two_words_mean_both_words_not_a_phrase(self) -> None:
+        # A single FTS phrase required the words to be adjacent *and* in
+        # the same column, so the commonest way to narrow a search
+        # returned nothing at all.
+        repo = self._store()
+        self._seed(repo)
+        self.assertEqual(
+            self._find(repo, "invoice paid"),
+            {"Invoice #3 paid", "Paid the invoice"},
+        )
+
+    def test_word_order_does_not_matter(self) -> None:
+        repo = self._store()
+        self._seed(repo)
+        self.assertEqual(
+            self._find(repo, "paid invoice"),
+            {"Invoice #3 paid", "Paid the invoice"},
+        )
+
+    def test_terms_may_match_different_columns_of_one_message(self) -> None:
+        # "notes" is in the subject, "invoice" only in the body.
+        repo = self._store()
+        self._seed(repo)
+        self.assertEqual(self._find(repo, "notes invoice"), {"Meeting notes"})
+
+    def test_a_single_word_still_matches_broadly(self) -> None:
+        repo = self._store()
+        self._seed(repo)
+        self.assertEqual(len(self._find(repo, "invoice")), 3)
+
+    def test_repeated_field_prefixes_and_together(self) -> None:
+        repo = self._store()
+        repo.insert_message(
+            message=_make_message("<d@x>", subject="Quarterly report update")
+        )
+        self.assertEqual(
+            self._find(repo, "subject:quarterly subject:report"),
+            {"Quarterly report update"},
+        )
+        self.assertEqual(self._find(repo, "subject:quarterly subject:absent"), set())
+
+    def test_trashed_messages_do_not_appear_in_results(self) -> None:
+        # Trashed rows live on until retention reaps them, so the
+        # duplicates `pony folder dedup` hid came back in every search.
+        repo = self._store()
+        repo.insert_message(message=_make_message("<keep@x>", subject="Active secret"))
+        repo.insert_message(
+            message=_make_message(
+                "<gone@x>",
+                subject="Trashed secret",
+                local_status=MessageStatus.TRASHED,
+            )
+        )
+        self.assertEqual(self._find(repo, "secret"), {"Active secret"})
+
+    def test_a_pending_move_is_still_findable(self) -> None:
+        # It is real mail awaiting a push, and the folder list shows it.
+        repo = self._store()
+        repo.insert_message(
+            message=_make_message(
+                "<pm@x>",
+                subject="Archived thing",
+                local_status=MessageStatus.PENDING_MOVE,
+            )
+        )
+        self.assertEqual(self._find(repo, "archived"), {"Archived thing"})

@@ -121,6 +121,30 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **Searching for two words works.** Every term after the first was treated
+  as part of one adjacent phrase confined to a single column, so `invoice
+  paid` found nothing even when both words were plainly there, and a subject
+  word combined with a body word never matched. Terms are now combined with
+  AND and each may match any searched field. Repeated field prefixes
+  (`subject:quarterly subject:report`) narrow instead of failing.
+
+- **Trashed messages no longer appear in search results.** They stay in the
+  index until retention reaps them, so the duplicates `pony folder dedup` had
+  just hidden came straight back on the next search.
+
+- **Search works again after upgrading from a 0.6-era index.** The v2→v3
+  migration dropped the full-text index and copied the rows across before the
+  triggers that populate it existed, so nothing was ever indexed: search
+  silently returned nothing, for everything, permanently — an ordinary sync
+  never repairs it because unchanged rows are not rewritten. The migration now
+  rebuilds the index.
+
+- **An apostrophe no longer breaks a search.** The tokenizer used shell rules,
+  where `'` opens a quote — so `o'brien` made the whole query fall back to a
+  path with no quote handling, pushing stray `"` characters into the search
+  term where they matched nothing. Backslashes were being eaten as escapes,
+  so searching for a Windows path searched for something else.
+
 - **An mbox deletion is committed before control returns.** A deletion is
   only applied to the file when the mailbox is flushed, so a cross-account
   move, a draft cleanup or the composer dropping its pre-send draft left the
