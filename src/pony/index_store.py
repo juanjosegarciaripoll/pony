@@ -1153,28 +1153,25 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return result
 
     def clear_uids_for_folder(self, *, account_name: str, folder_name: str) -> None:
-        """Drop ACTIVE rows for a folder on UIDVALIDITY reset.
+        """Drop the stale UID epoch from a folder on UIDVALIDITY reset.
 
-        ACTIVE rows are recoverable from the server's new UID epoch
-        via the next slow-path scan, so deleting them here avoids a
-        spurious PushAppendOp for every row (which would happen if we
-        merely NULLed ``uid``).  PENDING_MOVE rows keep their
-        ``source_*`` server-side handle and so survive; TRASHED rows
-        survive too — the user already asked for them gone.
+        A UIDVALIDITY change means the server's UIDs are meaningless, not
+        that the mail is gone.  This used to DELETE every ACTIVE row —
+        which, when the folder had also been emptied server-side, threw
+        away the user's only copy without the confirmation that the same
+        event triggers when UIDVALIDITY is unchanged.
+
+        The rows keep everything except the UID.  The server re-reports
+        the same messages under the new epoch and ``_adopt_existing_row``
+        gives each row its new UID back, so no message is re-downloaded,
+        re-uploaded or duplicated.  A row with no counterpart on the
+        server is then genuinely local-only and is pushed, which is the
+        non-destructive answer.
         """
         with self._use() as conn:
-            conn.execute(
-                """
-                DELETE FROM messages
-                WHERE account_name = ? AND folder_name = ?
-                  AND local_status = ?
-                  AND uid IS NOT NULL
-                """,
-                (account_name, folder_name, MessageStatus.ACTIVE.value),
-            )
-            # Surviving non-ACTIVE rows lose their stale UID epoch so
-            # a stray uid_validity doesn't accidentally match a future
-            # uid in this folder.
+            # Every row, whatever its status: a stale UID must not
+            # accidentally match one in the new epoch, and a TRASHED row
+            # needs re-adopting before its deletion can be pushed.
             conn.execute(
                 """
                 UPDATE messages
@@ -1182,6 +1179,19 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     server_flags = '', extra_imap_flags = '',
                     synced_at = NULL
                 WHERE account_name = ? AND folder_name = ?
+                """,
+                (account_name, folder_name),
+            )
+            # A move out of this folder is still waiting to be pushed,
+            # and its handle on the server side is a UID in the epoch
+            # that just ended.  Clearing it lets the re-fetch re-adopt
+            # the source, instead of the move being pushed as an append
+            # while the original stays where it was.
+            conn.execute(
+                """
+                UPDATE messages
+                SET source_uid = NULL
+                WHERE account_name = ? AND source_folder = ?
                 """,
                 (account_name, folder_name),
             )

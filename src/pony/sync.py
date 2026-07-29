@@ -1312,7 +1312,13 @@ class ImapSyncService:
                     # untouched until the user resolves it.
                     continue
                 if row.source_folder in uidvalidity_reset_folders:
-                    ops.append(PushAppendOp(message_ref=row.message_ref))
+                    # The source handle is a UID from the epoch that just
+                    # ended.  Appending to the target would leave the
+                    # original where it is, so the message would exist in
+                    # both folders on the server.  Wait: this pass
+                    # re-adopts the source UID from the new epoch while
+                    # re-fetching that folder, and the next pass issues a
+                    # real move.
                     continue
                 # Interrupted-move recovery: if the source folder was
                 # scanned and ``source_uid`` is no longer there, the
@@ -1951,7 +1957,6 @@ class ImapSyncService:
                 self._execute_uidvalidity_reset(
                     account=account,
                     folder_ref=folder_ref,
-                    mirror=mirror,
                 )
                 return True
 
@@ -2153,25 +2158,17 @@ class ImapSyncService:
         *,
         account: AccountConfig,
         folder_ref: FolderRef,
-        mirror: MirrorRepository,
     ) -> None:
-        stale_rows = [
-            row
-            for row in self._index.list_folder_messages(folder=folder_ref)
-            if row.local_status == MessageStatus.ACTIVE and row.uid is not None
-        ]
+        # Only the UID epoch is discarded.  The rows and their mirror
+        # files stay: a UIDVALIDITY change says the server's UIDs are
+        # meaningless, not that the mail is gone, and deleting the
+        # mirror files removed the user's only copy of anything the
+        # server no longer had.  The re-fetch re-adopts these rows by
+        # Message-ID rather than re-downloading them.
         self._index.clear_uids_for_folder(
             account_name=account.name,
             folder_name=folder_ref.folder_name,
         )
-        for row in stale_rows:
-            if not row.storage_key:
-                continue
-            with contextlib.suppress(Exception):
-                mirror.delete_message(
-                    folder=folder_ref,
-                    storage_key=row.storage_key,
-                )
 
     def _ingest_raw(
         self,
@@ -2193,6 +2190,26 @@ class ImapSyncService:
                 folder_ref.folder_name,
             )
             return False
+
+        # A row this folder already holds for the same message, waiting
+        # for a UID.  A UIDVALIDITY reset produces a folder full of them:
+        # the cached UIDs are meaningless, so they are cleared, and the
+        # server then re-reports the same mail under new ones.  Adopting
+        # the row keeps the message's local state — read/flagged, or the
+        # user's pending deletion — where re-inserting would resurrect a
+        # deleted message and duplicate everything else.  It also covers
+        # an APPEND whose APPENDUID never came back.
+        adopted = self._adopt_existing_row(
+            account=account,
+            folder_ref=folder_ref,
+            uid=uid,
+            message_id=message_id,
+            server_flags=server_flags,
+            extra_imap_flags=extra_imap_flags,
+        )
+        if adopted:
+            return True
+
         try:
             storage_key = mirror.store_message_async(
                 folder=folder_ref,
@@ -2225,6 +2242,99 @@ class ImapSyncService:
             synced_at=datetime.now(tz=UTC),
         )
         self._index.insert_message(message=indexed)
+        return True
+
+    def _adopt_existing_row(
+        self,
+        *,
+        account: AccountConfig,
+        folder_ref: FolderRef,
+        uid: int,
+        message_id: str,
+        server_flags: frozenset[MessageFlag],
+        extra_imap_flags: frozenset[str],
+    ) -> bool:
+        """Give *uid* to a UID-less row for the same message, if there is one.
+
+        Returns whether a row was adopted.  ``local_status`` is left
+        alone: a row the user trashed stays trashed, and regains a UID
+        so the deletion can finally be pushed rather than being stranded
+        with no server handle.  Local flags are left alone too — they are
+        the user's intent and the three-way merge reconciles them on the
+        next pass.
+        """
+        if not message_id:
+            return False
+        candidates = [
+            row
+            for row in self._index.find_messages_by_message_id(
+                account_name=account.name,
+                message_id=message_id,
+            )
+            if row.message_ref.folder_name == folder_ref.folder_name
+            and row.uid is None
+            and row.local_status
+            in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
+        ]
+        if not candidates:
+            return self._adopt_move_source(
+                account=account,
+                folder_ref=folder_ref,
+                uid=uid,
+                message_id=message_id,
+            )
+        if len(candidates) != 1:
+            # More than one, and no way to tell which.
+            return False
+        row = candidates[0]
+        self._index.update_message(
+            message=dataclasses.replace(
+                row,
+                uid=uid,
+                base_flags=server_flags,
+                server_flags=server_flags,
+                extra_imap_flags=extra_imap_flags,
+                synced_at=datetime.now(tz=UTC),
+            )
+        )
+        return True
+
+    def _adopt_move_source(
+        self,
+        *,
+        account: AccountConfig,
+        folder_ref: FolderRef,
+        uid: int,
+        message_id: str,
+    ) -> bool:
+        """Re-point a pending move at the server copy it is moving away from.
+
+        A message archived locally leaves a ``PENDING_MOVE`` row in the
+        target folder holding ``(source_folder, source_uid)`` — the
+        server-side handle the move has to expunge.  A UIDVALIDITY reset
+        on the source folder invalidates that UID, so the move degraded
+        into an append and the original was left where it was: the
+        message ended up in both folders on the server.
+
+        Re-adopting the source UID here lets the move complete as a move.
+        The re-fetch that found it must not also insert a row for it,
+        hence the boolean.
+        """
+        candidates = [
+            row
+            for row in self._index.find_messages_by_message_id(
+                account_name=account.name,
+                message_id=message_id,
+            )
+            if row.local_status == MessageStatus.PENDING_MOVE
+            and row.source_folder == folder_ref.folder_name
+            and row.source_uid is None
+        ]
+        if len(candidates) != 1:
+            return False
+        self._index.update_message(
+            message=dataclasses.replace(candidates[0], source_uid=uid)
+        )
         return True
 
     def _run_cleanup(self) -> None:

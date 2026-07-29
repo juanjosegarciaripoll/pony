@@ -3286,3 +3286,103 @@ class ReadOnlyAppendSuppressionTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=folder)
         self.assertEqual(len(rows), 1)
         self.assertIsNone(rows[0].uid)
+
+
+class UidValidityResetPreservesMailTestCase(unittest.TestCase):
+    """A UIDVALIDITY change means the UIDs are meaningless, not the mail.
+
+    The reset deleted every ACTIVE row and its mirror file. When the
+    server folder had also been emptied — which is exactly what a restore
+    from backup or a server migration looks like — that destroyed the
+    user's only copy, and it did so without the confirmation that the
+    same event triggers when UIDVALIDITY is unchanged.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _ten(self) -> dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]:
+        return {
+            "INBOX": {
+                i: (
+                    f"<m{i}@example.com>",
+                    frozenset(),
+                    _make_raw_message(f"m{i}", f"<m{i}@example.com>"),
+                )
+                for i in range(1, 11)
+            }
+        }
+
+    def test_an_emptied_folder_does_not_lose_local_mail(self) -> None:
+        service, index, mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+
+        session.folders["INBOX"] = {}
+        session.uid_validity = 2
+        service.sync()
+
+        self.assertEqual(len(index.list_folder_messages(folder=self.folder)), 10)
+        self.assertEqual(len(mirror.list_messages(folder=self.folder)), 10)
+
+    def test_the_same_messages_are_adopted_not_re_downloaded(self) -> None:
+        service, index, mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+        before = {
+            r.message_ref.id for r in index.list_folder_messages(folder=self.folder)
+        }
+
+        session.uid_validity = 2
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 10, "messages were duplicated")
+        self.assertEqual(
+            {r.message_ref.id for r in rows}, before, "rows were replaced, not adopted"
+        )
+        self.assertTrue(all(r.uid is not None for r in rows), "UIDs not re-adopted")
+
+    def test_an_unpushed_local_flag_survives(self) -> None:
+        service, index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+        row = index.list_folder_messages(folder=self.folder)[0]
+        index.update_message(
+            message=dataclasses.replace(
+                row, local_flags=frozenset({MessageFlag.FLAGGED})
+            )
+        )
+
+        session.uid_validity = 2
+        service.sync()
+
+        after = [
+            r
+            for r in index.list_folder_messages(folder=self.folder)
+            if r.message_id == row.message_id
+        ]
+        self.assertEqual(len(after), 1)
+        self.assertIn(MessageFlag.FLAGGED, after[0].local_flags)
+
+    def test_a_pending_deletion_is_not_undone(self) -> None:
+        """The row used to lose its UID and resurrect as a second, active row."""
+        service, index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+        row = index.list_folder_messages(folder=self.folder)[0]
+        index.update_message(
+            message=dataclasses.replace(row, local_status=MessageStatus.TRASHED)
+        )
+
+        session.uid_validity = 2
+        service.sync()
+
+        same = [
+            r
+            for r in index.list_folder_messages(folder=self.folder)
+            if r.message_id == row.message_id
+        ]
+        self.assertEqual(len(same), 1, "the message came back as a second row")
+        self.assertEqual(same[0].local_status, MessageStatus.TRASHED)
+        self.assertIsNotNone(same[0].uid, "no server handle, so the delete is stranded")
+
+        # With a handle again, the next pass actually removes it.
+        service.sync()
+        remaining = {v[0] for v in session.folders["INBOX"].values()}
+        self.assertNotIn(row.message_id, remaining)

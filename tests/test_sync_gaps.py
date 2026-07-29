@@ -388,30 +388,27 @@ def test_push_move_handles_missing_row_failure_and_missing_copyuid() -> None:
     assert updated.synced_at is None
 
 
-def test_uidvalidity_reset_skips_empty_keys_and_suppresses_delete_errors() -> None:
+def test_uidvalidity_reset_keeps_the_mail_and_only_drops_the_uid_epoch() -> None:
+    """A UIDVALIDITY change means the UIDs are meaningless, not the mail.
+
+    The reset used to delete every ACTIVE row and its mirror file, which
+    threw away the user's only copy of anything the server no longer
+    had — and without the confirmation the same server-side event
+    triggers when UIDVALIDITY is unchanged.
+    """
     service, index, mirror, _ = _service()
     folder = FolderRef("personal", "Archive")
     index.list_folder_messages.return_value = [
         _row(storage_key=""),
         dataclasses.replace(_row(), message_ref=MessageRef("personal", "Archive", 12)),
-        dataclasses.replace(
-            _row(),
-            message_ref=MessageRef("personal", "Archive", 13),
-            local_status=MessageStatus.TRASHED,
-        ),
     ]
-    mirror.delete_message.side_effect = OSError("already gone")
 
-    service._execute_uidvalidity_reset(
-        account=_account(), folder_ref=folder, mirror=mirror
-    )
+    service._execute_uidvalidity_reset(account=_account(), folder_ref=folder)
 
     index.clear_uids_for_folder.assert_called_once_with(
         account_name="personal", folder_name="Archive"
     )
-    mirror.delete_message.assert_called_once_with(
-        folder=folder, storage_key="message-key"
-    )
+    mirror.delete_message.assert_not_called()
 
 
 def test_ingest_raw_rejects_empty_and_storage_failure() -> None:

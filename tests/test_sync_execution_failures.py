@@ -475,8 +475,18 @@ class UidValidityResetTestCase(unittest.TestCase):
         # The message survives the forced re-scan — no duplicate row.
         self.assertEqual(len(index.list_folder_messages(folder=_PERSONAL_INBOX)), 1)
 
-    def test_a_pending_move_from_a_reset_folder_falls_back_to_append(self) -> None:
-        """The source UID is meaningless now, so upload rather than MOVE."""
+    def test_a_pending_move_from_a_reset_folder_waits_rather_than_duplicating(
+        self,
+    ) -> None:
+        """Appending would leave the original where it is.
+
+        The source handle is a UID from the epoch that just ended, so the
+        move cannot be pushed yet.  Uploading to the target instead —
+        which is what this used to do — left the message in the source
+        folder as well, so it existed twice on the server and no later
+        sync removed either copy.  The move waits for the source UID to
+        be re-adopted and completes on the next pass.
+        """
         from pony.domain import MessageRef
 
         raw = _make_raw_message("Moving", "<moving@example.com>")
@@ -510,9 +520,20 @@ class UidValidityResetTestCase(unittest.TestCase):
         session.uid_validity = 99
         service.execute(service.plan())
 
-        # Uploaded to Archive rather than MOVEd from a stale INBOX UID.
+        # Nothing pushed yet: no copy in Archive, original untouched.
         self.assertEqual(session.moves, [])
-        self.assertTrue(session.folders["Archive"])
+        self.assertFalse(session.folders["Archive"])
+
+        # The re-fetch re-adopted the source UID, so the next pass moves it.
+        service.sync()
+        archived = {v[0] for v in session.folders["Archive"].values()}
+        inbox = {v[0] for v in session.folders["INBOX"].values()}
+        self.assertIn("<moving@example.com>", archived)
+        self.assertNotIn(
+            "<moving@example.com>",
+            inbox,
+            "the message is in both folders on the server",
+        )
 
 
 class AppendWithoutUidplusTestCase(unittest.TestCase):

@@ -121,6 +121,22 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **A UIDVALIDITY change no longer deletes your mail.** When a server resets
+  UIDVALIDITY — a restore from backup, a migration — Pony deleted every active
+  row for that folder *and its mirror files*, so anything the server no longer
+  had was gone locally too. The identical server-side event triggers a
+  mass-deletion confirmation when UIDVALIDITY is unchanged; the reset path
+  bypassed it. A reset now discards only the stale UIDs. The server re-reports
+  the same messages under the new epoch and each row adopts its new UID, so
+  nothing is re-downloaded, re-uploaded or duplicated.
+
+  Three consequences of the old behaviour go with it: a message archived
+  locally was uploaded to the target while the original stayed put, leaving it
+  in both folders on the server with no later sync removing either; a message
+  the user had deleted came back as a second, active row while the deletion was
+  stranded with no server handle; and flag changes made since the last sync were
+  discarded rather than re-applied.
+
 - **Deleting from an mbox no longer makes the index point at the wrong
   messages.** A storage key there is the message's ordinal position, and
   removing a message renumbered every message after it — silently, on the next
