@@ -38,13 +38,7 @@ from ...domain import (
     MessageFlag,
     MessageStatus,
 )
-from ...mailbox_ops import (
-    flush_mirror,
-    landed_in_folder,
-    mirror_flags,
-    moved_to_folder,
-    write_mirror_flags,
-)
+from ...mailbox_ops import flush_mirror, landed_in_folder, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
     RenderedMessage,
@@ -855,39 +849,17 @@ class MainScreen(Screen[None]):
             local_flags=message.local_flags | {MessageFlag.SEEN},
         )
         self._record_flags(updated)
-        self._commit_mirror(message.message_ref.account_name)
         self.query_one(MessageListPanel).update_from_indexed(updated)
         self._refresh_folder_indicators()
 
     def _record_flags(self, message: IndexedMessage) -> None:
-        """Persist *message*'s flags to the index and mirror them to disk.
+        """Persist *message*'s flags.
 
-        Every flag change the user makes goes through here.  The index is
-        authoritative; the mirror write is what lets another MUA sharing
-        the same Maildir or mbox see that a message was read, flagged or
-        answered.
-
-        The mirror write is deferred, so the caller must finish with
-        :meth:`_commit_mirror` — batching a marked selection into one
-        commit instead of one per message.
+        The index is the only store of flag state — nothing reads flags
+        back out of the mirror, so writing them there would be data no
+        one consumes.
         """
         self._index.upsert_message(message=message)
-        mirror = self._mirrors.get(message.message_ref.account_name)
-        if mirror is not None:
-            mirror_flags(mirror, message)
-
-    def _commit_mirror(self, account_name: str) -> None:
-        """Commit the mirror writes queued for *account_name*.
-
-        Deferring is what keeps a bulk flag change from rewriting an mbox
-        once per message, but an uncommitted mbox holds a flag-changed
-        message twice — the original plus the rewritten copy — and an
-        uncommitted deletion has not happened at all.  Anything else
-        reading the tree sees that, so it must not outlive the action.
-        """
-        mirror = self._mirrors.get(account_name)
-        if mirror is not None:
-            flush_mirror(mirror)
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -925,7 +897,6 @@ class MainScreen(Screen[None]):
                     continue
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._record_flags(updated)
-        self._commit_mirror(targets[0].message_ref.account_name)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
@@ -937,7 +908,6 @@ class MainScreen(Screen[None]):
         )
         with self._index.connection():
             self._record_flags(updated)
-        self._commit_mirror(msg.message_ref.account_name)
         folder_ref = FolderRef(
             account_name=msg.message_ref.account_name,
             folder_name=msg.message_ref.folder_name,
@@ -960,7 +930,6 @@ class MainScreen(Screen[None]):
                     new_flags = msg.local_flags | {flag}
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._record_flags(updated)
-        self._commit_mirror(targets[0].message_ref.account_name)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
@@ -1085,17 +1054,7 @@ class MainScreen(Screen[None]):
         folder_ref = self._current_folder_ref
         if folder_ref is None:
             return
-        # Collect the unread ones before the update: the index change is a
-        # single UPDATE that materialises no rows, but the mirror has to be
-        # told message by message.  The reload below re-reads the folder
-        # anyway, so this costs no extra query.
-        unread = [
-            summary
-            for summary in self._index.list_folder_message_summaries(folder=folder_ref)
-            if MessageFlag.SEEN not in summary.local_flags
-        ]
         count = self._index.mark_folder_read(folder=folder_ref)
-        self._mirror_seen(folder_ref, unread)
         self._reload_keeping_cursor(folder_ref)
         self._refresh_folder_indicators()
         if count:
@@ -1103,28 +1062,6 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Marked {count} message{suffix} as read.",
             )
-
-    def _mirror_seen(
-        self, folder_ref: FolderRef, summaries: list[FolderMessageSummary]
-    ) -> None:
-        """Write SEEN onto *summaries* in the mirror, in one pass.
-
-        Marking a folder read is the one flag action whose size the user
-        does not choose, so it goes through the mirror in a single batch
-        and commits once: on mbox each write would otherwise rewrite the
-        whole mailbox, which made the cost quadratic in folder size.
-        """
-        mirror = self._mirrors.get(folder_ref.account_name)
-        if mirror is None or not summaries:
-            return
-        for summary in summaries:
-            write_mirror_flags(
-                mirror,
-                folder=folder_ref,
-                storage_key=summary.storage_key,
-                flags=frozenset(summary.local_flags | {MessageFlag.SEEN}),
-            )
-        flush_mirror(mirror)
 
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)

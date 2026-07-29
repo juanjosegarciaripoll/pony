@@ -24,13 +24,7 @@ import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
-from .domain import (
-    FolderRef,
-    IndexedMessage,
-    MessageFlag,
-    MessageRef,
-    MessageStatus,
-)
+from .domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
 
 if TYPE_CHECKING:
     from .protocols import MirrorRepository
@@ -58,59 +52,6 @@ def flush_mirror(mirror: MirrorRepository) -> None:
         mirror.flush_writes()
     except Exception as exc:  # noqa: BLE001
         _log.warning("Could not flush mirror writes: %s", exc)
-
-
-def write_mirror_flags(
-    mirror: MirrorRepository,
-    *,
-    folder: FolderRef,
-    storage_key: str,
-    flags: frozenset[MessageFlag],
-) -> bool:
-    """Write *flags* onto the message at *storage_key* in *mirror*.
-
-    Takes the three things the write actually needs, so a caller holding
-    a ``FolderMessageSummary`` — the narrow row the message list uses —
-    does not have to re-fetch the full ``IndexedMessage`` just to record
-    a flag.  See :func:`mirror_flags` for the whole-row convenience form
-    and for why this is best-effort.
-    """
-    try:
-        mirror.set_flags(folder=folder, storage_key=storage_key, flags=flags)
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("Could not write flags to mirror for %s: %s", storage_key, exc)
-        return False
-    return True
-
-
-def mirror_flags(mirror: MirrorRepository, message: IndexedMessage) -> bool:
-    """Write *message*'s local flags onto its file in *mirror*.
-
-    The index is where Pony reads flags from, but it is not the only
-    reader of the mirror: a Maildir or mbox tree is routinely shared with
-    another MUA, and until this was called nothing ever wrote flags to
-    disk, so anything Pony marked read still looked unread to everything
-    else.
-
-    Best-effort by design.  The index row is authoritative and has
-    already been written by the time this runs; a mirror file that has
-    been moved or removed underneath us (a sync racing the same message)
-    must not turn a successful flag change into an error the user sees.
-    Returns whether the write landed, for callers that want to count.
-
-    Costs one file rename on Maildir but a full rewrite of the mailbox on
-    mbox, so callers should apply it to messages the user actually
-    selected rather than to a whole folder.
-    """
-    return write_mirror_flags(
-        mirror,
-        folder=FolderRef(
-            account_name=message.message_ref.account_name,
-            folder_name=message.message_ref.folder_name,
-        ),
-        storage_key=message.storage_key,
-        flags=frozenset(message.local_flags),
-    )
 
 
 def landed_in_folder(

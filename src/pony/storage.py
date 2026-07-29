@@ -72,50 +72,19 @@ class MaildirMirrorRepository(MirrorRepository):
         timestamp = time.time()
         return f"{timestamp:.6f}.{pid}.{hostname}"
 
-    def store_message(
-        self,
-        *,
-        folder: FolderRef,
-        raw_message: bytes,
-        flags: frozenset[MessageFlag] = frozenset(),
-    ) -> str:
+    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         self._require_folder(folder)
         folder_path = self._ensure_folder_dirs(folder.folder_name)
         filename = self._make_filename()
-        path = self._destination_for(folder_path, filename, flags)
-        path.write_bytes(raw_message)
+        new_path = folder_path / "new" / filename
+        new_path.write_bytes(raw_message)
         return filename
-
-    def _destination_for(
-        self,
-        folder_path: Path,
-        filename: str,
-        flags: frozenset[MessageFlag],
-    ) -> Path:
-        """Where a newly stored message goes, given its flags.
-
-        A message with no flags is unread and belongs in ``new/`` with a
-        bare name. One that arrives already flagged belongs in ``cur/``
-        carrying the flag suffix, which is how every other Maildir reader
-        will see that state. Writing it there directly avoids storing the
-        message and then immediately renaming it.
-
-        The storage_key stays the bare filename either way: the suffix
-        separator is registered with ``mailbox.Maildir`` so the key round
-        trips, and ``_find_message_file`` searches both directories.
-        """
-        if not flags:
-            return folder_path / "new" / filename
-        cur = folder_path / "cur"
-        cur.mkdir(parents=True, exist_ok=True)
-        return cur / f"{filename}!2,{_maildir_flags(flags)}"
 
     def store_message_async(
         self,
         *,
         folder: FolderRef,
         raw_message: bytes,
-        flags: frozenset[MessageFlag] = frozenset(),
     ) -> str:
         """Generate the filename and return immediately; write in background.
 
@@ -125,7 +94,7 @@ class MaildirMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         folder_path = self._ensure_folder_dirs(folder.folder_name)
         filename = self._make_filename()
-        new_path = self._destination_for(folder_path, filename, flags)
+        new_path = folder_path / "new" / filename
         if self._write_pool is None:
             self._write_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=4,
@@ -397,42 +366,22 @@ class MboxMirrorRepository(MirrorRepository):
             for name in sorted(set(folder_names))
         )
 
-    def store_message(
-        self,
-        *,
-        folder: FolderRef,
-        raw_message: bytes,
-        flags: frozenset[MessageFlag] = frozenset(),
-    ) -> str:
+    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         parsed = BytesParser(policy=policy.default).parsebytes(raw_message)
         message = mailbox.mboxMessage(parsed)
-        if flags:
-            _set_mbox_flags(message, flags=flags)
         key = str(mbox.add(message))
-        # Flush is deferred, as in set_flags and delete_message.  ``add``
-        # has already appended the bytes and assigned the key, so nothing
-        # here depends on flushing.  Doing it per message was not merely
-        # an extra fsync: once a flag write or a delete is pending,
-        # ``mbox.flush()`` rewrites the entire file, so a sync that
-        # interleaves ingests with flag reconciliation paid a full rewrite
-        # per ingested message.
+        mbox.flush()
         return key
 
-    def store_message_async(
-        self,
-        *,
-        folder: FolderRef,
-        raw_message: bytes,
-        flags: frozenset[MessageFlag] = frozenset(),
-    ) -> str:
+    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
         """Store synchronously — an mbox key is the message's position.
 
         There is nothing to defer: the key only exists once the message
         has been appended, so there is no way to hand one back early.
         """
-        return self.store_message(folder=folder, raw_message=raw_message, flags=flags)
+        return self.store_message(folder=folder, raw_message=raw_message)
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
@@ -480,10 +429,7 @@ class MboxMirrorRepository(MirrorRepository):
         updated = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
-        # Flush is deferred, exactly as in delete_message: mbox.flush()
-        # rewrites the entire file, so flushing per message made marking a
-        # folder read cost one full rewrite per message. flush_writes()
-        # commits them in one pass and _close_all() catches process exit.
+        mbox.flush()
 
     def delete_message(
         self,

@@ -31,7 +31,6 @@ All v1 capabilities implemented and tested:
 - Background/periodic sync: non-blocking `ctrl+g` worker that auto-confirms every folder, plus a config-gated periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
 - RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
 - Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
-- Flag changes written through to the mirror (Maildir filename suffix, mbox `Status`/`X-Status`), including the bulk paths: sync ingest applies flags at store time, and mbox defers its flush so marking a folder read costs one rewrite rather than one per message.
 - Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.
 
 ## Queue

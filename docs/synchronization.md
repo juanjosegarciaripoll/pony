@@ -405,21 +405,6 @@ the field sets below *are* the contract. They are implemented once, in
 | Compose / send | New row `uid=NULL`, `folder=Sent` | `PushAppendOp` |
 | Flag change | Update `local_flags` | `PushFlagsOp` if drift |
 
-Flag changes also write through to the mirror (`mailbox_ops.mirror_flags`) so
-another MUA sharing the tree sees them. The index stays authoritative: a failed
-mirror write is logged, not raised.
-
-Bulk paths avoid a second pass over each message rather than skipping the
-mirror. A message a sync ingests is stored with its flags already applied —
-`store_message(flags=…)` puts them in the Maildir filename or the mbox
-`Status` headers as it writes.
-
-mbox defers every mutation — stores, flag writes and deletions alike — to a
-single `flush_writes()` per folder. This matters more than an extra `fsync`
-would: `mbox.flush()` rewrites the whole mailbox whenever any change is
-outstanding, so flushing per message meant a sync that interleaved downloads
-with flag reconciliation rewrote the entire folder once per message.
-
 ### UID recovery
 
 `PushAppendOp` and `PushMoveOp` capture the new UID from APPENDUID / COPYUID

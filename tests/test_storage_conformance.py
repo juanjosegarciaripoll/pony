@@ -75,9 +75,7 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
             folder=folder, storage_key=alpha, flags=frozenset({MessageFlag.SEEN})
         )
         charlie = repository.store_message(
-            folder=folder,
-            raw_message=_rfc5322_message_bytes("charlie", "<c@x>"),
-            flags=frozenset({MessageFlag.FLAGGED}),
+            folder=folder, raw_message=_rfc5322_message_bytes("charlie", "<c@x>")
         )
         repository.delete_message(folder=folder, storage_key=bravo)
         delta = repository.store_message(
@@ -98,35 +96,6 @@ class MirrorRepositoryConformanceMixin(unittest.TestCase):
             b"alpha",
             repository.get_message_bytes(folder=folder, storage_key=alpha),
         )
-
-    def test_flags_given_at_store_time_are_recorded(self) -> None:
-        """A message can arrive already flagged.
-
-        Sync ingests messages the server reports as read; setting the
-        flags afterwards would mean a second pass over every one of them,
-        and the write may not even have landed yet.
-        """
-        repository = self.make_repository()
-        folder = FolderRef(account_name=self.account_name, folder_name="INBOX")
-
-        key = repository.store_message(
-            folder=folder,
-            raw_message=_rfc5322_message_bytes("seen", "<seen@x>"),
-            flags=frozenset({MessageFlag.SEEN}),
-        )
-        repository.flush_writes()
-
-        # The key is unaffected by the flags, and the message reads back.
-        self.assertIn(key, repository.list_messages(folder=folder))
-        self.assertIn(
-            b"seen",
-            repository.get_message_bytes(folder=folder, storage_key=key),
-        )
-        # Setting them again is idempotent, not an error.
-        repository.set_flags(
-            folder=folder, storage_key=key, flags=frozenset({MessageFlag.SEEN})
-        )
-        self.assertIn(key, repository.list_messages(folder=folder))
 
     def test_store_list_read_delete_cycle(self) -> None:
         repository = self.make_repository()

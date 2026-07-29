@@ -70,36 +70,6 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   to match a subcommand does not hijack it, and a path that does not exist
   still reports itself rather than being silently swallowed.
 
-- **Flag changes now reach the mirror.** Read, flagged and answered state
-  lived only in the SQLite index, so another MUA sharing the same Maildir or
-  mbox tree — the arrangement `[[local]]` accounts exist for — saw everything
-  as unread no matter what was done in Pony. Marking read, marking unread,
-  flagging and replying now write the flags onto the message file too. The
-  index stays authoritative: a mirror file that a sync moved underneath the
-  action is logged and skipped rather than surfaced as an error.
-
-  This covers the bulk paths too: marking a folder read, and the flags a
-  sync learns from the server when it ingests a message or reconciles a
-  change made elsewhere. A message a sync downloads is written with its
-  flags already on it rather than being stored and then rewritten, and mbox
-  now defers its flush the way deletions already did, so marking a folder read
-  commits once instead of rewriting the whole mailbox per message.
-
-- **mbox mirrors are left in a consistent state after every action.** `mbox`
-  applies a change by appending the new copy of the message and only dropping
-  the original when the mailbox is committed, and a deletion is not applied
-  until then either. Flag changes, cross-account moves and draft cleanup now
-  commit before handing control back, so another client reading the same tree
-  never sees a message twice and an interrupted Pony cannot leave one there.
-
-- **Syncing into an mbox mirror is faster.** Storing a message forced a flush,
-  and a flush rewrites the entire mailbox whenever a flag change or deletion
-  is outstanding — so a sync that interleaved downloads with flag
-  reconciliation, which is the normal case, paid a full rewrite per message.
-  Storing now defers like every other mbox mutation: 2000 messages in that
-  pattern took 4.5s and grew super-linearly, and now take 1.6s and scale
-  linearly.
-
 - **The `env` credential backend works for hyphenated account names.** The
   variable name replaced spaces but nothing else, so an account named
   `work-email` mapped to `PONY_PASSWORD_WORK-EMAIL` — which no POSIX shell
@@ -150,6 +120,11 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   toggle as `F` rather than `!`, and trash as `d` rather than `D` — and
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
+
+- **An mbox deletion is committed before control returns.** A deletion is
+  only applied to the file when the mailbox is flushed, so a cross-account
+  move, a draft cleanup or the composer dropping its pre-send draft left the
+  message still in the file, to reappear on the next read.
 
 - **Replies now thread.** Pony sent no `In-Reply-To` or `References` header,
   so every reply arrived in the recipient's client as the start of a new
