@@ -611,7 +611,23 @@ def _mbox_find_message_by_id(path: Path, message_id: str) -> bytes | None:
     """Return raw RFC 5322 bytes for *message_id* via direct mmap search.
 
     Avoids a full TOC scan when only one specific message is needed.
-    Returns None if not found; the caller should fall back to integer-key lookup.
+    Returns None when the answer is not unambiguous, and the caller falls
+    back to the integer-key lookup.
+
+    Three things have to hold before a hit counts, and none of them did:
+
+    - The match must end where the header value ends.  A bare substring
+      search made ``<abc@x>`` match the message whose id is
+      ``<abc@x.longer>``.
+    - It must be a header of *this* message, not text inside its body —
+      a forwarded ``message/rfc822`` part carries the original's
+      ``Message-ID:`` and shadowed the real one.
+    - It must be the only match.  Duplicate Message-IDs are ordinary
+      (resends, list copies) and the index allows them by design, so
+      picking the first occurrence returned the wrong message roughly
+      half the time.  Worse, the fast path only ran when the folder
+      handle was closed, so the same keystroke gave different messages
+      depending on what had been opened earlier in the session.
     """
     try:
         size = path.stat().st_size
@@ -629,28 +645,52 @@ def _mbox_find_message_by_id(path: Path, message_id: str) -> bytes | None:
     with open(path, "rb") as fh:
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
     try:
-        hit = mm.find(needle)
-        if hit < 0:
-            return None
+        spans: list[tuple[int, int]] = []
+        cursor = 0
+        while True:
+            hit = mm.find(needle, cursor)
+            if hit < 0:
+                break
+            cursor = hit + 1
+            # The value must end here, not merely start here.
+            tail = mm[hit + len(needle) : hit + len(needle) + 1]
+            if tail not in (b"\r", b"\n"):
+                continue
 
-        # Walk backward to the nearest "From " envelope line.
-        from_nl = mm.rfind(b"\nFrom ", 0, hit + 1)
-        msg_start = 0 if from_nl < 0 else from_nl + 1
+            from_nl = mm.rfind(b"\nFrom ", 0, hit + 1)
+            msg_start = 0 if from_nl < 0 else from_nl + 1
 
-        # Walk forward to the next "From " boundary for the stop offset,
-        # applying the same blank-line trim as _build_mbox_toc.
-        next_nl = mm.find(b"\nFrom ", hit + 1)
-        if next_nl < 0:
-            if size >= double_len and mm[size - double_len : size] == double_linesep:
-                msg_stop = size - linesep_len
+            next_nl = mm.find(b"\nFrom ", hit + 1)
+            if next_nl < 0:
+                if size >= double_len and (
+                    mm[size - double_len : size] == double_linesep
+                ):
+                    msg_stop = size - linesep_len
+                else:
+                    msg_stop = size
             else:
-                msg_stop = size
-        else:
-            next_pos = next_nl + 1
-            has_blank = next_pos >= double_len and (
-                mm[next_pos - double_len : next_pos] == double_linesep
-            )
-            msg_stop = next_pos - linesep_len if has_blank else next_pos
+                next_pos = next_nl + 1
+                has_blank = next_pos >= double_len and (
+                    mm[next_pos - double_len : next_pos] == double_linesep
+                )
+                msg_stop = next_pos - linesep_len if has_blank else next_pos
+
+            # Header block ends at the first blank line; a hit past that
+            # is body text, most likely an attached original message.
+            header_end = mm.find(double_linesep, msg_start, msg_stop)
+            if header_end >= 0 and hit > header_end:
+                continue
+
+            span = (msg_start, msg_stop)
+            if span not in spans:
+                spans.append(span)
+                if len(spans) > 1:
+                    # Ambiguous — let the caller resolve it by position.
+                    return None
+
+        if len(spans) != 1:
+            return None
+        msg_start, msg_stop = spans[0]
 
         # Skip the "From " envelope line; return RFC 5322 headers + body only.
         from_end = mm.find(b"\n", msg_start, msg_stop)

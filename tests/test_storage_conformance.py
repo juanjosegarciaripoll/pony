@@ -743,3 +743,106 @@ class MirrorProtocolCompletenessTest(unittest.TestCase):
                         getattr(MirrorRepository, name),
                         f"{backend.__name__} must define {name}, not inherit the stub",
                     )
+
+
+class MboxMessageIdFastPathTest(unittest.TestCase):
+    """The Message-ID shortcut must return the message that was asked for.
+
+    ``get_message_bytes`` takes a Message-ID so the reader can skip a
+    full TOC scan, and the TUI message view passes one. The shortcut ran
+    a bare substring search and returned the first hit, so it answered
+    with the wrong message in three separate ways — and only when the
+    folder handle happened to be closed, so the same keystroke could
+    give different messages depending on what had been opened earlier.
+    """
+
+    def _folder(self) -> FolderRef:
+        return FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _build(self, messages: list[bytes]) -> tuple[MboxMirrorRepository, list[str]]:
+        root = TMP_ROOT / "mbox-fastpath" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        writer = MboxMirrorRepository(account_name="personal", root_dir=root)
+        keys = [
+            writer.store_message(folder=self._folder(), raw_message=raw)
+            for raw in messages
+        ]
+        writer.flush_writes()
+        # A fresh repository, so no handle is cached and the shortcut is
+        # eligible — which is the only situation it ever ran in.
+        return MboxMirrorRepository(account_name="personal", root_dir=root), keys
+
+    def _subject(self, raw: bytes) -> str:
+        for line in raw.split(b"\n"):
+            if line.startswith(b"Subject:"):
+                return line.split(b": ", 1)[1].decode().strip()
+        return ""
+
+    def _message(self, subject: str, message_id: str, body: str = "body") -> bytes:
+        message = EmailMessage()
+        message["From"] = "sender@example.com"
+        message["To"] = "user@example.com"
+        message["Subject"] = subject
+        message["Message-ID"] = message_id
+        message.set_content(body)
+        return message.as_bytes()
+
+    def test_a_duplicate_message_id_resolves_by_position(self) -> None:
+        # Resends and list copies share a Message-ID; the index allows
+        # duplicates by design, so the first hit is not the answer.
+        reader, keys = self._build(
+            [
+                self._message("FIRST COPY", "<dup@example.com>"),
+                self._message("SECOND COPY", "<dup@example.com>"),
+            ]
+        )
+        raw = reader.get_message_bytes(
+            folder=self._folder(),
+            storage_key=keys[1],
+            message_id="<dup@example.com>",
+        )
+        self.assertEqual(self._subject(raw), "SECOND COPY")
+
+    def test_a_forwarded_copy_does_not_shadow_the_real_message(self) -> None:
+        wrapper = self._message(
+            "FWD WRAPPER",
+            "<wrap@example.com>",
+            "see below\n\nMessage-ID: <inner@example.com>\nquoted text",
+        )
+        reader, keys = self._build(
+            [wrapper, self._message("INNER STANDALONE", "<inner@example.com>")]
+        )
+        raw = reader.get_message_bytes(
+            folder=self._folder(),
+            storage_key=keys[1],
+            message_id="<inner@example.com>",
+        )
+        self.assertEqual(self._subject(raw), "INNER STANDALONE")
+
+    def test_an_id_that_prefixes_a_longer_one_is_not_matched(self) -> None:
+        reader, keys = self._build(
+            [
+                self._message("LONGER ID", "<abc@example.com.longer>"),
+                self._message("EXACT ID", "<abc@example.com>"),
+            ]
+        )
+        raw = reader.get_message_bytes(
+            folder=self._folder(),
+            storage_key=keys[1],
+            message_id="<abc@example.com>",
+        )
+        self.assertEqual(self._subject(raw), "EXACT ID")
+
+    def test_an_unambiguous_id_still_takes_the_shortcut(self) -> None:
+        reader, keys = self._build(
+            [
+                self._message("ALPHA", "<alpha@example.com>"),
+                self._message("BETA", "<beta@example.com>"),
+            ]
+        )
+        raw = reader.get_message_bytes(
+            folder=self._folder(),
+            storage_key=keys[0],
+            message_id="<alpha@example.com>",
+        )
+        self.assertEqual(self._subject(raw), "ALPHA")

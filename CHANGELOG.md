@@ -121,6 +121,17 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **Opening a message in an mbox folder shows the right message.** The reader
+  passes a Message-ID so the mirror can skip a full scan, and the shortcut ran
+  a bare substring search and returned the first hit. It matched a longer
+  Message-ID that merely started the same way, matched the copy quoted inside
+  a forwarded message, and picked the first of two messages sharing an ID —
+  which is ordinary for resends and list copies. It ran only when the folder
+  handle was closed, so the same keystroke could show different messages
+  depending on what had been opened earlier in the session. The match is now
+  anchored, confined to the message's own headers, and used only when it is
+  unambiguous.
+
 - **Merging contacts no longer deletes the details you typed.** The merge kept
   only emails, aliases and message counts, discarding the source's name,
   organisation, notes, affix and last-seen date. The browser merges into the
