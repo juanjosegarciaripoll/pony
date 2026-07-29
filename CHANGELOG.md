@@ -121,6 +121,17 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **Deleting from an mbox no longer makes the index point at the wrong
+  messages.** A storage key there is the message's ordinal position, and
+  removing a message renumbered every message after it — silently, on the next
+  open, long after those numbers were recorded. Four messages into a folder,
+  three of the four surviving keys named a different message than the index
+  believed. Deletion now marks the message and leaves it in place, so the file
+  only ever grows and the numbering never moves; appends and flag changes never
+  moved it either. Space is reclaimed by an explicit compaction, which is the
+  one operation that renumbers and which reports where every surviving key
+  moved so the index can be updated with it.
+
 - **Opening a message in an mbox folder shows the right message.** The reader
   passes a Message-ID so the mirror can skip a full scan, and the shortcut ran
   a bare substring search and returned the first hit. It matched a longer

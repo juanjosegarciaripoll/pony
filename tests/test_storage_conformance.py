@@ -5,6 +5,7 @@ from __future__ import annotations
 import mailbox
 import unittest
 from email.message import EmailMessage
+from pathlib import Path
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -334,10 +335,13 @@ class BuildMboxTocTestCase(unittest.TestCase):
         ref_filelen: int = ref._file_length  # type: ignore[attr-defined]
         ref.close()
 
-        toc, next_key, file_length = _build_mbox_toc(path)
+        toc, next_key, file_length, deleted = _build_mbox_toc(path)
         self.assertEqual(toc, ref_toc)
         self.assertEqual(next_key, ref_next)
         self.assertEqual(file_length, ref_filelen)
+        # Fixtures carry no deleted marks; the stdlib has no equivalent
+        # to compare against, so assert the fourth value separately.
+        self.assertEqual(deleted, set())
         return toc, next_key, file_length
 
     def test_empty_mbox(self) -> None:
@@ -487,7 +491,6 @@ class MboxDirectLookupTestCase(unittest.TestCase):
     """Edge cases of the mmap-based single-message lookup."""
 
     def _mbox_path(self, body: bytes) -> object:
-        from pathlib import Path
 
         root = TMP_ROOT / "mbox-lookup" / uuid4().hex
         root.mkdir(parents=True, exist_ok=True)
@@ -846,3 +849,129 @@ class MboxMessageIdFastPathTest(unittest.TestCase):
             message_id="<alpha@example.com>",
         )
         self.assertEqual(self._subject(raw), "ALPHA")
+
+
+class MboxOrdinalStabilityTest(unittest.TestCase):
+    """An mbox storage_key must still name the same message after a restart.
+
+    A key here is the message's ordinal position. Removing a message
+    renumbers everything after it — silently, on the next open, long
+    after the index recorded the old numbers, so rows pointed at their
+    neighbours. Deletion therefore marks the message and leaves it in
+    place; only ``compact_folder`` renumbers, and it says how.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _root(self) -> Path:
+        root = TMP_ROOT / "mbox-ordinals" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _seed(self, root: Path, count: int) -> list[str]:
+        writer = MboxMirrorRepository(account_name="personal", root_dir=root)
+        keys = [
+            writer.store_message(
+                folder=self.folder,
+                raw_message=_rfc5322_message_bytes(f"M{i}", f"<m{i}@x>"),
+            )
+            for i in range(count)
+        ]
+        writer.flush_writes()
+        return keys
+
+    def _subjects_by_key(self, root: Path) -> dict[str, str]:
+        """Reopen from scratch, as a later process would."""
+        reader = MboxMirrorRepository(account_name="personal", root_dir=root)
+        out: dict[str, str] = {}
+        for key in reader.list_messages(folder=self.folder):
+            raw = reader.get_message_bytes(folder=self.folder, storage_key=key)
+            for line in raw.split(b"\n"):
+                if line.startswith(b"Subject:"):
+                    out[key] = line.split(b": ", 1)[1].decode().strip()
+                    break
+        return out
+
+    def test_a_delete_does_not_move_the_other_keys(self) -> None:
+        root = self._root()
+        keys = self._seed(root, 5)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        mirror.delete_message(folder=self.folder, storage_key=keys[1])
+        mirror.flush_writes()
+
+        after = self._subjects_by_key(root)
+        self.assertNotIn("M1", after.values())
+        for index in (0, 2, 3, 4):
+            self.assertEqual(after[str(index)], f"M{index}")
+
+    def test_a_deleted_key_behaves_as_absent(self) -> None:
+        root = self._root()
+        keys = self._seed(root, 3)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        mirror.delete_message(folder=self.folder, storage_key=keys[1])
+        mirror.flush_writes()
+
+        reader = MboxMirrorRepository(account_name="personal", root_dir=root)
+        self.assertNotIn(keys[1], reader.list_messages(folder=self.folder))
+        with self.assertRaises(KeyError):
+            reader.get_message_bytes(folder=self.folder, storage_key=keys[1])
+        with self.assertRaises(KeyError):
+            reader.set_flags(
+                folder=self.folder,
+                storage_key=keys[1],
+                flags=frozenset({MessageFlag.SEEN}),
+            )
+
+    def test_appending_after_a_delete_does_not_reuse_the_hole(self) -> None:
+        root = self._root()
+        keys = self._seed(root, 3)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        mirror.delete_message(folder=self.folder, storage_key=keys[1])
+        mirror.store_message(
+            folder=self.folder, raw_message=_rfc5322_message_bytes("NEW", "<n@x>")
+        )
+        mirror.flush_writes()
+
+        after = self._subjects_by_key(root)
+        self.assertEqual(after["0"], "M0")
+        self.assertEqual(after["2"], "M2")
+        self.assertEqual(after["3"], "NEW")
+
+    def test_a_flag_write_does_not_move_keys(self) -> None:
+        root = self._root()
+        keys = self._seed(root, 4)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        mirror.set_flags(
+            folder=self.folder,
+            storage_key=keys[1],
+            flags=frozenset({MessageFlag.SEEN}),
+        )
+        mirror.flush_writes()
+        after = self._subjects_by_key(root)
+        self.assertEqual([after[str(i)] for i in range(4)], ["M0", "M1", "M2", "M3"])
+
+    def test_compaction_reports_where_every_surviving_key_moved(self) -> None:
+        root = self._root()
+        keys = self._seed(root, 5)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        mirror.delete_message(folder=self.folder, storage_key=keys[1])
+        mirror.delete_message(folder=self.folder, storage_key=keys[3])
+        mirror.flush_writes()
+
+        compactor = MboxMirrorRepository(account_name="personal", root_dir=root)
+        before = self._subjects_by_key(root)
+        remap = compactor.compact_folder(folder=self.folder)
+
+        self.assertEqual(remap, {"0": "0", "2": "1", "4": "2"})
+        after = self._subjects_by_key(root)
+        # Every surviving key maps to the message it used to name.
+        for old, new in remap.items():
+            self.assertEqual(after[new], before[old])
+        self.assertEqual(len(after), 3)
+
+    def test_compacting_with_nothing_deleted_is_a_noop(self) -> None:
+        root = self._root()
+        self._seed(root, 3)
+        mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
+        self.assertEqual(mirror.compact_folder(folder=self.folder), {})
+        self.assertEqual(len(self._subjects_by_key(root)), 3)

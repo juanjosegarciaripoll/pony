@@ -420,6 +420,24 @@ sync adopts it via `FetchNewOp`.
 | **C-4** | UIDVALIDITY reset | Reset op, drop stale UID-bearing rows, refetch in the new epoch |
 | **C-6** | More than 20% of UIDs gone | Confirmation required |
 
+### mbox storage keys
+
+A Maildir storage key is a filename and is stable by construction. An mbox key
+is the message's ordinal position, which is not — removing a message shifts
+every message after it, and the shift only becomes visible on the next open,
+by which time the index has recorded the old numbers.
+
+So an mbox mirror is append-only. Deleting marks the message with the mbox `D`
+status flag and leaves it in the file; it is then absent from `list_messages`
+and reads and flag writes against its key raise `KeyError`. Appends and flag
+changes never disturbed the numbering, so with removal gone the ordinals are
+durable.
+
+`compact_folder` reclaims the space. It is the only operation that renumbers,
+and it returns `{old_key: new_key}` for every survivor so the caller can update
+the index in the same transaction rather than have the numbering change beneath
+it.
+
 ### Trash retention
 
 `TRASHED` rows are kept for `account.mirror.trash_retention_days` (default 30),

@@ -345,6 +345,9 @@ class MboxMirrorRepository(MirrorRepository):
         self._root_dir = root_dir
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._open_handles: dict[str, mailbox.mbox] = {}
+        # Keys whose message is marked deleted but still in the
+        # file, per folder.  Populated with the table of contents.
+        self._deleted_keys: dict[str, set[int]] = {}
         self._finalizer = weakref.finalize(
             self,
             _close_mbox_handles,
@@ -395,7 +398,14 @@ class MboxMirrorRepository(MirrorRepository):
         # mailboxes return [] rather than crashing.
         if mbox._toc is None:  # type: ignore[attr-defined]
             mbox._generate_toc()  # type: ignore[attr-defined]
-        return tuple(sorted(str(k) for k in mbox._toc))  # type: ignore[attr-defined]
+        deleted = self._deleted_keys.get(folder.folder_name, set())
+        return tuple(
+            sorted(
+                str(k)
+                for k in mbox._toc  # type: ignore[attr-defined]
+                if k not in deleted
+            )
+        )
 
     def get_message_bytes(
         self,
@@ -414,6 +424,7 @@ class MboxMirrorRepository(MirrorRepository):
                 return result
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
+        self._require_not_deleted(folder.folder_name, key, storage_key)
         return _mbox_get_bytes(mbox, key, storage_key)
 
     def set_flags(
@@ -426,6 +437,7 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
+        self._require_not_deleted(folder.folder_name, key, storage_key)
         updated = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
         _set_mbox_flags(updated, flags=flags)
         mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
@@ -440,9 +452,86 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        del mbox[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
-        # Flush is deferred: call flush_writes() to commit pending deletes.
+        # Mark the message deleted instead of removing it.  A storage_key
+        # here is the message's ordinal position, and removing a message
+        # renumbers every message after it — silently, on the next open,
+        # long after the index recorded the old numbers.  Appends and
+        # flag writes both leave the numbering alone; only removal moves
+        # it.  So the file is append-only and deletion is a mark, which
+        # makes the ordinals durable keys.  ``compact_folder`` reclaims
+        # the space and reports how the keys moved.
+        message = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
+        message.add_flag("D")
+        mbox[key] = message  # type: ignore[index]  # typeshed: str; runtime: int
+        self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
+        # Flush is deferred: call flush_writes() to commit pending marks.
         # _close_all() also flushes all handles on process exit.
+
+    def compact_folder(self, *, folder: FolderRef) -> dict[str, str]:
+        """Drop deleted messages from the file and report how keys moved.
+
+        This is the only operation that renumbers, and it is the reason
+        deletion does not: the caller gets ``{old_key: new_key}`` back
+        and can update the index in the same transaction, instead of the
+        numbering shifting silently under rows that were written long
+        ago.  Keys absent from the mapping were the deleted ones.
+
+        Returns an empty mapping when there is nothing to reclaim, so a
+        caller can compact unconditionally and pay only a scan.
+        """
+        self._require_folder(folder)
+        folder_name = folder.folder_name
+        mbox = self._open_mbox(folder_name=folder_name)
+        deleted = self._deleted_keys.get(folder_name, set())
+        if not deleted:
+            return {}
+
+        survivors = [key for key in sorted(mbox._toc) if key not in deleted]  # type: ignore[attr-defined]
+        kept = [
+            mailbox.mboxMessage(_mbox_get_message(mbox, key, str(key)))
+            for key in survivors
+        ]
+
+        path = self._folder_file(folder_name)
+        self._close_handle(folder_name)
+        rebuilt = mailbox.mbox(str(path), create=True)
+        try:
+            rebuilt.lock()
+            rebuilt.clear()
+            for message in kept:
+                rebuilt.add(message)
+            rebuilt.flush()
+            # The new key is the message's position in the rewritten
+            # file, which is its index among the survivors — not what
+            # ``add`` returns.  ``add`` continues the counter of the
+            # handle it was called on, and those numbers do not survive
+            # the next open, which is exactly the trap this whole design
+            # exists to avoid.
+            remap = {str(old): str(new) for new, old in enumerate(survivors)}
+        finally:
+            rebuilt.unlock()
+            rebuilt.close()
+        return remap
+
+    def _close_handle(self, folder_name: str) -> None:
+        """Flush and forget the cached handle for *folder_name*."""
+        mbox = self._open_handles.pop(folder_name, None)
+        self._deleted_keys.pop(folder_name, None)
+        if mbox is not None:
+            mbox.flush()
+            mbox.close()
+
+    def _require_not_deleted(
+        self, folder_name: str, key: int, storage_key: str
+    ) -> None:
+        """Raise if *key* names a message that has been deleted.
+
+        A tombstoned message is still in the file so that the ordinals
+        after it do not move, but it must behave as absent to everyone
+        above this layer.
+        """
+        if key in self._deleted_keys.get(folder_name, set()):
+            raise KeyError(f"message not found: {storage_key}")
 
     def flush_writes(self) -> None:
         """Flush any pending mbox changes to disk.
@@ -504,11 +593,12 @@ class MboxMirrorRepository(MirrorRepository):
             # Pre-populate the TOC via mmap scan to avoid stdlib's lazy
             # ``_generate_toc`` (readline + tell per line — see
             # MBOX_REFACTOR_PLAN.md finding #6).
-            toc, next_key, file_length = _build_mbox_toc(path)
+            toc, next_key, file_length, deleted = _build_mbox_toc(path)
             mbox._toc = toc  # type: ignore[attr-defined]
             mbox._next_key = next_key  # type: ignore[attr-defined]
             mbox._file_length = file_length  # type: ignore[attr-defined]
             self._open_handles[folder_name] = mbox
+            self._deleted_keys[folder_name] = deleted
         return self._open_handles[folder_name]
 
     def _folder_file(self, folder_name: str) -> Path:
@@ -538,12 +628,14 @@ _MBOX_LINESEP = os.linesep.encode("ascii")
 
 def _build_mbox_toc(
     path: Path,
-) -> tuple[dict[int, tuple[int, int]], int, int]:
+) -> tuple[dict[int, tuple[int, int]], int, int, set[int]]:
     """Build an mbox TOC by mmap + bytes-scanning for ``From `` separators.
 
-    Returns ``(toc, next_key, file_length)`` matching the semantics of
-    ``mailbox.mbox._generate_toc`` so the result can be assigned to
-    ``mbox._toc`` / ``mbox._next_key`` / ``mbox._file_length`` directly.
+    Returns ``(toc, next_key, file_length, tombstoned_keys)``.  The first
+    three match the semantics of ``mailbox.mbox._generate_toc`` so they
+    can be assigned to ``mbox._toc`` / ``mbox._next_key`` /
+    ``mbox._file_length`` directly; the fourth reports which keys hold a
+    message that has been deleted but not yet compacted away.
 
     The stdlib implementation calls ``readline`` + ``tell`` on a buffered
     file object once per line, which on a multi-GB mbox dominates the
@@ -554,7 +646,7 @@ def _build_mbox_toc(
     """
     size = path.stat().st_size
     if size == 0:
-        return {}, 0, 0
+        return {}, 0, 0, set()
 
     linesep = _MBOX_LINESEP
     linesep_len = len(linesep)
@@ -604,7 +696,47 @@ def _build_mbox_toc(
         mm.close()
 
     toc = dict(enumerate(zip(starts, stops, strict=True)))
-    return toc, len(toc), size
+    return toc, len(toc), size, _tombstoned_keys(path, toc)
+
+
+def _tombstoned_keys(path: Path, toc: dict[int, tuple[int, int]]) -> set[int]:
+    """Keys whose message carries the mbox ``D`` (deleted) flag.
+
+    Deleting from an mbox marks the message rather than removing it, so
+    that the positional keys of everything after it do not move — see
+    :meth:`MboxMirrorRepository.delete_message`.  Recognising the mark
+    therefore has to happen wherever the table of contents is built.
+
+    Only each message's header block is examined, which keeps this to a
+    bounded read per message rather than a pass over the whole file.
+    """
+    if not toc:
+        return set()
+    deleted: set[int] = set()
+    linesep = _MBOX_LINESEP
+    double_linesep = linesep + linesep
+    with open(path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        for key, (start, stop) in toc.items():
+            header_end = mm.find(double_linesep, start, stop)
+            block = mm[start : header_end if header_end >= 0 else stop]
+            if _header_marks_deleted(bytes(block)):
+                deleted.add(key)
+    finally:
+        mm.close()
+    return deleted
+
+
+def _header_marks_deleted(block: bytes) -> bool:
+    """True when a header block carries the mbox ``D`` status code."""
+    for line in block.split(_MBOX_LINESEP):
+        lowered = line[:9].lower()
+        if lowered.startswith((b"status:", b"x-status:")):
+            _, _, value = line.partition(b":")
+            if b"D" in value:
+                return True
+    return False
 
 
 def _mbox_find_message_by_id(path: Path, message_id: str) -> bytes | None:
