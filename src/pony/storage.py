@@ -185,6 +185,11 @@ class MaildirMirrorRepository(MirrorRepository):
                     return matches[0]
         return None
 
+    def compact_folder(self, *, folder: FolderRef) -> dict[str, str]:
+        """Nothing to reclaim: a Maildir delete removes the file at once."""
+        self._require_folder(folder)
+        return {}
+
     def set_flags(
         self,
         *,
@@ -640,9 +645,7 @@ class MboxMirrorRepository(MirrorRepository):
             with contextlib.suppress(Exception):
                 mbox.unlock()
 
-    def _file_changed_underneath(
-        self, folder_name: str, mbox: mailbox.mbox
-    ) -> bool:
+    def _file_changed_underneath(self, folder_name: str, mbox: mailbox.mbox) -> bool:
         """Has the file grown or shrunk since this handle read it?"""
         try:
             size = self._folder_file(folder_name).stat().st_size
@@ -937,7 +940,14 @@ def _mbox_get_message(
     parsed = BytesParser(policy=policy.compat32).parsebytes(body if sep else raw)
     msg = mailbox.mboxMessage(parsed)
     if from_line.startswith(b"From "):
-        msg.set_from(from_line[5:].decode("ascii", errors="replace"))
+        # The envelope line is routing metadata, not part of the
+        # message, and another MUA may well have put non-ASCII in it.
+        # Decoding with errors="replace" made reads work and every write
+        # fail: U+FFFD is not encodable as ASCII, and the stdlib encodes
+        # this line as ASCII when it writes the message back — so a
+        # message like that could be read but never archived, moved or
+        # flagged.  Keep only what survives the round trip.
+        msg.set_from(from_line[5:].decode("ascii", errors="ignore"))
     return msg
 
 

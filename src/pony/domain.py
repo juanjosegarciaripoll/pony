@@ -356,7 +356,6 @@ class SearchQuery:
     cc_address: str = ""
     subject: str = ""
     body: str = ""
-    case_sensitive: bool = False
 
 
 @dataclass(frozen=True, slots=True)

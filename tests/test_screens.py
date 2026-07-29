@@ -2025,7 +2025,7 @@ async def test_contact_browser_merge_needs_two_marks() -> None:
 
 
 async def test_contact_browser_merge_marked_collapses_them() -> None:
-    """Two marked contacts merge into one row."""
+    """Two marked contacts merge into one row, once confirmed."""
     from textual.widgets import DataTable
 
     index = _contacts_index("cb-merge-ok", "Alice Smith", "Alicia Smith")
@@ -2039,10 +2039,33 @@ async def test_contact_browser_merge_marked_collapses_them() -> None:
         await pilot.pause()
         await pilot.press("M")
         await pilot.pause()
+        await pilot.press("y")  # merging is irreversible; it asks first
+        await pilot.pause()
 
     remaining = index.list_all_contacts()
     assert len(remaining) == 1
     assert set(remaining[0].emails) == {"alice@x.com", "alicia@x.com"}
+
+
+async def test_contact_browser_merge_can_be_declined() -> None:
+    """Answering no leaves both contacts alone."""
+    from textual.widgets import DataTable
+
+    index = _contacts_index("cb-merge-no", "Alice Smith", "Alicia Smith")
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#contact-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.press("m")
+        await pilot.pause()
+        await pilot.press("M")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+    assert len(index.list_all_contacts()) == 2
 
 
 async def test_contact_browser_mark_on_empty_list_is_a_noop() -> None:

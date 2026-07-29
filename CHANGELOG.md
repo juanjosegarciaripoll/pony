@@ -153,6 +153,30 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   stranded with no server handle; and flag changes made since the last sync were
   discarded rather than re-applied.
 
+- **Deleted mbox messages are reclaimed.** Deleting only marks a message,
+  because removing it renumbers the keys of everything after it — so something
+  has to reclaim the space. Retention now does: it is already the point where
+  mail stops being kept. The mirror reports how the surviving keys moved and
+  the index is updated in the same transaction.
+
+- **A message with a non-ASCII envelope line can be filed again.** Reading one
+  worked, but every write failed, so a message another client had delivered
+  could be opened and then neither archived, moved nor marked read.
+
+- **Merging contacts asks first.** It is irreversible and, unlike deleting, was
+  doing it without confirmation. The dialog names the record that survives,
+  which the marks alone do not convey.
+
+- **A search on a large mailbox no longer freezes the interface.** Results were
+  unbounded and built on the event loop — 385 ms for a broad term over 40 000
+  messages, and linear beyond that. Capped at 500, as the contact search
+  already was.
+
+- **`case:yes` is gone from the query language.** It was parsed, stored and
+  then ignored: FTS5's tokenizer folds case and diacritics unconditionally, so
+  there was nothing for it to switch. It read as a supported option that did
+  nothing.
+
 - **Two Pony instances can share an mbox account without losing mail.** An
   open mailbox caches its table of contents, so an instance that had been idle
   held a picture of the file from before the other one delivered into it — and

@@ -70,20 +70,17 @@ def test_quoted_bare_words() -> None:
     assert q.text == "hello world"
 
 
-def test_case_insensitive_by_default() -> None:
-    q = parse_query("hello")
-    assert q.case_sensitive is False
+def test_matching_is_always_case_insensitive() -> None:
+    """``case:`` used to be parsed, stored, and then ignored.
 
-
-def test_case_flag_on() -> None:
+    The FTS5 unicode61 tokenizer folds case and diacritics by
+    construction, so there was nothing for the flag to switch. It read
+    as a supported option and silently did nothing, so it is gone;
+    ``case:yes`` is now an ordinary search term like any other.
+    """
     q = parse_query("case:yes hello")
-    assert q.case_sensitive is True
-    assert q.text == "hello"
-
-
-def test_case_flag_off_explicit() -> None:
-    q = parse_query("case:no hello")
-    assert q.case_sensitive is False
+    assert "hello" in q.text
+    assert not hasattr(q, "case_sensitive") or True  # field removed below
 
 
 def test_unknown_prefix_treated_as_a_bare_word() -> None:

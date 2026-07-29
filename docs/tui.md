@@ -214,7 +214,6 @@ Press ++q++ in the message list to exit search and reload the original folder.
 | `subject:hello` | Subject |
 | `body:text` | Body (explicit prefix) |
 | `"quoted phrase"` | Exact phrase |
-| `case:yes` | Enable case-sensitive matching |
 
 ---
 

@@ -292,17 +292,46 @@ class ContactBrowserScreen(Screen[None]):
                 severity="warning",
             )
             return
+        from .confirm_screen import ConfirmScreen
+
         ids = sorted(self._marked)
         target = ids[0]
         sources = ids[1:]
-        self._contacts.merge_contacts(
-            target_id=target,
-            source_ids=sources,
+        # Merging is irreversible and, unlike deleting, was doing it
+        # without asking.  Name the record that survives, since which one
+        # that is — the oldest — is not something the marks convey.
+        by_id = {c.id: c for c in self._contacts.list_all_contacts()}
+
+        def _label(contact_id: int) -> str:
+            contact = by_id.get(contact_id)
+            if contact is None:
+                return f"contact {contact_id}"
+            return contact.display_name or (
+                contact.emails[0] if contact.emails else "(no name)"
+            )
+
+        body = f"  keeping: {_label(target)}\n" + "\n".join(
+            f"  merging in: {_label(cid)}" for cid in sources[:10]
         )
-        self._marked.clear()
-        self._refresh_list()
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Merged {len(sources) + 1} contacts.",
+        if len(sources) > 10:
+            body += f"\n  … and {len(sources) - 10} more"
+
+        def _on_confirm(yes: bool | None) -> None:
+            if not yes:
+                return
+            self._contacts.merge_contacts(target_id=target, source_ids=sources)
+            self._marked.clear()
+            self._refresh_list()
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Merged {len(sources) + 1} contacts.",
+            )
+
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ConfirmScreen(
+                f"Merge {len(ids)} contacts into one?",
+                body,
+            ),
+            _on_confirm,
         )
 
     # ------------------------------------------------------------------

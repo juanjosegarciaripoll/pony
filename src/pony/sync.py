@@ -2245,6 +2245,36 @@ class ImapSyncService:
         self._index.insert_message(message=indexed)
         return True
 
+    def _compact_mirror(self, account: AccountConfig) -> None:
+        """Reclaim space from messages this account has deleted.
+
+        Deleting from an mbox only marks the message, because removing it
+        renumbers the keys of everything after it.  Something therefore
+        has to reclaim the space, and retention is the natural moment:
+        it is already the point where mail stops being kept.  The mirror
+        reports how the surviving keys moved and the index is updated in
+        the same transaction, so the numbering never shifts under it.
+
+        A Maildir mirror reports nothing to do and this costs a call.
+        """
+        mirror = self._mirror_factory(account)
+        for folder_ref in mirror.list_folders(account_name=account.name):
+            try:
+                remap = mirror.compact_folder(folder=folder_ref)
+            except Exception:
+                logger.debug("Compaction failed for %s", folder_ref.folder_name)
+                continue
+            if not remap:
+                continue
+            with self._index.connection():
+                changed = self._index.remap_storage_keys(folder=folder_ref, remap=remap)
+            logger.info(
+                "Cleanup: compacted %s/%s, remapped %d row(s)",
+                account.name,
+                folder_ref.folder_name,
+                changed,
+            )
+
     def _adopt_existing_row(
         self,
         *,
@@ -2414,3 +2444,4 @@ class ImapSyncService:
                         len(purged),
                         account.name,
                     )
+                self._compact_mirror(account)

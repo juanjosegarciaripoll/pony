@@ -207,21 +207,22 @@ class SearchTestCase(unittest.TestCase):
         )
         self.assertEqual(len(hits), 2)
 
-    def test_case_sensitive_flag_is_ignored(self) -> None:
-        # The legacy ``case_sensitive`` flag on SearchQuery is accepted
-        # for backwards compatibility but has no effect — FTS5's
-        # ``unicode61`` tokenizer folds case (and diacritics)
-        # unconditionally.  Both values must return the same results.
-        hits_on = self.repo.search(
-            query=SearchQuery(subject="quarterly report", case_sensitive=True),
-            account_name="personal",
-        )
-        hits_off = self.repo.search(
-            query=SearchQuery(subject="quarterly report", case_sensitive=False),
-            account_name="personal",
-        )
-        self.assertEqual(len(hits_on), 2)
-        self.assertEqual(len(hits_off), 2)
+    def test_matching_ignores_case_however_it_is_typed(self) -> None:
+        """There is no case-sensitive mode, and there never was one.
+
+        ``SearchQuery`` carried a ``case_sensitive`` flag and the parser
+        set it from a ``case:`` token, but nothing read it — FTS5's
+        ``unicode61`` tokenizer folds case and diacritics
+        unconditionally.  Both are gone rather than left looking like an
+        option that does nothing.
+        """
+        for spelling in ("quarterly report", "QUARTERLY REPORT", "Quarterly Report"):
+            with self.subTest(spelling=spelling):
+                hits = self.repo.search(
+                    query=SearchQuery(subject=spelling),
+                    account_name="personal",
+                )
+                self.assertEqual(len(hits), 2)
 
     def test_cross_account_search_none_returns_all(self) -> None:
         # add a message in a different account

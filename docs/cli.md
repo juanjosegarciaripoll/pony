@@ -128,14 +128,14 @@ If `query` is omitted, Pony prompts for one interactively.
 | `subject:hello` | Subject containing *hello* |
 | `body:text` | Body containing *text* (explicit) |
 | `"quoted phrase"` | Exact phrase (any field prefix applies) |
-| `case:yes` | Switch to case-sensitive matching |
 
-Multiple tokens for the same field are AND-joined. Tokens for different fields
-are also AND-joined.
+Multiple tokens for the same field are AND-joined, and so are tokens for
+different fields — every term must match, though each may match a different
+field. Matching always ignores case and diacritics.
 
 ```
 pony search "from:alice subject:project"
-pony search "quarterly report case:yes"
+pony search "quarterly report"
 ```
 
 ---

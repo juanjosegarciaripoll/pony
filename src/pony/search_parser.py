@@ -9,7 +9,6 @@ Supported syntax
     subject:hello         → subject
     body:world            → body only (narrower than a bare word)
     "quoted string"       → single token; field prefix still applies
-    case:yes / case:no    → case-sensitive toggle (default: insensitive)
 
 Multiple tokens for the same field are space-joined.
 Unknown field prefixes are treated as bare words.
@@ -71,15 +70,10 @@ def parse_query(raw: str) -> SearchQuery:
 
     buckets: dict[str, list[str]] = {f: [] for f in _FIELD_ALIASES.values()}
     buckets["text"] = []
-    case_sensitive = False
-
     for token in tokens:
         if ":" in token:
             prefix, _, value = token.partition(":")
             prefix_low = prefix.lower()
-            if prefix_low == "case":
-                case_sensitive = value.lower() in ("yes", "true", "1", "on")
-                continue
             field = _FIELD_ALIASES.get(prefix_low)
             if field is not None:
                 buckets[field].append(value)
@@ -94,5 +88,4 @@ def parse_query(raw: str) -> SearchQuery:
         cc_address=" ".join(buckets["cc_address"]),
         subject=" ".join(buckets["subject"]),
         body=" ".join(buckets["body"]),
-        case_sensitive=case_sensitive,
     )

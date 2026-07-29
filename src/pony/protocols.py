@@ -99,6 +99,18 @@ class MirrorRepository(Protocol):
         """Delete a message from local mirror storage."""
         ...
 
+    def compact_folder(self, *, folder: FolderRef) -> dict[str, str]:
+        """Reclaim space from deleted messages; report moved storage keys.
+
+        Backends whose deletion is immediate have nothing to reclaim and
+        return an empty mapping.  An mbox mirror only marks a message
+        deleted, because removing it renumbers the positional keys of
+        everything after it, so it needs a separate pass — and that pass
+        is the one operation that does renumber, hence ``{old: new}`` for
+        every surviving key so the caller can update the index with it.
+        """
+        ...
+
     def move_message_to_folder(
         self,
         *,
@@ -386,6 +398,15 @@ class IndexRepository(Protocol):
         the changed UIDs, so the planner needs the cached baseline for
         the rest.  A two-column projection replaces a full-row hydration
         that was measured at 4-5s on a 100k-row mirror.
+        """
+        ...
+
+    def remap_storage_keys(self, *, folder: FolderRef, remap: dict[str, str]) -> int:
+        """Apply a mirror's ``{old_key: new_key}`` to a folder's rows.
+
+        Compacting a mirror that numbers its messages by position
+        renumbers them; this is how the index is told, rather than the
+        numbering shifting underneath it.  Returns the rows changed.
         """
         ...
 
