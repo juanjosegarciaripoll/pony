@@ -1370,6 +1370,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 )
                 conn.execute("DELETE FROM contacts WHERE id = ?", (src_id,))
             self._write_contact_fields(conn, target)
+            # merged_contact can introduce an alias that exists in
+            # neither row — the source's name, kept as an AKA rather than
+            # discarded — so the alias rows need syncing, not just moving.
+            for alias in target.aliases:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO contact_aliases (contact_id, alias)
+                    VALUES (?, ?)
+                    """,
+                    (target_id, alias),
+                )
         return self._load_contact(target_id)
 
     def _write_contact_fields(self, conn: sqlite3.Connection, contact: Contact) -> None:

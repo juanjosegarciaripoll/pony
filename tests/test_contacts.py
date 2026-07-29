@@ -1305,3 +1305,102 @@ class ContactEmailOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(again.emails, ("ann@x.com",))
         self.assertEqual(again.organization, "ACME")
+
+
+class ContactMergeAkaTests(unittest.TestCase):
+    """A name that loses the primary slot is kept as an AKA.
+
+    Only one name can be primary, so merging two named records would
+    otherwise discard one — a maiden name, a transliteration, the short
+    form someone signs with. BBDB models exactly this in its ``aka``
+    slot (index 3, a list of strings), which is what ``aliases`` maps to.
+    """
+
+    def _store(self) -> SqliteIndexRepository:
+        path = TMP_ROOT / "contact-aka" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        return repo
+
+    def _merge(
+        self, repo: SqliteIndexRepository, target: Contact, source: Contact
+    ) -> Contact:
+        a = repo.upsert_contact(contact=target)
+        b = repo.upsert_contact(contact=source)
+        assert a.id is not None and b.id is not None
+        return repo.merge_contacts(target_id=a.id, source_ids=[b.id])
+
+    def test_a_different_surname_is_kept_as_an_aka(self) -> None:
+        merged = self._merge(
+            self._store(),
+            _make_contact(first_name="Alice", last_name="Smith", emails=("a@x.com",)),
+            _make_contact(first_name="Alice", last_name="Johnson", emails=("b@x.com",)),
+        )
+        self.assertEqual((merged.first_name, merged.last_name), ("Alice", "Smith"))
+        self.assertIn("Alice Johnson", merged.aliases)
+
+    def test_a_different_given_name_is_kept_as_an_aka(self) -> None:
+        merged = self._merge(
+            self._store(),
+            _make_contact(first_name="Bob", last_name="Smith", emails=("c@x.com",)),
+            _make_contact(first_name="Robert", last_name="Smith", emails=("d@x.com",)),
+        )
+        self.assertIn("Robert Smith", merged.aliases)
+
+    def test_a_name_that_merely_completes_the_target_is_not_duplicated(self) -> None:
+        # The stub says "Alice", the other record says "Alice Smith";
+        # the result *is* "Alice Smith", so recording it again is noise.
+        merged = self._merge(
+            self._store(),
+            _make_contact(first_name="Alice", last_name="", emails=("e@x.com",)),
+            _make_contact(first_name="Alice", last_name="Smith", emails=("f@x.com",)),
+        )
+        self.assertEqual((merged.first_name, merged.last_name), ("Alice", "Smith"))
+        self.assertEqual(merged.aliases, ())
+
+    def test_identical_names_add_nothing(self) -> None:
+        merged = self._merge(
+            self._store(),
+            _make_contact(first_name="Zoe", last_name="Ray", emails=("g@x.com",)),
+            _make_contact(first_name="Zoe", last_name="Ray", emails=("h@x.com",)),
+        )
+        self.assertEqual(merged.aliases, ())
+
+    def test_a_nameless_source_adds_nothing(self) -> None:
+        merged = self._merge(
+            self._store(),
+            _make_contact(first_name="Ann", last_name="Lee", emails=("i@x.com",)),
+            _make_contact(first_name="", last_name="", emails=("j@x.com",)),
+        )
+        self.assertEqual(merged.aliases, ())
+
+    def test_existing_akas_on_both_sides_are_kept_too(self) -> None:
+        merged = self._merge(
+            self._store(),
+            _make_contact(
+                first_name="Kim",
+                last_name="Lee",
+                emails=("k@x.com",),
+                aliases=("Kimmy",),
+            ),
+            _make_contact(
+                first_name="Kimberly",
+                last_name="Lee",
+                emails=("l@x.com",),
+                aliases=("KL",),
+            ),
+        )
+        self.assertEqual(set(merged.aliases), {"Kimmy", "KL", "Kimberly Lee"})
+
+    def test_the_aka_survives_a_bbdb_round_trip(self) -> None:
+        """It has to land in slot 3, or the point is lost on export."""
+        repo = self._store()
+        merged = self._merge(
+            repo,
+            _make_contact(first_name="Alice", last_name="Smith", emails=("m@x.com",)),
+            _make_contact(first_name="Alice", last_name="Johnson", emails=("n@x.com",)),
+        )
+        path = TMP_ROOT / "contact-aka" / f"{uuid4().hex}.bbdb"
+        write_bbdb([merged], path)
+        self.assertIn("Alice Johnson", read_bbdb(path)[0].aliases)

@@ -41,6 +41,11 @@ def _combined_notes(target: str, source: str) -> str:
     return f"{target}\n{source}"
 
 
+def _display_name(contact: Contact) -> str:
+    """The contact's name as one string, or empty when it has none."""
+    return " ".join(part for part in (contact.first_name, contact.last_name) if part)
+
+
 def merged_contact(target: Contact, source: Contact) -> Contact:
     """Return *target* enriched with everything *source* knows.
 
@@ -67,10 +72,23 @@ def merged_contact(target: Contact, source: Contact) -> Contact:
     ):
         last_seen = source.last_seen
 
+    first_name = _first_non_empty(target.first_name, source.first_name)
+    last_name = _first_non_empty(target.last_name, source.last_name)
+
+    # Only one name can be the primary one, so the other would be lost.
+    # BBDB models exactly this with its ``aka`` slot (a list of strings,
+    # which is what ``aliases`` maps to), so a genuinely different name
+    # is kept there rather than discarded — a maiden name, a
+    # transliteration, the short form someone signs with.
+    surviving = " ".join(part for part in (first_name, last_name) if part)
+    source_name = _display_name(source)
+    if source_name and source_name != surviving and source_name not in merged_aliases:
+        merged_aliases.append(source_name)
+
     return dataclasses.replace(
         target,
-        first_name=_first_non_empty(target.first_name, source.first_name),
-        last_name=_first_non_empty(target.last_name, source.last_name),
+        first_name=first_name,
+        last_name=last_name,
         organization=_first_non_empty(target.organization, source.organization),
         notes=_combined_notes(target.notes, source.notes),
         emails=tuple(merged_emails),

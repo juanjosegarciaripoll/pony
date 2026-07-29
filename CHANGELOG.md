@@ -128,7 +128,9 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   a message rather than the one edited by hand — so tidying up duplicates
   destroyed exactly the information worth keeping. Merging is now field-level
   and loses nothing: blanks are filled from the other record, notes are
-  combined, counts add up. Merging a contact into itself is a no-op instead of
+  combined, counts add up, and a name that cannot keep the primary slot is
+  recorded as an AKA — BBDB's `aka` field, which Pony already exports — so
+  merging "Alice Smith" with "Alice Johnson" keeps both. Merging a contact into itself is a no-op instead of
   deleting it, and a source that has since been deleted is skipped instead of
   raising.
 
