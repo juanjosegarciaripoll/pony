@@ -114,12 +114,16 @@ trash.
 
 ### You deleted a message but the server changed its flags
 
-If you trashed a message locally but another client changed its flags on the
-server, Pony **cancels the deletion** and restores the message to active status
-with the server's updated flags. The rationale: someone (or a server-side rule)
-considered the message worth modifying, so deleting it might be premature.
+**In a writable folder the deletion wins.** If you trashed a message locally
+and another client changed its flags on the server before the next sync, Pony
+still expunges it. Deleting is an explicit instruction and a flag change is
+not, so the flag change does not override it — but it does mean a message can
+be removed after another client has touched it, which is worth knowing before
+you trash something you are unsure about.
 
-If the server's flags are unchanged, the deletion proceeds normally.
+**In a read-only folder the deletion is cancelled**, because Pony has no way
+to expunge on the server: the message is restored to active status with the
+server's current flags. See [Read-only folders](#read-only-folders).
 
 ### Read-only folders
 
