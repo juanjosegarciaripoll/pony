@@ -15,8 +15,16 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import FolderConfig, FolderRef, MessageFlag, MessageStatus
-from pony.storage import MaildirMirrorRepository
+from pony.domain import (
+    AnyAccount,
+    FolderConfig,
+    FolderRef,
+    MessageFlag,
+    MessageStatus,
+    MirrorConfig,
+)
+from pony.protocols import MirrorRepository
+from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
 
@@ -723,11 +731,12 @@ async def test_a_local_account_folder_is_created_without_a_sync_hint() -> None:
 
 
 def _maildir_names(
-    mirrors: Mapping[str, MaildirMirrorRepository], account: str = "acct"
+    mirrors: Mapping[str, MirrorRepository], account: str = "acct"
 ) -> list[str]:
     """Filenames in the account's INBOX cur/ directory."""
-    root = mirrors[account]._root_dir  # noqa: SLF001
-    return sorted(p.name for p in (root / "cur").iterdir())
+    mirror = mirrors[account]
+    assert isinstance(mirror, MaildirMirrorRepository)
+    return sorted(p.name for p in (mirror._root_dir / "cur").iterdir())  # noqa: SLF001
 
 
 async def test_marking_a_message_read_reaches_the_mirror() -> None:
@@ -824,3 +833,99 @@ async def test_a_mirror_that_cannot_be_written_does_not_break_the_action() -> No
     row = list(index.list_folder_messages(folder=folder))[0]
     assert MessageFlag.FLAGGED in row.local_flags
     assert not any("read-only filesystem" in n for n in notices), notices
+
+
+def _mbox_account(label: str) -> AnyAccount:
+    """An account whose mirror is mbox rather than Maildir."""
+    paths = make_tmp_paths(label)
+    return dataclasses.replace(
+        make_test_account(paths),
+        mirror=MirrorConfig(path=paths.data_dir / "mbox", format="mbox"),
+    )
+
+
+def _mbox_rows(mirrors: Mapping[str, MirrorRepository]) -> list[tuple[str, str]]:
+    """(subject, Status) for every message physically in the mbox file.
+
+    Read with a fresh ``mailbox.mbox`` rather than through the
+    repository, because the point is what another mail client — or this
+    one after a crash — would find on disk.
+    """
+    import mailbox
+
+    mirror = mirrors["acct"]
+    assert isinstance(mirror, MboxMirrorRepository)
+    path = next(
+        p
+        for p in mirror._root_dir.rglob("*")  # noqa: SLF001
+        if p.is_file() and p.suffix == ".mbox"
+    )
+    box = mailbox.mbox(str(path))
+    try:
+        return [(str(m.get("Subject")), str(m.get("Status"))) for m in box]
+    finally:
+        box.close()
+
+
+async def test_flagging_an_mbox_message_does_not_duplicate_it_on_disk() -> None:
+    """An mbox flag write must be committed before control returns.
+
+    ``mbox`` applies a modification by appending the new copy and only
+    dropping the original when the mailbox is flushed. Leaving that
+    uncommitted means the message is in the file twice — visible to any
+    other client reading the tree, and permanent if the process dies.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="mbox-flag-dup",
+        accounts=(_mbox_account("mbox-flag-dup"),),
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)  # opening marks it read
+        assert len(_mbox_rows(mirrors)) == 1, _mbox_rows(mirrors)
+
+        _main(app).toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+        assert len(_mbox_rows(mirrors)) == 1, _mbox_rows(mirrors)
+
+        _main(app).set_flag(MessageFlag.SEEN, present=False)
+        await pilot.pause()
+
+    rows = _mbox_rows(mirrors)
+    assert len(rows) == 1, f"message duplicated in the mbox file: {rows}"
+
+
+async def test_marking_an_mbox_folder_read_commits_once_and_cleanly() -> None:
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed = [(folder, _numbered_message(i)) for i in range(4)]
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="mbox-mark-all",
+        accounts=(_mbox_account("mbox-mark-all"),),
+        seed=seed,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _main(app).action_mark_all_read()
+        await pilot.pause()
+        await pilot.pause()
+
+    rows = _mbox_rows(mirrors)
+    assert len(rows) == 4, f"messages duplicated: {rows}"
+    assert all(status == "RO" for _subject, status in rows), rows
+
+
+def _numbered_message(index: int) -> bytes:
+    """A plain message whose subject identifies it."""
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "user@example.com"
+    message["Subject"] = f"numbered {index}"
+    message["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    message["Message-ID"] = f"<numbered-{index}@example.com>"
+    message.set_content("body")
+    return message.as_bytes()

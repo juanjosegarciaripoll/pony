@@ -41,6 +41,7 @@ from ...domain import (
     MessageRef,
 )
 from ...folder_utils import find_folder
+from ...mailbox_ops import flush_mirror
 from ...message_projection import project_rfc822_message
 from ...protocols import (
     ContactRepository,
@@ -614,6 +615,10 @@ class ComposeScreen(Screen[bool]):
                     )
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("Could not delete pre-send draft from mirror: %s", exc)
+                else:
+                    # An uncommitted mbox deletion has not happened yet —
+                    # the draft would still be in the file after sending.
+                    flush_mirror(mirror)
             self._index.delete_message(message_ref=draft_entry.message_ref)
         self._save_to_folder(
             raw,

@@ -38,6 +38,28 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+def flush_mirror(mirror: MirrorRepository) -> None:
+    """Commit whatever the mirror has deferred.
+
+    Mirror mutations are deferred so that a sync pays one commit per
+    folder rather than one per message, but until the commit lands the
+    on-disk file is in an intermediate state: an mbox flag write appends
+    the modified copy and leaves the original in place, so the message
+    is briefly present twice, and a deletion has not yet been applied at
+    all.  Anything else reading the tree sees that, and a process that
+    exits abruptly makes it permanent.
+
+    So every path that mutates a mirror and then hands control back to
+    the user has to call this.  The sync engine already does it per
+    folder.  Best-effort: the index is authoritative, and a mirror that
+    cannot be written must not turn a completed action into an error.
+    """
+    try:
+        mirror.flush_writes()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not flush mirror writes: %s", exc)
+
+
 def write_mirror_flags(
     mirror: MirrorRepository,
     *,

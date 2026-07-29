@@ -85,6 +85,13 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   now defers its flush the way deletions already did, so marking a folder read
   commits once instead of rewriting the whole mailbox per message.
 
+- **mbox mirrors are left in a consistent state after every action.** `mbox`
+  applies a change by appending the new copy of the message and only dropping
+  the original when the mailbox is committed, and a deletion is not applied
+  until then either. Flag changes, cross-account moves and draft cleanup now
+  commit before handing control back, so another client reading the same tree
+  never sees a message twice and an interrupted Pony cannot leave one there.
+
 - **Syncing into an mbox mirror is faster.** Storing a message forced a flush,
   and a flush rewrites the entire mailbox whenever a flag change or deletion
   is outstanding — so a sync that interleaved downloads with flag

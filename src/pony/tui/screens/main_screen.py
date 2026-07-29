@@ -39,6 +39,7 @@ from ...domain import (
     MessageStatus,
 )
 from ...mailbox_ops import (
+    flush_mirror,
     landed_in_folder,
     mirror_flags,
     moved_to_folder,
@@ -854,6 +855,7 @@ class MainScreen(Screen[None]):
             local_flags=message.local_flags | {MessageFlag.SEEN},
         )
         self._record_flags(updated)
+        self._commit_mirror(message.message_ref.account_name)
         self.query_one(MessageListPanel).update_from_indexed(updated)
         self._refresh_folder_indicators()
 
@@ -864,11 +866,28 @@ class MainScreen(Screen[None]):
         authoritative; the mirror write is what lets another MUA sharing
         the same Maildir or mbox see that a message was read, flagged or
         answered.
+
+        The mirror write is deferred, so the caller must finish with
+        :meth:`_commit_mirror` — batching a marked selection into one
+        commit instead of one per message.
         """
         self._index.upsert_message(message=message)
         mirror = self._mirrors.get(message.message_ref.account_name)
         if mirror is not None:
             mirror_flags(mirror, message)
+
+    def _commit_mirror(self, account_name: str) -> None:
+        """Commit the mirror writes queued for *account_name*.
+
+        Deferring is what keeps a bulk flag change from rewriting an mbox
+        once per message, but an uncommitted mbox holds a flag-changed
+        message twice — the original plus the rewritten copy — and an
+        uncommitted deletion has not happened at all.  Anything else
+        reading the tree sees that, so it must not outlive the action.
+        """
+        mirror = self._mirrors.get(account_name)
+        if mirror is not None:
+            flush_mirror(mirror)
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -906,6 +925,7 @@ class MainScreen(Screen[None]):
                     continue
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._record_flags(updated)
+        self._commit_mirror(targets[0].message_ref.account_name)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
@@ -917,6 +937,7 @@ class MainScreen(Screen[None]):
         )
         with self._index.connection():
             self._record_flags(updated)
+        self._commit_mirror(msg.message_ref.account_name)
         folder_ref = FolderRef(
             account_name=msg.message_ref.account_name,
             folder_name=msg.message_ref.folder_name,
@@ -939,6 +960,7 @@ class MainScreen(Screen[None]):
                     new_flags = msg.local_flags | {flag}
                 updated = dataclasses.replace(msg, local_flags=new_flags)
                 self._record_flags(updated)
+        self._commit_mirror(targets[0].message_ref.account_name)
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(self._folder_ref_from_summary(targets[0]))
 
@@ -1102,8 +1124,7 @@ class MainScreen(Screen[None]):
                 storage_key=summary.storage_key,
                 flags=frozenset(summary.local_flags | {MessageFlag.SEEN}),
             )
-        with contextlib.suppress(Exception):
-            mirror.flush_writes()
+        flush_mirror(mirror)
 
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)
@@ -1432,6 +1453,9 @@ class MainScreen(Screen[None]):
                     folder=source,
                     storage_key=msg.storage_key,
                 )
+            # Without this an mbox deletion is only queued: the message is
+            # still in the file and comes back on the next read.
+            flush_mirror(source_mirror)
             self._index.delete_message(message_ref=msg.message_ref)
         return True
 
@@ -1756,6 +1780,7 @@ class MainScreen(Screen[None]):
                         mirror.delete_message(
                             folder=folder_ref, storage_key=msg.storage_key
                         )
+                    flush_mirror(mirror)
                 self._index.delete_message(message_ref=msg.message_ref)
             self._reload_folder(folder_ref)
 

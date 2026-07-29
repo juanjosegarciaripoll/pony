@@ -25,6 +25,7 @@ from textual.widgets import DirectoryTree, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
+from pony.accounts import build_mirrors
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     AccountConfig,
@@ -39,7 +40,6 @@ from pony.index_store import SqliteIndexRepository
 from pony.message_projection import project_rfc822_message
 from pony.paths import AppPaths
 from pony.protocols import CredentialsProvider, IndexRepository, MirrorRepository
-from pony.storage import MaildirMirrorRepository
 from pony.tui.app import ComposeApp, PonyApp
 
 
@@ -251,15 +251,15 @@ def make_index(paths: AppPaths) -> SqliteIndexRepository:
     return repo
 
 
-def make_mirrors(config: AppConfig) -> dict[str, MaildirMirrorRepository]:
-    """One :class:`MaildirMirrorRepository` per account."""
-    mirrors: dict[str, MaildirMirrorRepository] = {}
-    for account in config.accounts:
-        mirrors[account.name] = MaildirMirrorRepository(
-            account_name=account.name,
-            root_dir=account.mirror.path,
-        )
-    return mirrors
+def make_mirrors(config: AppConfig) -> dict[str, MirrorRepository]:
+    """One mirror per account, of the format the account actually declares.
+
+    This used to hardcode Maildir, so no TUI test ever ran against an
+    mbox mirror however the account was configured — which is why the
+    mbox-only defects (a flag write leaving the message in the file
+    twice until the commit lands) went unnoticed.
+    """
+    return build_mirrors(config)
 
 
 def make_credentials(config: AppConfig) -> CredentialsProvider:
@@ -312,7 +312,7 @@ def build_pony_app(
     AppConfig,
     AppPaths,
     SqliteIndexRepository,
-    dict[str, MaildirMirrorRepository],
+    dict[str, MirrorRepository],
 ]:
     """Construct a :class:`PonyApp` wired to real Sqlite + Maildir repos.
 
@@ -363,7 +363,7 @@ def build_compose_app(
     AppConfig,
     AppPaths,
     SqliteIndexRepository,
-    dict[str, MaildirMirrorRepository],
+    dict[str, MirrorRepository],
 ]:
     """Construct a :class:`ComposeApp` ready for Pilot-driven tests."""
     paths = make_tmp_paths(label)
