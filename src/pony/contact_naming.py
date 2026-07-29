@@ -30,7 +30,12 @@ def clean_display_name(display_name: str) -> str:
     person's name is wrong on its face, and worse, it blocks a later
     message carrying the real name from filling the field in.
     """
-    if "@" in display_name:
+    # Only when the name *is* the address.  Testing for a bare "@"
+    # anywhere threw away real names — "Bob (bob@corp) Jones" stored a
+    # nameless contact.
+    stripped = display_name.strip().strip("<>").strip()
+    local, sep, domain = stripped.partition("@")
+    if sep and local and "." in domain and " " not in stripped:
         return ""
     return display_name
 

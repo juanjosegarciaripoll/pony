@@ -79,8 +79,10 @@
 # - ssl:  Use TLS (implicit TLS when true, STARTTLS when false — default: true)
 #
 # Local accounts (account_type = "local"):
-# Point Pony at a Maildir or mbox tree managed by another tool
-# (e.g. offlineimap, getmail, procmail).  The sync command skips local
+# Point Pony at a Maildir or mbox tree that already exists on disk (an
+# archive, or mail delivered there once).  Pony owns the tree once it is
+# configured: it writes flags, moves and deletions into it, so nothing
+# else may write to the same files.  The sync command skips local
 # accounts entirely.  SMTP is optional: omit to make the account
 # read-only, or add an [smtp] subtable together with username / password
 # / credentials_source to let the account send outgoing mail.
@@ -182,7 +184,7 @@ read_only = ["Sent Mail"]
 # tool.  Pony never connects to any IMAP server for them; they are read-only
 # from a sync perspective.
 
-# Local account backed by a Maildir tree (e.g. delivered by offlineimap).
+# Local account backed by an existing Maildir tree.
 # No SMTP — browse-only.
 [[accounts]]
 account_type  = "local"

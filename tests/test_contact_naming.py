@@ -130,3 +130,21 @@ class HarvestPathsAgreeTest(unittest.TestCase):
 
                 self.assertEqual(stored.first_name, expected_first)
                 self.assertEqual(stored.last_name, expected_last)
+
+
+class CleanDisplayNameBreadthTest(unittest.TestCase):
+    """Reject a name that *is* an address, not any name containing one."""
+
+    def test_an_address_used_as_its_own_name_is_dropped(self) -> None:
+        self.assertEqual(clean_display_name("alice@example.com"), "")
+        self.assertEqual(clean_display_name("<alice@example.com>"), "")
+
+    def test_a_real_name_containing_an_address_survives(self) -> None:
+        # Testing for a bare "@" anywhere stored this contact nameless.
+        self.assertEqual(
+            clean_display_name("Bob (bob@corp.com) Jones"), "Bob (bob@corp.com) Jones"
+        )
+
+    def test_ordinary_names_are_untouched(self) -> None:
+        for name in ("Ana Ruiz", "O'Brien", "José García-Ñuñez"):
+            self.assertEqual(clean_display_name(name), name)

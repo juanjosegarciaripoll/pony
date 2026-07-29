@@ -133,9 +133,14 @@ class AccountConfig:
 class LocalAccountConfig:
     """Local account backed by a mirror directory, no IMAP sync.
 
-    Use this when you want Pony to read from a local Maildir or mbox tree
-    managed by another tool (offlineimap, getmail, procmail, Emacs/Gnus).
-    The sync command skips local accounts.
+    Use this for mail that already exists on disk as a Maildir or mbox
+    tree — an archive, or a folder delivered there once — rather than
+    being fetched over IMAP.  The sync command skips local accounts.
+
+    Pony takes ownership of the tree.  It writes flags, moves and
+    deletions into it, so it must not be shared with another program
+    writing to the same files concurrently; import such a tree instead
+    of pointing two writers at it.
 
     SMTP fields are optional.  When ``smtp`` is configured (together with
     ``username`` and a credential source), the account can send outgoing

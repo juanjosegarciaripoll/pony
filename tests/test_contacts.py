@@ -1404,3 +1404,56 @@ class ContactMergeAkaTests(unittest.TestCase):
         path = TMP_ROOT / "contact-aka" / f"{uuid4().hex}.bbdb"
         write_bbdb([merged], path)
         self.assertIn("Alice Johnson", read_bbdb(path)[0].aliases)
+
+
+class ContactHygieneTests(unittest.TestCase):
+    """Smaller defects that all end up polluting the address book."""
+
+    def _store(self) -> SqliteIndexRepository:
+        path = TMP_ROOT / "contact-hygiene" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        return repo
+
+    def test_contacts_are_listed_without_regard_to_case(self) -> None:
+        # Byte ordering put every lowercase surname after every
+        # uppercase one, so "adams" sorted after "Zephyr".
+        repo = self._store()
+        for last, first in (("Adams", "Zoe"), ("adams", "Bo"), ("Zephyr", "Al")):
+            repo.upsert_contact(
+                contact=_make_contact(
+                    first_name=first,
+                    last_name=last,
+                    emails=(f"{first.lower()}@x.com",),
+                )
+            )
+        listed = [(c.last_name, c.first_name) for c in repo.list_all_contacts()]
+        self.assertEqual(
+            [name.lower() for name, _first in listed], ["adams", "adams", "zephyr"]
+        )
+
+    def test_a_malformed_recipient_is_not_harvested(self) -> None:
+        """``getaddresses`` returns a bare word for a malformed header."""
+        from email.message import EmailMessage
+
+        from pony.message_projection import project_rfc822_message
+
+        repo = self._store()
+        message = EmailMessage()
+        message["From"] = "sender@example.com"
+        message["To"] = "not an address at all"
+        message["Subject"] = "junk"
+        message["Message-ID"] = "<junk@example.com>"
+        message.set_content("body")
+        indexed = project_rfc822_message(
+            message_ref=MessageRef(account_name="a", folder_name="INBOX", id=0),
+            raw_message=message.as_bytes(),
+            storage_key="k",
+        )
+        repo.insert_message(message=indexed)
+        repo.harvest_contacts([indexed])
+
+        addresses = {e for c in repo.list_all_contacts() for e in c.emails}
+        self.assertNotIn("not", addresses)
+        self.assertEqual(addresses, set())

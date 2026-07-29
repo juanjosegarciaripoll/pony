@@ -121,6 +121,22 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **A contact whose name contains an address keeps its name.** The check that
+  discards a display name which *is* an address (`"a@b.com" <a@b.com>`) tested
+  for an `@` anywhere, so `Bob (bob@corp.com) Jones` was stored nameless.
+
+- **A malformed recipient header no longer creates a contact.** A `To:` line
+  reading `not an address at all` yields the bare word `not`, which went
+  straight into the address book and into compose autocompletion.
+
+- **Contacts are listed without regard to case.** Byte ordering put every
+  lowercase surname after every uppercase one, so `adams` sorted after
+  `Zephyr`.
+
+- **A BBDB record with no email address stops duplicating on every import.**
+  The only dedup key was the address, so a phone-only entry was created afresh
+  each time — and the importer used to re-run on its own.
+
 - **A UIDVALIDITY change no longer deletes your mail.** When a server resets
   UIDVALIDITY — a restore from backup, a migration — Pony deleted every active
   row for that folder *and its mirror files*, so anything the server no longer

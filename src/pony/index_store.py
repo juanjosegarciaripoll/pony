@@ -262,14 +262,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
     def _open_connection(self) -> sqlite3.Connection:
         """Open a fresh connection with WAL mode and a busy timeout."""
-        try:
-            conn = sqlite3.connect(self._database_path, timeout=10)
-        except sqlite3.OperationalError:
-            # Stale lock — remove journal files and retry.
-            for suffix in ("-wal", "-shm", "-journal"):
-                p = self._database_path.parent / (self._database_path.name + suffix)
-                p.unlink(missing_ok=True)
-            conn = sqlite3.connect(self._database_path, timeout=10)
+        # No journal-file recovery here.  Deleting a -wal discards every
+        # transaction committed since the last checkpoint — in WAL mode
+        # that is where committed data lives — and SQLite recovers a
+        # crash-left journal correctly on its own.  The guard could not
+        # fire anyway: connect() is lazy, so a database that cannot be
+        # opened raises on the first statement below, not here.
+        conn = sqlite3.connect(self._database_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         # Per-connection, and SQLite ignores it while a transaction is
@@ -1329,7 +1328,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         """Return every contact record (for export)."""
         with self._use() as conn:
             rows = conn.execute(
-                "SELECT id FROM contacts ORDER BY last_name, first_name"
+                "SELECT id FROM contacts "
+                "ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE"
             ).fetchall()
         return self._load_contacts_by_ids([int(r[0]) for r in rows])
 
@@ -2037,6 +2037,12 @@ def _build_contact(
     )
 
 
+def _looks_like_address(value: str) -> bool:
+    """A minimal sanity check: one ``@`` with a non-empty side each."""
+    local, sep, domain = value.partition("@")
+    return bool(sep) and bool(local) and "@" not in domain and "." in domain
+
+
 def _harvest_message_contacts(
     conn: sqlite3.Connection, message: IndexedMessage
 ) -> None:
@@ -2049,7 +2055,12 @@ def _harvest_message_contacts(
     raw = ", ".join(filter(None, [message.recipients, message.cc]))
     for display_name, addr in getaddresses([raw]):
         addr = addr.lower().strip()
-        if not addr:
+        # getaddresses returns whatever it can make of a malformed
+        # header, so a To: line reading "not an address at all" yields
+        # the bare word "not".  Requiring an @ with something either
+        # side of it keeps that out of the address book and out of
+        # compose autocompletion.
+        if not _looks_like_address(addr):
             continue
         display_name = clean_display_name(display_name)
         # Check if email already belongs to a contact.

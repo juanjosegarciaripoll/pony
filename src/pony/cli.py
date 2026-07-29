@@ -31,6 +31,7 @@ from .domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
+    Contact,
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
@@ -2456,8 +2457,9 @@ def run_tui(
 
     # Local accounts have no sync step, so their mirrors are the sole
     # source of truth.  Reconcile the index against the mirror before
-    # the TUI opens — picks up externally-added files (offlineimap,
-    # getmail, procmail) and prunes rows for files removed out-of-band.
+    # the TUI opens — picks up files added since the last run and prunes
+    # rows whose file is gone, which covers a tree edited between
+    # sessions or restored from a backup.
     # The folder-mtime cache lets us skip folders that haven't changed
     # since last run, keeping startup fast on big cold archives.
     scan_state_path = paths.data_dir / "local_scan_state.json"
@@ -3057,6 +3059,30 @@ def run_contacts_export(
     return 0
 
 
+def _contact_by_name(
+    index: SqliteIndexRepository, contact: Contact
+) -> Contact | None:
+    """An existing contact with the same name and no email, if any.
+
+    Only used for imported records that carry no address at all — a
+    phone-only entry in someone's address book.  Restricting the match
+    to other address-less contacts keeps it from silently merging a
+    namesake who does have mail.
+    """
+    name = (contact.first_name.strip().lower(), contact.last_name.strip().lower())
+    if not any(name):
+        return None
+    for candidate in index.list_all_contacts():
+        if candidate.emails:
+            continue
+        if (
+            candidate.first_name.strip().lower(),
+            candidate.last_name.strip().lower(),
+        ) == name:
+            return candidate
+    return None
+
+
 def import_bbdb_contacts(
     *,
     index: SqliteIndexRepository,
@@ -3090,6 +3116,12 @@ def import_bbdb_contacts(
                 )
                 if existing is not None:
                     break
+            if existing is None and not contact.emails:
+                # A record with no address has nothing to match on, so
+                # every re-import created another copy of it — and the
+                # importer re-runs whenever the file is newer.  Fall back
+                # to the name, which is all such a record has.
+                existing = _contact_by_name(index, contact)
 
             try:
                 if existing is not None:

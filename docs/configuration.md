@@ -235,10 +235,17 @@ See [Credential backends](#credential-backends) below.
 
 ## Local account fields
 
-Local accounts point at a Maildir or mbox tree managed by something else
-(`offlineimap`, `getmail`, `procmail`…). Pony never connects to an IMAP
+Local accounts point at a Maildir or mbox tree that already exists on disk —
+an archive, or mail delivered there once. Pony never connects to an IMAP
 server for them; sync is a no-op. Browsing, searching, harvesting contacts,
 and folder creation all work normally.
+
+!!! warning "Pony owns the tree"
+    Pony writes flags, moves and deletions into the mirror, so the tree must
+    not also be written to by another program while Pony is using it. To bring
+    in mail another tool manages, copy it in with `pony folder mirror` rather
+    than pointing both at the same files. This applies to a second Pony
+    instance as well for mbox mirrors, which have no file locking yet.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
