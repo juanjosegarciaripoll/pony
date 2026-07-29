@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
 
+from .contact_merge import merged_contact
 from .contact_naming import clean_display_name, split_display_name
 from .domain import (
     Contact,
@@ -38,6 +39,24 @@ from .protocols import ContactRepository, IndexRepository
 # and pointed at the reset workflow.
 _SCHEMA_VERSION = 3
 _MIGRATABLE_FROM = 2
+
+
+class ContactEmailConflictError(RuntimeError):
+    """An email address is already held by a different contact.
+
+    ``contact_emails`` keys on the address, so one address belongs to
+    exactly one contact.  The insert used to be ``INSERT OR IGNORE``, so
+    a save that named a taken address silently dropped it — and a save
+    that *replaced* the contact's only address with a taken one left the
+    contact with no address at all, reporting success either way.
+    """
+
+    def __init__(self, *, email_address: str, owner_id: int, owner_name: str) -> None:
+        self.email_address = email_address
+        self.owner_id = owner_id
+        self.owner_name = owner_name
+        owner = owner_name or f"contact {owner_id}"
+        super().__init__(f"{email_address} already belongs to {owner}")
 
 
 class SchemaMismatchError(RuntimeError):
@@ -253,6 +272,12 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn = sqlite3.connect(self._database_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        # Per-connection, and SQLite ignores it while a transaction is
+        # open — so setting it inside a method that runs within a
+        # ``connection()`` block did nothing, and deleting a contact
+        # there left its emails and aliases behind as orphan rows that
+        # made the address permanently unclaimable.
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     @contextlib.contextmanager
@@ -1220,6 +1245,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 (contact_id,),
             )
             for email in contact.emails:
+                owner = conn.execute(
+                    "SELECT contact_id FROM contact_emails WHERE email_address = ?",
+                    (email.strip().lower(),),
+                ).fetchone()
+                if owner is not None and int(owner[0]) != contact_id:
+                    other = self._load_contact_or_none(conn, int(owner[0]))
+                    raise ContactEmailConflictError(
+                        email_address=email,
+                        owner_id=int(owner[0]),
+                        owner_name=other.display_name if other else "",
+                    )
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO contact_emails
@@ -1290,15 +1326,34 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def delete_contact(self, *, contact_id: int) -> None:
         """Delete a contact and its emails/aliases."""
         with self._use() as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
 
     def merge_contacts(self, *, target_id: int, source_ids: list[int]) -> Contact:
-        """Merge *source_ids* into *target_id*."""
+        """Merge *source_ids* into *target_id* and return the result.
+
+        Field-level: the surviving record gains everything the sources
+        knew rather than only their emails and aliases.  See
+        :func:`pony.contact_merge.merged_contact` for the policy and for
+        what used to be silently destroyed here.
+
+        A source that is the target, or that no longer exists, is
+        skipped — both are reachable from the browser when a marked row
+        was deleted between marking and merging, and neither is a reason
+        to fail.
+        """
         with self._use() as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
+            target = self._load_contact_or_none(conn, target_id)
+            if target is None:
+                raise KeyError(f"contact not found: {target_id}")
             for src_id in source_ids:
-                # Move emails to target (skip duplicates).
+                if src_id == target_id:
+                    continue
+                source = self._load_contact_or_none(conn, src_id)
+                if source is None:
+                    continue
+                target = merged_contact(target, source)
+                # Move emails and aliases before the source row goes, so
+                # the unique constraints see one owner at a time.
                 conn.execute(
                     """
                     UPDATE OR IGNORE contact_emails
@@ -1306,7 +1361,6 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     """,
                     (target_id, src_id),
                 )
-                # Move aliases to target (skip duplicates).
                 conn.execute(
                     """
                     UPDATE OR IGNORE contact_aliases
@@ -1314,35 +1368,68 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     """,
                     (target_id, src_id),
                 )
-                # Sum message_count.
-                conn.execute(
-                    """
-                    UPDATE contacts SET
-                        message_count = message_count + (
-                            SELECT COALESCE(message_count, 0)
-                            FROM contacts WHERE id = ?
-                        ),
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        src_id,
-                        datetime.now(tz=UTC).isoformat(),
-                        target_id,
-                    ),
-                )
-                # Delete source.
-                conn.execute(
-                    "DELETE FROM contacts WHERE id = ?",
-                    (src_id,),
-                )
+                conn.execute("DELETE FROM contacts WHERE id = ?", (src_id,))
+            self._write_contact_fields(conn, target)
         return self._load_contact(target_id)
+
+    def _write_contact_fields(self, conn: sqlite3.Connection, contact: Contact) -> None:
+        """Persist the scalar columns of an existing contact row."""
+        conn.execute(
+            """
+            UPDATE contacts SET
+                first_name = ?, last_name = ?, affix = ?, organization = ?,
+                notes = ?, message_count = ?, last_seen = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                contact.first_name,
+                contact.last_name,
+                json.dumps(list(contact.affix)),
+                contact.organization,
+                contact.notes,
+                contact.message_count,
+                contact.last_seen.isoformat() if contact.last_seen else None,
+                datetime.now(tz=UTC).isoformat(),
+                contact.id,
+            ),
+        )
 
     def harvest_contacts(self, messages: Iterable[IndexedMessage]) -> None:
         """Bulk-harvest addresses from *messages*."""
         with self._use() as conn:
             for message in messages:
                 _harvest_message_contacts(conn, message)
+
+    def _load_contact_or_none(
+        self, conn: sqlite3.Connection, contact_id: int
+    ) -> Contact | None:
+        """Load one contact on an existing connection, or None.
+
+        ``_load_contacts_by_ids`` goes through ``_use()``, which opens a
+        second connection when it is not already inside a
+        ``connection()`` block — and that one would not see this
+        transaction's uncommitted writes.
+        """
+        row = conn.execute(
+            """
+            SELECT id, first_name, last_name, affix, organization,
+                   notes, message_count, last_seen, created_at, updated_at
+            FROM contacts WHERE id = ?
+            """,
+            (contact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        email_rows = conn.execute(
+            "SELECT email_address FROM contact_emails WHERE contact_id = ?"
+            " ORDER BY rowid",
+            (contact_id,),
+        ).fetchall()
+        alias_rows = conn.execute(
+            "SELECT alias FROM contact_aliases WHERE contact_id = ? ORDER BY alias",
+            (contact_id,),
+        ).fetchall()
+        return _build_contact(tuple(row), list(email_rows), list(alias_rows))
 
     def _load_contact(self, contact_id: int) -> Contact:
         """Load a full contact record by id."""

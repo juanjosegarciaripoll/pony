@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -744,12 +745,13 @@ class ContactsCliTests(unittest.TestCase):
             bbdb_file,
         )
 
-        created, updated = import_bbdb_contacts(
+        created, updated, skipped = import_bbdb_contacts(
             index=repo,
             bbdb_path=bbdb_file,
         )
         self.assertEqual(created, 0)
         self.assertEqual(updated, 1)
+        self.assertEqual(skipped, 0)
 
         found = repo.find_contact_by_email(email_address="alice@work.com")
         self.assertIsNotNone(found)
@@ -1117,3 +1119,189 @@ class BbdbFieldRoundTripTests(unittest.TestCase):
         with self.assertRaises(BbdbError) as ctx:
             read_bbdb(path)
         self.assertIn("not UTF-8", str(ctx.exception))
+
+
+class ContactMergeTests(unittest.TestCase):
+    """Merging must not be a way to lose the details you typed.
+
+    The browser merges into the lowest row id — the oldest record, which
+    in practice is the stub harvested from a message rather than the one
+    edited by hand. Merge kept only emails, aliases and message counts,
+    so the routine gesture of tidying duplicates deleted the name,
+    organisation, notes and affix the user had entered.
+    """
+
+    def _store(self) -> SqliteIndexRepository:
+        path = TMP_ROOT / "contact-merge" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        return repo
+
+    def test_the_sources_curated_fields_survive(self) -> None:
+        repo = self._store()
+        stub = repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Alice", last_name="", emails=("alice@work.com",)
+            )
+        )
+        rich = repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Alice",
+                last_name="Smith",
+                emails=("alice@home.com",),
+                organization="ACME Corp",
+                notes="Met at PyCon.",
+                affix=("Dr.",),
+            )
+        )
+        assert stub.id is not None and rich.id is not None
+
+        merged = repo.merge_contacts(target_id=stub.id, source_ids=[rich.id])
+
+        self.assertEqual(merged.last_name, "Smith")
+        self.assertEqual(merged.organization, "ACME Corp")
+        self.assertEqual(merged.notes, "Met at PyCon.")
+        self.assertEqual(merged.affix, ("Dr.",))
+        self.assertEqual(set(merged.emails), {"alice@work.com", "alice@home.com"})
+
+    def test_notes_on_both_sides_are_combined(self) -> None:
+        repo = self._store()
+        a = repo.upsert_contact(
+            contact=_make_contact(emails=("a@x.com",), notes="first note")
+        )
+        b = repo.upsert_contact(
+            contact=_make_contact(emails=("b@x.com",), notes="second note")
+        )
+        assert a.id is not None and b.id is not None
+        merged = repo.merge_contacts(target_id=a.id, source_ids=[b.id])
+        self.assertIn("first note", merged.notes)
+        self.assertIn("second note", merged.notes)
+
+    def test_a_note_already_contained_is_not_repeated(self) -> None:
+        repo = self._store()
+        a = repo.upsert_contact(
+            contact=_make_contact(emails=("a@x.com",), notes="alpha\nbeta")
+        )
+        b = repo.upsert_contact(
+            contact=_make_contact(emails=("b@x.com",), notes="beta")
+        )
+        assert a.id is not None and b.id is not None
+        merged = repo.merge_contacts(target_id=a.id, source_ids=[b.id])
+        self.assertEqual(merged.notes, "alpha\nbeta")
+
+    def test_message_counts_add_up(self) -> None:
+        repo = self._store()
+        a = repo.upsert_contact(
+            contact=_make_contact(emails=("a@x.com",), message_count=3)
+        )
+        b = repo.upsert_contact(
+            contact=_make_contact(emails=("b@x.com",), message_count=4)
+        )
+        assert a.id is not None and b.id is not None
+        self.assertEqual(
+            repo.merge_contacts(target_id=a.id, source_ids=[b.id]).message_count, 7
+        )
+
+    def test_merging_a_contact_into_itself_is_a_noop(self) -> None:
+        # It used to delete the row outright, taking everything with it.
+        repo = self._store()
+        only = repo.upsert_contact(
+            contact=_make_contact(first_name="Solo", emails=("solo@x.com",))
+        )
+        assert only.id is not None
+        merged = repo.merge_contacts(target_id=only.id, source_ids=[only.id])
+        self.assertEqual(merged.first_name, "Solo")
+        self.assertEqual(len(repo.list_all_contacts()), 1)
+
+    def test_a_source_that_no_longer_exists_is_skipped(self) -> None:
+        # Reachable from the browser when a marked row was deleted
+        # between marking and merging; it used to raise IntegrityError.
+        repo = self._store()
+        target = repo.upsert_contact(contact=_make_contact(emails=("t@x.com",)))
+        assert target.id is not None
+        merged = repo.merge_contacts(target_id=target.id, source_ids=[9999])
+        self.assertEqual(merged.emails, ("t@x.com",))
+
+    def test_deleting_a_contact_removes_its_emails(self) -> None:
+        """Foreign keys are per-connection and ignored inside a transaction.
+
+        The pragma was set inside the delete method, where an open
+        transaction made it a no-op, so the rows survived and the address
+        became permanently unclaimable.
+        """
+        repo = self._store()
+        saved = repo.upsert_contact(
+            contact=_make_contact(emails=("orphan@x.com",), aliases=("nick",))
+        )
+        assert saved.id is not None
+        with repo.connection():
+            repo.upsert_contact(contact=_make_contact(emails=("other@x.com",)))
+            repo.delete_contact(contact_id=saved.id)
+
+        self.assertIsNone(repo.find_contact_by_email(email_address="orphan@x.com"))
+        reclaimed = repo.upsert_contact(
+            contact=_make_contact(first_name="New", emails=("orphan@x.com",))
+        )
+        self.assertEqual(reclaimed.emails, ("orphan@x.com",))
+
+
+class ContactEmailOwnershipTests(unittest.TestCase):
+    """An address belongs to exactly one contact, and saying so beats silence."""
+
+    def _store(self) -> SqliteIndexRepository:
+        path = TMP_ROOT / "contact-email" / f"{uuid4().hex}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        return repo
+
+    def test_claiming_a_taken_address_reports_the_owner(self) -> None:
+        from pony.index_store import ContactEmailConflictError
+
+        repo = self._store()
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Alice", last_name="A", emails=("shared@x.com",)
+            )
+        )
+        bob = repo.upsert_contact(
+            contact=_make_contact(first_name="Bob", emails=("bob@x.com",))
+        )
+        with self.assertRaises(ContactEmailConflictError) as ctx:
+            repo.upsert_contact(
+                contact=dataclasses.replace(bob, emails=("bob@x.com", "shared@x.com"))
+            )
+        self.assertIn("shared@x.com", str(ctx.exception))
+        self.assertIn("Alice", str(ctx.exception))
+
+    def test_the_rejected_save_leaves_the_contact_untouched(self) -> None:
+        # Replacing the only address with a taken one used to leave the
+        # contact with no address at all, and report success.
+        from pony.index_store import ContactEmailConflictError
+
+        repo = self._store()
+        repo.upsert_contact(contact=_make_contact(emails=("shared@x.com",)))
+        bob = repo.upsert_contact(
+            contact=_make_contact(first_name="Bob", emails=("bob@x.com",))
+        )
+        with self.assertRaises(ContactEmailConflictError):
+            repo.upsert_contact(
+                contact=dataclasses.replace(bob, emails=("shared@x.com",))
+            )
+        assert bob.id is not None
+        self.assertEqual(
+            repo.find_contact_by_email(email_address="bob@x.com").emails,  # type: ignore[union-attr]
+            ("bob@x.com",),
+        )
+
+    def test_saving_a_contact_with_its_own_address_is_fine(self) -> None:
+        repo = self._store()
+        saved = repo.upsert_contact(
+            contact=_make_contact(first_name="Ann", emails=("ann@x.com",))
+        )
+        again = repo.upsert_contact(
+            contact=dataclasses.replace(saved, organization="ACME")
+        )
+        self.assertEqual(again.emails, ("ann@x.com",))
+        self.assertEqual(again.organization, "ACME")

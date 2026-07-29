@@ -121,6 +121,28 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **Merging contacts no longer deletes the details you typed.** The merge kept
+  only emails, aliases and message counts, discarding the source's name,
+  organisation, notes, affix and last-seen date. The browser merges into the
+  lowest row id — the oldest record, which is usually the stub harvested from
+  a message rather than the one edited by hand — so tidying up duplicates
+  destroyed exactly the information worth keeping. Merging is now field-level
+  and loses nothing: blanks are filled from the other record, notes are
+  combined, counts add up. Merging a contact into itself is a no-op instead of
+  deleting it, and a source that has since been deleted is skipped instead of
+  raising.
+
+- **An email address that belongs to another contact is reported, not
+  swallowed.** Saving a contact with an address held by someone else silently
+  dropped it, and replacing the contact's only address that way left it with
+  none — reporting success both times. The save is now refused with a message
+  naming the other contact.
+
+- **Deleting a contact removes its addresses and aliases.** The foreign-key
+  pragma was set inside the delete, where an open transaction makes SQLite
+  ignore it, so the rows survived their contact and the address could never be
+  used again. It is set when the connection is opened.
+
 - **BBDB is now import/export only.** Pony used to import from `bbdb_path`
   and rewrite an export on every launch and every sync, so contacts appeared
   and files changed as a side effect of reading mail. Nothing happens now

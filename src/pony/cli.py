@@ -24,13 +24,13 @@ from .accounts import (
     find_imap_account,
 )
 from .config import ConfigError, load_config
+from .contact_merge import merged_contact
 from .credentials import build_credentials_provider, encrypt_password
 from .domain import (
     CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
     AppConfig,
-    Contact,
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
@@ -40,6 +40,7 @@ from .domain import (
 from .fixture_flow import run_fixture_ingest
 from .imap_client import ImapAuthError, ImapSession
 from .index_store import (
+    ContactEmailConflictError,
     SchemaMismatchError,
     SqliteIndexRepository,
     load_contacts_for_backup,
@@ -3060,7 +3061,7 @@ def import_bbdb_contacts(
     *,
     index: SqliteIndexRepository,
     bbdb_path: Path,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Import contacts from a BBDB file, merging with existing records.
 
     For each BBDB contact:
@@ -3068,13 +3069,16 @@ def import_bbdb_contacts(
       record (add new emails/aliases, update name/org/notes if richer).
     - Otherwise create a new contact.
 
-    Returns ``(created, updated)`` counts.
+    Returns ``(created, updated, skipped)`` counts.  A record is
+    skipped when one of its addresses is already held by a third
+    contact, which an import cannot arbitrate.
     """
     from .bbdb import read_bbdb
 
     imported = read_bbdb(bbdb_path)
     created = 0
     updated = 0
+    skipped = 0
 
     with index.connection():
         for contact in imported:
@@ -3087,42 +3091,22 @@ def import_bbdb_contacts(
                 if existing is not None:
                     break
 
-            if existing is not None:
-                # Merge: combine emails and aliases, prefer richer name.
-                merged_emails = set(existing.emails) | set(contact.emails)
-                merged_aliases = set(existing.aliases) | set(contact.aliases)
-                first = contact.first_name or existing.first_name
-                last = contact.last_name or existing.last_name
-                org = contact.organization or existing.organization
-                notes_parts = [p for p in (existing.notes, contact.notes) if p]
-                notes = existing.notes if existing.notes else contact.notes
-                if (
-                    existing.notes
-                    and contact.notes
-                    and contact.notes not in existing.notes
-                ):
-                    notes = "\n".join(notes_parts)
-                affix = contact.affix or existing.affix
-                index.upsert_contact(
-                    contact=Contact(
-                        id=existing.id,
-                        first_name=first,
-                        last_name=last,
-                        emails=tuple(sorted(merged_emails)),
-                        aliases=tuple(sorted(merged_aliases)),
-                        affix=affix,
-                        organization=org,
-                        notes=notes,
-                        message_count=existing.message_count,
-                        last_seen=existing.last_seen,
-                    ),
-                )
-                updated += 1
-            else:
-                index.upsert_contact(contact=contact)
-                created += 1
+            try:
+                if existing is not None:
+                    # One merge policy for the whole program — the same
+                    # one the contact browser's merge key uses.
+                    index.upsert_contact(contact=merged_contact(existing, contact))
+                    updated += 1
+                else:
+                    index.upsert_contact(contact=contact)
+                    created += 1
+            except ContactEmailConflictError as exc:
+                # A third contact already holds one of these addresses;
+                # importing cannot decide who should own it.
+                print(f"  Skipped {contact.display_name}: {exc}")
+                skipped += 1
 
-    return created, updated
+    return created, updated, skipped
 
 
 def run_contacts_import(
@@ -3154,11 +3138,12 @@ def run_contacts_import(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     try:
-        created, updated = import_bbdb_contacts(index=index, bbdb_path=src)
+        created, updated, skipped = import_bbdb_contacts(index=index, bbdb_path=src)
     except BbdbError as exc:
         print(f"Could not read {src}: {exc}")
         return 1
-    print(f"Imported from {src}: {created} new, {updated} updated.")
+    suffix = f", {skipped} skipped" if skipped else ""
+    print(f"Imported from {src}: {created} new, {updated} updated{suffix}.")
     return 0
 
 

@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Label, TextArea
 
 from ...domain import Contact
+from ...index_store import ContactEmailConflictError
 from ...protocols import ContactRepository
 
 
@@ -119,7 +120,16 @@ class ContactEditScreen(Screen[Contact | None]):
             aliases=aliases,
             notes=notes,
         )
-        saved = self._contacts.upsert_contact(contact=updated)
+        try:
+            saved = self._contacts.upsert_contact(contact=updated)
+        except ContactEmailConflictError as exc:
+            # An address belongs to exactly one contact.  Saying so beats
+            # dropping the address and reporting success.
+            self.notify(
+                f"{exc}. Merge the two contacts instead.",
+                severity="error",
+            )
+            return
         self.dismiss(saved)
 
     def action_cancel(self) -> None:
