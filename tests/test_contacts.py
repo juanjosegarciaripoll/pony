@@ -651,7 +651,6 @@ class ContactsCliTests(unittest.TestCase):
         output = _capture(
             run_contacts_export,
             paths=paths,
-            config_path=None,
             output_path=str(out_file),
         )
         self.assertIn("Exported 1 contact", output)
@@ -661,28 +660,28 @@ class ContactsCliTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].first_name, "Juan")
 
-    def test_contacts_export_no_path_errors(self) -> None:
-        import io
-        import sys
+    def test_contacts_export_with_no_path_writes_ponys_own_copy(self) -> None:
+        """Never the user's bbdb_path — this export cannot represent it.
 
+        It carries no phone numbers, postal addresses, xfields beyond
+        notes, or stable record id, so writing over the user's file would
+        destroy data Pony never had.
+        """
         from pony.cli import run_contacts_export
 
         paths, repo = _cli_paths()
-        del repo
-
-        captured = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured
-        try:
-            rc = run_contacts_export(
-                paths=paths,
-                config_path=paths.data_dir / "nonexistent.toml",
-                output_path=None,
+        repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Ana", last_name="Ruiz", emails=("ana@example.com",)
             )
-        finally:
-            sys.stdout = old_stdout
-        self.assertEqual(rc, 1)
-        self.assertIn("No output path", captured.getvalue())
+        )
+
+        output = _capture(run_contacts_export, paths=paths, output_path=None)
+
+        destination = paths.data_dir / "contacts.bbdb"
+        self.assertIn("Exported 1 contact", output)
+        self.assertTrue(destination.exists())
+        self.assertEqual(read_bbdb(destination)[0].first_name, "Ana")
 
     def test_contacts_import_creates_new(self) -> None:
         from pony.cli import run_contacts_import
@@ -1026,3 +1025,95 @@ class ContactOrderingTest(unittest.TestCase):
         results = self._seeded_index().search_contacts(prefix="zed", limit=2)
 
         self.assertEqual([c.message_count for c in results], [50, 10])
+
+
+class BbdbFieldRoundTripTests(unittest.TestCase):
+    """Any character must survive an export/import cycle.
+
+    A record was written on one line and read back by requiring each
+    line to start with ``[`` and end with ``]``. A field containing any
+    line-break character therefore split the record in two, and both
+    halves failed the test — so the contact vanished with no error. Pony
+    produces such fields itself: the BBDB import merge joins notes with
+    newlines, and the notes editor is a multi-line text area.
+
+    This is also the format the schema-recovery backup is written in,
+    immediately before the index is deleted — the one moment the export
+    is the only copy of a contact.
+    """
+
+    def _round_trip(self, value: str) -> list[Contact]:
+        path = TMP_ROOT / "bbdb-round" / f"{uuid4().hex}.bbdb"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_bbdb(
+            [
+                Contact(
+                    id=None,
+                    first_name="Alice",
+                    last_name="Smith",
+                    emails=("alice@example.com",),
+                    notes=value,
+                )
+            ],
+            path,
+        )
+        return read_bbdb(path)
+
+    def test_every_line_break_character_survives(self) -> None:
+        for name, value in {
+            "LF": "a\nb",
+            "CR": "a\rb",
+            "CRLF": "a\r\nb",
+            "VT": "a\vb",
+            "FF": "a\fb",
+            "FS": "a\x1cb",
+            "GS": "a\x1db",
+            "RS": "a\x1eb",
+            "NEL": "a\x85b",
+            "LINE SEP": "a\u2028b",
+            "PARA SEP": "a\u2029b",
+        }.items():
+            with self.subTest(character=name):
+                loaded = self._round_trip(value)
+                self.assertEqual(len(loaded), 1, f"{name} destroyed the contact")
+                self.assertEqual(loaded[0].notes, value)
+
+    def test_quotes_backslashes_and_a_literal_escape_survive(self) -> None:
+        # r"a\nb" must come back as a backslash and an n, not a newline —
+        # the reason unescaping is a single pass rather than chained
+        # str.replace calls.
+        for value in ('say "hi"', r"C:\path", r"a\nb", "tab\there"):
+            with self.subTest(value=value):
+                loaded = self._round_trip(value)
+                self.assertEqual(len(loaded), 1)
+                self.assertEqual(loaded[0].notes, value)
+
+    def test_a_record_written_by_emacs_across_lines_is_read(self) -> None:
+        """Emacs writes line breaks inside strings verbatim."""
+        path = TMP_ROOT / "bbdb-round" / f"{uuid4().hex}.bbdb"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            ";; -*-coding: utf-8-emacs;-*-\n;;; file-format: 9\n"
+            '["Emacs" "User" nil nil nil nil nil ("e@u.com") '
+            '((notes . "line one\nline two")) nil nil nil nil]\n',
+            encoding="utf-8",
+        )
+        loaded = read_bbdb(path)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].notes, "line one\nline two")
+
+    def test_a_bracket_in_a_note_does_not_end_the_record(self) -> None:
+        loaded = self._round_trip("see [1] and [2]")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].notes, "see [1] and [2]")
+
+    def test_a_non_utf8_file_reports_itself(self) -> None:
+        """It used to raise UnicodeDecodeError out of the CLI."""
+        from pony.bbdb import BbdbError
+
+        path = TMP_ROOT / "bbdb-round" / f"{uuid4().hex}.bbdb"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b';; -*-coding: latin-1;-*-\n["Jos\xe9" "R" nil]\n')
+        with self.assertRaises(BbdbError) as ctx:
+            read_bbdb(path)
+        self.assertIn("not UTF-8", str(ctx.exception))

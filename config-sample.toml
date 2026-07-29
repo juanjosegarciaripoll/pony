@@ -18,9 +18,12 @@
 #                      When true, all new messages open in Markdown mode unless the
 #                      account sets markdown_compose = false.  Toggle per-message
 #                      with ctrl+x m inside the composer.
-# - bbdb_path:         Path to a BBDB v3 file for Emacs interop.  When set, the
-#                      contacts database is automatically exported to this file after
-#                      every sync.  Use `pony contacts export` to export manually.
+# - bbdb_path:         Path to a BBDB v3 file for Emacs interop.  Read by
+#                      `pony contacts import` when no path is given, and never
+#                      written to — `pony contacts export` with no path writes
+#                      <data_dir>/contacts.bbdb instead, because the export
+#                      cannot represent phone numbers, addresses or record ids.
+#                      Nothing is imported or exported automatically.
 #                      Tilde (~), environment variables ($HOME, %USERPROFILE%)
 #                      are expanded.  Example: bbdb_path = "~/.bbdb"
 # - downloads_path:    Directory where attachments opened / saved from the TUI

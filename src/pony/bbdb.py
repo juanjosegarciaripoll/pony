@@ -33,6 +33,10 @@ _BBDB_HEADER = """\
 # ---------------------------------------------------------------------------
 
 
+class BbdbError(RuntimeError):
+    """Raised when a BBDB file cannot be read."""
+
+
 def write_bbdb(contacts: list[Contact], path: Path) -> None:
     """Write a BBDB v3 file from a list of Contact records."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,11 +68,69 @@ def _contact_to_bbdb_line(contact: Contact) -> str:
     return "[" + " ".join(fields) + "]\n"
 
 
+# Characters that must not appear raw inside a record.  The first two are
+# Lisp string syntax; the rest are every character Python's ``splitlines``
+# treats as a line break, which is what used to tear a record in half.
+_LISP_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\v": "\\v",
+    "\f": "\\f",
+    "\x1c": "\\x1c",
+    "\x1d": "\\x1d",
+    "\x1e": "\\x1e",
+    "\x85": "\\x85",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+}
+
+_LISP_UNESCAPES = {
+    "\\": "\\",
+    '"': '"',
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "f": "\f",
+}
+
+
 def _lisp_string(value: str) -> str:
     if not value:
         return "nil"
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = "".join(_LISP_ESCAPES.get(char, char) for char in value)
     return f'"{escaped}"'
+
+
+def _lisp_unescape(text: str) -> str:
+    """Reverse :func:`_lisp_string`, in one pass.
+
+    Chained ``str.replace`` calls would decode the output of an earlier
+    replacement, so a value containing a literal backslash-n could come
+    back as a newline.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\" or index + 1 >= len(text):
+            out.append(char)
+            index += 1
+            continue
+        marker = text[index + 1]
+        if marker == "x" and index + 4 <= len(text) - 1:
+            out.append(chr(int(text[index + 2 : index + 4], 16)))
+            index += 4
+        elif marker == "u" and index + 6 <= len(text):
+            out.append(chr(int(text[index + 2 : index + 6], 16)))
+            index += 6
+        else:
+            out.append(_LISP_UNESCAPES.get(marker, marker))
+            index += 2
+    return "".join(out)
 
 
 def _lisp_string_list(items: tuple[str, ...]) -> str:
@@ -92,17 +154,61 @@ def read_bbdb(path: Path) -> list[Contact]:
     """Parse a BBDB v3 file and return Contact records."""
     if not path.exists():
         return []
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise BbdbError(
+            f"{path} is not UTF-8 ({exc.reason} at byte {exc.start}). "
+            "Re-save it as UTF-8, or convert it with iconv."
+        ) from exc
     contacts: list[Contact] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            contact = _parse_bbdb_record(line)
-            if contact is not None:
-                contacts.append(contact)
+    for record in _split_records(text):
+        contact = _parse_bbdb_record(record)
+        if contact is not None:
+            contacts.append(contact)
     return contacts
+
+
+def _split_records(text: str) -> list[str]:
+    """Yield one ``[...]`` record per element, however it is laid out.
+
+    Emacs writes line breaks inside string fields verbatim, so a record
+    is not reliably one line.  Splitting on lines and demanding that each
+    start with ``[`` and end with ``]`` silently dropped any record
+    containing a newline — including ones Pony wrote itself, since the
+    BBDB import merge joins notes with newlines.
+
+    Brackets are counted outside of strings, so a ``[`` or ``]`` in a
+    note does not end the record early.
+    """
+    records: list[str] = []
+    buffer: list[str] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if depth == 0:
+            # Between records: start one at '[', ignore everything else
+            # (the header comment lines land here).
+            if char == "[":
+                depth = 1
+                buffer = ["["]
+            continue
+        buffer.append(char)
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            in_string = not in_string
+        elif not in_string:
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    records.append("".join(buffer))
+    return records
 
 
 def _parse_bbdb_record(line: str) -> Contact | None:
@@ -185,8 +291,7 @@ def _parse_sexp(tokens: list[str], pos: int) -> tuple[object, int]:
 
     if tok.startswith('"'):
         # Quoted string — strip quotes and unescape.
-        s = tok[1:-1].replace('\\"', '"').replace("\\\\", "\\")
-        return s, pos + 1
+        return _lisp_unescape(tok[1:-1]), pos + 1
 
     if tok == "(":
         # List or alist.

@@ -57,9 +57,9 @@ editor = "/usr/bin/nvim"
 # below; toggle per-message with ctrl+x m.
 markdown_compose = false
 
-# BBDB v3 file for Emacs interop.  Imported on each `pony sync` if its
-# mtime advanced since the last import; exported to <data_dir>/contacts.bbdb.
-# Supports ~, $VAR, and %VAR% expansion.
+# BBDB v3 file for Emacs interop.  Read by `pony contacts import` when no
+# path is given; never written to.  Nothing happens automatically — import
+# and export are commands you run.  Supports ~, $VAR, and %VAR% expansion.
 # bbdb_path = "~/.emacs.d/bbdb"
 
 # Where the TUI's "open" / "save" attachment keys land.  Created on demand.

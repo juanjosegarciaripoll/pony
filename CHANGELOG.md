@@ -121,6 +121,31 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   mark-all-read, copy, move, edit-draft and the row-marking keys were absent
   entirely.
 
+- **BBDB is now import/export only.** Pony used to import from `bbdb_path`
+  and rewrite an export on every launch and every sync, so contacts appeared
+  and files changed as a side effect of reading mail. Nothing happens now
+  unless you run `pony contacts import` or `pony contacts export`. The
+  contacts database is the single store; `bbdb_path` names the file import
+  reads when given no path, and is never written to.
+
+- **`pony contacts export` no longer overwrites your Emacs BBDB file.** With
+  no path it defaulted to `bbdb_path` — the user's own file — and rewrote it
+  without phone numbers, postal addresses, xfields beyond `notes`, or the
+  stable record id, none of which Pony stores. It writes
+  `<data_dir>/contacts.bbdb`, which is what the documentation always said.
+
+- **A line break in a contact field no longer deletes the contact.** Records
+  were written on one line and read back by requiring each line to start with
+  `[` and end with `]`, so any newline split the record in two and both halves
+  were silently discarded. Pony produced such fields itself — the import merge
+  joins notes with newlines — which meant a contact could disappear from every
+  later export, including the backup written just before a schema reset, when
+  it is the only copy. Line breaks are escaped on write, and records spanning
+  several lines (as Emacs writes them) are read correctly.
+
+- **A non-UTF-8 BBDB file reports itself** instead of raising
+  `UnicodeDecodeError` out of the command.
+
 - **Searching for two words works.** Every term after the first was treated
   as part of one adjacent phrase confined to a single column, so `invoice
   paid` found nothing even when both words were plainly there, and a subject

@@ -510,9 +510,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 # without this every search silently returns nothing and
                 # no ordinary sync ever repairs it, because unchanged rows
                 # are never rewritten.
-                conn.execute(
-                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
-                )
+                conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     # ------------------------------------------------------------------

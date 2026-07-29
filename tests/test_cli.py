@@ -1637,8 +1637,8 @@ class ContactsCommandsTest(unittest.TestCase):
             )
         self.assertEqual(rc, 1)
 
-    def test_contacts_export_no_path_no_bbdb_returns_1(self) -> None:
-        """``pony contacts export`` exits 1 when no path given and no bbdb_path."""
+    def test_contacts_export_no_path_writes_ponys_own_copy(self) -> None:
+        """No path means <data_dir>/contacts.bbdb, never the user's file."""
         from pony.cli import run_contacts_export
 
         with isolated_app_env():
@@ -1646,8 +1646,9 @@ class ContactsCommandsTest(unittest.TestCase):
 
             paths = AppPaths.default()
             paths.ensure_runtime_dirs()
-            rc = run_contacts_export(paths=paths, config_path=None, output_path=None)
-        self.assertEqual(rc, 1)
+            rc = run_contacts_export(paths=paths, output_path=None)
+            self.assertEqual(rc, 0)
+            self.assertTrue((paths.data_dir / "contacts.bbdb").exists())
 
     def test_contacts_export_to_explicit_path(self) -> None:
         """``pony contacts export /path/out.bbdb`` writes a file and returns 0."""
@@ -2877,8 +2878,13 @@ class AppLaunchingCommandTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         app_cls.assert_not_called()
 
-    def test_the_tui_rescans_local_accounts_and_imports_bbdb(self) -> None:
-        """Local mirrors are the only source of truth, so they are rescanned."""
+    def test_the_tui_rescans_local_accounts_without_touching_bbdb(self) -> None:
+        """Local mirrors are rescanned; BBDB is import/export only.
+
+        Launching used to import from ``bbdb_path`` and rewrite an export
+        on every start.  Contacts live in the index; BBDB is a format you
+        move data through on request, not a second store kept in step.
+        """
         from unittest.mock import patch
 
         with isolated_app_env() as env_root, temporary_config() as config_path:
@@ -2915,11 +2921,11 @@ class AppLaunchingCommandTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             app_cls.return_value.run.assert_called_once()
-            # The BBDB contact was imported into the index on the way in.
+            # Nothing was imported: the user asked for a mail reader.
             output = run_cli(
                 "--config", str(config_path), "contacts", "show", "ada@example.com"
             )
-            self.assertIn("Ada", output)
+            self.assertIn("No contact found", output)
 
     def test_the_contacts_browser_command_opens_the_app(self) -> None:
         from unittest.mock import patch

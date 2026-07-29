@@ -359,8 +359,12 @@ class SyncSummaryTestCase(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("up to date", output.lower())
 
-    def test_bbdb_contacts_are_synced_after_a_run(self) -> None:
-        """A configured bbdb_path is imported once the sync finishes."""
+    def test_a_sync_does_not_import_contacts_behind_your_back(self) -> None:
+        """BBDB is import/export on request, not a second store kept in step.
+
+        Syncing mail used to silently import from ``bbdb_path`` and
+        rewrite an export every time.
+        """
         with isolated_app_env() as env_root, temporary_config() as config_path:
             bbdb_file = env_root / "data" / "sync-contacts.bbdb"
             bbdb_file.parent.mkdir(parents=True, exist_ok=True)
@@ -385,4 +389,4 @@ class SyncSummaryTestCase(unittest.TestCase):
                 "--config", str(config_path), "contacts", "show", "grace@example.com"
             )
 
-        self.assertIn("Grace", shown)
+        self.assertIn("No contact found", shown)

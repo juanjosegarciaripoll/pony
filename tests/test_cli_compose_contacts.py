@@ -361,26 +361,30 @@ class ContactsExportTests(unittest.TestCase):
         self.assertIn(str(out_path), output)
         self.assertIn("dora@example.com", out_path.read_text(encoding="utf-8"))
 
-    def test_export_no_path_no_config_default(self) -> None:
-        """With no path and no bbdb_path configured, export explains usage."""
+    def test_export_with_no_path_succeeds(self) -> None:
+        """No path is not an error — it means Pony's own copy."""
         with isolated_app_env(), temporary_config() as config_path:
             out, rc = run_cli_capture(
                 "--config", str(config_path), "contacts", "export"
             )
-        self.assertEqual(rc, 1)
-        self.assertIn("No output path", out)
+        self.assertEqual(rc, 0)
+        self.assertIn("Exported", out)
 
-    def test_export_uses_bbdb_path_from_config(self) -> None:
-        """When no path is given, export falls back to config bbdb_path."""
+    def test_export_never_overwrites_the_configured_bbdb_path(self) -> None:
+        """``bbdb_path`` is an import source, not an export target.
+
+        Pony's export cannot represent that file: no phone numbers, no
+        postal addresses, no xfields beyond notes, no stable record id.
+        Defaulting to it destroyed data Pony never had.
+        """
         out_path = _temp_dir() / "configured.bbdb"
-        # bbdb_path must be a top-level key, declared before the account
-        # tables (otherwise TOML folds it into the last table).
+        out_path.write_text("ORIGINAL CONTENT", encoding="utf-8")
         toml = f'bbdb_path = "{out_path}"\n\n' + sample_config_toml()
         config_path = _write_config(toml)
         with isolated_app_env():
             output = run_cli("--config", str(config_path), "contacts", "export")
-        self.assertTrue(out_path.exists())
         self.assertIn("Exported", output)
+        self.assertEqual(out_path.read_text(encoding="utf-8"), "ORIGINAL CONTENT")
 
 
 class ContactsShowTests(unittest.TestCase):

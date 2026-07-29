@@ -269,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_export.add_argument(
         "path",
         nargs="?",
-        help="Output file path (default: bbdb_path from config).",
+        help="Output file path (default: <data_dir>/contacts.bbdb).",
     )
     contacts_import = contacts_subparsers.add_parser(
         "import",
@@ -555,11 +555,7 @@ def _dispatch(
         if args.contacts_command == "show":
             return run_contacts_show(paths=paths, email=args.email)
         if args.contacts_command == "export":
-            return run_contacts_export(
-                paths=paths,
-                config_path=args.config,
-                output_path=args.path,
-            )
+            return run_contacts_export(paths=paths, output_path=args.path)
         if args.contacts_command == "import":
             return run_contacts_import(
                 paths=paths,
@@ -928,10 +924,6 @@ def run_sync(
     if failed:
         print(f"Warning: {failed} account(s) failed to sync — check logs for details.")
 
-    # Auto-sync contacts with BBDB when configured.
-    if config.bbdb_path:
-        _bbdb_auto_sync(config.bbdb_path, index, paths)
-
     return 0
 
 
@@ -1075,53 +1067,6 @@ def _save_scan_state(path: Path, state: dict[str, ScanState]) -> None:
         encoding="utf-8",
     )
     tmp.replace(path)
-
-
-def _bbdb_auto_sync(
-    bbdb_path: Path,
-    index: SqliteIndexRepository,
-    paths: AppPaths,
-) -> None:
-    """Import from BBDB if newer than last import, then export a copy.
-
-    The user's BBDB file (``bbdb_path``) is **read-only** — Pony never
-    overwrites it, because the roundtrip is lossy (phone numbers,
-    addresses, and xfields beyond ``notes`` are not preserved).
-
-    Instead, Pony exports its full contacts database to a separate
-    ``contacts.bbdb`` file inside the data directory.  This file can
-    be loaded into Emacs as a secondary BBDB source if desired.
-
-    The last-import timestamp is stored in a ``.bbdb_imported`` marker
-    file next to the index database.
-    """
-    from .bbdb import write_bbdb
-
-    marker = paths.data_dir / ".bbdb_imported"
-
-    # Import if BBDB file is newer than our last import.
-    if bbdb_path.exists():
-        bbdb_mtime = bbdb_path.stat().st_mtime
-        last_imported = 0.0
-        if marker.exists():
-            with contextlib.suppress(ValueError, OSError):
-                last_imported = float(marker.read_text().strip())
-        if bbdb_mtime > last_imported:
-            created, updated = import_bbdb_contacts(
-                index=index,
-                bbdb_path=bbdb_path,
-            )
-            if created or updated:
-                print(f"BBDB import: {created} new, {updated} updated from {bbdb_path}")
-            # Record the source file's mtime so we don't re-import
-            # until Emacs edits it again.
-            with contextlib.suppress(OSError):
-                marker.write_text(str(bbdb_mtime))
-
-    # Export a Pony-managed copy (never overwrites the user's file).
-    export_path = paths.data_dir / "contacts.bbdb"
-    contacts = index.list_all_contacts()
-    write_bbdb(contacts, export_path)
 
 
 def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str:
@@ -2527,10 +2472,6 @@ def run_tui(
             )
     _save_scan_state(scan_state_path, scan_state_by_account)
 
-    # Auto-import BBDB contacts if configured.
-    if config.bbdb_path:
-        _bbdb_auto_sync(config.bbdb_path, index, paths)
-
     effective_theme, err = _resolve_theme(theme, config.theme)
     if err is not None:
         return err
@@ -3093,25 +3034,19 @@ def run_contacts_show(*, paths: AppPaths, email: str) -> int:
 def run_contacts_export(
     *,
     paths: AppPaths,
-    config_path: Path | None,
     output_path: str | None,
 ) -> int:
-    """Export all contacts to a BBDB v3 file."""
+    """Export all contacts to a BBDB v3 file.
+
+    With no path this writes Pony's own copy, never the file named by
+    ``bbdb_path``.  That one belongs to the user's other tools and this
+    export cannot represent it in full — it carries no phone numbers,
+    postal addresses or xfields beyond ``notes``, and no stable record
+    id — so writing over it would destroy data Pony never had.
+    """
     from .bbdb import write_bbdb
 
-    dest: Path | None = None
-    if output_path:
-        dest = Path(output_path)
-    else:
-        config = try_load_config(config_path)
-        if config and config.bbdb_path:
-            dest = config.bbdb_path
-    if dest is None:
-        print(
-            "No output path given and bbdb_path is not set in config.\n"
-            "Usage: pony contacts export [path]"
-        )
-        return 1
+    dest = Path(output_path) if output_path else paths.data_dir / "contacts.bbdb"
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
@@ -3214,9 +3149,15 @@ def run_contacts_import(
         print(f"File not found: {src}")
         return 1
 
+    from .bbdb import BbdbError
+
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
-    created, updated = import_bbdb_contacts(index=index, bbdb_path=src)
+    try:
+        created, updated = import_bbdb_contacts(index=index, bbdb_path=src)
+    except BbdbError as exc:
+        print(f"Could not read {src}: {exc}")
+        return 1
     print(f"Imported from {src}: {created} new, {updated} updated.")
     return 0
 

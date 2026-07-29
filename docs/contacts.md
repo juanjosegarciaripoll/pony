@@ -167,26 +167,28 @@ entered.
 
 ## BBDB import and export (Emacs interop)
 
-Pony can read and write BBDB v3 files, enabling bidirectional synchronisation
-with Emacs. The BBDB file format is plain-text Lisp vector notation, one record
-per line, UTF-8 encoded.
+Pony can read and write BBDB v3 files, so contacts can be moved between Pony
+and Emacs. The format is plain-text Lisp vector notation, UTF-8 encoded.
 
-### Automatic sync via `bbdb_path`
+The contacts database is the single store. **BBDB is a format you move data
+through when you ask, not a second copy kept in step** — nothing is imported or
+exported unless you run the command. Earlier versions imported from `bbdb_path`
+and rewrote an export on every launch and every sync, which meant contacts
+appeared and files changed as a side effect of reading mail.
 
-Set `bbdb_path` in your config to enable automatic BBDB synchronisation:
+### `bbdb_path`
+
+`bbdb_path` names the file `pony contacts import` reads when you give it no
+path:
 
 ```toml
 bbdb_path = "~/.emacs.d/bbdb"
 ```
 
-When this is set, every `pony sync` run will:
-
-1. **Import** from the BBDB file if it has been modified since the last import
-   (detected via file modification time). New contacts are created; existing
-   contacts are merged by matching email addresses, combining emails/aliases
-   and preferring the richer name, organization, and notes.
-2. **Export** back to `<data_dir>/contacts.bbdb` (Pony never overwrites the
-   user's original BBDB file).
+It is only ever read. `pony contacts export` will not write to it even if you
+give it no destination, because Pony's export cannot represent that file in
+full — it carries no phone numbers, postal addresses, xfields beyond `notes`,
+or stable record ids, so overwriting it would discard data Pony never had.
 
 ### Manual import/export
 
