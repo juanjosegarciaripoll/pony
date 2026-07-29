@@ -35,6 +35,19 @@ DEBS="${PREFIX}/debs"
 export LD_LIBRARY_PATH="${ROOT}/usr/lib/dovecot:${ROOT}/usr/lib/x86_64-linux-gnu:${ROOT}/usr/lib:${LD_LIBRARY_PATH:-}"
 DOVECOT="${ROOT}/usr/sbin/dovecot"
 
+# A system-installed dovecot needs none of the sandboxing below: its
+# helpers are already at the absolute paths it execs.  CI installs it
+# with the package manager, and newer distributions restrict the
+# unprivileged user namespaces bubblewrap needs, so prefer it when
+# present.  PONY_DOVECOT_FORCE_UNPACK=1 exercises the unpacked path
+# anyway.
+SYSTEM_DOVECOT=""
+if [[ "${PONY_DOVECOT_FORCE_UNPACK:-}" != "1" ]]; then
+    if [[ -x /usr/sbin/dovecot ]]; then
+        SYSTEM_DOVECOT=/usr/sbin/dovecot
+    fi
+fi
+
 # dovecot execs helpers such as /usr/bin/doveconf by absolute path, which
 # an unpacked tree cannot satisfy.  bubblewrap gives us a user namespace
 # in which the unpacked tree is layered *over* the real /usr — a plain
@@ -42,6 +55,10 @@ DOVECOT="${ROOT}/usr/sbin/dovecot"
 # to a throwaway tmpfs, so nothing outside $PREFIX is touched and the
 # view exists only for these processes.
 in_sandbox() {
+    if [[ -n "${SYSTEM_DOVECOT}" ]]; then
+        "$@"
+        return
+    fi
     bwrap --dev-bind / / \
           --overlay-src "${ROOT}/usr" --overlay-src /usr --tmp-overlay /usr \
           --setenv LD_LIBRARY_PATH "/usr/lib/dovecot" \
@@ -51,6 +68,7 @@ in_sandbox() {
 die() { echo "error: $*" >&2; exit 1; }
 
 installed_ok() {
+    [[ -n "${SYSTEM_DOVECOT}" ]] && return 0
     [[ -x "${DOVECOT}" ]] && command -v bwrap >/dev/null &&
         in_sandbox /usr/sbin/dovecot --version >/dev/null 2>&1
 }
@@ -164,7 +182,8 @@ EOF
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; }
 
 start() {
-    [[ -x "${DOVECOT}" ]] || die "not installed — run: $0 install"
+    [[ -n "${SYSTEM_DOVECOT}" || -x "${DOVECOT}" ]] ||
+        die "not installed — run: $0 install"
     # Idempotent: a second start is a fatal error to dovecot itself, and
     # callers (the test harness especially) should not have to track it.
     if port_open; then

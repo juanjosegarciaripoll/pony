@@ -222,6 +222,25 @@ jobs:
         run: uv run python -m pytest
         shell: bash
 
+      # The live IMAP scenarios cover what a fake session decides for
+      # itself: UID assignment, a real UIDVALIDITY change, what APPEND
+      # answers.  Linux only, because that is where a server is
+      # installable here — the same code paths run unexercised on the
+      # other two platforms.
+      - name: Install Dovecot (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dovecot-imapd
+        shell: bash
+
+      - name: Live IMAP scenarios (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          PONY_LIVE_IMAP: '1'
+        run: uv run python -m pytest tests/test_imap_live.py --no-cov
+        shell: bash
+
       - name: Build documentation
         run: uv run mkdocs build --strict
         shell: bash

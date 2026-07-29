@@ -1,0 +1,104 @@
+name: CI
+
+# Quality gates on every push and pull request.  The release workflow
+# runs the same gates again on the exact commit it is about to tag, so a
+# green CI here is a fast signal rather than the last word.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  gates:
+    name: Gates and tests (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --group dev --group docs
+        shell: bash
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+        shell: bash
+
+      - name: Format
+        run: uv run ruff format --check src/ tests/
+        shell: bash
+
+      - name: Type-check (mypy)
+        run: uv run mypy
+        shell: bash
+
+      - name: Type-check (basedpyright)
+        run: uv run basedpyright
+        shell: bash
+
+      # Coverage gate lives in pyproject; never pass --no-cov.
+      - name: Tests
+        run: uv run python -m pytest
+        shell: bash
+
+      - name: Documentation builds
+        if: matrix.platform == 'linux'
+        run: uv run mkdocs build --strict
+        shell: bash
+
+  imap:
+    name: Live IMAP (Dovecot)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      # The harness runs an unpacked Dovecot under bubblewrap when it has
+      # to, but a system install needs no sandbox and CI has the rights
+      # for one.  Newer Ubuntu images restrict the unprivileged user
+      # namespaces bubblewrap depends on, so this is the reliable path.
+      - name: Install Dovecot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dovecot-imapd
+
+      - name: Run the live scenarios
+        env:
+          PONY_LIVE_IMAP: '1'
+        run: uv run python -m pytest tests/test_imap_live.py -v --no-cov
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -100 ~/.cache/pony-dovecot/dovecot.log || true
