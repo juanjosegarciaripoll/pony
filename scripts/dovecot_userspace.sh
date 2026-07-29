@@ -41,11 +41,22 @@ DOVECOT="${ROOT}/usr/sbin/dovecot"
 # unprivileged user namespaces bubblewrap needs, so prefer it when
 # present.  PONY_DOVECOT_FORCE_UNPACK=1 exercises the unpacked path
 # anyway.
+# Whichever binaries are used, the server itself always runs as the
+# invoking user, with this script's config, base_dir and Maildir root —
+# a packaged install's own service and /etc/dovecot are never involved.
+# The package only supplies the executables.
 SYSTEM_DOVECOT=""
 if [[ "${PONY_DOVECOT_FORCE_UNPACK:-}" != "1" ]]; then
-    if [[ -x /usr/sbin/dovecot ]]; then
-        SYSTEM_DOVECOT=/usr/sbin/dovecot
-    fi
+    for candidate in /usr/sbin/dovecot "$(command -v dovecot 2>/dev/null || true)"; do
+        # Verified rather than assumed: a binary that is present but does
+        # not run would otherwise send us down the no-sandbox path and
+        # fail later, with the unpacked tree sitting right there unused.
+        if [[ -n "${candidate}" && -x "${candidate}" ]] &&
+           "${candidate}" --version >/dev/null 2>&1; then
+            SYSTEM_DOVECOT="${candidate}"
+            break
+        fi
+    done
 fi
 
 # dovecot execs helpers such as /usr/bin/doveconf by absolute path, which
@@ -56,7 +67,15 @@ fi
 # view exists only for these processes.
 in_sandbox() {
     if [[ -n "${SYSTEM_DOVECOT}" ]]; then
-        "$@"
+        # Absolute paths already resolve; run it directly, still as this
+        # user and still against our own config.  Callers name the
+        # binary by the path it has when packaged, which is where a
+        # system install puts it — but not necessarily where this one
+        # was found, so substitute.
+        local first="$1"
+        shift
+        [[ "${first}" == "/usr/sbin/dovecot" ]] && first="${SYSTEM_DOVECOT}"
+        "${first}" "$@"
         return
     fi
     bwrap --dev-bind / / \
@@ -68,6 +87,7 @@ in_sandbox() {
 die() { echo "error: $*" >&2; exit 1; }
 
 installed_ok() {
+    # Already verified to run during detection.
     [[ -n "${SYSTEM_DOVECOT}" ]] && return 0
     [[ -x "${DOVECOT}" ]] && command -v bwrap >/dev/null &&
         in_sandbox /usr/sbin/dovecot --version >/dev/null 2>&1

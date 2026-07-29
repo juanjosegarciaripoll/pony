@@ -232,6 +232,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends dovecot-imapd
+          # Only the binaries are wanted.  The packaged service starts on
+          # install and binds :143 with /etc/dovecot; the harness runs its
+          # own instance as the CI user, on its own port, with its own
+          # config, so the system one is dead weight and its log noise
+          # would be confusing on a failure.
+          sudo systemctl disable --now dovecot || true
         shell: bash
 
       - name: Live IMAP scenarios (Linux)

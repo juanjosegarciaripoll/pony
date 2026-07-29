@@ -32,8 +32,14 @@ uv run pytest
 
   Turn them on for a checkout by writing `PONY_LIVE_IMAP=1` into a `.env` at the repo root —
   `tests/conftest.py` loads it, a real environment variable still wins, and `.env` is gitignored.
-  The Dovecot install is cached: the first run downloads roughly 3 MB and unpacks it, later runs
-  cost milliseconds. `scripts/dovecot_userspace.sh install --force` rebuilds it. The eight
+  The server always runs as the invoking user, on its own port, with the harness's own config and
+  Maildir root — a packaged install supplies only the binaries, and its own service and
+  `/etc/dovecot` are never used. When a working system Dovecot is present the harness uses it and
+  skips the sandbox; otherwise it unpacks one under `~/.cache`. Set `PONY_DOVECOT_FORCE_UNPACK=1`
+  to exercise the unpacked path regardless.
+
+  The unpacked install is cached: the first run downloads roughly 3 MB, later runs cost
+  milliseconds. `scripts/dovecot_userspace.sh install --force` rebuilds it. The eight
   scenarios take about 40 s, most of it restarting the server to change a UID epoch.
 - Sync: `FakeImapSession`. Storage: conformance suite (Maildir + mbox). Contacts: real `SqliteIndexRepository`.
 - Fixture messages: `tests/corpus.py` (15 RFC 5322 types). All addresses use `@example.com`.
