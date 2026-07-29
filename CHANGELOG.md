@@ -8,19 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.0.0]
 
 First stable release. Pony Express is a terminal-first mail client: IMAP sync
-into a Maildir or mbox mirror you own, a SQLite index over it, a three-pane
-Textual reader, and SMTP out. Local accounts let it read and send from a tree
-another tool already manages.
+into a Maildir or mbox mirror, a SQLite index over it, a three-pane Textual
+reader, and SMTP out. Local accounts read and send from a tree that already
+exists on disk, without any server.
 
-The 1.0 line commits to the on-disk shapes: the `config.toml` schema (version
-2), the mirror layout, and the SQLite index. Changes to any of them from here
-will come with a migration rather than a rebuild.
+**Pony owns the mirror.** It writes flags, moves and deletions into the tree,
+so nothing else may write to the same files while it is running. Bring mail
+another tool manages in with `pony folder mirror` rather than pointing both at
+one directory. Two Pony instances on one account are fine.
+
+The 1.0 line commits to the on-disk shapes — the `config.toml` schema
+(version 2), the mirror layout, and the SQLite index — and changes to them
+from here will come with a migration rather than a rebuild. This release is
+where the mbox layout settles: see the upgrade note below.
 
 **Not in 1.0**, so you know before you install: authentication is password-based
 (`plaintext`, `env`, `command` or `encrypted` credential backends) — there is no
 OAuth, which Gmail and Outlook now require for IMAP, so those accounts need an
-app password. There is no POP support. mbox mirrors rewrite the whole file on
-flush and are best kept for archives; prefer Maildir where durability matters.
+app password. There is no POP support. mbox mirrors rewrite the whole file when
+they commit, so a hard kill can still cost the most recent writes; prefer
+Maildir where durability matters.
+
+### Upgrading
+
+**mbox mirrors keep deleted messages until they are compacted.** A storage key
+in an mbox is the message's position, so removing a message renumbered every
+message after it and left the index pointing at the wrong mail. Deleting now
+marks the message and leaves it in place; it disappears from Pony immediately,
+but the bytes stay in the file until compaction reclaims them, which happens
+with trash retention on the next sync. Expect an mbox folder to grow slightly
+between syncs, and expect the first sync after upgrading to renumber it once.
+Maildir mirrors are unaffected.
 
 ### Added
 
