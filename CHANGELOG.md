@@ -153,6 +153,15 @@ flush and are best kept for archives; prefer Maildir where durability matters.
   stranded with no server handle; and flag changes made since the last sync were
   discarded rather than re-applied.
 
+- **Two Pony instances can share an mbox account without losing mail.** An
+  open mailbox caches its table of contents, so an instance that had been idle
+  held a picture of the file from before the other one delivered into it — and
+  the next flush rewrote the file from that picture, silently dropping the
+  other's messages. Every mutation now takes the mailbox lock other mbox
+  readers honour, and re-reads the file if it changed while the handle was
+  idle. Locking alone would not have been enough: the stale view is still
+  stale once the lock is granted. Maildir was never affected.
+
 - **Deleting from an mbox no longer makes the index point at the wrong
   messages.** A storage key there is the message's ordinal position, and
   removing a message renumbered every message after it — silently, on the next

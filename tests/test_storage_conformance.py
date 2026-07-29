@@ -975,3 +975,107 @@ class MboxOrdinalStabilityTest(unittest.TestCase):
         mirror = MboxMirrorRepository(account_name="personal", root_dir=root)
         self.assertEqual(mirror.compact_folder(folder=self.folder), {})
         self.assertEqual(len(self._subjects_by_key(root)), 3)
+
+
+class MboxConcurrentWriterTest(unittest.TestCase):
+    """A second writer must not lose the first one's mail.
+
+    Two Pony instances on one mbox mirror is a supported arrangement.
+    A handle caches the table of contents, so a writer that has been
+    idle holds a picture of the file from before the other appended —
+    and a flush rewrites the file from that picture. Locking alone does
+    not help: the stale view is still stale once the lock is granted.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _root(self) -> Path:
+        root = TMP_ROOT / "mbox-concurrent" / uuid4().hex
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _subjects(self, root: Path) -> set[str]:
+        reader = MboxMirrorRepository(account_name="personal", root_dir=root)
+        found = set()
+        for key in reader.list_messages(folder=self.folder):
+            raw = reader.get_message_bytes(folder=self.folder, storage_key=key)
+            for line in raw.split(b"\n"):
+                if line.startswith(b"Subject:"):
+                    found.add(line.split(b": ", 1)[1].decode().strip())
+                    break
+        return found
+
+    def test_a_flag_write_does_not_drop_another_writers_append(self) -> None:
+        root = self._root()
+        first = MboxMirrorRepository(account_name="personal", root_dir=root)
+        keys = [
+            first.store_message(
+                folder=self.folder,
+                raw_message=_rfc5322_message_bytes(f"own {i}", f"<own{i}@x>"),
+            )
+            for i in range(2)
+        ]
+        first.flush_writes()
+
+        # A second instance delivers while the first holds its handle.
+        second = MboxMirrorRepository(account_name="personal", root_dir=root)
+        second.store_message(
+            folder=self.folder,
+            raw_message=_rfc5322_message_bytes("from the other", "<other@x>"),
+        )
+        second.flush_writes()
+
+        first.set_flags(
+            folder=self.folder,
+            storage_key=keys[0],
+            flags=frozenset({MessageFlag.SEEN}),
+        )
+        first.flush_writes()
+
+        self.assertEqual(self._subjects(root), {"own 0", "own 1", "from the other"})
+
+    def test_a_store_does_not_drop_another_writers_append(self) -> None:
+        root = self._root()
+        first = MboxMirrorRepository(account_name="personal", root_dir=root)
+        first.store_message(
+            folder=self.folder, raw_message=_rfc5322_message_bytes("own", "<own@x>")
+        )
+        first.flush_writes()
+
+        second = MboxMirrorRepository(account_name="personal", root_dir=root)
+        second.store_message(
+            folder=self.folder,
+            raw_message=_rfc5322_message_bytes("from the other", "<other@x>"),
+        )
+        second.flush_writes()
+
+        first.store_message(
+            folder=self.folder, raw_message=_rfc5322_message_bytes("later", "<later@x>")
+        )
+        first.flush_writes()
+
+        self.assertEqual(self._subjects(root), {"own", "from the other", "later"})
+
+    def test_a_delete_does_not_drop_another_writers_append(self) -> None:
+        root = self._root()
+        first = MboxMirrorRepository(account_name="personal", root_dir=root)
+        keys = [
+            first.store_message(
+                folder=self.folder,
+                raw_message=_rfc5322_message_bytes(f"own {i}", f"<own{i}@x>"),
+            )
+            for i in range(2)
+        ]
+        first.flush_writes()
+
+        second = MboxMirrorRepository(account_name="personal", root_dir=root)
+        second.store_message(
+            folder=self.folder,
+            raw_message=_rfc5322_message_bytes("from the other", "<other@x>"),
+        )
+        second.flush_writes()
+
+        first.delete_message(folder=self.folder, storage_key=keys[1])
+        first.flush_writes()
+
+        self.assertEqual(self._subjects(root), {"own 0", "from the other"})

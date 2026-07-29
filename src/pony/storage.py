@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
+import contextlib
 import mailbox
 import mmap
 import os
@@ -12,6 +13,7 @@ import socket
 import sys
 import time
 import weakref
+from collections.abc import Iterator
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -371,11 +373,11 @@ class MboxMirrorRepository(MirrorRepository):
 
     def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
         self._require_folder(folder)
-        mbox = self._open_mbox(folder_name=folder.folder_name)
         parsed = BytesParser(policy=policy.default).parsebytes(raw_message)
         message = mailbox.mboxMessage(parsed)
-        key = str(mbox.add(message))
-        mbox.flush()
+        with self._locked(folder.folder_name) as mbox:
+            key = str(mbox.add(message))
+            mbox.flush()
         return key
 
     def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
@@ -435,13 +437,13 @@ class MboxMirrorRepository(MirrorRepository):
         flags: frozenset[MessageFlag],
     ) -> None:
         self._require_folder(folder)
-        mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        self._require_not_deleted(folder.folder_name, key, storage_key)
-        updated = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
-        _set_mbox_flags(updated, flags=flags)
-        mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
-        mbox.flush()
+        with self._locked(folder.folder_name) as mbox:
+            self._require_not_deleted(folder.folder_name, key, storage_key)
+            updated = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
+            _set_mbox_flags(updated, flags=flags)
+            mbox[key] = updated  # type: ignore[index]  # typeshed: str; runtime: int
+            mbox.flush()
 
     def delete_message(
         self,
@@ -450,7 +452,6 @@ class MboxMirrorRepository(MirrorRepository):
         storage_key: str,
     ) -> None:
         self._require_folder(folder)
-        mbox = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
         # Mark the message deleted instead of removing it.  A storage_key
         # here is the message's ordinal position, and removing a message
@@ -460,10 +461,11 @@ class MboxMirrorRepository(MirrorRepository):
         # it.  So the file is append-only and deletion is a mark, which
         # makes the ordinals durable keys.  ``compact_folder`` reclaims
         # the space and reports how the keys moved.
-        message = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
-        message.add_flag("D")
-        mbox[key] = message  # type: ignore[index]  # typeshed: str; runtime: int
-        self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
+        with self._locked(folder.folder_name) as mbox:
+            message = mailbox.mboxMessage(_mbox_get_message(mbox, key, storage_key))
+            message.add_flag("D")
+            mbox[key] = message  # type: ignore[index]  # typeshed: str; runtime: int
+            self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
         # Flush is deferred: call flush_writes() to commit pending marks.
         # _close_all() also flushes all handles on process exit.
 
@@ -513,6 +515,16 @@ class MboxMirrorRepository(MirrorRepository):
             rebuilt.close()
         return remap
 
+    def _discard_handle(self, folder_name: str) -> None:
+        """Drop a cached handle without writing anything back."""
+        mbox = self._open_handles.pop(folder_name, None)
+        self._deleted_keys.pop(folder_name, None)
+        if mbox is not None:
+            with contextlib.suppress(Exception):
+                mbox.unlock()
+            with contextlib.suppress(Exception):
+                mbox.close()
+
     def _close_handle(self, folder_name: str) -> None:
         """Flush and forget the cached handle for *folder_name*."""
         mbox = self._open_handles.pop(folder_name, None)
@@ -539,8 +551,9 @@ class MboxMirrorRepository(MirrorRepository):
         Called by the sync engine after it finishes processing a folder so
         that N deletions trigger a single file rewrite rather than N.
         """
-        for mbox in self._open_handles.values():
-            mbox.flush()
+        for folder_name in list(self._open_handles):
+            with self._locked(folder_name) as mbox:
+                mbox.flush()
 
     def move_message_to_folder(
         self,
@@ -556,14 +569,24 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_folder(folder)
         if target_folder == folder.folder_name:
             return storage_key
-        src = self._open_mbox(folder_name=folder.folder_name)
         key = int(storage_key)
-        message = _mbox_get_message(src, key, storage_key)
-        dest = self._open_mbox(folder_name=target_folder)
-        new_key = str(dest.add(mailbox.mboxMessage(message)))
-        dest.flush()
-        del src[key]  # type: ignore[arg-type]  # typeshed: str; runtime: int
-        src.flush()
+        # Three short critical sections rather than one holding both
+        # mailboxes: a second instance moving the other way would
+        # deadlock against a nested pair.
+        with self._locked(folder.folder_name) as src:
+            self._require_not_deleted(folder.folder_name, key, storage_key)
+            message = _mbox_get_message(src, key, storage_key)
+        with self._locked(target_folder) as dest:
+            new_key = str(dest.add(mailbox.mboxMessage(message)))
+            dest.flush()
+        # Tombstone rather than remove, for the same reason deletion
+        # does: removing renumbers every key after it in the source.
+        with self._locked(folder.folder_name) as src:
+            marked = mailbox.mboxMessage(_mbox_get_message(src, key, storage_key))
+            marked.add_flag("D")
+            src[key] = marked  # type: ignore[index]  # typeshed: str; runtime: int
+            self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
+            src.flush()
         return new_key
 
     def create_folder(self, *, account_name: str, folder_name: str) -> None:
@@ -571,8 +594,8 @@ class MboxMirrorRepository(MirrorRepository):
         self._require_account(account_name)
         # _open_mbox opens the file with create=True; flush materialises
         # an empty file on disk even with no messages added.
-        mbox = self._open_mbox(folder_name=folder_name)
-        mbox.flush()
+        with self._locked(folder_name) as mbox:
+            mbox.flush()
 
     def folder_mtime_ns(self, *, folder: FolderRef) -> int:
         """mbox files are a single flat file per folder — stat it."""
@@ -582,6 +605,50 @@ class MboxMirrorRepository(MirrorRepository):
             return path.stat().st_mtime_ns
         except (FileNotFoundError, OSError):
             return 0
+
+    @contextlib.contextmanager
+    def _locked(self, folder_name: str) -> Iterator[mailbox.mbox]:
+        """Hold the mailbox lock for one mutation, over a fresh view.
+
+        Two things are needed and neither is sufficient alone.
+
+        The lock — a dotlock plus flock, which is what every other mbox
+        reader honours — keeps a second writer out for the duration.
+        Without it two Pony instances interleave their rewrites and one
+        silently loses the other's mail.
+
+        Revalidation is the other half.  A handle caches the table of
+        contents, so a writer that has been idle holds a picture of the
+        file from before the other instance appended to it — and a flush
+        rewrites the file from that picture, dropping whatever it does
+        not know about.  Taking the lock is therefore the moment to
+        check whether the file moved underneath us and re-read it if so.
+        """
+        mbox = self._open_mbox(folder_name=folder_name)
+        mbox.lock()
+        try:
+            if self._file_changed_underneath(folder_name, mbox):
+                # Discarded, never flushed.  Flushing rewrites the file
+                # from the stale table of contents, which is exactly the
+                # loss this is here to prevent — the handle's picture of
+                # the file predates whatever the other writer appended.
+                self._discard_handle(folder_name)
+                mbox = self._open_mbox(folder_name=folder_name)
+                mbox.lock()
+            yield mbox
+        finally:
+            with contextlib.suppress(Exception):
+                mbox.unlock()
+
+    def _file_changed_underneath(
+        self, folder_name: str, mbox: mailbox.mbox
+    ) -> bool:
+        """Has the file grown or shrunk since this handle read it?"""
+        try:
+            size = self._folder_file(folder_name).stat().st_size
+        except OSError:
+            return False
+        return bool(size != mbox._file_length)  # type: ignore[attr-defined]
 
     def _open_mbox(self, *, folder_name: str) -> mailbox.mbox:
         # mailbox.mbox uses int keys at runtime; typeshed stubs incorrectly
