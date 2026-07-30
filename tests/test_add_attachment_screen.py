@@ -31,8 +31,8 @@ aas_module.DirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defin
 def _make_tree(label: str) -> Path:
     """Create a temp directory tree with a couple of files and a subdir.
 
-    Returns the directory path.  ``tempfile`` lives outside the home
-    directory, so a screen rooted here exercises the "outside home" branch.
+    Returns the directory path. Tests pass an explicit synthetic home because
+    Windows normally places its temporary directory inside the user's home.
     """
     base = Path(tempfile.mkdtemp(prefix=f"pony-attach-{label}-"))
     (base / "alpha.txt").write_text("a", encoding="utf-8")
@@ -62,7 +62,7 @@ class _Host(App[str | None]):
     def __init__(self, start_dir: Path, *, home_dir: Path | None = None) -> None:
         super().__init__()
         self._start_dir = start_dir
-        self._home_dir = home_dir
+        self._home_dir = home_dir or start_dir
 
     def compose(self) -> ComposeResult:
         return iter([])
@@ -108,7 +108,7 @@ class ConstructionTest(unittest.TestCase):
 
     def test_outside_home_roots_at_initial_dir(self) -> None:
         base = _make_tree("ctor-out")
-        screen = AddAttachmentScreen(base)
+        screen = AddAttachmentScreen(base, home_dir=base / "unrelated-home")
         self.assertEqual(screen._root, base.resolve())
         self.assertEqual(screen._initial_dir, base.resolve())
 
@@ -226,11 +226,11 @@ async def test_input_submit_valid_dir_navigates() -> None:
         screen.on_input_submitted(Input.Submitted(inp, str(sub)))
         await pilot.pause()
         # Navigation re-roots the tree and rewrites the path bar.
-        assert screen._root == sub
+        assert screen._root == sub.resolve()
         assert screen.query_one("#path-input", Input).value == str(sub)
         tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
-        assert Path(tree.path) == sub
-    assert aas_module._session_dir == sub
+        assert Path(tree.path) == sub.resolve()
+    assert aas_module._session_dir == sub.resolve()
 
 
 async def test_input_submit_invalid_dir_notifies_error() -> None:

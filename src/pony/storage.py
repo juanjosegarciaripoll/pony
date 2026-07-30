@@ -336,11 +336,11 @@ def _close_mbox_handles(open_handles: dict[str, mailbox.mbox]) -> None:
 class MboxMirrorRepository(MirrorRepository):
     """mbox-backed mirror repository.
 
-    mbox files are kept open for the lifetime of the repository.  Parsing the
-    table of contents on every operation is O(file size) and would make bulk
-    access quadratic.  Handles are flushed after every write and released by
-    a finalizer so clean-up happens automatically without retaining the
-    repository until process exit.
+    mbox files are cached while a batch is active. Parsing the table of
+    contents on every operation is O(file size) and would make bulk access
+    quadratic. ``flush_writes`` closes the cached handles so Windows permits
+    another process to atomically replace the file; a finalizer is the safety
+    net for callers that omit that batch boundary.
 
     mbox is not crash-safe: a hard kill before a flush can leave the file in
     an inconsistent state.  Prefer Maildir for accounts where durability
@@ -551,14 +551,17 @@ class MboxMirrorRepository(MirrorRepository):
             raise KeyError(f"message not found: {storage_key}")
 
     def flush_writes(self) -> None:
-        """Flush any pending mbox changes to disk.
+        """Flush pending mbox changes and release their file handles.
 
         Called by the sync engine after it finishes processing a folder so
-        that N deletions trigger a single file rewrite rather than N.
+        that N deletions trigger a single file rewrite rather than N. Closing
+        here is also required on Windows, where another repository cannot
+        replace an mbox file while this repository still has it open.
         """
         for folder_name in list(self._open_handles):
             with self._locked(folder_name) as mbox:
                 mbox.flush()
+            self._close_handle(folder_name)
 
     def move_message_to_folder(
         self,
@@ -916,7 +919,10 @@ def _mbox_get_bytes(mbox: mailbox.mbox, key: int, storage_key: str) -> bytes:
         f = mbox.get_file(key)  # type: ignore[arg-type]  # typeshed: str; runtime: int
     except KeyError:
         raise KeyError(f"message not found: {storage_key}") from None
-    return f.read()
+    try:
+        return f.read()
+    finally:
+        f.close()
 
 
 def _mbox_get_message(

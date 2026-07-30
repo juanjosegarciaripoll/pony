@@ -2904,14 +2904,14 @@ class AppLaunchingCommandTests(unittest.TestCase):
             # Top-level keys must precede every table, so bbdb_path goes
             # first — appending it would land it inside [accounts.mirror].
             config_path.write_text(
-                f'bbdb_path = "{bbdb_file}"\n'
+                f'bbdb_path = "{bbdb_file.as_posix()}"\n'
                 + sample_config_toml()
                 + "\n\n[[accounts]]\n"
                 'account_type = "local"\n'
                 'name = "archive"\n'
                 'email_address = "archive@example.com"\n'
                 "\n[accounts.mirror]\n"
-                f'path = "{mirror_dir}"\n'
+                f'path = "{mirror_dir.as_posix()}"\n'
                 'format = "maildir"\n',
                 encoding="utf-8",
             )
@@ -3365,7 +3365,7 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
             'name = "archive"\n'
             'email_address = "archive@example.com"\n'
             "\n[accounts.mirror]\n"
-            f'path = "{mirror_dir}"\n'
+            f'path = "{mirror_dir.as_posix()}"\n'
             'format = "maildir"\n',
             encoding="utf-8",
         )

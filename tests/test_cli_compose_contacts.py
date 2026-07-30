@@ -292,7 +292,7 @@ class ContactsImportTests(unittest.TestCase):
         bbdb = _write_bbdb_file(
             [_sample_contact(first_name="Gus", emails=("gus@example.com",))]
         )
-        toml = f'bbdb_path = "{bbdb}"\n\n' + sample_config_toml()
+        toml = f'bbdb_path = "{bbdb.as_posix()}"\n\n' + sample_config_toml()
         config_path = _write_config(toml)
         with isolated_app_env():
             output = run_cli("--config", str(config_path), "contacts", "import")
@@ -379,7 +379,7 @@ class ContactsExportTests(unittest.TestCase):
         """
         out_path = _temp_dir() / "configured.bbdb"
         out_path.write_text("ORIGINAL CONTENT", encoding="utf-8")
-        toml = f'bbdb_path = "{out_path}"\n\n' + sample_config_toml()
+        toml = f'bbdb_path = "{out_path.as_posix()}"\n\n' + sample_config_toml()
         config_path = _write_config(toml)
         with isolated_app_env():
             output = run_cli("--config", str(config_path), "contacts", "export")

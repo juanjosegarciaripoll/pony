@@ -376,7 +376,8 @@ class SyncSummaryTestCase(unittest.TestCase):
             )
             original = config_path.read_text(encoding="utf-8")
             config_path.write_text(
-                f'bbdb_path = "{bbdb_file}"\n' + original, encoding="utf-8"
+                f'bbdb_path = "{bbdb_file.as_posix()}"\n' + original,
+                encoding="utf-8",
             )
 
             with patch("pony.cli.ImapSession", _fake_factory(_seeded_inbox())):

@@ -74,7 +74,7 @@ _SCENARIO = textwrap.dedent(
                     nested_node = next(
                         node
                         for node in tree.root.children
-                        if node.data and node.data.path == nested
+                        if node.data and node.data.path.samefile(nested)
                     )
                     nested_node.expand()
                     await wait_until(lambda: len(nested_node.children) == 1)
@@ -90,11 +90,11 @@ _SCENARIO = textwrap.dedent(
                     tree.path = other
                     await wait_until(
                         lambda: tree.root.data is not None
-                        and tree.root.data.path == other
+                        and tree.root.data.path.samefile(other)
                         and len(tree.root.children) == 1
                     )
                     assert tree.root.data is not None
-                    assert tree.root.data.path == other
+                    assert tree.root.data.path.samefile(other)
                     assert [
                         node.data.path.name
                         for node in tree.root.children
