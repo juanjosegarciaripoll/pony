@@ -528,6 +528,13 @@ async def test_eml_viewer_print_pdf_exports_to_chosen_folder(
     export = MagicMock()
     monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export)
 
+    def run_worker_now(_screen, work, **_kwargs):  # type: ignore[no-untyped-def]
+        """Exercise the dispatch without leaving an executor thread behind."""
+        work()
+        return MagicMock()
+
+    monkeypatch.setattr(EmlViewerScreen, "run_worker", run_worker_now)
+
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
         await pilot.pause()
