@@ -62,7 +62,9 @@ jobs:
 
       # Coverage gate lives in pyproject; never pass --no-cov.
       - name: Tests
-        run: uv run python -m pytest
+        run: >-
+          uv run python -u -m pytest -vv -ra --durations=25
+          -o faulthandler_timeout=300
         shell: bash
 
       - name: Documentation builds
@@ -103,7 +105,9 @@ jobs:
       - name: Run the live scenarios
         env:
           PONY_LIVE_IMAP: '1'
-        run: uv run python -m pytest tests/test_imap_live.py -v --no-cov
+        run: >-
+          uv run python -u -m pytest tests/test_imap_live.py -vv -ra
+          --durations=25 -o faulthandler_timeout=300 --no-cov
 
       - name: Server log on failure
         if: failure()

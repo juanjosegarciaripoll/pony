@@ -219,7 +219,9 @@ jobs:
         shell: bash
 
       - name: Run tests
-        run: uv run python -m pytest
+        run: >-
+          uv run python -u -m pytest -vv -ra --durations=25
+          -o faulthandler_timeout=300
         shell: bash
 
       # The live IMAP scenarios cover what a fake session decides for
@@ -244,7 +246,9 @@ jobs:
         if: matrix.platform == 'linux'
         env:
           PONY_LIVE_IMAP: '1'
-        run: uv run python -m pytest tests/test_imap_live.py --no-cov
+        run: >-
+          uv run python -u -m pytest tests/test_imap_live.py -vv -ra
+          --durations=25 -o faulthandler_timeout=300 --no-cov
         shell: bash
 
       - name: Build documentation
