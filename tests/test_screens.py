@@ -1678,12 +1678,14 @@ async def test_save_folder_picker_directory_selection_updates_result(tmp_path) -
         screen.on_directory_tree_directory_selected(
             DeterministicDirOnlyTree.DirectorySelected(tree.root, selected)
         )
-        assert str(screen.query_one("#current-path", Label).render()) == str(selected)
+        assert str(screen.query_one("#current-path", Label).render()) == str(
+            selected.resolve()
+        )
         await pilot.click("#select")
         await pilot.pause()
 
-    assert app.return_value == selected
-    assert picker_module._session_dir == selected
+    assert app.return_value == selected.resolve()
+    assert picker_module._session_dir == selected.resolve()
 
 
 async def test_save_folder_picker_creates_and_selects_new_folder(tmp_path) -> None:
@@ -1707,7 +1709,9 @@ async def test_save_folder_picker_creates_and_selects_new_folder(tmp_path) -> No
         assert isinstance(picker, SaveFolderPickerScreen)
         created = tmp_path / "fictional-folder"
         assert created.is_dir()
-        assert str(picker.query_one("#current-path", Label).render()) == str(created)
+        assert str(picker.query_one("#current-path", Label).render()) == str(
+            created.resolve()
+        )
 
 
 async def test_save_folder_picker_empty_new_folder_is_noop(tmp_path) -> None:
@@ -1728,7 +1732,9 @@ async def test_save_folder_picker_empty_new_folder_is_noop(tmp_path) -> None:
 
         picker = app.screen
         assert isinstance(picker, SaveFolderPickerScreen)
-        assert str(picker.query_one("#current-path", Label).render()) == str(tmp_path)
+        assert str(picker.query_one("#current-path", Label).render()) == str(
+            tmp_path.resolve()
+        )
 
 
 # ===========================================================================

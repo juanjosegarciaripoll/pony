@@ -140,15 +140,16 @@ class AddAttachmentScreen(Screen[str | None]):
     ) -> None:
         global _session_dir
         event.stop()
-        _session_dir = event.path.parent
-        self.dismiss(str(event.path))
+        selected = event.path.resolve()
+        _session_dir = selected.parent
+        self.dismiss(str(selected))
 
     def on_directory_tree_directory_selected(
         self, event: DirectoryTree.DirectorySelected
     ) -> None:
         """Keep the path bar in sync with the highlighted directory."""
         event.stop()
-        self.query_one("#path-input", Input).value = str(event.path)
+        self.query_one("#path-input", Input).value = str(event.path.resolve())
 
     # ------------------------------------------------------------------
     # Auto-expansion

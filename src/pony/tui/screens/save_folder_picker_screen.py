@@ -124,7 +124,7 @@ class SaveFolderPickerScreen(Screen[Path | None]):
     def __init__(self, start_dir: Path | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         initial = (start_dir or _session_dir or Path.home()).resolve()
-        home = Path.home()
+        home = Path.home().resolve()
         try:
             initial.relative_to(home)
             self._root = home
@@ -155,8 +155,8 @@ class SaveFolderPickerScreen(Screen[Path | None]):
         self, event: DirectoryTree.DirectorySelected
     ) -> None:
         event.stop()
-        self._selected = event.path
-        self.query_one("#current-path", Label).update(str(event.path))
+        self._selected = event.path.resolve()
+        self.query_one("#current-path", Label).update(str(self._selected))
 
     # ------------------------------------------------------------------
     # Buttons

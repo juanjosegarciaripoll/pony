@@ -160,9 +160,9 @@ async def test_select_file_dismisses_with_path() -> None:
             DeterministicDirectoryTree.FileSelected(tree.root, target)
         )
         await pilot.pause()
-    assert pilot.app.return_value == str(target)
+    assert pilot.app.return_value == str(target.resolve())
     # Selecting a file remembers its parent directory for next time.
-    assert aas_module._session_dir == target.parent
+    assert aas_module._session_dir == target.resolve().parent
 
 
 async def test_directory_selected_updates_path_input() -> None:
@@ -178,7 +178,7 @@ async def test_directory_selected_updates_path_input() -> None:
         )
         await pilot.pause()
         inp = screen.query_one("#path-input", Input)
-        assert inp.value == str(sub)
+        assert inp.value == str(sub.resolve())
 
 
 async def test_escape_cancels_with_none() -> None:
@@ -227,7 +227,7 @@ async def test_input_submit_valid_dir_navigates() -> None:
         await pilot.pause()
         # Navigation re-roots the tree and rewrites the path bar.
         assert screen._root == sub.resolve()
-        assert screen.query_one("#path-input", Input).value == str(sub)
+        assert screen.query_one("#path-input", Input).value == str(sub.resolve())
         tree = screen.query_one("#file-tree", DeterministicDirectoryTree)
         assert Path(tree.path) == sub.resolve()
     assert aas_module._session_dir == sub.resolve()
