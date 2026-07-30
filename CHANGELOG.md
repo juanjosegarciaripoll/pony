@@ -5,7 +5,7 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.0]
+## [1.0.0] - 2026-07-30
 
 First stable release. Pony Express is a terminal-first mail client: IMAP sync
 into a Maildir or mbox mirror, a SQLite index over it, a three-pane Textual
@@ -1074,3 +1074,4 @@ First feature-complete release of Pony Express.
 [0.6.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.6.0
 [0.7.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.7.0
 [0.8.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.8.0
+[1.0.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v1.0.0
