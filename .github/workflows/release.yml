@@ -220,7 +220,7 @@ jobs:
 
       - name: Run tests
         run: >-
-          uv run python -u -m pytest -vv -ra --durations=25
+          uv run python -u -m pytest -vv -ra --instafail --tb=long --durations=25
           -o faulthandler_timeout=300
         shell: bash
 
@@ -248,6 +248,7 @@ jobs:
           PONY_LIVE_IMAP: '1'
         run: >-
           uv run python -u -m pytest tests/test_imap_live.py -vv -ra
+          --instafail --tb=long
           --durations=25 -o faulthandler_timeout=300 --no-cov
         shell: bash
 
