@@ -27,7 +27,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.49 %** (measured, not rounded — the previous **96.5 %** here was never verified and read as a regression against real 96.3–96.4 % runs). Regenerate rather than trusting it.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.11 %**, measured on the full suite at v1.0.0. Regenerate rather than trusting it — every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -79,15 +79,16 @@ Largest remaining gaps, by absolute missing statements+branches:
 
 | Missing | File | % |
 |---:|---|---:|
-| 43 | `cli.py` | 97.97 |
-| 33 | `tui/screens/main_screen.py` | 97.50 |
-| 29 | `storage.py` | 94.61 |
-| 29 | `credentials.py` | 83.52 |
+| 53 | `cli.py` | 97.18 |
+| 48 | `storage.py` | 92.78 |
+| 33 | `sync.py` | 97.19 |
+| 29 | `tui/screens/main_screen.py` | 97.79 |
 | 25 | `message_renderer.py` | 95.87 |
-| 24 | `sync.py` | 97.86 |
-| 21 | `tui/widgets/message_view.py` | 88.59 |
-| 21 | `tui/app.py` | 85.42 |
+| 25 | `credentials.py` | 83.52 |
+| 19 | `tui/widgets/message_view.py` | 88.59 |
 | 19 | `mcp_server.py` | 89.56 |
+| 17 | `tui/screens/compose_screen.py` | 96.69 |
+| 17 | `tui/app.py` | 85.42 |
 
 `credentials.py` is platform-gated and cannot rise on Linux CI (below).
 `cli.py`, `sync.py` and `main_screen.py` are mostly the verified-unreachable
