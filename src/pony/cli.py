@@ -781,6 +781,7 @@ def run_sync(
             ssl=acc.imap_ssl,
             username=acc.username,
             password=password,
+            connect_timeout=config.imap_connect_timeout_seconds,
         )
 
     service = ImapSyncService(
@@ -2037,6 +2038,7 @@ def run_server_summary(
                 ssl=acc.imap_ssl,
                 username=acc.username,
                 password=password,
+                connect_timeout=config.imap_connect_timeout_seconds,
             )
         except (ConfigError, OSError, ConnectionError) as exc:
             print(f"  Could not connect: {exc}")
@@ -2622,6 +2624,7 @@ def run_account_test(
             ssl=account.imap_ssl,
             username=account.username,
             password=password,
+            connect_timeout=config.imap_connect_timeout_seconds,
         )
     except ImapAuthError:
         print("  Login: FAILED — authentication rejected", file=sys.stderr)

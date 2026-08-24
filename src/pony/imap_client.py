@@ -12,14 +12,16 @@ command up to ``max_retries`` times with exponential back-off.
 from __future__ import annotations
 
 import contextlib
+import imaplib
 import logging
+import socket
 import ssl
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import TypeVar, cast
+from typing import TypeVar, cast, override
 
-from imapclient import IMAPClient
+from imapclient import IMAPClient, SocketTimeout, imap4, tls
 from imapclient.exceptions import IMAPClientError, LoginError
 
 from .domain import FlagSet, FolderQuickStatus, MessageFlag
@@ -47,6 +49,74 @@ _TRANSIENT = (
 )
 
 logger = logging.getLogger(__name__)
+
+# Seconds to wait for the TCP handshake.  Without an explicit value
+# imapclient leaves the socket blocking and the kernel's SYN retry
+# ceiling applies (~130 s on Linux), so a packet filter that silently
+# drops SYNs stalls the whole sync instead of failing.  A handshake that
+# is going to succeed does so in milliseconds; this bounds the ones that
+# never will, so it buys nothing to set it high.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+
+# How many times to attempt the *first* connection before giving up.
+# Networks that spread flows over several paths pick the path by hashing
+# the connection's addresses and ports, so a single blackholed path drops
+# a reproducible fraction of connections while leaving the rest healthy.
+# Each retry opens a new socket with a new ephemeral source port, which
+# rehashes onto a possibly different path — an independent attempt rather
+# than a repeat of the same one.  Four attempts turn a path that swallows
+# half of all connections into a ~6 % chance of failing an account.
+DEFAULT_CONNECT_ATTEMPTS = 4
+
+# Seconds a single socket read may block.  This bounds a server that has
+# gone silent, not one that is merely slow: a large FETCH streams, so
+# every ``recv`` returns promptly however big the message is.  Read
+# timeouts land in ``_TRANSIENT`` and are retried by reconnecting.
+DEFAULT_READ_TIMEOUT_SECONDS = 600.0
+
+
+class _TimeoutIMAP4TLS(tls.IMAP4_TLS):  # type: ignore[misc]
+    """``imapclient.tls.IMAP4_TLS`` with the connect timeout actually applied.
+
+    Upstream (imapclient 3.1.0) stores the connect timeout on the instance
+    and then calls ``imaplib.IMAP4.__init__(host, port)`` without it, so
+    imaplib defaults it to ``None`` and passes that to ``_create_socket``,
+    whose body reads only its argument.  The stored value is never used, the
+    handshake blocks until the kernel's SYN ceiling (~130 s on Linux), and a
+    packet filter that silently drops SYNs stalls the whole sync.
+
+    The non-SSL sibling ``imapclient.imap4.IMAP4WithTimeout`` already falls
+    back to the stored value.  This does the same for TLS, which is the path
+    pony takes on port 993.
+    """
+
+    @override
+    def _create_socket(self, timeout: float | None = None) -> socket.socket:
+        # Bound to a name so mypy, which types the base as Any, sees a socket.
+        sock: socket.socket = super()._create_socket(
+            self._timeout if timeout is None else timeout
+        )
+        return sock
+
+
+class _TimeoutIMAPClient(IMAPClient):  # type: ignore[misc]
+    """``IMAPClient`` whose TLS connections honour the connect timeout."""
+
+    @override
+    def _create_IMAP4(
+        self,
+    ) -> imaplib.IMAP4_stream | tls.IMAP4_TLS | imap4.IMAP4WithTimeout:
+        if self.stream or not self.ssl:
+            upstream: imaplib.IMAP4_stream | tls.IMAP4_TLS | imap4.IMAP4WithTimeout = (
+                super()._create_IMAP4()
+            )
+            return upstream
+        return _TimeoutIMAP4TLS(
+            self.host,
+            self.port,
+            self.ssl_context,
+            getattr(self._timeout, "connect", None),
+        )
 
 
 class ImapAuthError(ConnectionError):
@@ -131,6 +201,9 @@ class ImapSession:
         username: str,
         password: str,
         max_retries: int = 3,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        read_timeout: float = DEFAULT_READ_TIMEOUT_SECONDS,
+        connect_attempts: int = DEFAULT_CONNECT_ATTEMPTS,
     ) -> None:
         self._host = host
         self._port = port
@@ -138,8 +211,37 @@ class ImapSession:
         self._username = username
         self._password = password
         self._max_retries = max_retries
-        self._conn = self._new_connection()
+        self._connect_attempts = connect_attempts
+        self._timeout = SocketTimeout(connect=connect_timeout, read=read_timeout)
+        self._conn = self._connect_with_retries()
         self._selected: str | None = None
+
+    def _connect_with_retries(self) -> IMAPClient:
+        """Open the first connection, retrying transient transport failures.
+
+        ``_retry`` cannot serve here: it recovers a session that already
+        exists, and this runs before there is one.  Only ``_TRANSIENT``
+        errors are retried, so a refused connection or a rejected password
+        still fails on the first attempt — neither improves with another go.
+        """
+        delay = 0.5
+        for attempt in range(1, self._connect_attempts + 1):
+            try:
+                return self._new_connection()
+            except _TRANSIENT as exc:
+                if attempt == self._connect_attempts:
+                    raise
+                logger.info(
+                    "Connecting to %s:%d failed (attempt %d/%d): %s — retrying",
+                    self._host,
+                    self._port,
+                    attempt,
+                    self._connect_attempts,
+                    exc,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _new_connection(self) -> IMAPClient:
         """Open, authenticate, and optionally compress a fresh connection."""
@@ -149,7 +251,15 @@ class ImapSession:
             self._port,
             self._ssl,
         )
-        conn = IMAPClient(self._host, port=self._port, ssl=self._ssl)
+        conn = _TimeoutIMAPClient(
+            self._host,
+            port=self._port,
+            ssl=self._ssl,
+            # imapclient types `timeout` as float|None, but _create_IMAP4
+            # reads `.connect` off it and _set_read_timeout reads `.read`,
+            # so SocketTimeout is the value that separates the two.
+            timeout=self._timeout,  # pyright: ignore[reportArgumentType]
+        )
         logger.debug("Logging in as %s", self._username)
         try:
             conn.login(self._username, self._password)
@@ -174,7 +284,9 @@ class ImapSession:
         )
         with contextlib.suppress(Exception):
             self._conn.logout()
-        self._conn = self._new_connection()
+        # Retried as well: a mid-session reconnect draws a new source port
+        # and is exposed to the same per-path loss as the first connect.
+        self._conn = self._connect_with_retries()
         self._selected = None
 
     def _retry(self, fn: Callable[[], _T], label: str = "") -> _T:

@@ -352,6 +352,28 @@ class ConfigParsingTestCase(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_config(data, base_dir=base_dir)
 
+    def test_imap_connect_timeout_defaults(self) -> None:
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(sample_config(), base_dir=base_dir)
+        self.assertEqual(config.imap_connect_timeout_seconds, 10)
+
+    def test_imap_connect_timeout_parsed(self) -> None:
+        data = sample_config()
+        data["imap_connect_timeout_seconds"] = 5
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        config = parse_config(data, base_dir=base_dir)
+        self.assertEqual(config.imap_connect_timeout_seconds, 5)
+
+    def test_imap_connect_timeout_non_positive_raises(self) -> None:
+        data = sample_config()
+        data["imap_connect_timeout_seconds"] = 0
+        base_dir = TMP_ROOT / "config-base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ConfigError):
+            parse_config(data, base_dir=base_dir)
+
     def test_archive_folder_parsed(self) -> None:
         from pony.domain import AccountConfig
 

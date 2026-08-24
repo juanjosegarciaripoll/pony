@@ -130,6 +130,17 @@ use_utf8 = true
 background_sync_enabled = false
 background_sync_interval_seconds = 600
 
+# Seconds to wait for the TCP handshake with an IMAP server (default 10,
+# must be positive).  Without it the kernel's SYN retry ceiling applies
+# (~130 s on Linux), so a network that silently drops packets stalls the
+# whole sync.  A handshake that will succeed takes milliseconds, so a
+# large value only lengthens the wait for ones that never will.  A timed
+# out connect is retried a few times — each retry uses a new source port,
+# which matters when a network spreads flows over several paths and one
+# of them is dropping.  Only once those attempts are exhausted are the
+# remaining accounts on that same host failed for the rest of the run.
+imap_connect_timeout_seconds = 10
+
 [[accounts]]
 name = "Personal"
 email_address = "user@example.com"

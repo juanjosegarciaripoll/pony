@@ -142,6 +142,33 @@ creation works the same way: the mirror exposes a new directory and the
 execute phase issues `IMAP CREATE`. The row rewrites themselves live in
 `pony.mailbox_ops`.
 
+Connections are bounded on both ends. `ImapSession` sets an explicit
+connect timeout (`imap_connect_timeout_seconds`, default 10 s) and a read
+timeout, because otherwise the kernel's SYN retry ceiling applies — roughly
+130 s per attempt on Linux — and a server that silently drops packets stalls
+the sync instead of failing it. Setting the timeout is not sufficient on its
+own: imapclient 3.1.0 accepts a connect timeout for TLS connections and then
+discards it, so `imap_client` subclasses its TLS transport to apply the value
+the way imapclient's own non-TLS transport already does.
+
+A timed-out connect is then retried (`DEFAULT_CONNECT_ATTEMPTS`), including
+mid-session reconnects. This is not the same concern as the read-side
+`_retry`: networks that spread flows over several paths select the path by
+hashing the connection's addresses and ports, so one blackholed path drops a
+reproducible share of connections while the rest stay healthy. Each retry
+opens a new socket with a new ephemeral source port and so re-rolls that
+hash, making it an independent attempt rather than a repeat of the same one.
+A single failure therefore says nothing about whether the server is up, which
+is why the connect timeout is short — a handshake that will succeed takes
+milliseconds.
+
+Since several accounts often share one server, the engine also keeps a
+per-host breaker, but it fires only once those attempts are exhausted: the
+host is then marked unreachable and the remaining accounts on it fail
+immediately for the rest of the run, rather than each paying its own
+timeouts. The breaker lives on the service instance, which is rebuilt per
+run, so the next sync retries the host from scratch.
+
 Full algorithm: [Synchronization](synchronization.md).
 
 ### Send (`pony.smtp_sender`, `pony.compose_utils`, `pony.composer`)

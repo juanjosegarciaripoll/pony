@@ -120,6 +120,11 @@ def _parse_app_config(raw: object) -> AppConfig:
     )
     if background_sync_interval_seconds <= 0:
         raise ConfigError("'background_sync_interval_seconds' must be positive")
+    imap_connect_timeout_seconds = _require_int(
+        data, "imap_connect_timeout_seconds", default=10
+    )
+    if imap_connect_timeout_seconds <= 0:
+        raise ConfigError("'imap_connect_timeout_seconds' must be positive")
     return AppConfig(
         accounts=accounts,
         use_utf8=use_utf8,
@@ -130,6 +135,7 @@ def _parse_app_config(raw: object) -> AppConfig:
         theme=theme,
         background_sync_enabled=background_sync_enabled,
         background_sync_interval_seconds=background_sync_interval_seconds,
+        imap_connect_timeout_seconds=imap_connect_timeout_seconds,
     )
 
 

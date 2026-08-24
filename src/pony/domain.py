@@ -210,6 +210,12 @@ class AppConfig:
     # Interval in seconds between automatic background syncs.  Must be
     # positive.
     background_sync_interval_seconds: int = 600
+    # Seconds to wait for the TCP handshake with an IMAP server before
+    # giving up on one attempt.  Must be positive.  A handshake that will
+    # succeed takes milliseconds, so this only bounds the ones that never
+    # will; the session retries a timed-out connect several times before
+    # the sync engine's per-host breaker sees a failure at all.
+    imap_connect_timeout_seconds: int = 10
 
 
 @dataclass(frozen=True, slots=True)

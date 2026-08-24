@@ -6,8 +6,13 @@ import unittest
 from datetime import UTC
 from unittest.mock import MagicMock, patch
 
+from imapclient import SocketTimeout
+
 from pony.domain import MessageFlag
 from pony.imap_client import (
+    DEFAULT_CONNECT_ATTEMPTS,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     ImapAuthError,
     ImapSession,
     _decode_response,
@@ -17,6 +22,8 @@ from pony.imap_client import (
     _parse_appenduid,
     _parse_copyuid,
     _parse_imap_flags,
+    _TimeoutIMAP4TLS,
+    _TimeoutIMAPClient,
 )
 
 # ---------------------------------------------------------------------------
@@ -137,7 +144,7 @@ class ImapSessionMockedTest(unittest.TestCase):
 
     def _make_session(self) -> tuple[ImapSession, MagicMock]:
         mock_client = _make_mock_imap_client()
-        with patch("pony.imap_client.IMAPClient", return_value=mock_client):
+        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
             session = ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -157,7 +164,7 @@ class ImapSessionMockedTest(unittest.TestCase):
         mock_client = _make_mock_imap_client()
         mock_client.login.side_effect = LoginError("bad password")
         with (
-            patch("pony.imap_client.IMAPClient", return_value=mock_client),
+            patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client),
             self.assertRaises(ImapAuthError) as ctx,
         ):
             ImapSession(
@@ -172,7 +179,7 @@ class ImapSessionMockedTest(unittest.TestCase):
     def test_compress_enabled_when_supported(self) -> None:
         mock_client = _make_mock_imap_client()
         mock_client.capabilities.return_value = [b"COMPRESS=DEFLATE"]
-        with patch("pony.imap_client.IMAPClient", return_value=mock_client):
+        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
             ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -242,7 +249,7 @@ class ImapSessionMockedTest(unittest.TestCase):
         mock_client = _make_mock_imap_client()
         mock_client.capabilities.return_value = [b"COMPRESS=DEFLATE"]
         mock_client.compress.side_effect = Exception("compress failed")
-        with patch("pony.imap_client.IMAPClient", return_value=mock_client):
+        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
             session = ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -563,3 +570,204 @@ class ParseCopyUidTest(unittest.TestCase):
     def test_invalid_uid_returns_none(self) -> None:
         result = _parse_copyuid(b"[COPYUID 1 1 notanint]")
         self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# Socket timeouts
+# ---------------------------------------------------------------------------
+
+
+class ImapSessionTimeoutTest(unittest.TestCase):
+    """A connect timeout must be explicit, not the kernel's SYN ceiling.
+
+    imapclient leaves the socket blocking when ``timeout`` is omitted, so
+    a firewall that silently drops SYNs costs ~130 s per attempt on Linux.
+    """
+
+    def _connect_with(
+        self,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        read_timeout: float = DEFAULT_READ_TIMEOUT_SECONDS,
+    ) -> MagicMock:
+        mock_client = _make_mock_imap_client()
+        with patch(
+            "pony.imap_client._TimeoutIMAPClient", return_value=mock_client
+        ) as factory:
+            ImapSession(
+                host="imap.example.com",
+                username="bob",
+                password="pw",
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
+            )
+        return factory
+
+    def test_default_timeouts_are_passed_to_imapclient(self) -> None:
+        factory = self._connect_with()
+        timeout = factory.call_args.kwargs["timeout"]
+        self.assertEqual(timeout.connect, DEFAULT_CONNECT_TIMEOUT_SECONDS)
+        self.assertEqual(timeout.read, DEFAULT_READ_TIMEOUT_SECONDS)
+
+    def test_configured_timeouts_override_the_defaults(self) -> None:
+        factory = self._connect_with(connect_timeout=5.0, read_timeout=7.0)
+        timeout = factory.call_args.kwargs["timeout"]
+        self.assertEqual(timeout.connect, 5.0)
+        self.assertEqual(timeout.read, 7.0)
+
+
+class TlsConnectTimeoutTest(unittest.TestCase):
+    """Passing the timeout to imapclient is not enough to make it apply.
+
+    imapclient 3.1.0's ``IMAP4_TLS`` stores the connect timeout and then
+    calls ``imaplib.IMAP4.__init__`` without it, so imaplib feeds ``None``
+    to ``_create_socket`` and the stored value is never read.  Observed in
+    the field as a 130 s stall per account against a firewalled server even
+    though a 30 s timeout was configured.  These tests pin the workaround.
+    """
+
+    def _create_socket(
+        self, stored: float | None, passed: float | None
+    ) -> float | None:
+        conn = _TimeoutIMAP4TLS.__new__(_TimeoutIMAP4TLS)
+        conn._timeout = stored
+        conn.host, conn.port, conn.ssl_context = "imap.example.com", 993, None
+        captured: dict[str, float | None] = {}
+
+        def _fake_connect(_address: object, timeout: float | None = None) -> object:
+            captured["timeout"] = timeout
+            return MagicMock()
+
+        with (
+            patch("imapclient.tls.socket.create_connection", _fake_connect),
+            patch("imapclient.tls.wrap_socket", lambda sock, _ctx, _host: sock),
+        ):
+            conn._create_socket(passed)
+        return captured["timeout"]
+
+    def test_stored_timeout_is_used_when_imaplib_passes_none(self) -> None:
+        """The regression: imaplib always passes None down this path."""
+        self.assertEqual(self._create_socket(stored=30.0, passed=None), 30.0)
+
+    def test_an_explicit_timeout_still_wins(self) -> None:
+        self.assertEqual(self._create_socket(stored=30.0, passed=2.0), 2.0)
+
+    def test_tls_connections_use_the_patched_class(self) -> None:
+        client = _TimeoutIMAPClient.__new__(_TimeoutIMAPClient)
+        client.stream, client.ssl, client.ssl_context = False, True, None
+        client.host, client.port = "imap.example.com", 993
+        client._timeout = SocketTimeout(  # pyright: ignore[reportAttributeAccessIssue]
+            connect=11.0, read=12.0
+        )
+
+        with patch("pony.imap_client._TimeoutIMAP4TLS") as tls_cls:
+            client._create_IMAP4()
+
+        self.assertEqual(tls_cls.call_args.args[-1], 11.0)
+
+    def test_non_tls_connections_delegate_upstream(self) -> None:
+        """Only the TLS path is broken upstream; leave the rest alone."""
+        client = _TimeoutIMAPClient.__new__(_TimeoutIMAPClient)
+        client.stream, client.ssl = False, False
+        client.host, client.port = "imap.example.com", 143
+        client._timeout = SocketTimeout(  # pyright: ignore[reportAttributeAccessIssue]
+            connect=11.0, read=12.0
+        )
+
+        with patch("imapclient.imap4.IMAP4WithTimeout") as upstream:
+            client._create_IMAP4()
+
+        upstream.assert_called_once()
+
+
+class ConnectRetryTest(unittest.TestCase):
+    """A timed-out connect must be retried, not surfaced immediately.
+
+    Networks that spread flows over several paths choose the path from a
+    hash of the connection's addresses and ports.  One blackholed path
+    then swallows a stable fraction of connections while the rest are
+    healthy, so a single failure says nothing about whether the server is
+    reachable.  Each retry opens a new socket with a new source port and
+    so re-rolls that hash.
+    """
+
+    def _connect(self, side_effect: object) -> MagicMock:
+        factory = MagicMock(side_effect=side_effect)
+        with (
+            patch("pony.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.imap_client.time.sleep"),
+        ):
+            ImapSession(host="imap.example.com", username="bob", password="pw")
+        return factory
+
+    def test_a_timed_out_connect_is_retried_until_one_succeeds(self) -> None:
+        factory = self._connect(
+            [
+                TimeoutError("[Errno 110] Connection timed out"),
+                TimeoutError("[Errno 110] Connection timed out"),
+                _make_mock_imap_client(),
+            ]
+        )
+        self.assertEqual(factory.call_count, 3)
+
+    def test_connect_gives_up_after_the_attempt_limit(self) -> None:
+        factory = MagicMock(side_effect=TimeoutError("timed out"))
+        with (
+            patch("pony.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.imap_client.time.sleep"),
+            self.assertRaises(TimeoutError),
+        ):
+            ImapSession(
+                host="imap.example.com",
+                username="bob",
+                password="pw",
+                connect_attempts=3,
+            )
+        self.assertEqual(factory.call_count, 3)
+
+    def test_the_default_is_more_than_one_attempt(self) -> None:
+        """A single attempt is what made a lossy path look like an outage."""
+        self.assertGreater(DEFAULT_CONNECT_ATTEMPTS, 1)
+        factory = MagicMock(side_effect=TimeoutError("timed out"))
+        with (
+            patch("pony.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.imap_client.time.sleep"),
+            self.assertRaises(TimeoutError),
+        ):
+            ImapSession(host="imap.example.com", username="bob", password="pw")
+        self.assertEqual(factory.call_count, DEFAULT_CONNECT_ATTEMPTS)
+
+    def test_a_rejected_password_is_not_retried(self) -> None:
+        """Auth failures are permanent; retrying only delays the error."""
+        from imapclient.exceptions import LoginError
+
+        mock_client = _make_mock_imap_client()
+        mock_client.login.side_effect = LoginError("bad credentials")
+        factory = MagicMock(return_value=mock_client)
+        with (
+            patch("pony.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.imap_client.time.sleep"),
+            self.assertRaises(ImapAuthError),
+        ):
+            ImapSession(host="imap.example.com", username="bob", password="pw")
+        self.assertEqual(factory.call_count, 1)
+
+    def test_a_reconnect_is_retried_too(self) -> None:
+        """Mid-session reconnects draw a new port and face the same loss."""
+        good = _make_mock_imap_client()
+        factory = MagicMock(
+            side_effect=[
+                good,
+                TimeoutError("timed out"),
+                _make_mock_imap_client(),
+            ]
+        )
+        with (
+            patch("pony.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.imap_client.time.sleep"),
+        ):
+            session = ImapSession(
+                host="imap.example.com", username="bob", password="pw"
+            )
+            session._reconnect()
+
+        self.assertEqual(factory.call_count, 3)

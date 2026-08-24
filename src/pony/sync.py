@@ -490,11 +490,52 @@ class ImapSyncService:
                     ssl=account.imap_ssl,
                     username=account.username,
                     password=password,
+                    connect_timeout=config.imap_connect_timeout_seconds,
                 )
 
             self._session_factory: ImapSessionFactory = _default_factory
         else:
             self._session_factory = session_factory
+        self._unreachable_hosts: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Connections
+    # ------------------------------------------------------------------
+
+    def _connect(self, account: AccountConfig, password: str) -> ImapClientSession:
+        """Open a session, short-circuiting hosts that already timed out.
+
+        A network that silently drops packets makes every connect cost the
+        full timeout, and several accounts commonly share one server — so
+        without a breaker one blocked host multiplies its timeout by the
+        number of accounts on it.
+
+        ``ImapSession`` retries a timed-out connect several times before it
+        raises, so reaching here means every attempt was swallowed, not
+        that one unlucky connection was.  That distinction matters: where
+        the loss is per-connection rather than total, retrying recovers the
+        account and the breaker must not fire on the first failure.  Only
+        an exhausted connect marks the host unreachable and fails the rest
+        of this sync run fast.  The service is rebuilt per run, so the next
+        run retries from scratch.
+        """
+        host = account.imap_host
+        if host in self._unreachable_hosts:
+            msg = (
+                f"{host} did not accept a connection earlier in this sync run; "
+                f"skipping account {account.name!r}"
+            )
+            raise ConnectionError(msg)
+        try:
+            return self._session_factory(account, password)
+        except TimeoutError:
+            logger.warning(
+                "Every connection attempt to %s timed out — skipping remaining "
+                "accounts on that host for this sync run",
+                host,
+            )
+            self._unreachable_hosts.add(host)
+            raise
 
     # ------------------------------------------------------------------
     # Public API
@@ -573,14 +614,14 @@ class ImapSyncService:
     ) -> AccountSyncPlan:
         logger.info("Planning sync for account %r", account.name)
         password = self._credentials.get_password(account_name=account.name)
-        session = self._session_factory(account, password)
+        session = self._connect(account, password)
 
         def _reconnect() -> ImapClientSession:
             nonlocal session
             logger.info("Reconnecting to %s", account.imap_host)
             with contextlib.suppress(Exception):
                 session.logout()
-            session = self._session_factory(account, password)
+            session = self._connect(account, password)
             return session
 
         try:
@@ -1429,7 +1470,7 @@ class ImapSyncService:
     ) -> AccountSyncResult:
         logger.info("Executing sync plan for account %r", account.name)
         password = self._credentials.get_password(account_name=account.name)
-        session = self._session_factory(account, password)
+        session = self._connect(account, password)
         mirror = self._mirror_factory(account)
 
         folder_results: list[FolderSyncResult] = []
@@ -1492,7 +1533,7 @@ class ImapSyncService:
                     try:
                         with contextlib.suppress(Exception):
                             session.logout()
-                        session = self._session_factory(account, password)
+                        session = self._connect(account, password)
                         result = self._execute_folder_plan(
                             account=account,
                             plan=folder_plan,
