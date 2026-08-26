@@ -293,11 +293,20 @@ class ImapSessionMockedTest(unittest.TestCase):
         session, mock_client = self._make_session()
         mock_client.select_folder.return_value = {}
         mock_client.fetch.return_value = {
-            5: {b"RFC822": raw_email},
+            5: {b"BODY[]": raw_email},
         }
         result = session.fetch_messages_batch("INBOX", [5])
         self.assertIn(5, result)
         self.assertEqual(result[5], raw_email)
+
+    def test_fetch_messages_batch_peeks(self) -> None:
+        """A body fetch must not set \\Seen on the server."""
+        session, mock_client = self._make_session()
+        mock_client.select_folder.return_value = {}
+        mock_client.fetch.return_value = {5: {b"BODY[]": b"raw"}}
+        session.fetch_messages_batch("INBOX", [5])
+        _, items = mock_client.fetch.call_args.args
+        self.assertEqual(items, ["BODY.PEEK[]"])
 
     def test_get_uid_validity(self) -> None:
         session, mock_client = self._make_session()

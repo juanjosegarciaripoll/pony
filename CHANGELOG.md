@@ -5,6 +5,18 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+### Fixed
+
+- **Sync no longer marks incoming mail as read**: bodies were downloaded with
+  `FETCH RFC822`, which RFC 3501 §6.4.5 defines as `BODY[]` — a non-peeking
+  body fetch, so the server set `\Seen` as a side effect of the download. The
+  message still looked unread on that pass; the next sync read the flag back
+  and stamped it locally, and on every other client of the account. The fetch
+  now uses `BODY.PEEK[]`. Messages already marked read this way cannot be
+  recovered — their prior flags were never recorded — so restore them with
+  `u` (mark unread) in the reader.
+
 ## [1.0.0] - 2026-07-30
 
 First stable release. Pony Express is a terminal-first mail client: IMAP sync

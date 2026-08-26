@@ -118,6 +118,21 @@ class LiveImapTestCase(unittest.TestCase):
         self.assertTrue(all(r.uid is not None for r in rows))
         self.assertEqual(len(self.mirror.list_messages(folder=self.inbox)), 2)
 
+    def test_a_first_sync_leaves_unread_mail_unread(self) -> None:
+        """Downloading a body must not set \\Seen — only a real read does."""
+        self._deliver(_message("fresh", "<fresh@example.test>"))
+        self.service.sync()
+
+        session = self.server.raw_session()
+        try:
+            server_flags = session.fetch_uid_to_message_id("INBOX")
+        finally:
+            session.logout()
+        self.assertEqual(len(server_flags), 1)
+        ((_mid, (known, _extra)),) = server_flags.values()
+        self.assertNotIn(MessageFlag.SEEN, known, "the fetch marked it read")
+        self.assertNotIn(MessageFlag.SEEN, self._rows()[0].local_flags)
+
     def test_a_uidvalidity_change_keeps_the_mail_and_readopts_the_uids(self) -> None:
         """The event that used to delete every row and its mirror file."""
         self._deliver(*(_message(f"m{i}", f"<m{i}@example.test>") for i in range(5)))

@@ -383,21 +383,24 @@ class ImapSession:
             for start in range(0, len(uids), batch_size):
                 batch = uids[start : start + batch_size]
                 logger.debug(
-                    "FETCH %d msgs (RFC822) on %s",
+                    "FETCH %d msgs (BODY.PEEK[]) on %s",
                     len(batch),
                     folder_name,
                 )
                 with _imap_errors(
-                    f"FETCH RFC822 on {folder_name!r}",
+                    f"FETCH BODY.PEEK[] on {folder_name!r}",
                 ):
-                    data = self._conn.fetch(batch, ["RFC822"])
+                    # PEEK, not RFC822/BODY[]: RFC 3501 §6.4.5 makes a
+                    # non-peeking body fetch set \Seen on the server, so
+                    # downloading new mail would mark it read.
+                    data = self._conn.fetch(batch, ["BODY.PEEK[]"])
                 for uid, msg_data in data.items():
-                    body = msg_data.get(b"RFC822", b"")
+                    body = msg_data.get(b"BODY[]", b"")
                     if isinstance(body, bytes) and body:
                         result[uid] = body
             return result
 
-        return self._retry(_do, f"FETCH RFC822 {folder_name}")
+        return self._retry(_do, f"FETCH BODY.PEEK[] {folder_name}")
 
     # ------------------------------------------------------------------
     # Mutations
