@@ -141,6 +141,14 @@ background_sync_interval_seconds = 600
 # remaining accounts on that same host failed for the rest of the run.
 imap_connect_timeout_seconds = 10
 
+# Seconds to wait for the TCP handshake with an SMTP server (default 10,
+# must be positive).  Same reasoning as the IMAP setting above: without it
+# a send blocks on the kernel's SYN retry ceiling (~130 s on Linux) with
+# the compose screen frozen behind it.  A timed out connect is retried a
+# few times before the send is reported as failed, each retry drawing a
+# new source port.
+smtp_connect_timeout_seconds = 10
+
 [[accounts]]
 name = "Personal"
 email_address = "user@example.com"

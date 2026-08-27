@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import subprocess
@@ -10,6 +11,7 @@ from email.message import EmailMessage
 from email.utils import getaddresses
 from pathlib import Path
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -49,6 +51,7 @@ from ...protocols import (
     IndexRepository,
     MirrorRepository,
 )
+from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
 
@@ -350,6 +353,10 @@ class ComposeScreen(Screen[bool]):
         self._credentials = credentials
         self._attachment_paths: list[Path] = list(initial.attachment_paths)
         self._markdown_mode: bool = initial.markdown_mode
+        # True while the send worker is in flight.  ctrl+s is a priority
+        # binding and stays live during the send, so without this a slow
+        # server invites a second, duplicate delivery.
+        self._sending: bool = False
 
     def compose(self) -> ComposeResult:
         from ..widgets.contact_suggester import RecipientInput
@@ -550,7 +557,17 @@ class ComposeScreen(Screen[bool]):
         )
 
     def action_send(self) -> None:
-        """Validate fields, send via SMTP, save copy to Sent folder."""
+        """Validate fields, then hand the send to a background worker.
+
+        Everything that touches widgets happens here, on the message
+        pump; only the SMTP conversation is moved off it.  A connect to
+        an unreachable server can take the full connect timeout times the
+        attempt count, and doing that inline froze the whole app.
+        """
+        if self._sending:
+            self.notify("A send is already in progress.", severity="warning")
+            return
+
         to = self.query_one("#to-input", Input).value.strip()
         if not to:
             self.notify("'To' field is required.", severity="error")
@@ -587,18 +604,64 @@ class ComposeScreen(Screen[bool]):
             silent=True,
         )
 
+        self._sending = True
+        self._deliver(account, msg, raw, to, cc, draft_entry, password)
+
+    @work(exclusive=True, group="compose-send")
+    async def _deliver(
+        self,
+        account: AnyAccount,
+        msg: EmailMessage,
+        raw: bytes,
+        to: str,
+        cc: str,
+        draft_entry: IndexedMessage | None,
+        password: str,
+    ) -> None:
+        """Run the SMTP conversation off the event loop, then file the copy.
+
+        The worker body runs on the event loop, so widget access here is
+        safe; only the blocking ``smtp_send`` call is handed to a thread.
+        """
+        assert account.smtp is not None
+        assert account.username is not None
+        host = account.smtp.host
         try:
-            smtp_send(
-                smtp=account.smtp,
-                username=account.username,
-                password=password,
-                msg=msg,
-            )
-        except (SMTPError, ValueError) as exc:
-            suffix = " (message saved to Drafts)" if draft_entry is not None else ""
-            self.notify(f"Send failed: {exc}{suffix}", severity="error")
-            _log.error("SMTP send failed: %s", exc)
-            return
+            self.notify(f"Connecting to {host}…", timeout=6)
+
+            def _progress(attempt: int, total: int) -> None:
+                # Called from the worker thread, so it must hop back.
+                if attempt == 1:
+                    return
+                self.app.call_from_thread(  # pyright: ignore[reportUnknownMemberType]
+                    self.notify,
+                    f"{host} did not answer — retrying ({attempt} of {total})",
+                    severity="warning",
+                    timeout=6,
+                )
+
+            try:
+                await asyncio.to_thread(
+                    smtp_send,
+                    smtp=account.smtp,
+                    username=account.username,
+                    password=password,
+                    msg=msg,
+                    connect_timeout=self._config.smtp_connect_timeout_seconds,
+                    connect_attempts=SMTP_CONNECT_ATTEMPTS,
+                    on_attempt=_progress,
+                )
+            except (SMTPError, ValueError) as exc:
+                suffix = (
+                    " The message is in Drafts."
+                    if draft_entry is not None
+                    else " The message was not saved."
+                )
+                self.notify(f"Send failed: {exc}{suffix}", severity="error", timeout=15)
+                _log.error("SMTP send to %s failed: %s", host, exc)
+                return
+        finally:
+            self._sending = False
 
         # SMTP succeeded — remove the pre-send draft and record the sent copy.
         # The source draft (if any) is cleaned up by the caller's dismiss callback.
@@ -627,6 +690,7 @@ class ComposeScreen(Screen[bool]):
             override=account.sent_folder,
         )
         self._harvest_outgoing(to, cc)
+        self.notify(f"Message sent to {to} via {host}.", timeout=6)
         self.dismiss(True)
 
     def action_cancel(self) -> None:

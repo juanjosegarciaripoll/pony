@@ -30,7 +30,11 @@ from pony.compose_utils import (
 )
 from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
 from pony.message_renderer import RenderedMessage
-from pony.smtp_sender import SMTPError, send_message
+from pony.smtp_sender import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    SMTPError,
+    send_message,
+)
 
 
 def _rendered(**kwargs: object) -> RenderedMessage:
@@ -404,7 +408,9 @@ class SmtpSenderTest(unittest.TestCase):
                 password="secret",
                 msg=EmailMessage(),
             )
-            smtp_ssl_cls.assert_called_once_with("smtp.example.com", 465)
+            smtp_ssl_cls.assert_called_once_with(
+                "smtp.example.com", 465, timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS
+            )
             mock.login.assert_called_once_with("alice", "secret")
             mock.send_message.assert_called_once()
 

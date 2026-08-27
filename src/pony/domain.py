@@ -216,6 +216,11 @@ class AppConfig:
     # will; the session retries a timed-out connect several times before
     # the sync engine's per-host breaker sees a failure at all.
     imap_connect_timeout_seconds: int = 10
+    # Seconds to wait for the TCP handshake with an SMTP server before
+    # giving up on one attempt.  Must be positive.  Sending retries a
+    # timed-out connect several times, so this bounds one attempt rather
+    # than the whole send.
+    smtp_connect_timeout_seconds: int = 10
 
 
 @dataclass(frozen=True, slots=True)

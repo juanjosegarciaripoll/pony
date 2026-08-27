@@ -43,6 +43,7 @@ from pony.domain import (
     MessageFlag,
     MessageStatus,
 )
+from pony.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from pony.sync import (
     AccountSyncResult,
     FolderSyncResult,
@@ -1274,6 +1275,140 @@ async def _fill_and_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
     await pilot.pause()
 
 
+async def test_compose_send_keeps_the_ui_responsive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow SMTP connect must not freeze the compose screen.
+
+    ``smtp_send`` blocks on a threading event, standing in for a connect
+    to a host that never answers.  While it is stuck, the screen must
+    still accept input — the whole point of moving the send off the
+    message pump.
+    """
+    import threading
+
+    app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-responsive")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    release = threading.Event()
+
+    def _blocking_send(**_kw: object) -> None:
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        _blocking_send,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+
+        app.screen.query_one("#to-input", Input).value = "bob@example.com"
+        app.screen.query_one("#subject-input", Input).value = "Subject"
+        app.screen.query_one("#body-area", TextArea).load_text("Body")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        # The send is in flight and parked in the thread.  If it were
+        # running on the event loop this would never come back.
+        subject = app.screen.query_one("#subject-input", Input)
+        subject.value = "Edited while sending"
+        await pilot.pause()
+        assert subject.value == "Edited while sending"
+
+        release.set()
+        for _ in range(5):
+            await pilot.pause()
+
+
+async def test_compose_send_refuses_a_second_send_while_one_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ctrl+s stays live during the send, so a duplicate must be refused."""
+    import threading
+
+    app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-double")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    release = threading.Event()
+    calls: list[int] = []
+
+    def _blocking_send(**_kw: object) -> None:
+        calls.append(1)
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        _blocking_send,
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert any("already in progress" in n for n in notifications)
+        release.set()
+        for _ in range(5):
+            await pilot.pause()
+
+    assert len(calls) == 1
+
+
+async def test_compose_send_announces_a_connect_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The progress callback surfaces retries as a toast naming the host."""
+    app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-retry-toast")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+
+    def _retrying_send(**kwargs: object) -> None:
+        on_attempt = kwargs["on_attempt"]
+        assert callable(on_attempt)
+        on_attempt(1, 4)
+        on_attempt(2, 4)
+
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        _retrying_send,
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+        for _ in range(5):
+            await pilot.pause()
+
+    assert any("Connecting to smtp.example.com" in n for n in notifications)
+    assert any("retrying (2 of 4)" in n for n in notifications)
+    assert any("Message sent to bob@example.com" in n for n in notifications)
+
+
+async def test_compose_send_passes_the_configured_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect timeout and attempt count reach the sender."""
+    app, cfg, _paths, _index, mirrors = build_compose_app(label="send-timeout")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
+    send_mock = Mock()
+    monkeypatch.setattr(
+        "pony.tui.screens.compose_screen.smtp_send",
+        send_mock,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _fill_and_send(pilot, app)
+        for _ in range(5):
+            await pilot.pause()
+
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["connect_timeout"] == cfg.smtp_connect_timeout_seconds
+    assert kwargs["connect_attempts"] == SMTP_CONNECT_ATTEMPTS
+
+
 async def test_compose_send_discards_pre_send_draft_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1314,7 +1449,7 @@ async def test_compose_send_failure_keeps_the_draft(
 
     drafts = FolderRef(account_name="acct", folder_name="Drafts")
     assert len(mirrors["acct"].list_messages(folder=drafts)) == 1
-    assert any("message saved to Drafts" in n for n in notifications)
+    assert any("The message is in Drafts." in n for n in notifications)
 
 
 async def test_compose_send_survives_a_failed_draft_cleanup(

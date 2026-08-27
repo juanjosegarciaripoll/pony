@@ -184,6 +184,23 @@ returns a `DraftSpec` for the UI to render. It does no I/O and imports
 nothing from `tui/`, so the same answers serve the TUI composer and anything
 else built on top later.
 
+Connecting is bounded and retried on the same terms as IMAP, and for the same
+reason: `smtplib` leaves the socket blocking unless given a timeout, so a
+dropped SYN costs the kernel's full retry ceiling. `smtp_connect_timeout_seconds`
+(default 10 s) bounds one attempt and `DEFAULT_CONNECT_ATTEMPTS` decides how
+many are made, each on a fresh source port. Only the connect is retried —
+past `DATA` a retry risks delivering the message twice. Every failure leaves
+`smtp_sender` as an `SMTPError` whose text names the host and repeats what
+the server said, so the composer can report a rejected recipient differently
+from an unreachable server.
+
+The compose screen runs the send in a Textual worker, keeping only the
+blocking SMTP call off the message pump while the surrounding widget work
+stays on it. An unreachable server can otherwise hold the event loop for the
+timeout times the attempt count, which freezes the whole app rather than just
+the send. A `_sending` guard rejects a second `ctrl+s` while one is in
+flight, since the binding stays live throughout.
+
 ### TUI (`pony.tui`)
 
 Three separate Textual `App` classes, each minimal:

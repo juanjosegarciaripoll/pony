@@ -27,7 +27,7 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.11 %**, measured on the full suite at v1.0.0. Regenerate rather than trusting it — every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **96.16 %**, measured on the full suite after the SMTP connect work. Regenerate rather than trusting it — every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -41,6 +41,7 @@ Key test infrastructure:
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
 | Message projection | `tests/test_message_projection.py` |
 | Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
+| SMTP send | `tests/test_smtp_sender.py` — patched `smtplib.SMTP_SSL` / `SMTP` |
 | Sync failures + races | `tests/test_sync_execution_failures.py` |
 | TUI screens | `tests/test_tui_flows.py` via `build_pony_app` + `Pilot` |
 | Main screen by concern | `tests/test_main_screen_{messages,compose,sync,io}.py` |
@@ -79,16 +80,16 @@ Largest remaining gaps, by absolute missing statements+branches:
 
 | Missing | File | % |
 |---:|---|---:|
-| 53 | `cli.py` | 97.18 |
-| 48 | `storage.py` | 92.78 |
+| 59 | `cli.py` | 97.18 |
+| 50 | `storage.py` | 92.78 |
 | 33 | `sync.py` | 97.19 |
 | 29 | `tui/screens/main_screen.py` | 97.79 |
+| 29 | `credentials.py` | 83.52 |
 | 25 | `message_renderer.py` | 95.87 |
-| 25 | `credentials.py` | 83.52 |
-| 19 | `tui/widgets/message_view.py` | 88.59 |
+| 21 | `tui/widgets/message_view.py` | 88.59 |
+| 21 | `tui/app.py` | 85.42 |
+| 21 | `index_store.py` | 96.79 |
 | 19 | `mcp_server.py` | 89.56 |
-| 17 | `tui/screens/compose_screen.py` | 96.69 |
-| 17 | `tui/app.py` | 85.42 |
 
 `credentials.py` is platform-gated and cannot rise on Linux CI (below).
 `cli.py`, `sync.py` and `main_screen.py` are mostly the verified-unreachable
