@@ -17,6 +17,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recovered — their prior flags were never recorded — so restore them with
   `u` (mark unread) in the reader.
 
+- **Sync no longer stalls when the network drops packets**: IMAP connections
+  were opened without an explicit timeout, so a silently dropped SYN cost the
+  kernel's full retry ceiling — about 130 s per attempt on Linux — rather than
+  failing. Setting the timeout was not enough on its own: imapclient 3.1.0
+  accepts a connect timeout for TLS connections and then discards it, so
+  `imap_client` now subclasses its TLS transport to apply the value. A timed
+  out connect is retried on a fresh source port, which matters when a network
+  spreads flows over several paths and one of them is dropping; only once the
+  attempts are exhausted are the remaining accounts on that host skipped for
+  the run. New setting: `imap_connect_timeout_seconds` (default 10).
+
+- **Sending no longer freezes the app**: `smtp_sender` called `smtplib`
+  without a timeout, so an unreachable server blocked for the same ~130 s, and
+  the connect ran inline on Textual's message pump — freezing the whole
+  interface rather than just the send. The connect is now bounded by
+  `smtp_connect_timeout_seconds` (default 10) and retried on a fresh source
+  port, and the SMTP conversation runs in a worker. Only the connect is
+  retried: past `DATA` a retry risks delivering the message twice. Failures
+  now name the host and repeat what the server said, so a rejected recipient
+  reads differently from an unreachable server, and connect retries are
+  reported as they happen. A STARTTLS refusal previously escaped as a raw
+  `smtplib` exception past the composer's error handling.
+
 ## [1.0.0] - 2026-07-30
 
 First stable release. Pony Express is a terminal-first mail client: IMAP sync
