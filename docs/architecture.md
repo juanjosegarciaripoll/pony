@@ -225,6 +225,13 @@ Alongside the modal `g` sync flow there is a non-blocking background sync
 (`ctrl+g`, the `sync-bg` worker) that auto-confirms every folder and shows a
 spinner on the `FolderPanel` border title; it can also run on a config-gated
 periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
+The same border title carries the schedule: once a periodic sync is armed —
+by the config gate at mount, or by `ctrl+g`, which arms repeats — the panel
+shows a clock and a live countdown to the next run (`Folders ◷ 9:32`).
+`MainScreen` recomputes the deadline whenever it arms the timer and on every
+tick, because a Textual `Timer` does not expose its next firing time. A sync
+in flight outranks the countdown, so the spinner replaces it and it returns
+when the sync ends.
 `MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and
 streams rows back to the UI thread in batches, so opening a 10k-row folder
 never freezes the event loop.

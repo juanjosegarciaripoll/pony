@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from time import monotonic
 
 from rich.markup import escape as markup_escape
 from textual.binding import Binding
@@ -18,8 +19,28 @@ from .edge_drag import DraggableEdgeMixin
 
 ACCOUNT_MAIL_SUFFIX = "✉"
 
+# Clock face marking a *scheduled* (not running) periodic sync.  A plain
+# geometric glyph rather than an emoji clock: emoji presentation is
+# double-width in some terminals and would shift the border title.
+SCHEDULED_SYNC_MARK = "◷"
+
 
 type FolderPanelNodeData = FolderRef | str | None
+
+
+def format_countdown(seconds: float) -> str:
+    """Render *seconds* remaining as ``M:SS``, or ``H:MM:SS`` past an hour.
+
+    A sync that is already due (or overdue, because the event loop was
+    busy when the timer fired) reads ``0:00`` rather than a negative
+    number.
+    """
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +175,10 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
     # time/random source) so the syncing indicator is reproducible in tests.
     _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+    # How often the scheduled-sync countdown repaints.  One second is the
+    # resolution the ``M:SS`` display can actually show.
+    _COUNTDOWN_TICK_SECONDS = 1.0
+
     # The right border doubles as the resize handle for this pane.
     DRAG_EDGE = "right"
 
@@ -184,6 +209,11 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
         self._inbox_nodes: list[TreeNode[FolderPanelNodeData]] = []
         self._spinner_timer: Timer | None = None
         self._spinner_index = 0
+        self._syncing = False
+        # ``time.monotonic()`` deadline of the next automatic sync, or None
+        # while no periodic sync is scheduled.
+        self._next_sync_deadline: float | None = None
+        self._countdown_timer: Timer | None = None
 
     def on_mount(self) -> None:
         self.refresh_folders()
@@ -193,25 +223,62 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
         """Show or hide a spinner on the border title while a sync runs.
 
         ``active=True`` starts a ~0.2s timer cycling a fixed spinner-frame
-        tuple by an advancing index; ``active=False`` stops it and restores
-        the plain ``"Folders"`` title.  Idempotent in both directions.
+        tuple by an advancing index; ``active=False`` stops it and falls
+        back to whatever the idle title is — the scheduled-sync countdown
+        if one is armed, the plain ``"Folders"`` otherwise.  Idempotent in
+        both directions.
         """
         if active:
             if self._spinner_timer is not None:
                 return
+            self._syncing = True
             self._spinner_index = 0
-            self._advance_spinner()
+            self._refresh_border_title()
             self._spinner_timer = self.set_interval(0.2, self._advance_spinner)
         else:
             if self._spinner_timer is not None:
                 self._spinner_timer.stop()
                 self._spinner_timer = None
-            self.border_title = "Folders"
+            self._syncing = False
+            self._refresh_border_title()
+
+    def set_next_sync(self, deadline: float) -> None:
+        """Show a live countdown to the next scheduled periodic sync.
+
+        *deadline* is a ``time.monotonic()`` value.  ``MainScreen`` calls
+        this every time it arms the periodic timer and on every tick, so
+        the countdown restarts in step with the schedule it describes.
+        The one-second repaint timer is installed on first use and then
+        left running: once periodic sync is on there is no way to turn it
+        back off, so there is nothing to tear down.
+        """
+        self._next_sync_deadline = deadline
+        if self._countdown_timer is None:
+            self._countdown_timer = self.set_interval(
+                self._COUNTDOWN_TICK_SECONDS, self._refresh_border_title
+            )
+        self._refresh_border_title()
 
     def _advance_spinner(self) -> None:
-        frame = self._SPINNER_FRAMES[self._spinner_index % len(self._SPINNER_FRAMES)]
         self._spinner_index += 1
-        self.border_title = f"Folders {frame} syncing…"
+        self._refresh_border_title()
+
+    def _refresh_border_title(self) -> None:
+        """Compose the border title from the two indicators.
+
+        A sync in flight outranks the countdown: while it runs, when the
+        *next* one is due is not what the user is waiting to read.
+        """
+        if self._syncing:
+            frame = self._SPINNER_FRAMES[
+                self._spinner_index % len(self._SPINNER_FRAMES)
+            ]
+            self.border_title = f"Folders {frame} syncing…"
+        elif self._next_sync_deadline is not None:
+            remaining = format_countdown(self._next_sync_deadline - monotonic())
+            self.border_title = f"Folders {SCHEDULED_SYNC_MARK} {remaining}"
+        else:
+            self.border_title = "Folders"
 
     def _select_first_inbox(self) -> None:
         if self._inbox_nodes:

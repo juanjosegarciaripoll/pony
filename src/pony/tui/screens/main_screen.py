@@ -8,6 +8,7 @@ import dataclasses
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -281,11 +282,25 @@ class MainScreen(Screen[None]):
                 self._background_sync_tick,
                 name="background-sync",
             )
-            return
-        self._background_sync_timer.reset()
+        else:
+            self._background_sync_timer.reset()
+        self._show_next_background_sync()
+
+    def _show_next_background_sync(self) -> None:
+        """Tell the folder panel when the next automatic sync falls due.
+
+        The Textual ``Timer`` does not expose its next firing time, so the
+        deadline is recomputed here from the interval at each of the two
+        points that decide it: arming (or resetting) the timer, and the
+        timer firing.
+        """
+        self.query_one(FolderPanel).set_next_sync(
+            monotonic() + self._config.background_sync_interval_seconds
+        )
 
     def _background_sync_tick(self) -> None:
         """Timer callback: run sync without re-arming/resetting the timer."""
+        self._show_next_background_sync()
         self._start_background_sync(arm_repeat=False)
 
     # ------------------------------------------------------------------

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from email.message import EmailMessage, Message
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -54,7 +55,7 @@ from pony.sync import (
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
 from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.folder_panel import FolderPanel
+from pony.tui.widgets.folder_panel import SCHEDULED_SYNC_MARK, FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
 
@@ -842,7 +843,9 @@ async def test_background_sync_success_summary(
         for _ in range(5):
             await pilot.pause()
         panel = app.screen.query_one(FolderPanel)
-        assert panel.border_title == "Folders"
+        # Spinner gone; ctrl+g armed the repeat, so the countdown takes over.
+        assert "syncing" not in str(panel.border_title)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
 
     assert any("Sync complete." in n and "+3 msgs" in n for n in notifications)
 
@@ -865,7 +868,8 @@ async def test_background_sync_failure_toast(
         for _ in range(5):
             await pilot.pause()
         panel = app.screen.query_one(FolderPanel)
-        assert panel.border_title == "Folders"
+        assert "syncing" not in str(panel.border_title)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
 
     assert any("Background sync failed" in n for n in notifications)
 
@@ -900,7 +904,8 @@ async def test_background_sync_rejects_overlap(
             release.set()
             for _ in range(5):
                 await pilot.pause()
-            assert panel.border_title == "Folders"
+            assert "syncing" not in str(panel.border_title)
+            assert SCHEDULED_SYNC_MARK in str(panel.border_title)
     finally:
         release.set()
 
@@ -1013,12 +1018,121 @@ async def test_folder_panel_set_syncing_toggle() -> None:
         await pilot.pause()
         assert "syncing" in str(panel.border_title)
         assert panel._spinner_timer is not None  # type: ignore[attr-defined]
+        # Each tick of the 0.2s timer moves to the next frame, so the title
+        # changes even though the sync state has not.
+        first = str(panel.border_title)
+        panel._advance_spinner()  # type: ignore[attr-defined]
+        assert str(panel.border_title) != first
+        assert "syncing" in str(panel.border_title)
         # Double-start is a no-op (guarded by the stored handle).
         panel.set_syncing(True)
         panel.set_syncing(False)
         await pilot.pause()
         assert panel.border_title == "Folders"
         assert panel._spinner_timer is None  # type: ignore[attr-defined]
+
+
+async def test_folder_panel_shows_a_countdown_to_the_next_sync() -> None:
+    """set_next_sync puts a clock and a M:SS countdown on the border title."""
+    app, *_ = build_pony_app(label="bg-countdown")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert panel.border_title == "Folders"
+
+        # The half-second margin keeps the truncating formatter off a
+        # boundary, so the rendered string does not depend on how long the
+        # call itself took.
+        panel.set_next_sync(monotonic() + 125.5)
+        assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 2:05"
+        assert panel._countdown_timer is not None  # type: ignore[attr-defined]
+
+        # Re-arming replaces the deadline and reuses the one repaint timer.
+        timer = panel._countdown_timer  # type: ignore[attr-defined]
+        panel.set_next_sync(monotonic() + 600.5)
+        assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 10:00"
+        assert panel._countdown_timer is timer  # type: ignore[attr-defined]
+
+
+async def test_folder_panel_countdown_yields_to_the_sync_spinner() -> None:
+    """A running sync outranks the countdown, which returns when it ends."""
+    app, *_ = build_pony_app(label="bg-countdown-vs-spinner")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        panel.set_next_sync(monotonic() + 300)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
+
+        panel.set_syncing(True)
+        await pilot.pause()
+        assert "syncing" in str(panel.border_title)
+        assert SCHEDULED_SYNC_MARK not in str(panel.border_title)
+
+        panel.set_syncing(False)
+        await pilot.pause()
+        assert "syncing" not in str(panel.border_title)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
+
+
+async def test_countdown_absent_until_a_periodic_sync_is_scheduled() -> None:
+    """Under the default config nothing is scheduled, so no clock is shown."""
+    app, *_ = build_pony_app(label="bg-countdown-absent")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert panel.border_title == "Folders"
+        assert panel._countdown_timer is None  # type: ignore[attr-defined]
+
+
+async def test_enabled_background_sync_shows_the_countdown_at_startup() -> None:
+    """background_sync_enabled arms the timer on mount, so the clock is up."""
+    import dataclasses
+
+    app, cfg, *_ = build_pony_app(label="bg-countdown-startup")
+    app._config = dataclasses.replace(  # type: ignore[attr-defined]
+        cfg, background_sync_enabled=True, background_sync_interval_seconds=900
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(FolderPanel)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
+        # Asserted as a deadline rather than a rendered string: how much of
+        # the interval mount consumed is not something a test can pin.
+        deadline = panel._next_sync_deadline  # type: ignore[attr-defined]
+        assert deadline is not None
+        assert monotonic() + 890 < deadline <= monotonic() + 900
+
+
+async def test_background_sync_tick_restarts_the_countdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each periodic firing pushes the clock back out to a full interval."""
+    import dataclasses
+
+    monkeypatch.setattr(
+        ImapSyncService, "sync", lambda _self, **_kw: _canned_sync_result()
+    )
+    app, cfg, *_ = build_pony_app(label="bg-countdown-tick")
+    app._config = dataclasses.replace(  # type: ignore[attr-defined]
+        cfg, background_sync_enabled=True, background_sync_interval_seconds=900
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main_screen(app)
+        panel = app.screen.query_one(FolderPanel)
+
+        # Pretend the whole interval has already elapsed.
+        panel.set_next_sync(monotonic() - 5)
+        assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 0:00"
+
+        screen._background_sync_tick()  # type: ignore[attr-defined]
+        for _ in range(5):
+            await pilot.pause()
+        deadline = panel._next_sync_deadline  # type: ignore[attr-defined]
+        assert deadline is not None
+        assert monotonic() + 890 < deadline <= monotonic() + 900
+        assert "syncing" not in str(panel.border_title)
+        assert SCHEDULED_SYNC_MARK in str(panel.border_title)
 
 
 def _main_screen(app: PonyApp) -> MainScreen:

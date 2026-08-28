@@ -16,6 +16,7 @@ from pony.tui.widgets.folder_panel import (
     _split_folder_name,
     build_folder_tree,
     format_account_label,
+    format_countdown,
     has_inbox_mail,
 )
 
@@ -344,3 +345,23 @@ async def test_selecting_an_unknown_folder_still_posts_it() -> None:
         await pilot.pause()
 
         assert screen._current_folder_ref == target
+
+
+class FormatCountdownTest(unittest.TestCase):
+    """The scheduled-sync countdown rendering."""
+
+    def test_under_a_minute_shows_zero_minutes(self) -> None:
+        self.assertEqual(format_countdown(7), "0:07")
+
+    def test_minutes_and_seconds_are_zero_padded(self) -> None:
+        self.assertEqual(format_countdown(605), "10:05")
+
+    def test_an_hour_or_more_grows_a_third_field(self) -> None:
+        self.assertEqual(format_countdown(3725), "1:02:05")
+
+    def test_seconds_are_truncated_not_rounded(self) -> None:
+        # A 9.9s remainder must not read 0:10 and then jump back to 0:09.
+        self.assertEqual(format_countdown(9.9), "0:09")
+
+    def test_an_overdue_sync_floors_at_zero(self) -> None:
+        self.assertEqual(format_countdown(-4.2), "0:00")
