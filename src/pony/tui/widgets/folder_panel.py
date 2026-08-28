@@ -24,6 +24,12 @@ ACCOUNT_MAIL_SUFFIX = "✉"
 # double-width in some terminals and would shift the border title.
 SCHEDULED_SYNC_MARK = "◷"
 
+# Granularity of the scheduled-sync countdown: it repaints this often, and
+# is rounded down to the same step so the title never claims precision it
+# has not got.  A per-second repaint of a border title nobody reads to the
+# second is work the event loop does not need to do.
+COUNTDOWN_STEP_SECONDS = 30
+
 
 type FolderPanelNodeData = FolderRef | str | None
 
@@ -31,11 +37,14 @@ type FolderPanelNodeData = FolderRef | str | None
 def format_countdown(seconds: float) -> str:
     """Render *seconds* remaining as ``M:SS``, or ``H:MM:SS`` past an hour.
 
-    A sync that is already due (or overdue, because the event loop was
-    busy when the timer fired) reads ``0:00`` rather than a negative
-    number.
+    Rounded down to ``COUNTDOWN_STEP_SECONDS``, the interval the display
+    repaints at, so a value on screen is never stale in the direction that
+    would overstate the wait.  A sync that is already due (or overdue,
+    because the event loop was busy when the timer fired) reads ``0:00``
+    rather than a negative number.
     """
     total = max(0, int(seconds))
+    total -= total % COUNTDOWN_STEP_SECONDS
     minutes, secs = divmod(total, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
@@ -175,10 +184,6 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
     # time/random source) so the syncing indicator is reproducible in tests.
     _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
-    # How often the scheduled-sync countdown repaints.  One second is the
-    # resolution the ``M:SS`` display can actually show.
-    _COUNTDOWN_TICK_SECONDS = 1.0
-
     # The right border doubles as the resize handle for this pane.
     DRAG_EDGE = "right"
 
@@ -248,14 +253,14 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
         *deadline* is a ``time.monotonic()`` value.  ``MainScreen`` calls
         this every time it arms the periodic timer and on every tick, so
         the countdown restarts in step with the schedule it describes.
-        The one-second repaint timer is installed on first use and then
-        left running: once periodic sync is on there is no way to turn it
+        The repaint timer is installed on first use and then left
+        running: once periodic sync is on there is no way to turn it
         back off, so there is nothing to tear down.
         """
         self._next_sync_deadline = deadline
         if self._countdown_timer is None:
             self._countdown_timer = self.set_interval(
-                self._COUNTDOWN_TICK_SECONDS, self._refresh_border_title
+                COUNTDOWN_STEP_SECONDS, self._refresh_border_title
             )
         self._refresh_border_title()
 

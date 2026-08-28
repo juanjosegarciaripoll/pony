@@ -227,9 +227,11 @@ spinner on the `FolderPanel` border title; it can also run on a config-gated
 periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
 The same border title carries the schedule: once a periodic sync is armed —
 by the config gate at mount, or by `ctrl+g`, which arms repeats — the panel
-shows a clock and a live countdown to the next run (`Folders ◷ 9:32`).
-`MainScreen` recomputes the deadline whenever it arms the timer and on every
-tick, because a Textual `Timer` does not expose its next firing time. A sync
+shows a clock and a live countdown to the next run (`Folders ◷ 9:30`). The
+countdown repaints every 30 s and is rounded down to the same step, so the
+title never shows precision it has not got. `MainScreen` recomputes the
+deadline whenever it arms the timer and on every tick, because a Textual
+`Timer` does not expose its next firing time. A sync
 in flight outranks the countdown, so the spinner replaces it and it returns
 when the sync ends.
 `MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and

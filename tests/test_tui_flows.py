@@ -1040,11 +1040,10 @@ async def test_folder_panel_shows_a_countdown_to_the_next_sync() -> None:
         panel = app.screen.query_one(FolderPanel)
         assert panel.border_title == "Folders"
 
-        # The half-second margin keeps the truncating formatter off a
-        # boundary, so the rendered string does not depend on how long the
-        # call itself took.
-        panel.set_next_sync(monotonic() + 125.5)
-        assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 2:05"
+        # The half-second margin keeps the rounding off a step boundary, so
+        # the rendered string does not depend on how long the call took.
+        panel.set_next_sync(monotonic() + 150.5)
+        assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 2:30"
         assert panel._countdown_timer is not None  # type: ignore[attr-defined]
 
         # Re-arming replaces the deadline and reuses the one repaint timer.

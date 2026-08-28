@@ -12,6 +12,7 @@ import unittest
 
 from pony.domain import FolderRef
 from pony.tui.widgets.folder_panel import (
+    COUNTDOWN_STEP_SECONDS,
     FolderTreeNode,
     _split_folder_name,
     build_folder_tree,
@@ -348,20 +349,30 @@ async def test_selecting_an_unknown_folder_still_posts_it() -> None:
 
 
 class FormatCountdownTest(unittest.TestCase):
-    """The scheduled-sync countdown rendering."""
+    """The scheduled-sync countdown rendering.
 
-    def test_under_a_minute_shows_zero_minutes(self) -> None:
-        self.assertEqual(format_countdown(7), "0:07")
+    The display is rounded down to ``COUNTDOWN_STEP_SECONDS`` because that
+    is how often it repaints; a finer format would be stale between ticks.
+    """
 
-    def test_minutes_and_seconds_are_zero_padded(self) -> None:
-        self.assertEqual(format_countdown(605), "10:05")
+    def test_a_whole_step_shows_seconds(self) -> None:
+        self.assertEqual(format_countdown(COUNTDOWN_STEP_SECONDS), "0:30")
+
+    def test_under_one_step_floors_to_zero(self) -> None:
+        self.assertEqual(format_countdown(COUNTDOWN_STEP_SECONDS - 1), "0:00")
+
+    def test_a_part_step_is_rounded_down(self) -> None:
+        self.assertEqual(format_countdown(605), "10:00")
+        self.assertEqual(format_countdown(629), "10:00")
+        self.assertEqual(format_countdown(630), "10:30")
 
     def test_an_hour_or_more_grows_a_third_field(self) -> None:
-        self.assertEqual(format_countdown(3725), "1:02:05")
+        self.assertEqual(format_countdown(3725), "1:02:00")
+        self.assertEqual(format_countdown(3630), "1:00:30")
 
-    def test_seconds_are_truncated_not_rounded(self) -> None:
-        # A 9.9s remainder must not read 0:10 and then jump back to 0:09.
-        self.assertEqual(format_countdown(9.9), "0:09")
+    def test_rounding_never_overstates_the_wait(self) -> None:
+        # 9:59 must not read 10:00 and then appear to go backwards.
+        self.assertEqual(format_countdown(599.9), "9:30")
 
     def test_an_overdue_sync_floors_at_zero(self) -> None:
         self.assertEqual(format_countdown(-4.2), "0:00")

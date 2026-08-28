@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **A countdown to the next scheduled sync**: when periodic background sync is
   armed — by `background_sync_enabled` at startup, or by `ctrl+g`, which arms
   repeats — the folder panel's border title carries a clock and the time
-  remaining (`Folders ◷ 9:32`). Previously nothing distinguished "syncing is
-  scheduled and quiet" from "syncing is not configured at all". A sync in
+  remaining (`Folders ◷ 9:30`), to the nearest 30 seconds. Previously nothing
+  distinguished "syncing is scheduled and quiet" from "syncing is not
+  configured at all". A sync in
   flight still takes the title over with its spinner; the countdown returns
   when it finishes.
 
