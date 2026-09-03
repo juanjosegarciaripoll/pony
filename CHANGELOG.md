@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 ### Added
 
+- **Sent folders list recipients, not senders**: the message list's From column
+  becomes a To column in a Sent folder, where the sender is the user on every
+  row and only the recipient tells the messages apart. The folder is recognised
+  from the account's `sent_folder` setting when it is configured, and otherwise
+  by name — `Sent`, `Enviados`, `Envoyés`, `Gesendet` and the other localised
+  names servers use, matched without regard to case or accents. Search results
+  span folders and keep showing the sender.
+
 - **A countdown to the next scheduled sync**: when periodic background sync is
   armed — by `background_sync_enabled` at startup, or by `ctrl+g`, which arms
   repeats — the folder panel's border title carries a clock and the time

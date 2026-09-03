@@ -433,8 +433,8 @@ class FolderMessageSummary:
     """Narrow projection of ``IndexedMessage`` for the folder list view.
 
     The TUI message-list panel only reads a handful of fields per row
-    (sender, subject, received_at, has_attachments, local_flags,
-    local_status, plus identity fields).  Loading a full
+    (sender or recipients, subject, received_at, has_attachments,
+    local_flags, local_status, plus identity fields).  Loading a full
     ``IndexedMessage`` for 10k+ row folders was the bottleneck on open:
     every row paid datetime parsing for three timestamp columns and
     frozenset construction for three flag columns it never displayed.
@@ -446,6 +446,7 @@ class FolderMessageSummary:
     message_id: str
     storage_key: str
     sender: str
+    recipients: str
     subject: str
     received_at: datetime
     has_attachments: bool

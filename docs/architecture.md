@@ -238,6 +238,15 @@ when the sync ends.
 streams rows back to the UI thread in batches, so opening a 10k-row folder
 never freezes the event loop.
 
+The correspondent column shows the sender, except in a Sent folder, where it
+shows the recipients: there the sender is the user on every row, and the To
+address is the only thing that tells the rows apart. `MainScreen` decides
+which, from the account's `sent_folder` setting when it is configured and
+otherwise from `folder_utils.is_sent_folder`, which matches the last path
+segment against the names servers localise the folder into (`Sent`,
+`Enviados`, `Envoyés`, `Gesendet`, …) case- and diacritic-insensitively.
+Search results span folders and always show the sender.
+
 `tui/terminal.py` updates the host terminal title via OSC 2 and restores it on
 exit. `tui/bindings.py` holds the mark/motion `Binding` tuples shared by the
 message list and the contact browser. `tui/ui_state.py` persists pane sizes to

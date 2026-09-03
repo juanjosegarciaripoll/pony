@@ -32,10 +32,13 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     """Single-column list of messages for the currently selected folder.
 
     The whole row is rendered as one pre-formatted line:
-    ``<icon> <date> <from> <subject>`` with fixed-width icon, date, and
-    from fields.  Seen rows are returned as plain ``str`` and inherit
-    the widget's ``text-style: dim`` from CSS — the cheap path, since
-    read messages dominate.  Unseen rows allocate one ``Text`` styled
+    ``<icon> <date> <who> <subject>`` with fixed-width icon, date, and
+    correspondent fields.  ``<who>`` is the sender, except in a Sent
+    folder, where every message is from the user and the recipient is
+    the only thing that tells one row from another.  Seen rows are
+    returned as plain ``str`` and inherit the widget's
+    ``text-style: dim`` from CSS — the cheap path, since read messages
+    dominate.  Unseen rows allocate one ``Text`` styled
     ``not dim`` so they render at full brightness.  Posts
     ``MessageListPanel.MessageSelected`` when a row is *activated*
     (Enter or click) — never when the cursor merely moves over it.
@@ -88,8 +91,11 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self._summaries: list[FolderMessageSummary] = []
         self._marked: set[str] = set()  # str(message_ref.id)
         self._in_search: bool = False
+        # True while showing a Sent folder, where the column holds the
+        # recipients rather than the sender.
+        self._show_recipients: bool = False
         self._row_col_key: ColumnKey | None = None
-        self._from_width_cached: int = 0
+        self._who_width_cached: int = 0
         # Keys whose row has actually been added to the DataTable.
         # Populated incrementally by the streaming load worker.
         self._loaded_keys: set[str] = set()
@@ -103,16 +109,17 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self._from_width_cached = self._from_width()
+        self._who_width_cached = self._who_width()
         self._row_col_key = self.add_column(self._header_text(), key="row")
 
-    def _from_width(self) -> int:
-        """Fixed width for the From field — capped at 25% of table width."""
+    def _who_width(self) -> int:
+        """Fixed width for the From/To field — capped at 25% of table width."""
         return max(10, min(40, max(20, self.size.width) // 4))
 
     def _header_text(self) -> str:
-        from_w = self._from_width_cached
-        return f"  {'Date':<{_DATE_WIDTH}} {'From':<{from_w}} Subject"
+        who_w = self._who_width_cached
+        label = "To" if self._show_recipients else "From"
+        return f"  {'Date':<{_DATE_WIDTH}} {label:<{who_w}} Subject"
 
     def _icon_for(self, summary: FolderMessageSummary) -> str:
         if self._marked and str(summary.message_ref.id) in self._marked:
@@ -120,15 +127,15 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         return _icon_column(summary)
 
     def _cell_for(self, summary: FolderMessageSummary) -> Text:
-        from_w = self._from_width_cached
+        who_w = self._who_width_cached
         icon = self._icon_for(summary)
         date = _format_date(summary.received_at)
-        sender = summary.sender
+        who = summary.recipients if self._show_recipients else summary.sender
         subject = summary.subject or "(no subject)"
         line = (
             f"{icon} "
             f"{date:<{_DATE_WIDTH}.{_DATE_WIDTH}} "
-            f"{sender:<{from_w}.{from_w}} "
+            f"{who:<{who_w}.{who_w}} "
             f"{subject}"
         )
         if MessageFlag.SEEN in summary.local_flags:
@@ -149,12 +156,41 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
             value=self._cell_for(summary),
         )
 
+    def _set_correspondent_column(self, show_recipients: bool) -> None:
+        """Switch the correspondent column between sender and recipients.
+
+        The choice is baked into both the header label and every
+        rendered row, so a change repaints what is already on screen.
+        Callers that clear the table first pay nothing for the repaint —
+        ``_update_row`` skips rows that have not been inserted yet.
+        """
+        if show_recipients == self._show_recipients:
+            return
+        self._show_recipients = show_recipients
+        self._repaint_header()
+
+    def _repaint_header(self) -> None:
+        """Rewrite the column label and re-render every row under it.
+
+        Each row is one pre-formatted string, so anything that changes
+        the header — the field width, or which correspondent it names —
+        has to re-render the rows to keep the columns lined up.  Both
+        callers can fire before ``on_mount`` has added the column, and
+        there is nothing to repaint until it exists.
+        """
+        if self._row_col_key is None:
+            return
+        self.columns[self._row_col_key].label = Text(self._header_text())
+        for summary in self._summaries:
+            self._update_row(summary)
+
     def load_folder(
         self,
         folder_ref: FolderRef,
         *,
         restore_row: int | None = None,
         restore_key: str | None = None,
+        show_recipients: bool = False,
     ) -> None:
         """Replace the table contents with messages from *folder_ref*.
 
@@ -175,12 +211,17 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         ``clear()`` resets the cursor and the replacement rows arrive
         later from the worker, so neither can be done by moving the
         cursor once this returns — there is nothing to move it to yet.
+
+        *show_recipients* asks for the To column instead of the From
+        column; the screen sets it for a Sent folder, where the sender
+        is the user on every row.
         """
         self._in_search = False
         self._marked.clear()
         self.border_title = "Messages"
         self.clear()
         self._loaded_keys.clear()
+        self._set_correspondent_column(show_recipients)
         summaries = list(self._index.list_folder_message_summaries(folder=folder_ref))
         self._summaries = summaries
         self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
@@ -221,6 +262,10 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self.border_title = f"Search: {query_raw}  [q=exit]"
         self.clear()
         self._loaded_keys.clear()
+        # Results span folders, so there is no single answer to whether
+        # the user is the sender; From is the column that always means
+        # something.
+        self._set_correspondent_column(False)
         msgs = list(messages)
         msgs.sort(key=lambda m: m.received_at, reverse=True)
         summaries = [_summary_from_indexed(m) for m in msgs]
@@ -370,21 +415,12 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self.border_title = "Messages"
 
     def on_resize(self) -> None:
-        """Re-format header and rows when the From-field width changes.
-
-        Each row is a single pre-formatted string, so a width change
-        means re-rendering every cell to keep columns aligned.
-        """
-        if self._row_col_key is None:
+        """Re-format header and rows when the correspondent width changes."""
+        new_width = self._who_width()
+        if new_width == self._who_width_cached:
             return
-        new_width = self._from_width()
-        if new_width == self._from_width_cached:
-            return
-        self._from_width_cached = new_width
-        col = self.columns[self._row_col_key]
-        col.label = Text(self._header_text())
-        for summary in self._summaries:
-            self._update_row(summary)
+        self._who_width_cached = new_width
+        self._repaint_header()
 
     def move_cursor_by(self, delta: int) -> FolderMessageSummary | None:
         """Move the row cursor by *delta* (±1) and return the new summary."""
@@ -461,6 +497,7 @@ def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
         message_id=msg.message_id,
         storage_key=msg.storage_key,
         sender=msg.sender,
+        recipients=msg.recipients,
         subject=msg.subject,
         received_at=msg.received_at,
         has_attachments=msg.has_attachments,

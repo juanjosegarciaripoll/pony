@@ -808,14 +808,14 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         See ``FolderMessageSummary`` for the motivation: the full
         ``list_folder_messages`` path materialises three datetime
         parses and three flag-set constructions per row — wasted work
-        when the list only wants sender, subject, received_at and a
-        handful of booleans.  This path selects only those columns
+        when the list only wants the correspondent, subject,
+        received_at and a handful of booleans.  This path selects only those columns
         and skips the unused parses, and pushes ``local_status`` and
         ``received_at`` ordering into SQL so callers don't re-sort.
         """
         sql = (
             "SELECT id, account_name, folder_name, message_id, "
-            "storage_key, sender, subject, received_at, "
+            "storage_key, sender, recipients, subject, received_at, "
             "has_attachments, local_flags, local_status "
             "FROM messages WHERE account_name = ? AND folder_name = ?"
         )
@@ -2026,8 +2026,8 @@ def _slow_path_row_from_projection(
 def _summary_from_row(row: sqlite3.Row) -> FolderMessageSummary:
     # Column order (matches list_folder_message_summaries SELECT):
     #  0 id  1 account_name  2 folder_name  3 message_id
-    #  4 storage_key  5 sender  6 subject  7 received_at
-    #  8 has_attachments  9 local_flags  10 local_status
+    #  4 storage_key  5 sender  6 recipients  7 subject  8 received_at
+    #  9 has_attachments  10 local_flags  11 local_status
     return FolderMessageSummary(
         message_ref=MessageRef(
             account_name=str(row[1]),
@@ -2037,11 +2037,12 @@ def _summary_from_row(row: sqlite3.Row) -> FolderMessageSummary:
         message_id=str(row[3]),
         storage_key=str(row[4]),
         sender=str(row[5]),
-        subject=str(row[6]),
-        received_at=datetime.fromisoformat(str(row[7])).astimezone(UTC),
-        has_attachments=bool(row[8]),
-        local_flags=_flags_from_csv(str(row[9])),
-        local_status=MessageStatus(str(row[10])),
+        recipients=str(row[6]),
+        subject=str(row[7]),
+        received_at=datetime.fromisoformat(str(row[8])).astimezone(UTC),
+        has_attachments=bool(row[9]),
+        local_flags=_flags_from_csv(str(row[10])),
+        local_status=MessageStatus(str(row[11])),
     )
 
 

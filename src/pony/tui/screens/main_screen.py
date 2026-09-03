@@ -39,6 +39,7 @@ from ...domain import (
     MessageFlag,
     MessageStatus,
 )
+from ...folder_utils import is_sent_folder
 from ...mailbox_ops import flush_mirror, landed_in_folder, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
@@ -318,7 +319,10 @@ class MainScreen(Screen[None]):
         view = self.query_one(MessageViewPanel)
         view.clear()
         view.display = False
-        self.query_one(MessageListPanel).load_folder(event.folder_ref)
+        self.query_one(MessageListPanel).load_folder(
+            event.folder_ref,
+            show_recipients=self._in_sent_folder(event.folder_ref),
+        )
         self.query_one(MessageListPanel).focus()
 
     def _has_inbox_mail(self) -> bool:
@@ -480,7 +484,10 @@ class MainScreen(Screen[None]):
         msg_list = self.query_one(MessageListPanel)
         msg_list.exit_search()
         if self._current_folder_ref is not None:
-            msg_list.load_folder(self._current_folder_ref)
+            msg_list.load_folder(
+                self._current_folder_ref,
+                show_recipients=self._in_sent_folder(self._current_folder_ref),
+            )
 
     # ------------------------------------------------------------------
     # Sync
@@ -780,6 +787,22 @@ class MainScreen(Screen[None]):
     # Contextual action gating
     # ------------------------------------------------------------------
 
+    def _in_sent_folder(self, folder_ref: FolderRef) -> bool:
+        """True when *folder_ref* holds the user's own outgoing mail.
+
+        The account's ``sent_folder`` setting decides it when configured;
+        otherwise the name is matched against the ones servers localise
+        the folder into, so ``Enviados`` is recognised as readily as
+        ``Sent``.
+        """
+        account = next(
+            (a for a in self._config.accounts if a.name == folder_ref.account_name),
+            None,
+        )
+        if account is not None and account.sent_folder:
+            return folder_ref.folder_name == account.sent_folder
+        return is_sent_folder(folder_ref.folder_name)
+
     def _in_drafts_folder(self) -> bool:
         from ...folder_utils import find_folder
 
@@ -841,6 +864,7 @@ class MainScreen(Screen[None]):
             folder_ref,
             restore_row=msg_list.effective_cursor_row,
             restore_key=None if summary is None else str(summary.message_ref.id),
+            show_recipients=self._in_sent_folder(folder_ref),
         )
 
     def _reload_folder(self, folder_ref: FolderRef) -> None:

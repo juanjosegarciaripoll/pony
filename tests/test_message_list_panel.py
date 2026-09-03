@@ -283,12 +283,12 @@ async def test_resizing_rerenders_every_row_at_the_new_width() -> None:
         await _boot(pilot)
         panel = _panel(app)
         await pilot.pause()
-        wide = panel._from_width_cached  # noqa: SLF001
+        wide = panel._who_width_cached  # noqa: SLF001
 
         await pilot.resize_terminal(60, 30)
         await pilot.pause()
 
-        narrow = panel._from_width_cached  # noqa: SLF001
+        narrow = panel._who_width_cached  # noqa: SLF001
         assert narrow < wide
         assert panel.row_count == 3
 
@@ -301,6 +301,8 @@ async def test_resize_before_mount_completes_is_a_noop() -> None:
         await pilot.pause()
         panel = _panel(app)
         panel._row_col_key = None  # noqa: SLF001
+        # A width change is what gets the repaint as far as the column.
+        panel._who_width_cached = 0  # noqa: SLF001
         panel.on_resize()
         await pilot.pause()
 
@@ -358,6 +360,7 @@ def test_marked_rows_render_a_star_icon() -> None:
             message_id="<icon@example.com>",
             storage_key="key",
             sender="sender@example.com",
+            recipients="me@example.com",
             subject="Icon probe",
             received_at=datetime(2026, 4, 17, 12, tzinfo=UTC),
             has_attachments=has_attachments,
@@ -528,6 +531,7 @@ def _restore_target(
                 account_name="acct", folder_name="INBOX", id=message_id
             ),
             sender="a@example.com",
+            recipients="me@example.com",
             subject=f"subject {message_id}",
             received_at=datetime(2026, 4, 17, tzinfo=UTC),
             has_attachments=False,
@@ -635,3 +639,173 @@ async def test_a_sync_refresh_keeps_the_cursor_on_its_message() -> None:
         assert after.message_ref.id == before.message_ref.id
         # It is the same message, so the row only moved if the list did.
         assert panel.effective_cursor_row >= before_row
+
+
+# ---------------------------------------------------------------------------
+# Sent folders
+#
+# Every message in a Sent folder is from the user, so a From column there
+# repeats one address down the whole list.  The recipient is what tells
+# the rows apart, so that is what the column shows.
+# ---------------------------------------------------------------------------
+
+_SENT = FolderRef(account_name="acct", folder_name="Enviados")
+
+
+def _outgoing_message(to: str, subject: str) -> bytes:
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "me@example.com"
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    msg["Message-ID"] = f"<{subject.replace(' ', '-')}@example.com>"
+    msg.set_content(f"Body of {subject}.")
+    return msg.as_bytes()
+
+
+def _row_text(panel: MessageListPanel, row: int) -> str:
+    from rich.text import Text
+
+    cell = panel.get_row_at(row)[0]
+    return cell.plain if isinstance(cell, Text) else str(cell)
+
+
+def _header_text(panel: MessageListPanel) -> str:
+    from rich.text import Text
+
+    assert panel._row_col_key is not None  # noqa: SLF001
+    label = panel.columns[panel._row_col_key].label  # noqa: SLF001
+    return label.plain if isinstance(label, Text) else str(label)
+
+
+async def test_selecting_a_sent_folder_lists_recipients() -> None:
+    """A localised Sent folder shows To, and the rows follow the header."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="mlist-sent",
+        seed=[
+            (_INBOX, _dated_message("inbound")),
+            (_SENT, _outgoing_message("alice@example.com", "outbound")),
+        ],
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        assert "From" in _header_text(panel)
+        assert "sender@example.com" in _row_text(panel, 0)
+
+        _main(app).on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=_SENT)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert "To" in _header_text(panel)
+        assert "From" not in _header_text(panel)
+        assert "alice@example.com" in _row_text(panel, 0)
+        assert "me@example.com" not in _row_text(panel, 0)
+
+
+async def test_leaving_a_sent_folder_restores_the_from_column() -> None:
+    """The column follows the folder, both on the way in and on the way out."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="mlist-sent-back",
+        seed=[
+            (_INBOX, _dated_message("inbound")),
+            (_SENT, _outgoing_message("alice@example.com", "outbound")),
+        ],
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        screen = _main(app)
+        panel = _panel(app)
+        screen.on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=_SENT)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert "To" in _header_text(panel)
+
+        screen.on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=_INBOX)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert "From" in _header_text(panel)
+        assert "sender@example.com" in _row_text(panel, 0)
+
+
+async def test_a_configured_sent_folder_overrides_the_name_match() -> None:
+    """``sent_folder`` decides it when set, whatever the folder is called."""
+    import dataclasses
+
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    archive = FolderRef(account_name="acct", folder_name="Outgoing")
+    app, cfg, _paths, _index, _mirrors = build_pony_app(
+        label="mlist-sent-config",
+        seed=[
+            (_SENT, _outgoing_message("alice@example.com", "outbound")),
+            (archive, _outgoing_message("bob@example.com", "archived")),
+        ],
+    )
+    accounts = [dataclasses.replace(cfg.accounts[0], sent_folder="Outgoing")]
+    app._config = dataclasses.replace(cfg, accounts=accounts)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        screen = _main(app)
+        screen._config = app._config
+        panel = _panel(app)
+
+        # The override names "Outgoing", so "Enviados" is an ordinary folder.
+        screen.on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=_SENT)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert "From" in _header_text(panel)
+
+        screen.on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=archive)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert "To" in _header_text(panel)
+        assert "bob@example.com" in _row_text(panel, 0)
+
+
+async def test_search_results_show_senders_even_from_a_sent_folder() -> None:
+    """Results span folders, so From is the column that always means something."""
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="mlist-sent-search",
+        seed=[(_SENT, _outgoing_message("alice@example.com", "outbound"))],
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        _main(app).on_folder_panel_folder_selected(
+            FolderPanel.FolderSelected(folder_ref=_SENT)
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert "To" in _header_text(panel)
+
+        results = list(index.list_folder_messages(folder=_SENT))
+        panel.load_search_results(results, "outbound")
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert "From" in _header_text(panel)
+        assert "me@example.com" in _row_text(panel, 0)
