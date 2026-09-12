@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`q` in search results closes the open message first**: with a search hit
+  open in the reader and the message list focused, `q` or `escape` left
+  search and reloaded the folder but kept the reader open, so the reader
+  could only be closed by leaving search. The first press now closes the
+  reader and keeps the results; a second press leaves search.
+
 - **Sync no longer marks incoming mail as read**: bodies were downloaded with
   `FETCH RFC822`, which RFC 3501 §6.4.5 defines as `BODY[]` — a non-peeking
   body fetch, so the server set `\Seen` as a side effect of the download. The

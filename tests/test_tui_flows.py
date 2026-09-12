@@ -1812,6 +1812,10 @@ async def test_message_list_empty_search_can_exit() -> None:
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
+        # _select_first_inbox leaves the reader open and focused; close it
+        # so the q below exits search rather than closing the reader.
+        await pilot.press("q")
+        await pilot.pause()
         panel = app.screen.query_one(MessageListPanel)
         panel.load_search_results([], "fictional query")
         await pilot.pause()
@@ -1824,6 +1828,37 @@ async def test_message_list_empty_search_can_exit() -> None:
         assert panel._in_search is False
         assert panel.border_title == "Messages"
         assert len(panel._summaries) == 1
+
+
+async def test_search_q_from_list_closes_the_reader_before_exiting() -> None:
+    """With a hit open and the list focused, q closes the reader first."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="ml-search-close-reader",
+        seed=[(folder, _custom_plain("only message"))],
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        panel = app.screen.query_one(MessageListPanel)
+        view = app.screen.query_one(MessageViewPanel)
+        panel.load_search_results(list(index.list_folder_messages(folder=folder)), "x")
+        await panel.wait_for_load_complete()
+        panel.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert view.display
+
+        panel.focus()
+        await pilot.press("q")
+        await pilot.pause()
+        assert not view.display
+        assert panel._in_search is True
+        assert app.focused is panel
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert panel._in_search is False
+        assert panel.border_title == "Messages"
 
 
 async def test_main_screen_address_and_link_actions() -> None:

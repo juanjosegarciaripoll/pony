@@ -369,6 +369,9 @@ class MainScreen(Screen[None]):
         self, event: MessageViewPanel.CloseRequested
     ) -> None:
         event.stop()
+        self._close_reader()
+
+    def _close_reader(self) -> None:
         view = self.query_one(MessageViewPanel)
         view.display = False
         view.clear()
@@ -461,12 +464,23 @@ class MainScreen(Screen[None]):
         view.load_message(summary, mirror)
         self._mark_seen(summary)
 
-    def on_message_list_panel_search_exited(
-        self, event: MessageListPanel.SearchExited
+    def on_message_list_panel_search_exit_requested(
+        self, event: MessageListPanel.SearchExitRequested
     ) -> None:
+        """Close the reader if one is open, otherwise leave search.
+
+        Focus can sit on the list while a search hit is open in the
+        reader, and leaving search there would strand the reader with no
+        way to close it short of refocusing it.
+        """
         event.stop()
+        if self.query_one(MessageViewPanel).display:
+            self._close_reader()
+            return
+        msg_list = self.query_one(MessageListPanel)
+        msg_list.exit_search()
         if self._current_folder_ref is not None:
-            self.query_one(MessageListPanel).load_folder(self._current_folder_ref)
+            msg_list.load_folder(self._current_folder_ref)
 
     # ------------------------------------------------------------------
     # Sync

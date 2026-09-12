@@ -202,6 +202,8 @@ selected folder if a folder is highlighted, or account-wide if an account
 node is selected.
 
 Press ++q++ in the message list to exit search and reload the original folder.
+If a result is open in the reader, the first ++q++ closes it and keeps the
+results; press it again to exit search.
 
 ### Query syntax
 

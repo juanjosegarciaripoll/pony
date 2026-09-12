@@ -77,8 +77,8 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         summary: FolderMessageSummary
 
     @dataclass
-    class SearchExited(Message):
-        """Posted when the user exits search-results mode."""
+    class SearchExitRequested(Message):
+        """Posted when the user presses q or escape in search-results mode."""
 
     _LOAD_BATCH = 200
 
@@ -347,7 +347,11 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self.update_summary(_summary_from_indexed(updated))
 
     def on_key(self, event: object) -> None:
-        """Exit search mode when q or escape is pressed."""
+        """Ask the screen to back out of search when q or escape is pressed.
+
+        The screen decides what backing out means: an open reader is
+        closed first, and only a press with no reader open leaves search.
+        """
         from textual.events import Key
 
         if not isinstance(event, Key):
@@ -357,14 +361,13 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         if event.key in ("q", "escape"):
             event.prevent_default()
             event.stop()
-            self.action_exit_search()
+            self.post_message(self.SearchExitRequested())
 
-    def action_exit_search(self) -> None:
-        """Post SearchExited to let the screen reload the current folder."""
+    def exit_search(self) -> None:
+        """Drop search-results mode; the caller reloads the folder."""
         self._in_search = False
         self._marked.clear()
         self.border_title = "Messages"
-        self.post_message(self.SearchExited())
 
     def on_resize(self) -> None:
         """Re-format header and rows when the From-field width changes.
