@@ -5,7 +5,9 @@ description = "Pony Express standalone mail user agent"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "imapclient>=3.0.0",
+    # 4.x post-filters fetch() responses through to_ints(), which rejects
+    # the IMAP sequence-set strings ("1:*") imap_client.py sends.
+    "imapclient>=3.0.0,<4",
     "markdown-it-py>=3.0.0",
     "textual>=8.2.3",
     "tinymcp",

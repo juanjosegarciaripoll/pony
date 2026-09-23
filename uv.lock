@@ -648,7 +648,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "imapclient", specifier = ">=3.0.0" },
+    { name = "imapclient", specifier = ">=3.0.0,<4" },
     { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "textual", specifier = ">=8.2.3" },
     { name = "tinymcp", git = "https://github.com/juanjosegarciaripoll/tinymcp.git" },
