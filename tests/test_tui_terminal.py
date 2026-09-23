@@ -5,6 +5,7 @@ import sys
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from textual.app import App, SuspendNotSupported
@@ -170,40 +171,60 @@ class TestResolveViewerCommand(unittest.TestCase):
 class TestLaunchFile(unittest.TestCase):
     """launch_file dispatches to the configured viewer or the OS default."""
 
-    def test_configured_command_receives_the_path_last(self) -> None:
-        from pathlib import Path
+    # A relative path: ``str()`` renders it identically on every platform,
+    # so the expected argv does not depend on the runner's separator.
+    PATH = Path("invite.ics")
 
+    def test_configured_command_receives_the_path_last(self) -> None:
         from pony.tui.terminal import launch_file
 
         with patch("pony.tui.terminal.subprocess.run") as run:
-            launch_file(Path("/tmp/invite.ics"), ("chronos", "import"))
+            launch_file(self.PATH, ("chronos", "import"))
 
-        run.assert_called_once_with(
-            ["chronos", "import", "/tmp/invite.ics"], check=False
-        )
+        run.assert_called_once_with(["chronos", "import", str(self.PATH)], check=False)
+
+    def test_windows_uses_startfile_and_never_xdg_open(self) -> None:
+        from pony.tui.terminal import launch_file
+
+        with (
+            patch("pony.tui.terminal.sys.platform", "win32"),
+            patch("pony.tui.terminal.os.startfile", create=True) as startfile,
+            patch("pony.tui.terminal.subprocess.run") as run,
+        ):
+            launch_file(self.PATH)
+
+        startfile.assert_called_once_with(self.PATH)
+        run.assert_not_called()
+
+    def test_macos_uses_open(self) -> None:
+        from pony.tui.terminal import launch_file
+
+        with (
+            patch("pony.tui.terminal.sys.platform", "darwin"),
+            patch("pony.tui.terminal.subprocess.run") as run,
+        ):
+            launch_file(self.PATH)
+
+        run.assert_called_once_with(["open", str(self.PATH)], check=False)
+
+    def test_other_platforms_use_xdg_open(self) -> None:
+        from pony.tui.terminal import launch_file
+
+        with (
+            patch("pony.tui.terminal.sys.platform", "linux"),
+            patch("pony.tui.terminal.subprocess.run") as run,
+        ):
+            launch_file(self.PATH)
+
+        run.assert_called_once_with(["xdg-open", str(self.PATH)], check=False)
 
     def test_empty_command_falls_back_to_the_os_default(self) -> None:
-        from pathlib import Path
-
         from pony.tui.terminal import launch_file
 
         with (
             patch("pony.tui.terminal.sys.platform", "linux"),
             patch("pony.tui.terminal.subprocess.run") as run,
         ):
-            launch_file(Path("/tmp/invite.ics"), ())
+            launch_file(self.PATH, ())
 
-        run.assert_called_once_with(["xdg-open", "/tmp/invite.ics"], check=False)
-
-    def test_no_command_uses_the_os_default(self) -> None:
-        from pathlib import Path
-
-        from pony.tui.terminal import launch_file
-
-        with (
-            patch("pony.tui.terminal.sys.platform", "linux"),
-            patch("pony.tui.terminal.subprocess.run") as run,
-        ):
-            launch_file(Path("/tmp/report.pdf"))
-
-        run.assert_called_once_with(["xdg-open", "/tmp/report.pdf"], check=False)
+        run.assert_called_once_with(["xdg-open", str(self.PATH)], check=False)
