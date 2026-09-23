@@ -29,6 +29,7 @@ from .domain import (
     MirrorConfig,
     MirrorFormat,
     SmtpConfig,
+    ViewerRule,
 )
 from .domain import (
     AppConfig as AppConfig,  # explicit re-export
@@ -130,6 +131,7 @@ def _parse_app_config(raw: object) -> AppConfig:
     )
     if smtp_connect_timeout_seconds <= 0:
         raise ConfigError("'smtp_connect_timeout_seconds' must be positive")
+    viewers = _parse_viewers(data)
     return AppConfig(
         accounts=accounts,
         use_utf8=use_utf8,
@@ -142,7 +144,47 @@ def _parse_app_config(raw: object) -> AppConfig:
         background_sync_interval_seconds=background_sync_interval_seconds,
         imap_connect_timeout_seconds=imap_connect_timeout_seconds,
         smtp_connect_timeout_seconds=smtp_connect_timeout_seconds,
+        viewers=viewers,
     )
+
+
+def _parse_viewers(data: dict[str, object]) -> tuple[ViewerRule, ...]:
+    """Parse the optional ``[viewers]`` table into content-type rules.
+
+    Each key is a MIME type and each value the argv of the program that
+    opens it; the attachment path is appended when the viewer runs.
+    """
+    raw = data.get("viewers")
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ConfigError("'viewers' must be a table of content-type = command")
+    rules: list[ViewerRule] = []
+    seen: set[str] = set()
+    for key, value in cast("dict[str, object]", raw).items():
+        content_type = key.strip().lower()
+        if "/" not in content_type:
+            raise ConfigError(
+                f"viewers key {key!r} must be a MIME type such as 'text/calendar'"
+            )
+        if content_type in seen:
+            raise ConfigError(f"viewers has a duplicate entry for {content_type!r}")
+        seen.add(content_type)
+        if not isinstance(value, list):
+            raise ConfigError(f"viewers[{key!r}] must be a list of strings")
+        items = cast("list[object]", value)
+        if not items:
+            raise ConfigError(f"viewers[{key!r}] must name a program to run")
+        for i, item in enumerate(items):
+            if not isinstance(item, str) or not item:
+                raise ConfigError(f"viewers[{key!r}][{i}] must be a non-empty string")
+        rules.append(
+            ViewerRule(
+                content_type=content_type,
+                command=tuple(cast("list[str]", items)),
+            )
+        )
+    return tuple(rules)
 
 
 def _parse_any_account(raw: object) -> AnyAccount:

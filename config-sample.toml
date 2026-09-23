@@ -30,6 +30,9 @@
 #                      (O / S keys) land.  Created on demand.  Same path
 #                      expansion rules as bbdb_path.  Default: ~/Downloads.
 #                      Example: downloads_path = "~/mail-attachments"
+# - [viewers]:         Table associating a MIME type with the program that
+#                      opens an attachment of that type.  See the section
+#                      below the top-level settings.
 # - theme:             Textual theme name for the TUI colour scheme.  Omit to
 #                      use the Textual default ("textual-dark").  Run
 #                      "pony --list-themes" to see all available names.
@@ -148,6 +151,27 @@ imap_connect_timeout_seconds = 10
 # few times before the send is reported as failed, each retry drawing a
 # new source port.
 smtp_connect_timeout_seconds = 10
+
+# External viewers, by attachment content type (optional).
+#
+# When an attachment is opened from the TUI (the O key), Pony looks its
+# content type up here first and, on a match, runs the listed program with
+# the saved attachment path appended as the final argument.  With no match
+# the OS default handler is used (xdg-open / open / ShellExecute), which is
+# the behaviour when this table is absent.
+#
+# Each value is a list of strings — the argv, not a shell command line — so
+# no quoting or escaping rules differ between platforms, and paths with
+# spaces need no special care.  Matching is exact on the lower-cased type:
+# an entry for "text/calendar" does not claim "text/plain".
+#
+# Because the association lives here rather than in the desktop MIME
+# database, it travels with the config file to every machine.
+#
+# [viewers]
+# "text/calendar" = ["chronos", "import"]
+# "application/pdf" = ["zathura"]
+# "image/png" = ["feh", "--scale-down"]
 
 [[accounts]]
 name = "Personal"

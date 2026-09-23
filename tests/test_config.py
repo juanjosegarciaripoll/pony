@@ -9,7 +9,7 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 
 from pony.config import ConfigError, load_config, parse_config
-from pony.domain import FolderConfig, LocalAccountConfig
+from pony.domain import FolderConfig, LocalAccountConfig, ViewerRule
 
 
 class ConfigParsingTestCase(unittest.TestCase):
@@ -602,6 +602,90 @@ class FolderPolicyTestCase(unittest.TestCase):
     def test_is_read_only_false_for_normal_folder(self) -> None:
         p = self._policy(read_only=["Sent"])
         self.assertFalse(p.is_read_only("INBOX"))
+
+
+class ViewersConfigTestCase(unittest.TestCase):
+    """Parsing of the optional [viewers] content-type table."""
+
+    def _config_with_viewers(self, viewers: object) -> dict[str, object]:
+        data = sample_config()
+        data["viewers"] = viewers
+        return data
+
+    def test_absent_table_yields_no_rules(self) -> None:
+        config = parse_config(sample_config(), base_dir=TMP_ROOT)
+        self.assertEqual(config.viewers, ())
+
+    def test_parses_content_type_to_argv(self) -> None:
+        config = parse_config(
+            self._config_with_viewers(
+                {
+                    "text/calendar": ["chronos", "import"],
+                    "application/pdf": ["zathura"],
+                }
+            ),
+            base_dir=TMP_ROOT,
+        )
+        self.assertEqual(
+            config.viewers,
+            (
+                ViewerRule("text/calendar", ("chronos", "import")),
+                ViewerRule("application/pdf", ("zathura",)),
+            ),
+        )
+
+    def test_content_type_is_lowercased(self) -> None:
+        config = parse_config(
+            self._config_with_viewers({" TEXT/Calendar ": ["chronos"]}),
+            base_dir=TMP_ROOT,
+        )
+        self.assertEqual(config.viewers[0].content_type, "text/calendar")
+
+    def test_rejects_non_table(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(self._config_with_viewers(["chronos"]), base_dir=TMP_ROOT)
+        self.assertIn("'viewers' must be a table", str(ctx.exception))
+
+    def test_rejects_key_that_is_not_a_mime_type(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(
+                self._config_with_viewers({"calendar": ["chronos"]}),
+                base_dir=TMP_ROOT,
+            )
+        self.assertIn("must be a MIME type", str(ctx.exception))
+
+    def test_rejects_duplicate_content_type(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(
+                self._config_with_viewers(
+                    {"text/calendar": ["chronos"], "TEXT/CALENDAR": ["khal"]}
+                ),
+                base_dir=TMP_ROOT,
+            )
+        self.assertIn("duplicate entry", str(ctx.exception))
+
+    def test_rejects_command_that_is_not_a_list(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(
+                self._config_with_viewers({"text/calendar": "chronos import"}),
+                base_dir=TMP_ROOT,
+            )
+        self.assertIn("must be a list of strings", str(ctx.exception))
+
+    def test_rejects_empty_command(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(
+                self._config_with_viewers({"text/calendar": []}), base_dir=TMP_ROOT
+            )
+        self.assertIn("must name a program to run", str(ctx.exception))
+
+    def test_rejects_non_string_argument(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(
+                self._config_with_viewers({"text/calendar": ["chronos", 7]}),
+                base_dir=TMP_ROOT,
+            )
+        self.assertIn("must be a non-empty string", str(ctx.exception))
 
 
 def sample_config() -> dict[str, object]:

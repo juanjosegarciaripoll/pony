@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
+from ...domain import ViewerRule
 from ...message_renderer import extract_attachment
-from ..terminal import launch_file, suspend_for_external_program
+from ..terminal import (
+    launch_file,
+    resolve_viewer_command,
+    suspend_for_external_program,
+)
 from ..widgets.message_view import MessageViewPanel
 
 
@@ -32,11 +38,13 @@ class EmlViewerScreen(Screen[None]):
         self,
         raw_bytes: bytes,
         downloads_dir: Path | None = None,
+        viewers: Sequence[ViewerRule] = (),
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._raw_bytes = raw_bytes
         self._downloads_dir = downloads_dir or Path.home() / "Downloads"
+        self._viewers = viewers
 
     def compose(self) -> ComposeResult:
         yield MessageViewPanel()
@@ -150,7 +158,9 @@ class EmlViewerScreen(Screen[None]):
                 continue
             if payload.content_type == "message/rfc822":
                 self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                    EmlViewerScreen(payload.data, self._downloads_dir)
+                    EmlViewerScreen(
+                        payload.data, self._downloads_dir, viewers=self._viewers
+                    )
                 )
             else:
                 suffix = Path(payload.filename).suffix
@@ -165,7 +175,10 @@ class EmlViewerScreen(Screen[None]):
                     # The default viewer may run in this terminal and alter
                     # input modes.  Textual's suspend context restores them.
                     with suspend_for_external_program(self.app):
-                        launch_file(path)
+                        launch_file(
+                            path,
+                            resolve_viewer_command(self._viewers, payload.content_type),
+                        )
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open attachment {idx}: {exc}", severity="error"

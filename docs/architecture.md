@@ -248,7 +248,11 @@ segment against the names servers localise the folder into (`Sent`,
 Search results span folders and always show the sender.
 
 `tui/terminal.py` updates the host terminal title via OSC 2 and restores it on
-exit. `tui/bindings.py` holds the mark/motion `Binding` tuples shared by the
+exit, and opens attachments: `resolve_viewer_command` looks the part's content
+type up in the `[viewers]` config table and `launch_file` runs the match with
+the saved path appended, falling back to the OS handler (`xdg-open` / `open` /
+`ShellExecute`) when nothing matches.  The association therefore travels with
+`config.toml` instead of depending on the desktop MIME database. `tui/bindings.py` holds the mark/motion `Binding` tuples shared by the
 message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 `ui_state.json`. Theme selection comes from `theme` in `config.toml`, the
 `--theme NAME` flag, or `--list-themes`.

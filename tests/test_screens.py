@@ -2416,3 +2416,30 @@ async def test_recipient_completion_preserves_a_quoted_name_before_it() -> None:
         assert field.value == (
             '"Doe, John" <john@example.test>, Marina Robles <marina@example.test>'
         )
+
+
+async def test_eml_viewer_screen_uses_configured_viewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The standalone viewer honours the same [viewers] table."""
+    from pony.domain import ViewerRule
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    launch_mock = MagicMock()
+    monkeypatch.setattr("pony.tui.screens.eml_viewer_screen.launch_file", launch_mock)
+
+    raw = corpus.calendar_invite()
+    app = EmlViewerApp(
+        raw_bytes=raw,
+        viewers=(ViewerRule("text/calendar", ("chronos", "import")),),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_open_attachment("1")
+        await pilot.pause()
+
+    launch_mock.assert_called_once()
+    _path, command = launch_mock.call_args.args
+    assert command == ("chronos", "import")

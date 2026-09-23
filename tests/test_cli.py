@@ -2955,6 +2955,43 @@ class AppLaunchingCommandTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         app_cls.return_value.run.assert_called_once()
 
+    def test_the_view_command_passes_configured_viewers(self) -> None:
+        from unittest.mock import patch
+
+        from pony.domain import ViewerRule
+
+        with isolated_app_env(), temporary_config() as config_path:
+            with config_path.open("a", encoding="utf-8") as handle:
+                handle.write('\n[viewers]\n"text/calendar" = ["chronos", "import"]\n')
+            eml = TMP_ROOT / f"viewers-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.calendar_invite())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("--config", str(config_path), "view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            app_cls.call_args.kwargs["viewers"],
+            (ViewerRule("text/calendar", ("chronos", "import")),),
+        )
+
+    def test_the_view_command_without_a_config_has_no_viewers(self) -> None:
+        from unittest.mock import patch
+
+        with isolated_app_env():
+            eml = TMP_ROOT / f"noviewers-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.plain_text())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(app_cls.call_args.kwargs["viewers"], ())
+
     def test_no_command_at_all_launches_the_tui(self) -> None:
         from unittest.mock import patch
 

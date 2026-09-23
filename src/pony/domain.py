@@ -185,6 +185,18 @@ CONFIG_VERSION: int = 2
 
 
 @dataclass(frozen=True, slots=True)
+class ViewerRule:
+    """A content-type → external-viewer association from ``[viewers]``.
+
+    ``content_type`` is lower-cased at parse time; ``command`` is the
+    argv prefix the attachment path is appended to.
+    """
+
+    content_type: str
+    command: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Top-level Pony Express configuration."""
 
@@ -221,6 +233,11 @@ class AppConfig:
     # timed-out connect several times, so this bounds one attempt rather
     # than the whole send.
     smtp_connect_timeout_seconds: int = 10
+    # Content-type → external viewer associations.  Consulted before the
+    # OS default handler when an attachment is opened from the TUI, so a
+    # viewer choice travels with the config instead of depending on the
+    # desktop MIME database.  Empty means always use the OS default.
+    viewers: tuple[ViewerRule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

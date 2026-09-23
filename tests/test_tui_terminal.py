@@ -126,3 +126,84 @@ class TestSuspendForExternalProgram(unittest.TestCase):
             launched = True
 
         self.assertTrue(launched)
+
+
+class TestResolveViewerCommand(unittest.TestCase):
+    """Content-type lookup against the configured [viewers] table."""
+
+    def test_returns_command_for_matching_content_type(self) -> None:
+        from pony.domain import ViewerRule
+        from pony.tui.terminal import resolve_viewer_command
+
+        rules = (ViewerRule("text/calendar", ("chronos", "import")),)
+        self.assertEqual(
+            resolve_viewer_command(rules, "text/calendar"), ("chronos", "import")
+        )
+
+    def test_match_ignores_case_and_surrounding_space(self) -> None:
+        from pony.domain import ViewerRule
+        from pony.tui.terminal import resolve_viewer_command
+
+        rules = (ViewerRule("text/calendar", ("chronos",)),)
+        self.assertEqual(resolve_viewer_command(rules, " TEXT/Calendar "), ("chronos",))
+
+    def test_returns_none_for_unlisted_type(self) -> None:
+        from pony.domain import ViewerRule
+        from pony.tui.terminal import resolve_viewer_command
+
+        rules = (ViewerRule("text/calendar", ("chronos",)),)
+        self.assertIsNone(resolve_viewer_command(rules, "text/plain"))
+
+    def test_returns_none_without_a_content_type(self) -> None:
+        from pony.domain import ViewerRule
+        from pony.tui.terminal import resolve_viewer_command
+
+        rules = (ViewerRule("text/calendar", ("chronos",)),)
+        self.assertIsNone(resolve_viewer_command(rules, None))
+
+    def test_returns_none_when_no_rules_are_configured(self) -> None:
+        from pony.tui.terminal import resolve_viewer_command
+
+        self.assertIsNone(resolve_viewer_command((), "text/calendar"))
+
+
+class TestLaunchFile(unittest.TestCase):
+    """launch_file dispatches to the configured viewer or the OS default."""
+
+    def test_configured_command_receives_the_path_last(self) -> None:
+        from pathlib import Path
+
+        from pony.tui.terminal import launch_file
+
+        with patch("pony.tui.terminal.subprocess.run") as run:
+            launch_file(Path("/tmp/invite.ics"), ("chronos", "import"))
+
+        run.assert_called_once_with(
+            ["chronos", "import", "/tmp/invite.ics"], check=False
+        )
+
+    def test_empty_command_falls_back_to_the_os_default(self) -> None:
+        from pathlib import Path
+
+        from pony.tui.terminal import launch_file
+
+        with (
+            patch("pony.tui.terminal.sys.platform", "linux"),
+            patch("pony.tui.terminal.subprocess.run") as run,
+        ):
+            launch_file(Path("/tmp/invite.ics"), ())
+
+        run.assert_called_once_with(["xdg-open", "/tmp/invite.ics"], check=False)
+
+    def test_no_command_uses_the_os_default(self) -> None:
+        from pathlib import Path
+
+        from pony.tui.terminal import launch_file
+
+        with (
+            patch("pony.tui.terminal.sys.platform", "linux"),
+            patch("pony.tui.terminal.subprocess.run") as run,
+        ):
+            launch_file(Path("/tmp/report.pdf"))
+
+        run.assert_called_once_with(["xdg-open", "/tmp/report.pdf"], check=False)

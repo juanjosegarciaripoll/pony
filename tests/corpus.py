@@ -10,6 +10,7 @@ plain_text                  Simple text/plain — the baseline case.
 multipart_alternative       text/plain + text/html — the most common modern format.
 multipart_mixed_attachment  text/plain body + one named file attachment.
 multipart_mixed_multi       text/plain body + two named file attachments.
+calendar_invite             text/plain body + an unnamed text/calendar part.
 html_only                   No text/plain part; only text/html.
 inline_image                multipart/related with an inline CID image — the
                             inline part must NOT be counted as an attachment.
@@ -187,6 +188,31 @@ def multipart_mixed_attachment() -> bytes:
     pdf = MIMEApplication(b"%PDF-1.4 fake pdf content", Name="q1-report.pdf")
     pdf["Content-Disposition"] = 'attachment; filename="q1-report.pdf"'
     msg.attach(pdf)
+    return msg.as_bytes()
+
+
+def calendar_invite() -> bytes:
+    """text/plain body + a text/calendar invite part.
+
+    The calendar part carries no filename, so the renderer names it
+    invite.ics from its content type.
+    """
+    msg = MIMEMultipart("mixed")
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Project kickoff"
+    msg["Date"] = DATE
+    msg["Message-ID"] = "<invite-fixture@example.com>"
+    msg.attach(MIMEText("See the attached invite.\n", "plain", "utf-8"))
+    msg.attach(
+        MIMEText(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+            "BEGIN:VEVENT\r\nSUMMARY:Kickoff\r\nEND:VEVENT\r\n"
+            "END:VCALENDAR\r\n",
+            "calendar",
+            "utf-8",
+        )
+    )
     return msg.as_bytes()
 
 

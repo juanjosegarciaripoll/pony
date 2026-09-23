@@ -35,6 +35,7 @@ from pony.domain import (
     MessageRef,
     MirrorConfig,
     SmtpConfig,
+    ViewerRule,
 )
 from pony.index_store import SqliteIndexRepository
 from pony.message_projection import project_rfc822_message
@@ -307,6 +308,7 @@ def build_pony_app(
     label: str = "pony",
     accounts: Sequence[AnyAccount] | None = None,
     seed: Sequence[tuple[FolderRef, bytes]] = (),
+    viewers: tuple[ViewerRule, ...] = (),
 ) -> tuple[
     TestPonyApp,
     AppConfig,
@@ -327,6 +329,7 @@ def build_pony_app(
     config = dataclasses.replace(
         make_test_config(accounts=accounts),
         downloads_path=paths.data_dir / "downloads",
+        viewers=viewers,
     )
     index = make_index(paths)
     mirrors = make_mirrors(config)

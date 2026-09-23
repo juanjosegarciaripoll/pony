@@ -58,6 +58,7 @@ from ...sync import ImapSyncService, ProgressInfo, SyncPlan, SyncResult
 from ..terminal import (
     format_terminal_title,
     launch_file,
+    resolve_viewer_command,
     set_terminal_title,
     suspend_for_external_program,
 )
@@ -1954,14 +1955,18 @@ class MainScreen(Screen[None]):
         dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
         missing: list[int] = []
+        viewers = self._config.viewers
         for idx in indices:
+            command: tuple[str, ...] | None = None
             if raw is not None:
                 payload = _extract_attachment(raw, idx)
                 if payload is not None and payload.content_type == "message/rfc822":
                     self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                        EmlViewerScreen(payload.data, dest)
+                        EmlViewerScreen(payload.data, dest, viewers=viewers)
                     )
                     continue
+                if payload is not None:
+                    command = resolve_viewer_command(viewers, payload.content_type)
             try:
                 name = save_one_attachment(raw, idx, dest)
             except OSError as exc:
@@ -1975,7 +1980,7 @@ class MainScreen(Screen[None]):
                     # The default viewer may run in this terminal and alter
                     # input modes.  Textual's suspend context restores them.
                     with suspend_for_external_program(self.app):
-                        launch_file(dest / name)
+                        launch_file(dest / name, command)
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                         f"Could not open {name}: {exc}",

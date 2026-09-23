@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 ### Added
 
+- **Attachments open in the viewer you configure**: a new `[viewers]` table
+  maps a MIME type to the program that opens it, so `"text/calendar" =
+  ["chronos", "import"]` sends an invite straight to a calendar application
+  instead of wherever the desktop happens to point. Each value is an argv list
+  rather than a shell command line, so nothing about quoting differs between
+  platforms, and the attachment path is appended as the final argument. Types
+  not listed still go to the OS default handler, which is what every
+  attachment did before. Because the association lives in `config.toml`, it
+  travels between machines with the rest of the configuration rather than
+  having to be re-registered in each desktop's MIME database. The table also
+  applies to the standalone `pony view` viewer.
+
 - **Sent folders list recipients, not senders**: the message list's From column
   becomes a To column in a Sent folder, where the sender is the user on every
   row and only the recipient tells the messages apart. The folder is recognised

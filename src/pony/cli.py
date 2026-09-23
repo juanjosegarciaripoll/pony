@@ -636,7 +636,7 @@ def _dispatch(
             )
 
     if args.command == "view":
-        return run_eml_viewer(path=args.file, theme=args.theme)
+        return run_eml_viewer(path=args.file, theme=args.theme, config_path=args.config)
 
     if args.command == "docs":
         return run_docs()
@@ -2951,7 +2951,9 @@ def run_account_set_password(
     return 0
 
 
-def run_eml_viewer(*, path: Path, theme: str | None = None) -> int:
+def run_eml_viewer(
+    *, path: Path, theme: str | None = None, config_path: Path | None = None
+) -> int:
     """Open a single .eml file in the full-screen message viewer."""
     if not path.exists():
         print(f"error: file not found: {path}", file=sys.stderr)
@@ -2971,7 +2973,9 @@ def run_eml_viewer(*, path: Path, theme: str | None = None) -> int:
 
     from .tui.app import EmlViewerApp
 
-    EmlViewerApp(raw_bytes=raw_bytes, theme_name=effective_theme).run()
+    config = try_load_config(config_path)
+    viewers = config.viewers if config is not None else ()
+    EmlViewerApp(raw_bytes=raw_bytes, theme_name=effective_theme, viewers=viewers).run()
     return 0
 
 

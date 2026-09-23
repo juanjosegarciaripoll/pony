@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
 from ..composer import DraftSpec
-from ..domain import AnyAccount, AppConfig
+from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..paths import AppPaths
 from ..protocols import (
     ContactRepository,
@@ -241,10 +242,12 @@ class EmlViewerApp(App[None]):
         self,
         raw_bytes: bytes,
         theme_name: str | None = None,
+        viewers: Sequence[ViewerRule] = (),
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._raw_bytes = raw_bytes
+        self._viewers = viewers
         if theme_name is not None:
             self.theme = theme_name
 
@@ -253,7 +256,7 @@ class EmlViewerApp(App[None]):
         set_terminal_title("Pony Express — Viewer")
         from .screens.eml_viewer_screen import EmlViewerScreen
 
-        self.push_screen(EmlViewerScreen(self._raw_bytes))
+        self.push_screen(EmlViewerScreen(self._raw_bytes, viewers=self._viewers))
 
     def on_unmount(self) -> None:
         pop_terminal_title()

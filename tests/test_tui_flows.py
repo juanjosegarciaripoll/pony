@@ -3536,3 +3536,70 @@ async def test_save_message_writes_the_body_and_an_attachment(
     assert not (tmp_path / "ghost.bin").exists()
     assert not (tmp_path.parent / "escaped.md").exists()
     assert any("failed" in n for n in notifications)
+
+
+async def test_open_attachment_uses_configured_viewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A [viewers] entry claims the attachment instead of the OS default."""
+    from unittest.mock import MagicMock
+
+    from corpus import calendar_invite
+
+    from pony.domain import ViewerRule
+
+    launch_mock = MagicMock()
+    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-att-viewer",
+        seed=[(folder, calendar_invite())],
+        viewers=(ViewerRule("text/calendar", ("chronos", "import")),),
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        view.focus()
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause(0.1)
+
+    launch_mock.assert_called_once()
+    path, command = launch_mock.call_args.args
+    assert path.name == "invite.ics"
+    assert command == ("chronos", "import")
+
+
+async def test_open_attachment_without_matching_viewer_uses_os_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlisted content type still falls through to the OS handler."""
+    from unittest.mock import MagicMock
+
+    from corpus import calendar_invite
+
+    from pony.domain import ViewerRule
+
+    launch_mock = MagicMock()
+    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+        label="open-att-no-viewer",
+        seed=[(folder, calendar_invite())],
+        viewers=(ViewerRule("application/pdf", ("zathura",)),),
+    )
+    async with app.run_test() as pilot:
+        await _select_first_inbox(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        view = app.screen.query_one(MessageViewPanel)
+        view.focus()
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause(0.1)
+
+    launch_mock.assert_called_once()
+    _path, command = launch_mock.call_args.args
+    assert command is None
