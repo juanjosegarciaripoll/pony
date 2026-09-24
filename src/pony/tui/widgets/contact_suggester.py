@@ -35,11 +35,16 @@ class RecipientInput(Vertical):
         width: 1fr;
         height: auto;
         max-height: 6;
-        border: none;
-        padding: 0 1;
         background: $panel;
     }
     """
+    # The list must keep the same geometry focused and blurred.  Textual's
+    # own ``OptionList:focus`` rule adds a border, and a pseudo-class
+    # outranks this widget's type selectors, so a plain ``border: none``
+    # here loses the moment the list takes focus -- the rows shift down by
+    # one and a click selects the neighbour of the address aimed at.
+    # ``compact`` sets ``-textual-compact``, whose ``border: none`` is
+    # ``!important`` and therefore holds in every state.
 
     def __init__(
         self,
@@ -67,7 +72,7 @@ class RecipientInput(Vertical):
             id=self._input_id,
             classes=self._input_classes,
         )
-        yield OptionList(classes="recipient-options")
+        yield OptionList(classes="recipient-options", compact=True)
 
     @property
     def input(self) -> Input:

@@ -2443,3 +2443,88 @@ async def test_eml_viewer_screen_uses_configured_viewer(
     launch_mock.assert_called_once()
     _path, command = launch_mock.call_args.args
     assert command == ("chronos", "import")
+
+
+async def test_recipient_options_keep_their_geometry_when_focused() -> None:
+    """Focus must not move the rows: a border would shift every option down.
+
+    Textual's own ``OptionList:focus`` rule adds one, and a pseudo-class
+    outranks this widget's type selectors, so the list is built compact.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input, OptionList
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-geometry"))
+    for first, last, email in (
+        ("Marina", "Núñez Robles", "marina@example.test"),
+        ("Mariela", "Norte", "mariela@example.test"),
+        ("Mario", "Ruiz", "mario@example.test"),
+    ):
+        index.upsert_contact(
+            contact=Contact(id=None, first_name=first, last_name=last, emails=(email,))
+        )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        field.focus()
+        field.value = "mari"
+        await pilot.pause()
+
+        options = app.query_one(OptionList)
+        blurred = options.content_region
+        options.focus()
+        await pilot.pause()
+
+        assert options.content_region == blurred
+        # An unset edge reports its type as ""; any real border shifts rows.
+        assert all(edge_type == "" for edge_type, _color in options.styles.border)
+
+
+async def test_clicking_a_recipient_option_selects_that_row() -> None:
+    """A mouse click must complete the address actually under the pointer."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Input, OptionList
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.domain import Contact
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    index = make_index(make_tmp_paths("recipient-click"))
+    for first, last, email in (
+        ("Marina", "Núñez Robles", "marina@example.test"),
+        ("Mariela", "Norte", "mariela@example.test"),
+        ("Mario", "Ruiz", "mario@example.test"),
+    ):
+        index.upsert_contact(
+            contact=Contact(id=None, first_name=first, last_name=last, emails=(email,))
+        )
+
+    class RecipientApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield RecipientInput(index, input_id="recipient")
+
+    app = RecipientApp()
+    async with app.run_test() as pilot:
+        field = app.query_one("#recipient", Input)
+        field.focus()
+        field.value = "mari"
+        await pilot.pause()
+
+        options = app.query_one(OptionList)
+        assert options.option_count == 3
+        # Whatever the ordering, row 1 is what the pointer is over.
+        expected = options.get_option_at_index(1).prompt
+
+        await pilot.click(OptionList, offset=(0, 1))
+        await pilot.pause()
+
+        assert field.value == expected

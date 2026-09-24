@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+
+- **Clicking a recipient suggestion picks that address**: the completion list
+  under a To/Cc/Bcc field drew a border the moment it took focus, which pushed
+  every row down by one. A click therefore landed on the neighbour of the
+  address aimed at, or on the new border and selected nothing at all. The list
+  now keeps identical geometry focused and blurred.
+
 ### Added
 
 - **Attachments open in the viewer you configure**: a new `[viewers]` table
