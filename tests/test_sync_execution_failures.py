@@ -16,7 +16,10 @@ finding nothing.
 from __future__ import annotations
 
 import dataclasses
+import threading
+import time
 import unittest
+from unittest import mock
 from uuid import uuid4
 
 from conftest import TMP_ROOT
@@ -25,12 +28,19 @@ from test_sync import FakeImapSession, _make_raw_message, _setup
 from pony.domain import (
     FolderRef,
     MessageFlag,
+    MessageRef,
     MessageStatus,
 )
+from pony.storage import MaildirMirrorRepository
 from pony.sync import (
+    FetchNewOp,
+    FolderSyncPlan,
+    ImapSyncService,
+    MergeFlagsOp,
     PushAppendOp,
     RestoreOp,
     ServerDeleteOp,
+    SyncOp,
 )
 
 _PERSONAL_INBOX = FolderRef(account_name="personal", folder_name="INBOX")
@@ -677,3 +687,175 @@ class ExpiredTrashTestCase(unittest.TestCase):
         service._run_cleanup()
 
         self.assertIsNone(index.get_message(message_ref=row.message_ref))
+
+
+class ProducerThreadTestCase(unittest.TestCase):
+    """The fetch producer thread owns the IMAP socket while it runs.
+
+    ``_execute_folder_plan`` hands fetch-heavy ops to a background thread
+    so ingest overlaps download.  imaplib is not thread-safe, so every op
+    that calls into the session has to wait until that thread is joined —
+    otherwise two threads interleave command tags on one connection and
+    each blocks on a completion the other consumed, which the user sees
+    as a sync that stalls with no output and no traceback.
+    """
+
+    def _fetch_plan_with_a_merge(
+        self,
+    ) -> tuple[
+        ImapSyncService, MaildirMirrorRepository, FakeImapSession, FolderSyncPlan
+    ]:
+        """A folder plan whose flag merge sits between two fetch batches."""
+        raws = {
+            uid: (
+                f"<m{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Subject {uid}", f"<m{uid}@example.com>"),
+            )
+            for uid in range(1, 5)
+        }
+        service, index, mirror, session = _setup(server_folders={"INBOX": raws})
+        ops: list[SyncOp] = [
+            FetchNewOp(
+                uid=uid,
+                message_id=f"<m{uid}@example.com>",
+                server_flags=frozenset(),
+                extra_imap_flags=frozenset(),
+            )
+            for uid in (1, 2)
+        ]
+        # Between the batches on purpose: a merge that lands at the very
+        # end would find the producer already finished, and the collision
+        # this guards against would go unnoticed.
+        ops.append(
+            MergeFlagsOp(
+                uid=1,
+                message_ref=MessageRef(
+                    account_name="personal", folder_name="INBOX", id=1
+                ),
+                merged_flags=frozenset({MessageFlag.SEEN}),
+                push_to_server=True,
+            )
+        )
+        ops.extend(
+            FetchNewOp(
+                uid=uid,
+                message_id=f"<m{uid}@example.com>",
+                server_flags=frozenset(),
+                extra_imap_flags=frozenset(),
+            )
+            for uid in (3, 4)
+        )
+        plan = FolderSyncPlan(
+            folder_name="INBOX",
+            uid_validity=1,
+            highest_uid=4,
+            ops=tuple(ops),
+        )
+        return service, mirror, session, plan
+
+    def test_a_flag_merge_is_never_pushed_while_a_fetch_is_in_flight(self) -> None:
+        """STORE from the main thread must not collide with the producer's FETCH."""
+        service, mirror, session, plan = self._fetch_plan_with_a_merge()
+
+        fetch_in_flight = threading.Event()
+        collisions: list[str] = []
+        threads: dict[str, set[str]] = {}
+        original_fetch = session.fetch_messages_batch
+        original_store = session.store_flags
+
+        def _slow_fetch(folder_name: str, uids: object) -> dict[int, bytes]:
+            threads.setdefault("fetch", set()).add(threading.current_thread().name)
+            fetch_in_flight.set()
+            try:
+                # Hold the socket long enough that a colliding command
+                # lands inside the window rather than racing it.
+                time.sleep(0.2)
+                return original_fetch(folder_name, uids)  # type: ignore[arg-type]
+            finally:
+                fetch_in_flight.clear()
+
+        def _recording_store(*args: object, **kwargs: object) -> None:
+            threads.setdefault("store", set()).add(threading.current_thread().name)
+            if fetch_in_flight.is_set():
+                collisions.append(threading.current_thread().name)
+            original_store(*args, **kwargs)  # type: ignore[arg-type]
+
+        session.fetch_messages_batch = _slow_fetch  # type: ignore[method-assign]
+        session.store_flags = _recording_store  # type: ignore[method-assign]
+
+        service._execute_folder_plan(  # type: ignore[attr-defined]
+            account=service._config.accounts[0],  # type: ignore[attr-defined]
+            plan=plan,
+            session=session,
+            mirror=mirror,
+            progress=None,
+        )
+
+        self.assertEqual(threads.get("store"), {threading.current_thread().name})
+        self.assertNotIn(threading.current_thread().name, threads.get("fetch", set()))
+        self.assertEqual(
+            collisions, [], "a flag push ran while the producer held the socket"
+        )
+
+    def test_a_two_sided_flag_change_still_pushes_its_merge(self) -> None:
+        """Guards the test above from silently covering an unreachable op."""
+        raw = _make_raw_message("Contested", "<contested@example.com>")
+        service, index, _mirror, session = _setup(
+            server_folders={"INBOX": {1: ("<contested@example.com>", frozenset(), raw)}}
+        )
+        service.sync()
+
+        # Both sides move away from the synced base: the server marks it
+        # read, the user stars it locally.  That plans a MergeFlagsOp with
+        # push_to_server=True, alongside a fetch for the new message.
+        row = index.list_folder_messages(folder=_PERSONAL_INBOX)[0]
+        index.update_message(
+            message=dataclasses.replace(
+                row, local_flags=frozenset({MessageFlag.FLAGGED})
+            )
+        )
+        session.folders["INBOX"][1] = (
+            "<contested@example.com>",
+            frozenset({MessageFlag.SEEN}),
+            raw,
+        )
+        session._bump_modseq("INBOX", 1)
+        session.folders["INBOX"][2] = _server_message(2, "Fresh")[2]
+        session._uidnext["INBOX"] = 3
+        session._bump_modseq("INBOX", 2)
+
+        result = service.sync()
+
+        folder = result.accounts[0].folders[0]
+        self.assertEqual(folder.flag_conflicts_merged, 1)
+        self.assertEqual(folder.fetched, 1)
+        self.assertEqual(
+            session.stored_flags,
+            [(1, frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}))],
+        )
+
+    def test_a_producer_that_dies_without_its_sentinel_fails_the_folder(self) -> None:
+        """A lost sentinel must surface as a failure, not wedge the consumer."""
+        service, index, _mirror, session = _setup(
+            server_folders={"INBOX": _server_message(1, "Doomed")}
+        )
+
+        def _die(*_args: object, **_kwargs: object) -> dict[int, bytes]:
+            # A BaseException escapes the producer's `except Exception`,
+            # so the thread unwinds before it can post its sentinel.
+            raise KeyboardInterrupt("producer killed")
+
+        session.fetch_messages_batch = _die  # type: ignore[method-assign]
+
+        # The escaping exception is the point of the test; leaving pytest's
+        # thread-exception hook in place would report it as an error.
+        with mock.patch("threading.excepthook", lambda _args: None):
+            result = service.sync()
+
+        self.assertEqual(index.list_folder_messages(folder=_PERSONAL_INBOX), ())
+        self.assertEqual(result.accounts[0].folders[0].fetched, 0)
+        # A lost producer is a folder failure, so no watermark may advance —
+        # the next sync has to retry the messages this one never fetched.
+        states = index.list_folder_sync_states(account_name="personal")
+        self.assertEqual([s for s in states if s.folder_name == "INBOX"], [])

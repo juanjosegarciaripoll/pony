@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 ### Fixed
 
+- **`pony sync` no longer stalls on a two-sided flag change**: when a message's
+  flags had changed both locally and on the server, the merge issued its `STORE`
+  from the main thread while the background fetch thread was still inside a
+  `FETCH` on the same connection. imaplib is not thread-safe, so the two
+  commands interleaved their tags and each thread blocked on a completion the
+  other had consumed — a sync that hung with no output and no error. Flag merges
+  now run with every other server mutation, after the fetch thread is joined.
+- **A crashed fetch thread ends its folder instead of hanging the sync**: the
+  consumer waited on an untimed queue, so a producer that died before posting
+  its sentinel wedged the process permanently. It now notices the thread is
+  gone, reports the folder as failed, and leaves the sync watermark unadvanced
+  so the next run retries those messages.
+
 - **Clicking a recipient suggestion picks that address**: the completion list
   under a To/Cc/Bcc field drew a border the moment it took focus, which pushed
   every row down by one. A click therefore landed on the neighbour of the

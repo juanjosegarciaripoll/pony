@@ -29,7 +29,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from queue import SimpleQueue
+from queue import Empty, SimpleQueue
 
 from .accounts import find_imap_account, select_imap_accounts
 from .domain import (
@@ -73,6 +73,15 @@ class ProgressInfo:
 
 
 ProgressCallback = collections.abc.Callable[[ProgressInfo], None]
+
+# How long the fetch consumer waits on an empty queue before checking that
+# the producer thread is still alive.  Purely a liveness poll: while items
+# are flowing it behaves like a blocking get.
+_PRODUCER_POLL_SECONDS = 1.0
+
+
+class _ProducerLostError(Exception):
+    """The fetch producer thread exited without posting its sentinel."""
 
 
 @contextlib.contextmanager
@@ -1580,6 +1589,32 @@ class ImapSyncService:
             skipped_folders=tuple(skipped),
         )
 
+    @staticmethod
+    def _next_produced(
+        q: SimpleQueue[tuple[SyncOp, bytes | None] | None],
+        producer: threading.Thread | None,
+    ) -> tuple[SyncOp, bytes | None] | None:
+        """Pop the next produced item, or raise :class:`_ProducerLostError`.
+
+        An untimed ``get()`` turns a producer that dies before posting its
+        sentinel into a silent, permanent stall — no progress line, no
+        traceback, nothing to report.  Every call the producer makes is
+        bounded by the session read timeout, so "nothing queued and the
+        thread is gone" is the only way the sentinel can go missing.
+        """
+        while True:
+            try:
+                return q.get(timeout=_PRODUCER_POLL_SECONDS)
+            except Empty:
+                if producer is None or producer.is_alive():
+                    continue
+                # The producer may have finished during the timeout, so
+                # drain what it left before declaring the sentinel lost.
+                try:
+                    return q.get_nowait()
+                except Empty:
+                    raise _ProducerLostError from None
+
     def _execute_folder_plan(
         self,
         *,
@@ -1607,6 +1642,14 @@ class ImapSyncService:
         # Two phases: phase-1 (fetch-heavy ops with a producer thread
         # that owns the IMAP socket) and phase-2 (mutation ops that
         # issue IMAP commands themselves on the main thread).
+        #
+        # The split is not about mutation, it is about the socket: phase-1
+        # runs while the producer thread is inside a FETCH, and imaplib is
+        # not thread-safe, so *every* op that calls into `session` belongs
+        # in phase-2.  Two threads writing commands onto one connection
+        # interleave their tags, and whichever reader picks up the other's
+        # tagged completion leaves its peer blocked until the read timeout
+        # — a sync that stalls with no output and no traceback.
         phase1: list[SyncOp] = []
         phase2: list[SyncOp] = []
         for op in plan.ops:
@@ -1614,6 +1657,7 @@ class ImapSyncService:
                 op,
                 (
                     PushFlagsOp,
+                    MergeFlagsOp,
                     PushDeleteOp,
                     PushMoveOp,
                     PushAppendOp,
@@ -1668,45 +1712,56 @@ class ImapSyncService:
         completed = 0
         had_failure = False
         with self._index.connection():
-            if phase1:
-                while (item := q.get()) is not None:
-                    op, raw = item
-                    try:
-                        _t = time.perf_counter()
-                        success = self._execute_one(
-                            op,
-                            raw,
-                            account=account,
-                            folder_name=folder_name,
-                            folder_ref=folder_ref,
-                            session=session,
-                            mirror=mirror,
-                            counters=counters,
-                        )
-                        if not success:
+            try:
+                if phase1:
+                    while (item := self._next_produced(q, producer)) is not None:
+                        op, raw = item
+                        try:
+                            _t = time.perf_counter()
+                            success = self._execute_one(
+                                op,
+                                raw,
+                                account=account,
+                                folder_name=folder_name,
+                                folder_ref=folder_ref,
+                                session=session,
+                                mirror=mirror,
+                                counters=counters,
+                            )
+                            if not success:
+                                had_failure = True
+                            if isinstance(op, FetchNewOp) and raw:
+                                ingest_ns.append(
+                                    int((time.perf_counter() - _t) * 1_000_000_000)
+                                )
+                        except Exception:
                             had_failure = True
-                        if isinstance(op, FetchNewOp) and raw:
-                            ingest_ns.append(
-                                int((time.perf_counter() - _t) * 1_000_000_000)
+                            logger.exception(
+                                "%s failed for %s/%s — skipping",
+                                type(op).__name__,
+                                account.name,
+                                folder_name,
                             )
-                    except Exception:
-                        had_failure = True
-                        logger.exception(
-                            "%s failed for %s/%s — skipping",
-                            type(op).__name__,
-                            account.name,
-                            folder_name,
-                        )
-                    completed += 1
-                    if progress is not None:
-                        progress(
-                            ProgressInfo(
-                                f"{account.name}/{folder_name}: "
-                                f"{completed}/{total_ops}",
-                                current=completed,
-                                total=total_ops,
+                        completed += 1
+                        if progress is not None:
+                            progress(
+                                ProgressInfo(
+                                    f"{account.name}/{folder_name}: "
+                                    f"{completed}/{total_ops}",
+                                    current=completed,
+                                    total=total_ops,
+                                )
                             )
-                        )
+            except _ProducerLostError:
+                had_failure = True
+                logger.error(
+                    "Fetch producer for %s/%s exited without finishing — "
+                    "%d of %d op(s) completed",
+                    account.name,
+                    folder_name,
+                    completed,
+                    total_ops,
+                )
             if producer is not None:
                 producer.join()
 
