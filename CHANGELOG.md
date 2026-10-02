@@ -6,7 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+
+- **To: is one address per row, like Cc: and Bcc:**: the three recipient
+  fields now behave identically. A comma-separated list splits into one row
+  per address when you leave the field or paste it — never while you are
+  still typing — and a comma inside a quoted display name stays put. Leaving
+  a field also drops a trailing comma and stray whitespace.
+- **The × and + buttons stay beside the field they act on**: recipient and
+  attachment rows no longer stretch to the terminal edge, so on a wide
+  terminal the buttons sit next to the entry instead of a screen away from
+  the label. Both button columns are reserved on every row — the + is hidden
+  rather than removed on all but the last — so × and + keep one column each
+  down the whole header, attachments included.
+
 ### Fixed
+
+- **A pasted address list keeps every line**: Textual's input pastes only the
+  first line of the clipboard, so a list copied one address per line out of
+  another mail client silently lost every recipient after the first. Newlines
+  are now treated as the separator they are.
 
 - **`pony sync` no longer stalls on a two-sided flag change**: when a message's
   flags had changed both locally and on the server, the merge issued its `STORE`

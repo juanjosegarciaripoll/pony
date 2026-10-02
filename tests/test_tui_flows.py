@@ -217,8 +217,8 @@ async def test_compose_dynamic_recipient_rows() -> None:
 
         rows = list(cc_container.query(_AddrRow))
         assert len(rows) == 2
-        assert rows[0].query_one(".addr-add-btn", Button).display is False
-        assert rows[1].query_one(".addr-add-btn", Button).display is True
+        assert rows[0].query_one(".addr-add-btn", Button).visible is False
+        assert rows[1].query_one(".addr-add-btn", Button).visible is True
         rows[1].query_one(Input).value = ""
         assert screen._collect_field("cc-container") == ("alex.rivera@example.test")
 

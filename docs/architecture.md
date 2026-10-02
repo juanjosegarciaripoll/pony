@@ -79,6 +79,7 @@ src/pony/
       message_list.py        # async-streamed message table
       message_view.py        # scrollable message reader
       contact_suggester.py   # autocomplete dropdown
+      address_input.py       # address field that keeps pasted lists whole
       edge_drag.py           # mouse-draggable pane borders
 ```
 

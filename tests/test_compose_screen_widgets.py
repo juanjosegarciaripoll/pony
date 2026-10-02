@@ -15,9 +15,13 @@ from uuid import uuid4
 from textual.containers import Horizontal, Vertical
 from textual.events import Paste
 from textual.widgets import Button, Input
+from textual.widgets.input import Selection
 from tui_helpers import build_compose_app
 
 from pony.tui.screens.compose_screen import (
+    BCC_CONTAINER,
+    CC_CONTAINER,
+    TO_CONTAINER,
     AttachmentsBar,
     ComposeScreen,
     _AddrRow,
@@ -194,8 +198,8 @@ async def test_removing_a_middle_row_keeps_the_plus_on_the_last_one() -> None:
 
         rows = list(container.query(_AddrRow))
         assert len(rows) == 2
-        assert rows[0].query_one(".addr-add-btn", Button).display is False
-        assert rows[-1].query_one(".addr-add-btn", Button).display is True
+        assert rows[0].query_one(".addr-add-btn", Button).visible is False
+        assert rows[-1].query_one(".addr-add-btn", Button).visible is True
 
 
 # ---------------------------------------------------------------------------
@@ -544,3 +548,332 @@ async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
 
     assert not sent
     assert any("No password available" in n for n in notices), notices
+
+
+# ---------------------------------------------------------------------------
+# Splitting an address list into one row per address
+# ---------------------------------------------------------------------------
+
+
+def _row_values(screen: ComposeScreen, container_id: str) -> list[str]:
+    container = screen.query_one(f"#{container_id}", Vertical)
+    return [row.address_input.value for row in container.query(_AddrRow)]
+
+
+async def test_to_opens_with_one_row_per_initial_address() -> None:
+    """To: is a row group like Cc/Bcc, so a draft's list arrives split."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="to-rows", to="alice@example.test, bob@example.test"
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+
+        assert _row_values(screen, TO_CONTAINER) == [
+            "alice@example.test",
+            "bob@example.test",
+        ]
+        # Collecting the rows back reproduces the header it came from.
+        assert screen._collect_field(TO_CONTAINER) == (
+            "alice@example.test, bob@example.test"
+        )
+
+
+async def test_a_typed_address_list_splits_when_the_field_is_left() -> None:
+    """Typing stays undisturbed; the split happens on blur."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="split-blur")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.value = "alice@example.test, bob@example.test"
+        await pilot.pause()
+        # Still one row — nothing moves while the caret is in the field.
+        assert _row_values(screen, TO_CONTAINER) == [
+            "alice@example.test, bob@example.test"
+        ]
+
+        screen.query_one("#subject-input", Input).focus()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == [
+            "alice@example.test",
+            "bob@example.test",
+        ]
+
+
+async def test_a_comma_inside_a_quoted_display_name_is_not_a_separator() -> None:
+    """``"Doe, Jane"`` is one recipient, not two."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="split-quoted")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#cc-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.value = '"Doe, Jane" <jane@example.test>, bob@example.test'
+        screen.query_one("#subject-input", Input).focus()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, CC_CONTAINER) == [
+            '"Doe, Jane" <jane@example.test>',
+            "bob@example.test",
+        ]
+
+
+async def test_a_list_pasted_one_address_per_line_keeps_every_line() -> None:
+    """Textual's Input pastes only the first line; recipients cannot be dropped."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-lines")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.post_message(Paste("a@example.test\nb@example.test\nc@example.test"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == [
+            "a@example.test",
+            "b@example.test",
+            "c@example.test",
+        ]
+
+
+async def test_a_pasted_address_list_splits_without_waiting_for_a_blur() -> None:
+    """A paste holds no half-typed address, so it can split immediately."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-commas")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#bcc-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.post_message(Paste("a@example.test, b@example.test"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, BCC_CONTAINER) == [
+            "a@example.test",
+            "b@example.test",
+        ]
+
+
+async def test_pasting_one_address_leaves_the_row_alone() -> None:
+    """The common paste must not gain a stray empty row."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-single")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.post_message(Paste("solo@example.test"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == ["solo@example.test"]
+
+
+async def test_the_split_rows_land_next_to_the_row_they_came_from() -> None:
+    """A middle row's list expands in place, not at the end of the group."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="split-middle", cc="first@example.test, last@example.test"
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#cc-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.value = "one@example.test, two@example.test"
+        screen.query_one("#subject-input", Input).focus()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, CC_CONTAINER) == [
+            "one@example.test",
+            "two@example.test",
+            "last@example.test",
+        ]
+
+
+async def test_the_remove_button_sits_at_one_column_on_every_row() -> None:
+    """The + is hidden, not removed, so × cannot shift between rows."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="button-columns", to="a@example.test, b@example.test"
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        rows = list(screen.query_one("#to-container", Vertical).query(_AddrRow))
+        assert len(rows) == 2
+
+        columns = {row.query_one(".addr-remove-btn", Button).region.x for row in rows}
+        assert len(columns) == 1, f"× moved between rows: {columns}"
+
+        # And the field stops short of the terminal edge, so the buttons
+        # stay beside the address rather than a screen away from it.
+        field = rows[0].address_input
+        assert field.region.right < 120 - 20
+
+
+async def test_a_paste_over_a_selection_replaces_it() -> None:
+    """Pasting with text selected must not append alongside it."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="paste-selection", to="wrong@example.test"
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.selection = Selection(0, len(field.value))
+        field.post_message(Paste("right@example.test, other@example.test"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == [
+            "right@example.test",
+            "other@example.test",
+        ]
+
+
+async def test_an_empty_paste_changes_nothing() -> None:
+    """A stray empty clipboard must not clear the field or add a row."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="paste-empty", to="keep@example.test"
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.post_message(Paste("   \n\n  "))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == ["keep@example.test"]
+
+
+async def test_leaving_a_field_tidies_a_trailing_separator() -> None:
+    """A dangling comma must not reach the header."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="tidy-comma")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.value = "  alice@example.test ,  "
+        screen.query_one("#subject-input", Input).focus()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == ["alice@example.test"]
+        assert screen._collect_field(TO_CONTAINER) == "alice@example.test"
+
+
+async def test_the_completion_list_stays_shut_when_a_row_is_tidied() -> None:
+    """The tidy-up is not typing, so it must not reopen the dropdown."""
+    from textual.widgets import OptionList
+
+    from pony.domain import Contact
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="tidy-quiet")
+    _index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Alice",
+            last_name="Ansell",
+            emails=("alice@example.test",),
+        )
+    )
+    app._contacts = _index  # type: ignore[attr-defined]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # A contacts-backed composer with a nameless account also opens
+        # the contact editor on top, so reach past it for the composer.
+        screen = next(s for s in app.screen_stack if isinstance(s, ComposeScreen))
+        field = screen.query_one("#to-container", Vertical).query(Input).first()
+        field.focus()
+        await pilot.pause()
+
+        field.value = "alice@example.test, bob@example.test"
+        screen.query_one("#subject-input", Input).focus()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert _row_values(screen, TO_CONTAINER) == [
+            "alice@example.test",
+            "bob@example.test",
+        ]
+        shown = [
+            options
+            for options in screen.query_one("#to-container", Vertical).query(OptionList)
+            if options.display
+        ]
+        assert shown == [], "a completion list opened under an unfocused field"
+
+
+async def test_the_attachment_buttons_share_the_recipient_columns() -> None:
+    """× and + line up down the whole header, attachments included."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(
+        label="button-alignment", to="a@example.test, b@example.test"
+    )
+    attachment = Path(_paths.data_dir) / "report.pdf"
+    attachment.parent.mkdir(parents=True, exist_ok=True)
+    attachment.write_bytes(b"%PDF-1.4\n")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        screen._attachment_paths = [attachment]
+        screen._refresh_attachments_bar()
+        await pilot.pause()
+        await pilot.pause()
+
+        remove_columns = {
+            button.region.x
+            for selector in (".addr-remove-btn", ".attach-remove-btn")
+            for button in screen.query(selector).results(Button)
+        }
+        add_columns = {
+            button.region.x
+            for selector in (".addr-add-btn", ".attach-add-btn")
+            for button in screen.query(selector).results(Button)
+            if button.visible
+        }
+
+        assert len(remove_columns) == 1, f"× columns disagree: {remove_columns}"
+        assert len(add_columns) == 1, f"+ columns disagree: {add_columns}"
+        # And + sits one cell to the right of ×, not on top of it.
+        assert add_columns.pop() > remove_columns.pop()

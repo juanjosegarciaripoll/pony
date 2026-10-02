@@ -10,6 +10,7 @@ from textual.widgets.option_list import Option
 
 from ...compose_utils import format_display_address, split_trailing_address
 from ...protocols import ContactRepository
+from .address_input import AddressInput
 
 
 class RecipientInput(Vertical):
@@ -66,7 +67,7 @@ class RecipientInput(Vertical):
         self._selected_value: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Input(
+        yield AddressInput(
             self._value,
             placeholder=self._placeholder,
             id=self._input_id,

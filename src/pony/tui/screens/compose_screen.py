@@ -18,6 +18,7 @@ from textual.containers import Horizontal, Vertical
 from textual.events import Paste
 from textual.message import Message
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Input,
@@ -54,6 +55,7 @@ from ...protocols import (
 from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from ...smtp_sender import SMTPError
 from ...smtp_sender import send_message as smtp_send
+from ..widgets.address_input import AddressInput
 
 _log = logging.getLogger(__name__)
 
@@ -73,8 +75,9 @@ class AttachmentsBar(Vertical):
             yield Label(
                 "(no attachments)",
                 id="attach-empty-label",
-                classes="attach-name",
+                classes="attach-name row-field",
             )
+            yield Static("", classes="row-btn-spacer")
             yield Button("+", classes="attach-add-btn")
 
     def on_paste(self, event: Paste) -> None:
@@ -112,8 +115,19 @@ class _AttachRow(Horizontal):
         return self._path
 
     def compose(self) -> ComposeResult:
-        yield Label(self._path.name, classes="attach-name")
+        yield Label(self._path.name, classes="attach-name row-field")
         yield Button("×", classes="attach-remove-btn")
+
+
+TO_CONTAINER = "to-container"
+CC_CONTAINER = "cc-container"
+BCC_CONTAINER = "bcc-container"
+
+_PLACEHOLDERS = {
+    TO_CONTAINER: "recipient@example.com",
+    CC_CONTAINER: "(optional)",
+    BCC_CONTAINER: "(optional)",
+}
 
 
 def _split_addresses(addresses: str) -> list[str]:
@@ -127,7 +141,7 @@ def _split_addresses(addresses: str) -> list[str]:
 
 
 class _AddrRow(Horizontal):
-    """One address input row: [Input 1fr] [× button]."""
+    """One address input row: [Input] [× remove] [+ add]."""
 
     DEFAULT_CSS = ""
 
@@ -136,11 +150,15 @@ class _AddrRow(Horizontal):
         value: str = "",
         *,
         contacts: ContactRepository | None = None,
+        placeholder: str = "(optional)",
+        input_id: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._addr_value = value
         self._contacts = contacts
+        self._placeholder = placeholder
+        self._input_id = input_id
 
     def compose(self) -> ComposeResult:
         if self._contacts is not None:
@@ -149,17 +167,25 @@ class _AddrRow(Horizontal):
             yield RecipientInput(
                 self._contacts,
                 self._addr_value,
-                placeholder="(optional)",
+                placeholder=self._placeholder,
+                input_id=self._input_id,
                 input_classes="addr-input field-input",
+                classes="row-field",
             )
         else:
-            yield Input(
+            yield AddressInput(
                 self._addr_value,
-                placeholder="(optional)",
-                classes="addr-input field-input",
+                placeholder=self._placeholder,
+                id=self._input_id,
+                classes="addr-input field-input row-field",
             )
         yield Button("×", classes="addr-remove-btn")
         yield Button("+", classes="addr-add-btn")
+
+    @property
+    def address_input(self) -> Input:
+        """The row's text field, whether or not completion wraps it."""
+        return self.query_one(Input)
 
 
 class ComposeScreen(Screen[bool]):
@@ -224,6 +250,27 @@ class ComposeScreen(Screen[bool]):
         background: $boost;
     }
 
+    /* ── Shared row geometry ────────────────────────────── */
+
+    /* One width for every field that carries row buttons, so the × and
+       + columns line up down the whole header — recipients and
+       attachments alike.  Stretched to full width the buttons ended up
+       on the far right of a wide terminal, a screen away from the label,
+       with no way to tell which row owned which button.  Overrides
+       RecipientInput's own width, which is DEFAULT_CSS and therefore
+       lower priority than a screen rule. */
+    .row-field {
+        width: 1fr;
+        max-width: 60;
+    }
+
+    /* Holds the × column open on a row that has no × of its own, so the
+       + beneath a stack of rows still lands in the + column. */
+    .row-btn-spacer {
+        width: 3;
+        height: 1;
+    }
+
     #attachments-bar {
         height: auto;
         width: 1fr;
@@ -234,7 +281,6 @@ class ComposeScreen(Screen[bool]):
     }
 
     .attach-name {
-        width: 1fr;
         color: $text-muted;
         padding: 0 1;
     }
@@ -249,12 +295,12 @@ class ComposeScreen(Screen[bool]):
     }
 
     .attach-add-btn {
-        width: auto;
+        width: 3;
         height: 1;
+        min-width: 3;
         border: none;
         background: $boost;
         color: $accent;
-        padding: 0 1;
     }
 
     /* ── Dynamic address rows (Cc / Bcc) ────────────────── */
@@ -276,6 +322,9 @@ class ComposeScreen(Screen[bool]):
         height: auto;
     }
 
+    /* Both buttons keep their cell whether or not they are drawn: + is
+       hidden rather than removed on every row but the last, so × does
+       not shift sideways from one row to the next. */
     .addr-remove-btn {
         width: 3;
         height: 1;
@@ -286,13 +335,12 @@ class ComposeScreen(Screen[bool]):
     }
 
     .addr-add-btn {
-        display: none;
-        width: auto;
+        width: 3;
         height: 1;
+        min-width: 3;
         border: none;
         background: $boost;
         color: $accent;
-        padding: 0 1;
     }
 
     /* ── Footer bar ─────────────────────────────────────── */
@@ -359,7 +407,6 @@ class ComposeScreen(Screen[bool]):
         self._sending: bool = False
 
     def compose(self) -> ComposeResult:
-        from ..widgets.contact_suggester import RecipientInput
 
         from_options: list[tuple[str, str]] = [
             (self._account_from_label(a), a.name) for a in self._accounts
@@ -374,37 +421,27 @@ class ComposeScreen(Screen[bool]):
                     id="from-select",
                     allow_blank=False,
                 )
-            with Horizontal(classes="field-row"):
-                yield Label("To:", classes="field-label")
-                if self._contacts is not None:
-                    yield RecipientInput(
-                        self._contacts,
-                        self._initial.to,
-                        placeholder="recipient@example.com",
-                        input_id="to-input",
-                        input_classes="field-input",
-                    )
-                else:
-                    yield Input(
-                        self._initial.to,
-                        placeholder="recipient@example.com",
-                        id="to-input",
-                        classes="field-input",
-                    )
-            with Horizontal(classes="addr-group"):
-                yield Label("Cc:", classes="field-label")
-                with Vertical(id="cc-container", classes="addr-container"):
-                    for addr in _split_addresses(self._initial.cc):
-                        yield _AddrRow(
-                            addr, contacts=self._contacts, classes="addr-row"
-                        )
-            with Horizontal(classes="addr-group"):
-                yield Label("Bcc:", classes="field-label")
-                with Vertical(id="bcc-container", classes="addr-container"):
-                    for addr in _split_addresses(self._initial.bcc):
-                        yield _AddrRow(
-                            addr, contacts=self._contacts, classes="addr-row"
-                        )
+            for label, container_id, initial in (
+                ("To:", TO_CONTAINER, self._initial.to),
+                ("Cc:", CC_CONTAINER, self._initial.cc),
+                ("Bcc:", BCC_CONTAINER, self._initial.bcc),
+            ):
+                with Horizontal(classes="addr-group"):
+                    yield Label(label, classes="field-label")
+                    with Vertical(id=container_id, classes="addr-container"):
+                        for position, addr in enumerate(_split_addresses(initial)):
+                            yield _AddrRow(
+                                addr,
+                                contacts=self._contacts,
+                                placeholder=_PLACEHOLDERS[container_id],
+                                # A stable handle on the first recipient
+                                # field, which is where focus lands and
+                                # what drives the composer's tests.
+                                input_id="to-input"
+                                if container_id == TO_CONTAINER and position == 0
+                                else None,
+                                classes="addr-row",
+                            )
             with Horizontal(classes="field-row"):
                 yield Label("Subject:", classes="field-label")
                 yield Input(
@@ -422,13 +459,13 @@ class ComposeScreen(Screen[bool]):
     def on_mount(self) -> None:
         self._refresh_attachments_bar()
         self._refresh_body_title()
-        self._refresh_add_buttons(self.query_one("#cc-container", Vertical))
-        self._refresh_add_buttons(self.query_one("#bcc-container", Vertical))
+        for container_id in (TO_CONTAINER, CC_CONTAINER, BCC_CONTAINER):
+            self._refresh_add_buttons(self.query_one(f"#{container_id}", Vertical))
         # Focus the To field for new mail, body for reply/forward.
         if self._initial.to:
             self.query_one("#body-area", TextArea).focus()
         else:
-            self.query_one("#to-input", Input).focus()
+            self._first_input(TO_CONTAINER).focus()
         self._maybe_prompt_missing_name()
 
     def on_unmount(self) -> None:
@@ -545,9 +582,9 @@ class ComposeScreen(Screen[bool]):
         """
         return build_email_message(
             from_address=self._account_from_address(account),
-            to=self.query_one("#to-input", Input).value.strip(),
-            cc=self._collect_field("cc-container"),
-            bcc=self._collect_field("bcc-container"),
+            to=self._collect_field(TO_CONTAINER),
+            cc=self._collect_field(CC_CONTAINER),
+            bcc=self._collect_field(BCC_CONTAINER),
             subject=self.query_one("#subject-input", Input).value.strip(),
             body=self.query_one("#body-area", TextArea).text,
             attachment_paths=self._attachment_paths,
@@ -568,10 +605,10 @@ class ComposeScreen(Screen[bool]):
             self.notify("A send is already in progress.", severity="warning")
             return
 
-        to = self.query_one("#to-input", Input).value.strip()
+        to = self._collect_field(TO_CONTAINER)
         if not to:
             self.notify("'To' field is required.", severity="error")
-            self.query_one("#to-input", Input).focus()
+            self._first_input(TO_CONTAINER).focus()
             return
 
         account = self._get_account()
@@ -579,7 +616,7 @@ class ComposeScreen(Screen[bool]):
             self.notify("Could not determine sending account.", severity="error")
             return
 
-        cc = self._collect_field("cc-container")
+        cc = self._collect_field(CC_CONTAINER)
         msg = self._build_message(account)
 
         # The dropdown only shows ``can_send`` accounts (see
@@ -696,7 +733,7 @@ class ComposeScreen(Screen[bool]):
     def action_cancel(self) -> None:
         """Prompt to save draft if the form has any content."""
         has_content = bool(
-            self.query_one("#to-input", Input).value.strip()
+            self._collect_field(TO_CONTAINER)
             or self.query_one("#subject-input", Input).value.strip()
             or self.query_one("#body-area", TextArea).text.strip()
         )
@@ -831,23 +868,40 @@ class ComposeScreen(Screen[bool]):
             inp.value.strip() for inp in container.query(Input) if inp.value.strip()
         )
 
+    def _first_input(self, container_id: str) -> Input:
+        """The topmost address field of *container_id*."""
+        container = self.query_one(f"#{container_id}", Vertical)
+        return next(iter(container.query(Input)))
+
     def _refresh_add_buttons(self, container: Vertical) -> None:
-        """Show the + button only on the last address row."""
+        """Draw the + button only on the last address row.
+
+        Hidden, not removed: the button keeps its cell either way, so ×
+        sits at the same column on every row of the group.
+        """
         rows = list(container.query(_AddrRow))
         for row in rows[:-1]:
-            row.query_one(".addr-add-btn", Button).display = False
+            row.query_one(".addr-add-btn", Button).visible = False
         if rows:
-            rows[-1].query_one(".addr-add-btn", Button).display = True
+            rows[-1].query_one(".addr-add-btn", Button).visible = True
+
+    def _new_addr_row(self, container_id: str, value: str = "") -> _AddrRow:
+        return _AddrRow(
+            value,
+            contacts=self._contacts,
+            placeholder=_PLACEHOLDERS[container_id],
+            classes="addr-row",
+        )
 
     def _add_addr_row(self, container_id: str) -> None:
         """Append a new empty address row and refresh + button visibility."""
         container = self.query_one(f"#{container_id}", Vertical)
-        new_row = _AddrRow(contacts=self._contacts, classes="addr-row")
+        new_row = self._new_addr_row(container_id)
         container.mount(new_row)
 
         def _after() -> None:
             self._refresh_add_buttons(container)
-            new_row.query_one(Input).focus()
+            new_row.address_input.focus()
 
         self.call_after_refresh(_after)
 
@@ -863,11 +917,65 @@ class ComposeScreen(Screen[bool]):
         if len(rows) > 1:
             remaining_rows = [candidate for candidate in rows if candidate is not row]
             for candidate in remaining_rows[:-1]:
-                candidate.query_one(".addr-add-btn", Button).display = False
-            remaining_rows[-1].query_one(".addr-add-btn", Button).display = True
+                candidate.query_one(".addr-add-btn", Button).visible = False
+            remaining_rows[-1].query_one(".addr-add-btn", Button).visible = True
             row.remove()
         else:
-            row.query_one(Input).value = ""
+            row.address_input.value = ""
+
+    # ------------------------------------------------------------------
+    # Splitting a typed or pasted address list into one row per address
+    # ------------------------------------------------------------------
+
+    async def on_input_blurred(self, event: Input.Blurred) -> None:
+        """Split a multi-address field once the user has left it.
+
+        Waiting for the blur keeps typing predictable: splitting on the
+        comma itself would move the cursor to another row mid-address,
+        and would have to second-guess a comma inside a quoted display
+        name that the user has not finished typing.
+        """
+        await self._split_addr_row(event.input)
+
+    async def on_address_input_pasted(self, event: AddressInput.Pasted) -> None:
+        """Split straight away on paste — there is no half-typed address."""
+        event.stop()
+        await self._split_addr_row(event.input)
+
+    async def _split_addr_row(self, inp: Input) -> None:
+        """Give each address in *inp* a row of its own, in place."""
+        node: Widget | None = inp
+        while node is not None and not isinstance(node, _AddrRow):
+            node = node.parent if isinstance(node.parent, Widget) else None
+        if node is None:
+            return
+        container = node.parent
+        if not isinstance(container, Vertical) or container.id is None:
+            return
+        parts = split_address_list(inp.value)
+        if not parts:
+            return
+
+        if inp.value != parts[0]:
+            # Leaving the field tidies it too: a trailing separator or
+            # stray whitespace goes, so the row shows exactly what it
+            # contributes to the header.  The rewrite is not typing, so
+            # it must not reopen the completion list under a field the
+            # user has already left.
+            with inp.prevent(Input.Changed):
+                inp.value = parts[0]
+        if len(parts) == 1:
+            return
+
+        # Mounted next to the row they came from, so a list expanded in
+        # the middle of a group does not jump to the end of it.  Awaited
+        # because _refresh_add_buttons reaches into the new rows, which
+        # have not composed their buttons until the mount completes.
+        await container.mount_all(
+            [self._new_addr_row(container.id, part) for part in parts[1:]],
+            after=node,
+        )
+        self._refresh_add_buttons(container)
 
     def _account_from_address(self, account: AnyAccount) -> str:
         if account.full_name:
