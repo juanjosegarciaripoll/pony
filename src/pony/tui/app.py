@@ -195,6 +195,13 @@ class PonyApp(App[None]):
             self.pop_screen()
             self._refresh_companion_status()
             return
+        if any(isinstance(s, CalendarScreen) for s in self.screen_stack):
+            # The agenda is open underneath one of its own dialogs — an
+            # event being edited, a sync being confirmed. Stacking a
+            # second agenda on top of that would be nonsense, and
+            # popping back to the mail side would throw the dialog away
+            # with whatever is half-typed in it.
+            return
         self.push_screen(CalendarScreen())
         # The header is app-wide and the mail screen has written the
         # open folder into it; name the subsystem now in front instead.

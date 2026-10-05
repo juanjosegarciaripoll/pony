@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from .config import ConfigError
 from .domain import AnyAccount, AppConfig
 from .paths import AppPaths
 from .protocols import IndexRepository
@@ -34,6 +35,81 @@ class ServiceStatus:
 
     paths: AppPaths
     checks: tuple[DoctorCheck, ...]
+
+
+def _calendar_checks(config_path: Path) -> list[DoctorCheck]:
+    """Report the calendar's configuration and local state.
+
+    The calendar is half of this program, so `pony doctor` answers for
+    it too. Its mirror and index live under the calendar's own data
+    directory, not Pony's, which is what keeps an install that predates
+    the merge working — so they are reported by their real paths rather
+    than assumed to sit beside the mail ones.
+
+    An unconfigured calendar is not a problem to report: plenty of
+    people only want the mail client.
+    """
+    from chronos.paths import default_index_path, user_data_dir
+
+    from .calendar import load_calendar_config
+
+    try:
+        config = load_calendar_config(config_path)
+    except ConfigError as exc:
+        return [DoctorCheck("Calendar config", CheckStatus.ERROR, str(exc))]
+    if config is None:
+        return [
+            DoctorCheck(
+                "Calendar",
+                CheckStatus.OK,
+                "Not configured (add a [calendar] table to enable it)",
+            )
+        ]
+
+    checks = [
+        DoctorCheck(
+            "Calendar config",
+            CheckStatus.OK,
+            f"{len(config.accounts)} account(s): "
+            + ", ".join(a.name for a in config.accounts),
+        )
+    ]
+    index_path = default_index_path()
+    if index_path.exists():
+        checks.append(DoctorCheck("Calendar index", CheckStatus.OK, str(index_path)))
+    else:
+        checks.append(
+            DoctorCheck(
+                "Calendar index",
+                CheckStatus.WARN,
+                f'Not yet created (run "pony calendar sync" first): {index_path}',
+            )
+        )
+    mirror_root = user_data_dir() / "mirror"
+    if mirror_root.is_dir():
+        calendars = sum(
+            1
+            for account in mirror_root.iterdir()
+            if account.is_dir()
+            for calendar in account.iterdir()
+            if calendar.is_dir()
+        )
+        checks.append(
+            DoctorCheck(
+                "Calendar mirror",
+                CheckStatus.OK,
+                f"{calendars} calendar(s): {mirror_root}",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "Calendar mirror",
+                CheckStatus.WARN,
+                f"Does not exist (created on first sync): {mirror_root}",
+            )
+        )
+    return checks
 
 
 def build_service_status(
@@ -163,6 +239,11 @@ def build_service_status(
                             f"Not writable: {mirror_path}",
                         )
                     )
+
+    # ------------------------------------------------------------------ #
+    # Calendar
+    # ------------------------------------------------------------------ #
+    checks.extend(_calendar_checks(effective_config_path))
 
     # ------------------------------------------------------------------ #
     # Markdown renderer (optional runtime dep)

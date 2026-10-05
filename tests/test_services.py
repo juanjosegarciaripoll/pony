@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest import mock
 
 from conftest import TMP_ROOT
 
@@ -245,3 +246,97 @@ class CheckMirrorIntegrityTest(unittest.TestCase):
         check = check_mirror_integrity(account=account, index=index)
         self.assertEqual(check.status, CheckStatus.OK)
         self.assertIn("no indexed messages", check.detail)
+
+
+class CalendarDoctorChecksTest(unittest.TestCase):
+    """`pony doctor` answers for the calendar half too."""
+
+    def setUp(self) -> None:
+        self.paths = _tmp_paths(f"cal-{self.id().rsplit('.', 1)[-1]}")
+        self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
+        # The calendar resolves its own data directory from the
+        # environment; keep it inside this test's tree.
+        patcher = mock.patch.dict(
+            "os.environ",
+            {"XDG_DATA_HOME": str(self.paths.data_dir / "cal-home")},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.calendar_home = self.paths.data_dir / "cal-home" / "chronos"
+
+    def _write_config(self, text: str) -> None:
+        self.paths.config_file.write_text(text, encoding="utf-8")
+
+    def _checks(self) -> dict[str, tuple[CheckStatus, str]]:
+        status = build_service_status(
+            paths=self.paths,
+            config_path=self.paths.config_file,
+            config=None,
+        )
+        return {c.name: (c.status, c.detail) for c in status.checks}
+
+    def test_a_mail_only_config_reports_no_calendar(self) -> None:
+        self._write_config("config_version = 2\naccounts = []\n")
+        checks = self._checks()
+        self.assertEqual(CheckStatus.OK, checks["Calendar"][0])
+        self.assertIn("Not configured", checks["Calendar"][1])
+
+    def test_a_configured_calendar_names_its_accounts(self) -> None:
+        self._write_config(
+            """
+            config_version = 2
+            accounts = []
+
+            [calendar]
+
+            [[calendar.accounts]]
+            name = "work"
+            url = "https://cal.example.com/dav/"
+            username = "user@example.com"
+            credential = { backend = "env", variable = "CAL_PASSWORD" }
+            """
+        )
+        checks = self._checks()
+        self.assertEqual(CheckStatus.OK, checks["Calendar config"][0])
+        self.assertIn("work", checks["Calendar config"][1])
+
+    def test_an_unsynced_calendar_warns_about_its_index_and_mirror(self) -> None:
+        self._write_config(
+            """
+            config_version = 2
+            accounts = []
+
+            [calendar]
+            """
+        )
+        checks = self._checks()
+        self.assertEqual(CheckStatus.WARN, checks["Calendar index"][0])
+        self.assertIn("pony calendar sync", checks["Calendar index"][1])
+        self.assertEqual(CheckStatus.WARN, checks["Calendar mirror"][0])
+
+    def test_a_synced_calendar_counts_its_calendars(self) -> None:
+        self._write_config("config_version = 2\naccounts = []\n\n[calendar]\n")
+        (self.calendar_home / "mirror" / "work" / "personal").mkdir(parents=True)
+        (self.calendar_home / "mirror" / "work" / "shared").mkdir(parents=True)
+        self.calendar_home.mkdir(parents=True, exist_ok=True)
+        (self.calendar_home / "index.sqlite3").write_bytes(b"")
+        checks = self._checks()
+        self.assertEqual(CheckStatus.OK, checks["Calendar index"][0])
+        self.assertEqual(CheckStatus.OK, checks["Calendar mirror"][0])
+        self.assertIn("2 calendar(s)", checks["Calendar mirror"][1])
+
+    def test_a_broken_calendar_table_is_an_error_not_a_crash(self) -> None:
+        self._write_config(
+            """
+            config_version = 2
+            accounts = []
+
+            [calendar]
+
+            [[calendar.accounts]]
+            name = "broken"
+            """
+        )
+        checks = self._checks()
+        self.assertEqual(CheckStatus.ERROR, checks["Calendar config"][0])
+        self.assertIn("[calendar]", checks["Calendar config"][1])

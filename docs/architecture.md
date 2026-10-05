@@ -338,6 +338,11 @@ row and reader scroll position. Three things make this work:
   the line each half shows about the other, and turns due reminders into
   announcements.
 
+++f2++ is an application binding, so it works from either side. It is
+ignored while one of the calendar's own dialogs is up: stacking a second
+agenda on top would be nonsense, and popping back to the mail side would
+throw the dialog away with whatever is half-typed in it.
+
 The dependency arrow points one way — `pony` imports `chronos`, never the
 reverse. What the calendar needs *from* a host arrives as injected
 collaborators on `TuiServices`: `invitation_sender` and

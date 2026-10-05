@@ -148,6 +148,23 @@ async def test_the_mail_screen_survives_the_round_trip() -> None:
         assert before is app.screen
 
 
+async def test_f2_is_ignored_inside_a_calendar_dialog() -> None:
+    """The agenda is open under its own dialog; neither answer is right."""
+    app, *_ = build_pony_app(
+        label="f2-dialog",
+        calendar=make_calendar_runtime(make_tmp_paths("f2-dialog")),
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.press("f1")  # the calendar's help screen
+        await pilot.pause()
+        depth = len(app.screen_stack)
+        await pilot.press("f2")
+        await pilot.pause()
+        assert len(app.screen_stack) == depth
+
+
 async def test_without_a_calendar_f2_says_so() -> None:
     app, *_ = build_pony_app(label="nocal")
     async with app.run_test() as pilot:
