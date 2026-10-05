@@ -654,7 +654,9 @@ class SyncLockReleaseTest(CliTestCase):
             exit_code = cli.cmd_sync(ctx)
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("another calendar sync is already running", self.stderr.getvalue())
+        self.assertIn(
+            "another calendar sync is already running", self.stderr.getvalue()
+        )
 
 
 class BuildSyncRunnerTest(CliTestCase):

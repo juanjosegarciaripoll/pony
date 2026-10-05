@@ -80,7 +80,9 @@ class AcquireSyncLockTest(unittest.TestCase):
                 acquire_sync_lock(self.lock_path),
             ):
                 self.fail("acquired a lock another process holds")
-            self.assertIn("another calendar sync is already running", str(ctx.exception))
+            self.assertIn(
+                "another calendar sync is already running", str(ctx.exception)
+            )
         finally:
             release.put("go")
             child.join(timeout=10)
