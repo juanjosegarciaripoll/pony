@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
@@ -14,6 +15,7 @@ from chronos.tui.app import CALENDAR_CSS
 from chronos.tui.app import TuiServices as CalendarServices
 from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
+from ..accounts import resolve_smtp_password
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
@@ -25,7 +27,11 @@ from ..protocols import (
     IndexRepository,
     MirrorRepository,
 )
-from .calendar_host import AlarmPoller, build_calendar_services
+from .calendar_host import (
+    AlarmPoller,
+    build_calendar_services,
+    send_event_invitations,
+)
 from .screens.main_screen import MainScreen
 from .terminal import (
     format_terminal_title,
@@ -137,10 +143,16 @@ class PonyApp(App[None]):
                 contacts=self._contacts,
                 ui_state_path=self._ui_state_path,
                 notifications=self.notifications,
+                calendar=self._calendar,
             )
         )
         if self._calendar is not None:
-            self._calendar_services = build_calendar_services(self._calendar, host=self)
+            self._calendar_services = build_calendar_services(
+                self._calendar,
+                host=self,
+                invitation_sender=self._post_invitation,
+                contacts=self._contacts,
+            )
             self._alarm_poller = AlarmPoller(self._calendar.index)
             self.set_interval(
                 _COMPANION_TICK_SECONDS, self._companion_tick, name="companion"
@@ -186,6 +198,86 @@ class PonyApp(App[None]):
         # Coming back, `_refresh_companion_status` restores the folder.
         self.sub_title = "Calendar"
         self._refresh_companion_status()
+
+    def _post_invitation(
+        self,
+        *,
+        ics: bytes,
+        attendees: Sequence[str],
+        organizer: str | None,
+        summary: str,
+        is_update: bool,
+    ) -> None:
+        """Mail an event the calendar just saved to its attendees.
+
+        Satisfies `chronos.tui.app.InvitationSender`.  The event is
+        already stored by the time this runs, so every failure here is
+        reported as a failure to *post* the invitation, never as a lost
+        event.
+        """
+        account = next((a for a in self._config.accounts if a.can_send), None)
+        if account is None:
+            self.notify(
+                "Event saved, but no account is configured for sending invitations.",
+                severity="warning",
+            )
+            return
+        try:
+            password = resolve_smtp_password(account, self._credentials)
+        except Exception as exc:  # noqa: BLE001 — any backend may fail
+            self.notify(f"Could not get password: {exc}", severity="error")
+            return
+        if password is None:
+            self.notify(
+                f"No password available for account {account.name!r}.",
+                severity="error",
+            )
+            return
+        self._deliver_invitation(
+            ics=ics,
+            attendees=tuple(attendees),
+            organizer=organizer,
+            summary=summary,
+            is_update=is_update,
+            account=account,
+            password=password,
+        )
+
+    @work(exclusive=False, group="invitation-send")
+    async def _deliver_invitation(
+        self,
+        *,
+        ics: bytes,
+        attendees: Sequence[str],
+        organizer: str | None,
+        summary: str,
+        is_update: bool,
+        account: AnyAccount,
+        password: str,
+    ) -> None:
+        """Run the invitation's SMTP conversation off the event loop."""
+        delivery = await asyncio.to_thread(
+            send_event_invitations,
+            ics=ics,
+            attendees=attendees,
+            organizer=organizer,
+            summary=summary,
+            is_update=is_update,
+            account=account,
+            password=password,
+            connect_timeout=self._config.smtp_connect_timeout_seconds,
+        )
+        if not delivery.ok:
+            self.notify(
+                f"Event saved, but the invitation was not sent: {delivery.error}",
+                severity="error",
+                timeout=15,
+            )
+            return
+        if delivery.sent_to:
+            count = len(delivery.sent_to)
+            plural = "" if count == 1 else "s"
+            self.notify(f"Invitation sent to {count} attendee{plural}.")
 
     def _companion_tick(self) -> None:
         """Fire due reminders and refresh what each half says about the other."""

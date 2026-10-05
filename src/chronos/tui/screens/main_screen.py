@@ -365,6 +365,7 @@ class MainScreen(Screen[None]):
             initial_start=initial_start,
             initial_end=initial_end,
             initial_all_day=all_day,
+            attendee_completer=self._services().attendee_completer,
         )
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
@@ -683,6 +684,13 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Created {draft.summary!r}"
             )
+            self._post_invitations(
+                ics=ics,
+                attendees=draft.attendees,
+                organizer=_organizer_for(draft.target, services.config),
+                summary=draft.summary,
+                is_update=False,
+            )
         else:
             existing = draft.existing
             organizer = extract_organizer(existing.raw_ics, existing.ref.uid)
@@ -724,7 +732,41 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Updated {draft.summary!r}"
             )
+            self._post_invitations(
+                ics=ics,
+                attendees=draft.attendees,
+                organizer=organizer,
+                summary=draft.summary,
+                is_update=True,
+            )
         self.refresh_view()
+
+    def _post_invitations(
+        self,
+        *,
+        ics: bytes,
+        attendees: Sequence[str],
+        organizer: str | None,
+        summary: str,
+        is_update: bool,
+    ) -> None:
+        """Mail the event to its attendees, when the host can send mail.
+
+        The event is already saved: an invitation that cannot be posted
+        leaves a recorded event with its attendees, not a lost one. A
+        calendar running on its own has no sender and simply records
+        them.
+        """
+        services = self._services()
+        if not attendees or services.invitation_sender is None:
+            return
+        services.invitation_sender(
+            ics=ics,
+            attendees=tuple(attendees),
+            organizer=organizer,
+            summary=summary,
+            is_update=is_update,
+        )
 
     def _refresh_local_caches(self, component: StoredComponent) -> None:
         """Rebuild the occurrence + alarm caches after a local create/edit.
@@ -764,6 +806,7 @@ class MainScreen(Screen[None]):
             default_calendar=component.ref.calendar,
             on_save=self._save_event,
             on_delete=self.delete_with_confirm,
+            attendee_completer=services.attendee_completer,
         )
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 

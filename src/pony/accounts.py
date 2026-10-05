@@ -23,7 +23,7 @@ from .storage import MaildirMirrorRepository, MboxMirrorRepository
 
 if TYPE_CHECKING:
     from .domain import AnyAccount, AppConfig
-    from .protocols import MirrorRepository
+    from .protocols import CredentialsProvider, MirrorRepository
 
 
 def build_mirror(account: AnyAccount) -> MirrorRepository:
@@ -78,3 +78,27 @@ def select_imap_accounts(config: AppConfig, name: str | None) -> list[AccountCon
     if name is None:
         return accounts
     return [a for a in accounts if a.name == name]
+
+
+def resolve_smtp_password(
+    account: AnyAccount, credentials: CredentialsProvider | None
+) -> str | None:
+    """Resolve *account*'s SMTP password, or None when there is none.
+
+    Sending goes through the same credentials provider as syncing, so
+    the ``env``, ``command`` and ``encrypted`` backends work for it too.
+    Reading ``account.password`` directly would mean every account not
+    using the plaintext backend looked sendable and was then refused at
+    send time; that fallback applies only when no provider is wired in
+    at all.
+
+    Backend failures propagate: the caller is the one that can tell the
+    user which account could not be unlocked and why.
+    """
+    if credentials is not None:
+        password = credentials.get_password(account_name=account.name)
+        if password:
+            return password
+    elif account.password:
+        return account.password
+    return None

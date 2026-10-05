@@ -16,6 +16,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ...domain import FolderMessageSummary, FolderRef
+from ...invitation import Invitation, extract_invitation
 from ...message_renderer import (
     RenderedMessage,
     build_browser_html,
@@ -92,6 +93,10 @@ class MessageViewPanel(VerticalScroll):
     """
 
     BORDER_TITLE = "Message"
+
+    # Set whenever a message is rendered; declared here so the property
+    # below answers before the first one is loaded.
+    _invitation: Invitation | None = None
 
     BINDINGS = [
         Binding("q", "close", "Close"),
@@ -195,7 +200,13 @@ class MessageViewPanel(VerticalScroll):
 
     def clear(self) -> None:
         self._rendered = None
+        self._invitation = None
         self._set_content("")
+
+    @property
+    def invitation(self) -> Invitation | None:
+        """The meeting invitation on the open message, if it carries one."""
+        return self._invitation
 
     def open_in_browser(self) -> None:
         """Render the message as a self-contained HTML file and open it."""
@@ -283,6 +294,7 @@ class MessageViewPanel(VerticalScroll):
     def _build_markup(self, r: RenderedMessage) -> str:
         self._header_addresses: list[tuple[str, str]] = []
         self._body_links = r.links
+        self._invitation = extract_invitation(r.raw_bytes)
         lines: list[str] = []
 
         for label, header in (
@@ -308,8 +320,27 @@ class MessageViewPanel(VerticalScroll):
                     f"  ({fmt_size(att.size_bytes)})"
                 )
 
+        if self._invitation is not None:
+            lines.append("")
+            lines.extend(_invitation_lines(self._invitation))
+
         lines.append("─" * 60)
         lines.append("")
         lines.append(_render_body(r.styled_body or r.body, r.links))
 
         return "\n".join(lines)
+
+
+def _invitation_lines(invitation: Invitation) -> list[str]:
+    """The invitation block shown above the body.
+
+    Says what is proposed and which key answers it, so an invitation is
+    recognisable without opening the calendar part by hand.
+    """
+    lines = [f"[bold]{_escape(invitation.describe()[0])}[/bold]"]
+    lines += [f"  {_escape(line)}" for line in invitation.describe()[1:]]
+    if invitation.is_request:
+        lines.append("  [dim]i — accept, decline or add to the calendar[/dim]")
+    elif invitation.is_cancellation:
+        lines.append("  [dim]i — remove it from the calendar[/dim]")
+    return lines

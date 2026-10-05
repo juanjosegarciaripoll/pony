@@ -36,6 +36,44 @@ _ALARM_LOOKBACK = timedelta(minutes=15)
 # the bundled themes; override per-user via config or the --theme flag.
 DEFAULT_THEME = "flexoki"
 
+
+class AttendeeCompleter(Protocol):
+    """Suggests attendee addresses as the user types one.
+
+    Called with what has been typed so far; returns ready-to-insert
+    address strings, best match first. Pony Express answers from the
+    contact index its own composer completes from, which is the point of
+    the two halves sharing a process: an invitation goes to the people
+    already in the user's mail.
+    """
+
+    def __call__(self, prefix: str, *, limit: int = 10) -> Sequence[str]: ...
+
+
+class InvitationSender(Protocol):
+    """Mails an invitation for an event that has just been saved.
+
+    Supplied by a host application that can send mail — Pony Express
+    does, with the calendar inside it. `None` on `TuiServices` means the
+    calendar has no way to post an invitation, and saving an event with
+    attendees simply records them.
+
+    Failures are the sender's own to report: saving the event has
+    already succeeded by the time this is called, and a bounced
+    invitation must not read as a lost event.
+    """
+
+    def __call__(
+        self,
+        *,
+        ics: bytes,
+        attendees: Sequence[str],
+        organizer: str | None,
+        summary: str,
+        is_update: bool,
+    ) -> None: ...
+
+
 SyncRunner = Callable[..., Sequence[SyncResult]]
 """Runs every configured account's sync.
 
@@ -64,6 +102,12 @@ class TuiServices:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     sync_runner: SyncRunner | None = None
     startup_ics_path: Path | None = None
+    # Set by a host that can send mail; see `InvitationSender`.
+    invitation_sender: InvitationSender | None = None
+    # Completes attendee addresses in the event editor. Set by a host
+    # with a contact store — Pony Express passes the same source its own
+    # composer completes from. None falls back to a plain text field.
+    attendee_completer: AttendeeCompleter | None = None
 
 
 @runtime_checkable
@@ -305,6 +349,8 @@ __all__ = [
     "CALENDAR_CSS",
     "CalendarHost",
     "ChronosApp",
+    "AttendeeCompleter",
+    "InvitationSender",
     "SyncRunner",
     "TuiServices",
     # Re-exported: the alarm poller's companion, now shared with the

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections.abc
 import contextlib
 import dataclasses
 import tempfile
 from datetime import UTC, datetime
+from email.message import EmailMessage
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -18,7 +22,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
-from ...accounts import find_imap_account
+from ...accounts import find_imap_account, resolve_smtp_password
 from ...composer import (
     DraftSpec,
     forward_attachment_name,
@@ -40,6 +44,7 @@ from ...domain import (
     MessageStatus,
 )
 from ...folder_utils import is_sent_folder
+from ...invitation import Invitation
 from ...mailbox_ops import flush_mirror, landed_in_folder, moved_to_folder
 from ...message_copy import copy_message_bytes
 from ...message_renderer import (
@@ -68,6 +73,10 @@ from ..widgets.edge_drag import PaneDragged
 from ..widgets.folder_panel import FolderPanel, has_inbox_mail
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
+
+if TYPE_CHECKING:
+    from ...calendar import CalendarRuntime
+    from .invitation_screen import InvitationChoice
 
 
 class MainScreen(Screen[None]):
@@ -106,6 +115,7 @@ class MainScreen(Screen[None]):
         Binding("G", "goto_folder", "Goto folder", show=False),
         Binding("H", "harvest_contacts", "Harvest contacts", show=False),
         Binding("B", "browse_contacts", "Contacts"),
+        Binding("i", "respond_invitation", "Invitation", show=False),
         Binding("ctrl+left", "narrow_folders", "Narrower folders", show=False),
         Binding("ctrl+right", "widen_folders", "Wider folders", show=False),
         Binding("ctrl+up", "shrink_list", "Smaller list", show=False),
@@ -161,6 +171,7 @@ class MainScreen(Screen[None]):
         contacts: ContactRepository | None = None,
         ui_state_path: Path | None = None,
         notifications: NotificationCenter | None = None,
+        calendar: CalendarRuntime | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -177,6 +188,9 @@ class MainScreen(Screen[None]):
         # what the calendar has to say (see `set_companion_status`).
         self._folder_context = ""
         self._companion_status = ""
+        # Present when a calendar is configured; what `i` files an
+        # invitation into.
+        self._calendar = calendar
         self._current_folder_ref: FolderRef | None = None
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
@@ -763,6 +777,185 @@ class MainScreen(Screen[None]):
         self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
         self._announce_new_mail(worker.result)
         self.call_after_refresh(self._refresh_after_sync)
+
+    # ------------------------------------------------------------------
+    # Invitations
+    # ------------------------------------------------------------------
+
+    def action_respond_invitation(self) -> None:
+        """Answer the meeting invitation on the open message.
+
+        The dialog settles which calendar the event goes in and what the
+        organizer is told, because those are one decision for the user
+        even though they are two operations underneath.
+        """
+        from chronos.tui.views import all_calendar_refs
+
+        from .invitation_screen import InvitationScreen
+
+        invitation = self.query_one(MessageViewPanel).invitation
+        if invitation is None:
+            self.app.notify("This message carries no invitation.")
+            return
+        if self._calendar is None:
+            self.app.notify(
+                "No calendar configured — add a [calendar] table to config.toml.",
+                severity="warning",
+            )
+            return
+        calendars = all_calendar_refs(self._calendar.config, self._calendar.mirror)
+        if not calendars:
+            self.app.notify(
+                "No calendars yet — sync the calendar first.", severity="warning"
+            )
+            return
+
+        def _chosen(choice: InvitationChoice | None) -> None:
+            if choice is not None:
+                self._apply_invitation(invitation, choice)
+
+        self.app.push_screen(
+            InvitationScreen(
+                invitation,
+                calendars,
+                can_reply=bool(invitation.organizer) and invitation.is_request,
+            ),
+            _chosen,
+        )
+
+    def _apply_invitation(
+        self, invitation: Invitation, choice: InvitationChoice
+    ) -> None:
+        """File *invitation* in the chosen calendar, then answer the organizer.
+
+        Filing comes first and is reported on its own: an accepted
+        invitation that reached the calendar but whose reply bounced is a
+        very different situation from one that never landed, and saying
+        "accepted" for both would hide it.
+        """
+        from chronos.ingest import IngestError, ingest_ics_bytes
+
+        assert self._calendar is not None
+        try:
+            report = ingest_ics_bytes(
+                invitation.raw_ics,
+                target=choice.calendar,
+                mirror=self._calendar.mirror,
+                index=self._calendar.index,
+                # A re-sent invitation for an event already filed is a
+                # correction, not a duplicate to skip.
+                on_conflict="replace",
+            )
+        except IngestError as exc:
+            self.app.notify(f"Could not file the invitation: {exc}", severity="error")
+            return
+        if invitation.is_cancellation:
+            self.app.notify(
+                f"Cancelled in {choice.calendar.calendar_name}."
+                if report.cancelled
+                else "Nothing to cancel — the event is not in the calendar."
+            )
+            return
+        self.app.notify(f"Filed in {choice.calendar.calendar_name}.")
+        if choice.partstat is not None:
+            self._send_invitation_reply(invitation, choice.partstat)
+
+    def _send_invitation_reply(self, invitation: Invitation, partstat: str) -> None:
+        """Mail the organizer a METHOD:REPLY carrying the chosen status."""
+        from ...invitation import (
+            build_itip_message,
+            reply_body,
+            reply_ics,
+            reply_subject,
+        )
+
+        account = self._sending_account_for_invitation()
+        if account is None:
+            return
+        assert account.smtp is not None
+        assert account.username is not None
+        organizer = invitation.organizer
+        if not organizer:
+            self.app.notify("No organizer to reply to.", severity="warning")
+            return
+        try:
+            password = resolve_smtp_password(account, self._credentials)
+        except Exception as exc:  # noqa: BLE001 — any backend may fail
+            self.app.notify(f"Could not get password: {exc}", severity="error")
+            return
+        if password is None:
+            self.app.notify(
+                f"No password available for account {account.name!r}.",
+                severity="error",
+            )
+            return
+        sender = account.email_address or account.username
+        message = build_itip_message(
+            from_address=sender,
+            to_addresses=[organizer],
+            subject=reply_subject(invitation, partstat),
+            body_text=reply_body(invitation, attendee=sender, partstat=partstat),
+            ics=reply_ics(
+                invitation,
+                attendee=sender,
+                partstat=partstat,
+                now=datetime.now(UTC),
+            ),
+            method="REPLY",
+            filename="reply.ics",
+        )
+        self._deliver_invitation_reply(account, message, partstat, password)
+
+    def _sending_account_for_invitation(self) -> AnyAccount | None:
+        """The account to answer from: the one the invitation arrived on.
+
+        Replying from the address the organizer invited is what lets
+        their client match the answer to the attendee line it wrote.
+        """
+        summary = self.get_current_message()
+        candidates = [a for a in self._config.accounts if a.can_send]
+        if not candidates:
+            self.app.notify("No account configured for sending.", severity="warning")
+            return None
+        if summary is not None:
+            name = summary.message_ref.account_name
+            for account in candidates:
+                if account.name == name:
+                    return account
+        return candidates[0]
+
+    @work(exclusive=True, group="invitation-reply")
+    async def _deliver_invitation_reply(
+        self,
+        account: AnyAccount,
+        message: EmailMessage,
+        partstat: str,
+        password: str,
+    ) -> None:
+        """Run the reply's SMTP conversation off the event loop."""
+        from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
+        from ...smtp_sender import send_message as smtp_send
+
+        assert account.smtp is not None
+        assert account.username is not None
+        try:
+            await asyncio.to_thread(
+                smtp_send,
+                smtp=account.smtp,
+                username=account.username,
+                password=password,
+                msg=message,
+                connect_timeout=self._config.smtp_connect_timeout_seconds,
+                connect_attempts=DEFAULT_CONNECT_ATTEMPTS,
+            )
+        except (SMTPError, ValueError) as exc:
+            self.app.notify(
+                f"Filed, but the reply could not be sent: {exc}",
+                severity="error",
+                timeout=15,
+            )
+            return
+        self.app.notify(f"Replied {partstat.lower()}.")
 
     # ------------------------------------------------------------------
     # Search

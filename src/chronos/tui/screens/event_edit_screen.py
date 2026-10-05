@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
+from textual.suggester import Suggester
 from textual.widgets import Checkbox, Footer, Input, Label, Select
 
 from chronos.domain import (
@@ -25,6 +26,9 @@ from chronos.mutations import (
 )
 from chronos.tui.bindings import edit_bindings
 from chronos.tui.widgets.date_picker import DatePicker, InvalidDateError
+
+if TYPE_CHECKING:
+    from chronos.tui.app import AttendeeCompleter
 
 _HALF_HOUR_OPTIONS = tuple(
     (label, label)
@@ -74,6 +78,7 @@ class EventEditScreen(Screen[None]):
         initial_start: datetime | None = None,
         initial_end: datetime | None = None,
         initial_all_day: bool = False,
+        attendee_completer: AttendeeCompleter | None = None,
     ) -> None:
         super().__init__()
         if not calendars:
@@ -86,6 +91,7 @@ class EventEditScreen(Screen[None]):
         self._initial_start = initial_start
         self._initial_end = initial_end
         self._initial_all_day = initial_all_day
+        self._attendee_completer = attendee_completer
         self._error: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -210,6 +216,11 @@ class EventEditScreen(Screen[None]):
                     placeholder="alice@example.com, bob@example.com",
                     classes="event-field-control",
                     compact=True,
+                    suggester=(
+                        _AttendeeSuggester(self._attendee_completer)
+                        if self._attendee_completer is not None
+                        else None
+                    ),
                 )
             with Horizontal(classes="event-field-row"):
                 yield Label("Reminders", classes="event-field-label")
@@ -462,3 +473,28 @@ def _selected_time(select: Select[object], label: str) -> time:
 
 
 __all__ = ["EditDraft", "EventEditScreen"]
+
+
+class _AttendeeSuggester(Suggester):
+    """Inline completion for the Invitees field.
+
+    Completes the address being typed after the last comma, leaving the
+    ones already entered alone, and offers the first match as Textual's
+    ghost text — accepted with `right`, ignored by typing on. Matching
+    is case-insensitive because an address is.
+    """
+
+    def __init__(self, completer: AttendeeCompleter) -> None:
+        super().__init__(case_sensitive=False)
+        self._completer = completer
+
+    async def get_suggestion(self, value: str) -> str | None:
+        head, _, typed = value.rpartition(",")
+        prefix = f"{head}," if head else ""
+        stripped = typed.lstrip()
+        if len(stripped) < 2:
+            return None
+        padding = typed[: len(typed) - len(stripped)] or (" " if prefix else "")
+        for candidate in self._completer(stripped, limit=1):
+            return f"{prefix}{padding}{candidate}"
+        return None

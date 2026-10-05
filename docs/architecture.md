@@ -12,7 +12,20 @@ can share the same core: the TUI, standalone composer, and contacts browser
 are all separate Textual `App` subclasses that push their own screens and
 own their own keybindings.
 
+Mail is one of two subsystems. The other is the calendar (`src/chronos`), a
+CalDAV client with its own mirror, index, sync engine and screens, which
+Pony Express hosts rather than launches: ++f2++ puts the agenda in front of
+the mail reader and ++f2++ again brings the mail back. One process, one
+configuration file, one notification space. See
+[Mail and calendar as one program](#mail-and-calendar-as-one-program).
+
 ## Package layout
+
+```
+src/
+  pony/     # mail
+  chronos/  # calendar
+```
 
 ```
 src/pony/
@@ -43,12 +56,16 @@ src/pony/
   imap_client.py       # ImapSession wrapper around imaplib
   smtp_sender.py       # SMTP submission
   bbdb.py              # BBDB v3 reader/writer
+  calendar.py          # the [calendar] config section + opening its stores
+  invitation.py        # iTIP: reading invitations, writing replies/requests
+  notifications.py     # the notification space mail and calendar share
   services.py          # doctor diagnostics, mirror integrity
   fixture_flow.py      # deterministic fixture ingest flow
   mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
     bindings.py        # shared mark/motion Binding tuples
+    calendar_host.py   # where the mail app meets the calendar's screens
     pdf_export.py      # HTML -> PDF via a detected external converter
     terminal.py        # OSC sequences for window-title push/pop/set
     ui_state.py        # persisted pane sizes (ui_state.json)
@@ -70,6 +87,7 @@ src/pony/
       add_attachment_screen.py   # file picker
       attachment_picker_screen.py# pick previously-attached files by number
       eml_viewer_screen.py       # standalone .eml viewer
+      invitation_screen.py       # i — accept / decline / file an invitation
       goto_folder_screen.py      # G — fuzzy jump to folder
       new_folder_screen.py       # N — create new folder
       pick_folder_screen.py      # modal (account, folder) target picker
@@ -278,6 +296,139 @@ worker.
 One predicate decides what counts as an attachment, so the reader pane, the
 browser view, the PDF export and the CLI extractor cannot disagree about a
 message's contents.
+
+## Mail and calendar as one program
+
+The calendar is a complete client in its own right — CalDAV sync, an `.ics`
+mirror, a SQLite index with a recurrence and alarm cache, and its own
+Textual screens. Pony Express does not start it as a separate program; it
+hosts its screens.
+
+```
+src/chronos/
+  config.py domain.py paths.py protocols.py
+  storage.py index_store.py storage_indexing.py locking.py
+  ical_parser.py recurrence.py mutations.py ingest.py
+  caldav/ http/ oauth.py credentials.py authorization.py sync.py
+  cli.py mcp_server.py
+  tui/
+    app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS
+    views.py           # pure projections the screens render
+    screens/           # agenda, day, grid, month, event edit, …
+    widgets/           # calendar panel, timeline grid, month grid, …
+```
+
+### One application
+
+`PonyApp` owns both screen stacks. The agenda is *pushed over* the mail
+screen rather than replacing it, so returning finds the same folder, cursor
+row and reader scroll position. Three things make this work:
+
+- **`CalendarHost`** (`chronos.tui.app`) is the protocol the calendar's
+  screens read their dependencies from. `ChronosApp` satisfies it when the
+  calendar runs on its own; `PonyApp` satisfies it here. The calendar's
+  screens were already decoupled from their app, so this is the only
+  coupling point.
+- **`CALENDAR_CSS`** is the calendar's stylesheet, lifted out of its app
+  class so a host can adopt it. `App.CSS` is global, but its rules select
+  calendar widgets, which exist only under the calendar's own screens.
+- **`pony.tui.calendar_host`** is the single module that imports from both
+  halves: it builds the calendar's `TuiServices` (including the OAuth flow,
+  which has to run as a screen on the application it interrupts), formats
+  the line each half shows about the other, and turns due reminders into
+  announcements.
+
+The dependency arrow points one way — `pony` imports `chronos`, never the
+reverse. What the calendar needs *from* a host arrives as injected
+collaborators on `TuiServices`: `invitation_sender` and
+`attendee_completer`. Both are optional, and without them the calendar
+behaves exactly as it does standalone.
+
+### One notification space
+
+`pony.notifications.NotificationCenter` takes every announcement from either
+half, and the application renders it once — a toast, the terminal bell, and
+an OSC 777 desktop notification. Going through the terminal is what makes a
+reminder arrive on the machine the user is looking at rather than on the far
+end of an SSH session.
+
+Announcements come in two kinds:
+
+- **Urgent** — a calendar reminder falling due. Shown wherever the user is,
+  including while the calendar itself is on screen.
+- **Ordinary** — mail a sync has just fetched. Shown only when the agenda is
+  the screen in front of the user, because the mail reader reports its own
+  sync results itself and a second toast saying the same thing is noise.
+
+Nothing is persisted. Mail and calendar each already keep the state that
+outlives a session (unread flags, an alarm's `fired_at`), so a second store
+would be a second truth.
+
+### One line about the other half
+
+Both screens expose the same `set_companion_status(text)` call, filled by the
+application: the mail reader carries the next event beside the open folder,
+and the agenda carries the unread mail count beside its sync countdown.
+Neither line appears when there is nothing to say.
+
+### Invitations
+
+`pony.invitation` is the shared vocabulary for iTIP (RFC 5546) in both
+directions. It does no I/O — importing is `chronos.ingest`'s job and sending
+is `pony.smtp_sender`'s — and it parses with the calendar's own iCalendar
+reader rather than a second one, so what the reader pane shows and what the
+calendar stores cannot disagree.
+
+**Mail → calendar.** A message carrying a `text/calendar` (or
+`application/ics`) part shows an invitation block above its body naming what
+is proposed. ++i++ opens a dialog that settles which calendar it goes in and
+what the organizer is told, because those are one decision for the user even
+though they are two operations underneath: `chronos.ingest.ingest_ics_bytes`
+files it — handling `METHOD:CANCEL` and a newer `SEQUENCE` as the calendar
+already does — and then a `METHOD:REPLY` goes back to the organizer over
+SMTP. Filing is reported on its own: an accepted invitation that reached the
+calendar but whose reply bounced is a very different situation from one that
+never landed.
+
+**Calendar → mail.** Saving an event that has attendees posts it to them as a
+`METHOD:REQUEST` through the same SMTP path the composer uses. The event is
+stored before the invitation is sent, so a failure to post is reported as
+exactly that and never as a lost event. The organizer is dropped from the
+recipient list — they are the one sending. The calendar writes its events
+without a `METHOD`, since they are entries rather than scheduling messages;
+posting one is what makes it a scheduling message, so the property is added
+on the way out rather than stored.
+
+**Attendees.** The event editor completes addresses from Pony's contact
+index — the same source the composer's address fields use, which is the
+point of the two halves sharing a process: an invitation goes to the people
+already in the user's mail.
+
+### Configuration and state
+
+One file. Mail keys stay at the top level and the calendar's live under
+`[calendar]`, with `[[calendar.accounts]]` holding its CalDAV accounts.
+`use_utf8`, `editor` and `theme` are read from the top level unless
+`[calendar]` overrides them; there is exactly one `config_version`, at the
+top. `pony.calendar` is the bridge, and it stays clear of `chronos.tui` so
+that importing it does not drag Textual into the CLI and MCP import graphs.
+
+The calendar's mirror, index and OAuth tokens stay at the paths the calendar
+already used, so an existing install keeps its synced data with nothing to
+migrate. Only the configuration moved.
+
+`pony calendar ...` runs any calendar command against that configuration.
+The argument list is split before argparse sees it, because
+`argparse.REMAINDER` still parses a leading flag itself — which would make
+`pony calendar --help` print a wrapper's help and reject
+`pony calendar --config f list` outright, when both belong to the calendar's
+own parser.
+
+### Known limitation
+
+The MCP server a running TUI exposes is still the mail one. The calendar's
+MCP tools are reachable through `pony calendar mcp`, not through the single
+session endpoint.
 
 ## Data flow
 

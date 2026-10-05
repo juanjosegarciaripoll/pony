@@ -372,6 +372,7 @@ def build_pony_app(
     seed: Sequence[tuple[FolderRef, bytes]] = (),
     viewers: tuple[ViewerRule, ...] = (),
     calendar: CalendarRuntime | None = None,
+    with_contacts: bool = False,
 ) -> tuple[
     TestPonyApp,
     AppConfig,
@@ -409,6 +410,11 @@ def build_pony_app(
         index=index,
         mirrors=dict(mirrors),
         credentials=credentials,
+        # `run_tui` always passes the index as the contact store, but
+        # several compose tests were written against an app without one
+        # and take different paths when contact flows are reachable, so
+        # the harness keeps it opt-in.
+        contacts=index if with_contacts else None,
         config_path=paths.config_file,
         calendar=calendar,
     )
