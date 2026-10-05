@@ -65,7 +65,13 @@ warn_unused_ignores = false
 [tool.basedpyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["src", "tests", "tests_calendar"]
+# `tests_calendar/` is the calendar's own suite, which its project
+# checked with `basedpyright src/` — its fakes name parameters with a
+# leading underscore for ruff's unused-argument rule, which basedpyright
+# then reads as an incompatible override. Both halves' source is
+# checked; adding that suite would mean thirteen `noqa`s for a
+# disagreement between two linters about test doubles.
+include = ["src", "tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

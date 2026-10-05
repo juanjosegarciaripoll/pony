@@ -9,11 +9,11 @@ from unittest.mock import Mock
 
 from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
 
-import pony.tui.screens.main_screen as main_screen_module
 from chronos.domain import CalendarRef
 from chronos.storage_indexing import index_calendar
 from pony.domain import FolderRef
 from pony.tui.screens.invitation_screen import InvitationChoice, InvitationScreen
+from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
 
@@ -96,6 +96,15 @@ def _calendar_with_one_calendar(label: str) -> Any:
     )
     (runtime.mirror.root / _ACCOUNT / _CALENDAR).mkdir(parents=True, exist_ok=True)
     return runtime
+
+
+def _main(app: object) -> MainScreen:
+    """The mail screen, narrowed from `App.screen`'s declared type."""
+    return next(
+        screen
+        for screen in app.screen_stack  # type: ignore[attr-defined]
+        if isinstance(screen, MainScreen)
+    )
 
 
 async def _open_first_message(pilot: Any) -> None:
@@ -196,9 +205,8 @@ async def test_adding_an_invitation_files_it_in_the_calendar() -> None:
     )
     async with app.run_test() as pilot:
         await _open_first_message(pilot)
-        screen = app.screen
-        view = screen.query_one(MessageViewPanel)
-        invitation = view.invitation
+        screen = _main(app)
+        invitation = screen.query_one(MessageViewPanel).invitation
         assert invitation is not None
         screen._apply_invitation(  # noqa: SLF001
             invitation,
@@ -226,7 +234,7 @@ async def test_accepting_files_it_and_replies_to_the_organizer() -> None:
         smtp_module.send_message = sent  # type: ignore[assignment]
         try:
             await _open_first_message(pilot)
-            screen = app.screen
+            screen = _main(app)
             invitation = screen.query_one(MessageViewPanel).invitation
             assert invitation is not None
             screen._apply_invitation(  # noqa: SLF001
@@ -272,7 +280,7 @@ async def test_a_cancellation_removes_the_event() -> None:
     target = CalendarRef(_ACCOUNT, _CALENDAR)
     async with app.run_test() as pilot:
         await _open_first_message(pilot)
-        screen = app.screen
+        screen = _main(app)
         list_panel = screen.query_one(MessageListPanel)
 
         # File the invitation from the first message…
@@ -307,7 +315,7 @@ async def test_malformed_calendar_data_is_reported_not_raised() -> None:
     )
     async with app.run_test() as pilot:
         await _open_first_message(pilot)
-        screen = app.screen
+        screen = _main(app)
         invitation = screen.query_one(MessageViewPanel).invitation
         assert invitation is not None
         import dataclasses
@@ -330,7 +338,7 @@ async def test_a_reply_without_a_sendable_account_is_reported() -> None:
     )
     async with app.run_test() as pilot:
         await _open_first_message(pilot)
-        screen = app.screen
+        screen = _main(app)
         invitation = screen.query_one(MessageViewPanel).invitation
         assert invitation is not None
         # A configuration with nothing that can send. (An IMAP
@@ -343,9 +351,3 @@ async def test_a_reply_without_a_sendable_account_is_reported() -> None:
         await pilot.pause()
         messages = [n.message for n in app._notifications]  # noqa: SLF001
         assert any("No account configured for sending" in m for m in messages), messages
-
-
-def test_module_imports_cleanly() -> None:
-    # The screen imports the calendar lazily; this keeps the import in
-    # the test's own dependency graph honest.
-    assert main_screen_module.MainScreen is not None

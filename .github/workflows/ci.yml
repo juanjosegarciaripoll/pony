@@ -59,11 +59,11 @@ jobs:
         shell: bash
 
       - name: Lint
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ tests_calendar/
         shell: bash
 
       - name: Format
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ tests_calendar/
         shell: bash
 
       - name: Type-check (mypy)

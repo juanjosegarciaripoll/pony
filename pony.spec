@@ -10,7 +10,14 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
+
+# The calendar is reached through imports inside functions — `pony tui`
+# builds it lazily, `pony calendar` hands off to its CLI — so collect it
+# wholesale rather than trust the analyser to walk every one of them.
+hidden = collect_submodules("chronos")
 
 site_dir = Path("site")
 datas: list[tuple[str, str]] = [("config-sample.toml", ".")]
@@ -28,7 +35,7 @@ a = Analysis(
     pathex=["src"],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
