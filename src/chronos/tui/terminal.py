@@ -27,4 +27,24 @@ def pop_terminal_title() -> None:
     out.flush()
 
 
-__all__ = ["pop_terminal_title", "push_terminal_title", "set_terminal_title"]
+def osc777_notification(title: str, body: str) -> str:
+    """OSC 777 `notify` sequence asking the terminal for a desktop notification.
+
+    Control characters would end the sequence early (and `;` in the
+    title would shift the body), so both are flattened: newlines become
+    " · " and the rest are dropped.
+    """
+
+    def clean(text: str) -> str:
+        text = text.replace("\n", " · ")
+        return "".join(ch for ch in text if ch >= " " and ch != "\x7f")
+
+    return f"\x1b]777;notify;{clean(title).replace(';', ',')};{clean(body)}\x07"
+
+
+__all__ = [
+    "osc777_notification",
+    "pop_terminal_title",
+    "push_terminal_title",
+    "set_terminal_title",
+]

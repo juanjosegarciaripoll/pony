@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from textual import work
 from textual.app import App
@@ -17,6 +18,7 @@ from chronos.protocols import (
 )
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.terminal import (
+    osc777_notification,
     pop_terminal_title,
     push_terminal_title,
     set_terminal_title,
@@ -64,26 +66,32 @@ class TuiServices:
     startup_ics_path: Path | None = None
 
 
-class ChronosApp(App[None]):
-    """Top-level Textual app.
+@runtime_checkable
+class CalendarHost(Protocol):
+    """A Textual app the calendar screens can live on.
 
-    All real logic lives in `MainScreen`; the app is just a host. We
-    push the main screen on mount instead of in `compose` so the
-    constructor runs synchronously without touching any I/O.
+    `MainScreen` reads its dependencies off `self.app`, so whatever app
+    hosts it has to offer them. `ChronosApp` does when the calendar runs
+    on its own, and Pony Express's `PonyApp` does when mail and calendar
+    run as one program.
     """
 
-    # Ctrl-P opens Textual's built-in command palette, which includes the
-    # "Change theme" picker — the live in-app theme switcher. Kept enabled
-    # so users can raise contrast on the fly; the F1 help screen documents
-    # it alongside chronos's own keybindings.
-    ENABLE_COMMAND_PALETTE = True
+    @property
+    def calendar_services(self) -> TuiServices: ...
 
-    CSS = """
+
+# The calendar's stylesheet, kept out of the app class so a host
+# application can adopt it (`App.CSS` is global, and the calendar
+# widgets only ever appear under the calendar's own screens).
+CALENDAR_CSS = """
     #main-body { height: 1fr; }
     CalendarPanel { width: 30; border-right: solid $accent; }
     #centre-pane { width: 1fr; }
     #title-row { height: 1; }
     #view-title { width: 1fr; padding: 0 1; color: $text-muted; }
+    /* Host-supplied state of the other half of the program; empty and
+       therefore invisible when the calendar runs on its own. */
+    #companion-status { width: auto; padding: 0 1; color: $text-muted; }
     #sync-status { width: auto; padding: 0 1; color: $text-muted; }
     EventList { height: 2fr; }
     /* The timeline takes the full centre-pane height in Day / Grid
@@ -166,10 +174,27 @@ class ChronosApp(App[None]):
         height: 18;
         padding: 0 1;
     }
-    #sync-progress-summary {
-        margin-top: 1;
-    }
+#sync-progress-summary {
+    margin-top: 1;
+}
+"""
+
+
+class ChronosApp(App[None]):
+    """Top-level Textual app for the calendar on its own.
+
+    All real logic lives in `MainScreen`; the app is just a host. We
+    push the main screen on mount instead of in `compose` so the
+    constructor runs synchronously without touching any I/O.
     """
+
+    # Ctrl-P opens Textual's built-in command palette, which includes the
+    # "Change theme" picker — the live in-app theme switcher. Kept enabled
+    # so users can raise contrast on the fly; the F1 help screen documents
+    # it alongside chronos's own keybindings.
+    ENABLE_COMMAND_PALETTE = True
+
+    CSS = CALENDAR_CSS
 
     def __init__(self, services: TuiServices, theme_name: str | None = None) -> None:
         super().__init__()
@@ -179,6 +204,11 @@ class ChronosApp(App[None]):
         # Tests that construct ChronosApp(services) keep Textual's default.
         if theme_name is not None:
             self.theme = theme_name
+
+    @property
+    def calendar_services(self) -> TuiServices:
+        """Satisfies `CalendarHost` — see that protocol."""
+        return self.services
 
     def on_mount(self) -> None:
         push_terminal_title()
@@ -255,21 +285,6 @@ class ChronosApp(App[None]):
 _BOILERPLATE_ALARM_TEXT = "This is an event reminder"
 
 
-def osc777_notification(title: str, body: str) -> str:
-    """OSC 777 `notify` sequence asking the terminal for a desktop notification.
-
-    Control characters would end the sequence early (and `;` in the
-    title would shift the body), so both are flattened: newlines become
-    " · " and the rest are dropped.
-    """
-
-    def clean(text: str) -> str:
-        text = text.replace("\n", " · ")
-        return "".join(ch for ch in text if ch >= " " and ch != "\x7f")
-
-    return f"\x1b]777;notify;{clean(title).replace(';', ',')};{clean(body)}\x07"
-
-
 def alarm_message(alarm: AlarmRecord, now: datetime) -> str:
     """Notification body: when the event starts, then any alarm text."""
     start = alarm.occurrence_start.astimezone()
@@ -286,4 +301,13 @@ def alarm_message(alarm: AlarmRecord, now: datetime) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["ChronosApp", "SyncRunner", "TuiServices"]
+__all__ = [
+    "CALENDAR_CSS",
+    "CalendarHost",
+    "ChronosApp",
+    "SyncRunner",
+    "TuiServices",
+    # Re-exported: the alarm poller's companion, now shared with the
+    # mail side's notifications (`pony.tui.terminal.notify_terminal`).
+    "osc777_notification",
+]

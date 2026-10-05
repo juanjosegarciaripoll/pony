@@ -91,7 +91,7 @@ from chronos.tui.widgets.sync_status import SyncStatus
 from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
 
 if TYPE_CHECKING:
-    from chronos.tui.app import ChronosApp, SyncRunner, TuiServices
+    from chronos.tui.app import CalendarHost, SyncRunner, TuiServices
 
 # How often the "now" highlighting is re-checked. Repaints happen only
 # when the current slot or the set of running events actually changes.
@@ -129,6 +129,9 @@ class MainScreen(Screen[None]):
         # What `_clock_signature` returned at the last render; the clock
         # tick repaints only when it changes.
         self._clock_state: object = None
+        # Filled by the host application through `set_companion_status`;
+        # empty when the calendar runs on its own.
+        self._companion_status = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -137,6 +140,7 @@ class MainScreen(Screen[None]):
             with Vertical(id="centre-pane"):
                 with Horizontal(id="title-row"):
                     yield Label("", id="view-title")
+                    yield Label(self._companion_status, id="companion-status")
                     yield SyncStatus(id="sync-status")
                 yield EventList(id="centre-list")
                 yield TimelineGrid(id="centre-timeline")
@@ -606,12 +610,25 @@ class MainScreen(Screen[None]):
         return self._services().index.get_component(ref)
 
     def _services(self) -> TuiServices:
-        # ChronosApp constructs MainScreen and always sets `.services`.
-        # `self.app` is typed as App[Any]; cast it to our concrete
-        # subclass so the attribute lookup is statically checked. We
-        # import the type only under TYPE_CHECKING — `app.py` imports
-        # MainScreen, so a runtime import would cycle.
-        return cast("ChronosApp", self.app).services
+        # Whichever app hosts this screen supplies the dependencies:
+        # `ChronosApp` with the calendar on its own, `PonyApp` with mail
+        # and calendar in one program. `self.app` is typed as App[Any],
+        # so cast it to the host protocol to have the lookup statically
+        # checked. The type is imported only under TYPE_CHECKING —
+        # `app.py` imports MainScreen, so a runtime import would cycle.
+        return cast("CalendarHost", self.app).calendar_services
+
+    def set_companion_status(self, text: str) -> None:
+        """Show *text* at the right of the title row, or clear it when empty.
+
+        The slot belongs to whatever hosts this screen: running inside
+        Pony Express it carries the state of the mail side, which has no
+        screen of its own while the agenda is open. Nothing sets it when
+        the calendar runs alone, so it stays empty.
+        """
+        self._companion_status = text
+        if self.is_mounted:
+            self.query_one("#companion-status", Label).update(text)
 
     def _save_event(self, draft: EditDraft) -> None:
         services = self._services()

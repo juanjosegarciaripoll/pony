@@ -11,6 +11,8 @@ from pathlib import Path
 
 from textual.app import App, SuspendNotSupported
 
+from chronos.tui.terminal import osc777_notification
+
 from ..domain import ViewerRule
 
 MAIL_TITLE_PREFIX = "✉ "
@@ -92,4 +94,20 @@ def pop_terminal_title() -> None:
     if out is None or not out.isatty():
         return
     out.write("\x1b[23;2t")
+    out.flush()
+
+
+def notify_terminal(title: str, body: str) -> None:
+    """Ask the terminal to raise a desktop notification (OSC 777).
+
+    Terminals without support ignore the sequence, so there is nothing
+    to detect and no fallback to choose.  Going through the terminal is
+    what makes a reminder arrive on the machine the user is *looking*
+    at: over SSH a desktop notification raised locally would appear on
+    the server instead.
+    """
+    out = sys.__stdout__
+    if out is None or not out.isatty():
+        return
+    out.write(osc777_notification(title, body))
     out.flush()

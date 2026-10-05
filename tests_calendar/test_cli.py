@@ -1988,7 +1988,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
 
 class CliAuthorizerTest(unittest.TestCase):
-    """`_default_cli_authorizer` picks a usable OAuth flow for the terminal."""
+    """`default_cli_authorizer` picks a usable OAuth flow for the terminal."""
 
     def test_raises_when_no_tty(self) -> None:
         from chronos.domain import OAuthCredential
@@ -2002,9 +2002,7 @@ class CliAuthorizerTest(unittest.TestCase):
             stdin.isatty.return_value = False
             stdout.isatty.return_value = False
             with self.assertRaises(OAuthError) as ctx:
-                cli._default_cli_authorizer(  # pyright: ignore[reportPrivateUsage]
-                    "google", spec, Path("/unused")
-                )
+                cli.default_cli_authorizer("google", spec, Path("/unused"))
         self.assertIn("TTY", str(ctx.exception))
 
     def test_delegates_to_loopback_flow_when_graphical(self) -> None:
@@ -2024,9 +2022,7 @@ class CliAuthorizerTest(unittest.TestCase):
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
-            result = cli._default_cli_authorizer(  # pyright: ignore[reportPrivateUsage]
-                "google", spec, Path("/unused")
-            )
+            result = cli.default_cli_authorizer("google", spec, Path("/unused"))
         self.assertIs(result, tokens)
         flow.assert_called_once()
         # And the user is told what's happening before the browser opens.
@@ -2050,9 +2046,7 @@ class CliAuthorizerTest(unittest.TestCase):
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
-            result = cli._default_cli_authorizer(  # pyright: ignore[reportPrivateUsage]
-                "google", spec, Path("/unused")
-            )
+            result = cli.default_cli_authorizer("google", spec, Path("/unused"))
         self.assertIs(result, tokens)
         flow.assert_called_once()
         write_calls = [c.args[0] for c in stdout.write.call_args_list]

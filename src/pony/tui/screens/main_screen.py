@@ -48,6 +48,7 @@ from ...message_renderer import (
     save_every_attachment,
     save_one_attachment,
 )
+from ...notifications import NotificationCenter
 from ...protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -159,6 +160,7 @@ class MainScreen(Screen[None]):
         credentials: CredentialsProvider | None = None,
         contacts: ContactRepository | None = None,
         ui_state_path: Path | None = None,
+        notifications: NotificationCenter | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -167,6 +169,14 @@ class MainScreen(Screen[None]):
         self._mirrors = mirrors
         self._credentials = credentials
         self._contacts = contacts
+        # Shared with the calendar when one is configured, so mail that
+        # arrives while the agenda is open is still announced.  None
+        # when this screen is driven on its own (several tests).
+        self._notifications = notifications
+        # The two halves of the sub-title: which folder is open, and
+        # what the calendar has to say (see `set_companion_status`).
+        self._folder_context = ""
+        self._companion_status = ""
         self._current_folder_ref: FolderRef | None = None
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
@@ -314,8 +324,10 @@ class MainScreen(Screen[None]):
     ) -> None:
         event.stop()
         self._current_folder_ref = event.folder_ref
-        context = f"{event.folder_ref.account_name}/{event.folder_ref.folder_name}"
-        self.app.sub_title = context
+        self._folder_context = (
+            f"{event.folder_ref.account_name}/{event.folder_ref.folder_name}"
+        )
+        self._refresh_sub_title()
         self._set_reader_terminal_title()
         view = self.query_one(MessageViewPanel)
         view.clear()
@@ -618,9 +630,47 @@ class MainScreen(Screen[None]):
             self.app.notify(f"Sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
         else:
             self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
+            self._announce_new_mail(worker.result)
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             dismiss_result = True if worker.state == worker.state.SUCCESS else None
             self.app.screen.dismiss(dismiss_result)  # pyright: ignore[reportUnknownMemberType]
+
+    def set_companion_status(self, text: str) -> None:
+        """Show *text* beside the open folder, or drop it when empty.
+
+        The slot belongs to whatever hosts this screen: inside Pony
+        Express it carries the next calendar event, which has no screen
+        of its own while the mail reader is open.  Nothing sets it when
+        the mail client runs without a calendar.
+        """
+        self._companion_status = text
+        self._refresh_sub_title()
+
+    def _refresh_sub_title(self) -> None:
+        parts = [
+            part for part in (self._folder_context, self._companion_status) if part
+        ]
+        self.app.sub_title = "  ".join(parts) or (self.app.SUB_TITLE or "")
+
+    def _announce_new_mail(self, result: SyncResult | None) -> None:
+        """Put what a sync fetched into the shared notification space.
+
+        The toast on this screen is this screen's own feedback; the
+        announcement is what reaches the user when the agenda is the
+        screen in front of them instead.  The application decides which
+        of the two the user actually sees.
+        """
+        if self._notifications is None or result is None:
+            return
+        from ..calendar_host import mail_arrival_notification
+
+        fetched = [
+            (ar.account_name, sum(f.fetched for f in ar.folders))
+            for ar in result.accounts
+        ]
+        notification = mail_arrival_notification(fetched, now=datetime.now(UTC))
+        if notification is not None:
+            self._notifications.publish(notification)
 
     def _sync_result_summary(self, result: SyncResult | None) -> str:
         """Build the human-readable "Sync complete. …" notification text."""
@@ -711,6 +761,7 @@ class MainScreen(Screen[None]):
             self.app.notify(f"Background sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
             return
         self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
+        self._announce_new_mail(worker.result)
         self.call_after_refresh(self._refresh_after_sync)
 
     # ------------------------------------------------------------------

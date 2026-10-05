@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .calendar import CalendarRuntime
     from .message_renderer import AttachmentInfo
 
 from .accounts import (
@@ -399,6 +400,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start the MCP server (bridges to TUI if running, else stdio).",
     )
 
+    # Everything after `calendar` belongs to the calendar's own parser,
+    # so it is taken verbatim rather than described twice.  `main` splits
+    # the argument list before argparse sees it (`_split_calendar_argv`),
+    # which is why this parser declares no arguments and no `--help`:
+    # `pony calendar --help` is the calendar's help, not a wrapper's.
+    subparsers.add_parser(
+        "calendar",
+        help="Run a calendar command (`pony calendar --help` for the list).",
+        add_help=False,
+    ).set_defaults(calendar_args=[])
+
     # Recorded so the bare-filename shortcut can tell a subcommand from a
     # path without keeping a second list of command names beside this one.
     parser.set_defaults(_commands=frozenset(subparsers.choices))
@@ -438,10 +450,41 @@ def _expand_bare_filename(
     return ["view", *tokens]
 
 
+# Pony's own options that take a value, so `_split_calendar_argv` can
+# tell `pony --theme calendar tui` (a theme named "calendar") from
+# `pony --theme nord calendar list` (the calendar command).
+_VALUE_OPTIONS = frozenset({"--config", "--theme"})
+
+
+def _split_calendar_argv(
+    argv: Sequence[str] | None,
+) -> tuple[list[str], list[str] | None]:
+    """Cut the argument list at the `calendar` command.
+
+    Returns ``(pony_tokens, calendar_tokens)``, the second being None
+    when this is not a calendar invocation.  Splitting by hand is what
+    makes the pass-through faithful: `argparse.REMAINDER` still tries to
+    parse a leading `--flag` itself, so `pony calendar --help` would
+    print a wrapper's help and `pony calendar --config f list` would be
+    rejected outright, when both belong to the calendar's parser.
+    """
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    for position, token in enumerate(tokens):
+        if token != "calendar":
+            continue
+        if position > 0 and tokens[position - 1] in _VALUE_OPTIONS:
+            continue  # the value of `--config` / `--theme`, not the command
+        return tokens[: position + 1], tokens[position + 1 :]
+    return tokens, None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
-    args = parser.parse_args(_expand_bare_filename(argv, parser))
+    tokens, calendar_argv = _split_calendar_argv(_expand_bare_filename(argv, parser))
+    args = parser.parse_args(tokens)
+    if calendar_argv is not None:
+        args.calendar_args = calendar_argv
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
 
@@ -509,6 +552,8 @@ def _dispatch(
         if args.config_command == "show":
             return run_config_show(paths=paths, config_path=args.config)
         return run_config_edit(paths=paths, config_path=args.config)
+    if args.command == "calendar":
+        return run_calendar(config_path=args.config, argv=args.calendar_args)
     if args.command == "tui":
         return run_tui(
             paths=paths,
@@ -2483,6 +2528,8 @@ def run_tui(
 
     from .tui import PonyApp
 
+    calendar = _open_calendar_or_warn(config_path)
+
     app = PonyApp(
         config=config,
         index=index,
@@ -2492,9 +2539,80 @@ def run_tui(
         config_path=config_path,
         theme_name=effective_theme,
         ui_state_path=paths.data_dir / "ui_state.json",
+        calendar=calendar,
     )
-    app.run()
+    try:
+        app.run()
+    finally:
+        if calendar is not None:
+            calendar.close()
     return 0
+
+
+def _open_calendar_or_warn(config_path: Path | None) -> CalendarRuntime | None:
+    """Open the calendar for the TUI, or log why it stays closed.
+
+    A mistake in `[calendar]` must not stand between the user and their
+    mail, so it is reported to the log rather than raised: the mail
+    client opens and F2 says the calendar is unavailable.  Every other
+    calendar entry point — `pony calendar ...` — reports it to the
+    terminal instead.
+    """
+    import logging
+
+    from .calendar import open_calendar_runtime
+
+    try:
+        return open_calendar_runtime(config_path)
+    except ConfigError as error:
+        logging.getLogger("pony").warning("calendar disabled: %s", error)
+        return None
+
+
+def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
+    """Run a calendar command against the unified configuration.
+
+    The calendar's own argument parser handles everything after
+    `calendar`, so `pony calendar sync`, `pony calendar list` and
+    `pony calendar --help` behave exactly as that parser defines them.
+    Only the configuration is redirected: it comes from Pony's file,
+    where the calendar's settings live under `[calendar]`.
+    """
+    from datetime import UTC, datetime
+
+    from chronos import cli as calendar_cli
+
+    from .calendar import open_calendar_runtime
+
+    def _context(path: Path | None) -> calendar_cli.CliContext:
+        runtime = open_calendar_runtime(
+            path, interactive_authorizer=calendar_cli.default_cli_authorizer
+        )
+        if runtime is None:
+            raise ConfigError(
+                "no calendar configured: add a [calendar] table to "
+                "config.toml (see config-sample.toml)."
+            )
+        return calendar_cli.CliContext(
+            config=runtime.config,
+            mirror=runtime.mirror,
+            index=runtime.index,
+            creds=runtime.credentials,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            now=datetime.now(UTC),
+        )
+
+    forwarded = list(argv)
+    if config_path is not None:
+        forwarded = ["--config", str(config_path), *forwarded]
+    try:
+        return calendar_cli.main(
+            forwarded, context_factory=_context, prog="pony calendar"
+        )
+    except ConfigError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
 
 def run_compose(

@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
+from chronos.tui.app import CALENDAR_CSS
+from chronos.tui.app import TuiServices as CalendarServices
+from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
+
+from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
+from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import AppPaths
 from ..protocols import (
     ContactRepository,
@@ -18,18 +25,35 @@ from ..protocols import (
     IndexRepository,
     MirrorRepository,
 )
+from .calendar_host import AlarmPoller, build_calendar_services
 from .screens.main_screen import MainScreen
 from .terminal import (
     format_terminal_title,
+    notify_terminal,
     pop_terminal_title,
     push_terminal_title,
     set_terminal_title,
 )
 from .widgets.folder_panel import has_inbox_mail
 
+# How often reminders are checked and the two status lines refreshed.
+# Matches the calendar's own alarm poll when it runs standalone.
+_COMPANION_TICK_SECONDS = 30.0
+
+# A reminder stays on screen long enough to be read after looking away.
+_REMINDER_TOAST_SECONDS = 120.0
+
 
 class PonyApp(App[None]):
-    """Pony Express — terminal mail client."""
+    """Pony Express — terminal mail client with its calendar.
+
+    One application, two full-screen subsystems.  The mail reader is
+    what opens; ++f2++ puts the agenda in front of it and ++f2++ again
+    brings the mail back.  Both halves announce through one
+    :class:`~pony.notifications.NotificationCenter`, so a reminder
+    reaches the user in the mail reader and newly arrived mail reaches
+    them in the agenda.
+    """
 
     TITLE = "Pony Express"
     SUB_TITLE = "Mail"
@@ -40,9 +64,15 @@ class PonyApp(App[None]):
     # intended keyboard-shortcut discovery path.
     ENABLE_COMMAND_PALETTE = False
 
+    # ``App.CSS`` is global, and the calendar's rules are the stylesheet
+    # its screens were written against.  They select calendar widgets,
+    # which only ever exist under the calendar's own screens.
+    CSS = CALENDAR_CSS
+
     BINDINGS = [
         Binding("Q", "quit", "Quit", priority=True),
         Binding("f1", "show_help", "Help"),
+        Binding("f2", "toggle_calendar", "Calendar"),
     ]
 
     def action_show_help(self) -> None:
@@ -63,6 +93,7 @@ class PonyApp(App[None]):
         config_path: Path | None = None,
         theme_name: str | None = None,
         ui_state_path: Path | None = None,
+        calendar: CalendarRuntime | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -75,6 +106,13 @@ class PonyApp(App[None]):
         self._ui_state_path = ui_state_path
         self._mcp_tcp_task: asyncio.Task[None] | None = None
         self._mcp_state_file: Path | None = None
+        self._calendar = calendar
+        # Built on mount: the OAuth flow it carries needs a running
+        # application to push its screen onto.
+        self._calendar_services: CalendarServices | None = None
+        self._alarm_poller: AlarmPoller | None = None
+        self.notifications = NotificationCenter()
+        self.notifications.subscribe(self._announce)
         if theme_name is not None:
             self.theme = theme_name
 
@@ -98,9 +136,130 @@ class PonyApp(App[None]):
                 credentials=self._credentials,
                 contacts=self._contacts,
                 ui_state_path=self._ui_state_path,
+                notifications=self.notifications,
             )
         )
+        if self._calendar is not None:
+            self._calendar_services = build_calendar_services(self._calendar, host=self)
+            self._alarm_poller = AlarmPoller(self._calendar.index)
+            self.set_interval(
+                _COMPANION_TICK_SECONDS, self._companion_tick, name="companion"
+            )
+            self._companion_tick()
         await self._start_mcp_tcp_server()
+
+    # ------------------------------------------------------------------
+    # Calendar
+    # ------------------------------------------------------------------
+
+    @property
+    def calendar_services(self) -> CalendarServices:
+        """The calendar screens' dependencies — see `chronos.tui.app.CalendarHost`."""
+        if self._calendar_services is None:
+            raise RuntimeError("the calendar is not configured")
+        return self._calendar_services
+
+    @property
+    def calendar_available(self) -> bool:
+        return self._calendar_services is not None
+
+    def action_toggle_calendar(self) -> None:
+        """Swap between the mail reader and the agenda.
+
+        The agenda is pushed over the mail screen rather than replacing
+        it, so coming back finds the message list exactly as it was —
+        same folder, same cursor row, same reader scroll position.
+        """
+        if not self.calendar_available:
+            self.notify(
+                "No calendar configured — add a [calendar] table to config.toml.",
+                severity="warning",
+            )
+            return
+        if isinstance(self.screen, CalendarScreen):
+            self.pop_screen()
+            self._refresh_companion_status()
+            return
+        self.push_screen(CalendarScreen())
+        # The header is app-wide and the mail screen has written the
+        # open folder into it; name the subsystem now in front instead.
+        # Coming back, `_refresh_companion_status` restores the folder.
+        self.sub_title = "Calendar"
+        self._refresh_companion_status()
+
+    def _companion_tick(self) -> None:
+        """Fire due reminders and refresh what each half says about the other."""
+        self._fire_due_reminders()
+        self._refresh_companion_status()
+
+    def _fire_due_reminders(self) -> None:
+        if self._alarm_poller is None:
+            return
+        try:
+            due = self._alarm_poller.due(datetime.now(UTC))
+        except Exception:  # noqa: BLE001 — a failed poll must not kill the app
+            self.log.warning("calendar alarm poll failed")
+            return
+        for notification in due:
+            self.notifications.publish(notification)
+
+    def _refresh_companion_status(self) -> None:
+        """Put the calendar's next event in the mail reader, and vice versa."""
+        from .calendar_host import mail_status, next_event_status
+
+        if self._calendar_services is None:
+            return
+        screen = self.screen
+        if isinstance(screen, CalendarScreen):
+            screen.set_companion_status(
+                mail_status(self._index, self._config, use_utf8=self._config.use_utf8)
+            )
+            return
+        if isinstance(screen, MainScreen):
+            try:
+                status = next_event_status(
+                    self._calendar_services,
+                    now=datetime.now(UTC),
+                    use_utf8=self._config.use_utf8,
+                )
+            except Exception:  # noqa: BLE001 — a status line is not worth a crash
+                self.log.warning("next-event lookup failed")
+                return
+            screen.set_companion_status(status)
+
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
+    def _announce(self, notification: Notification) -> None:
+        """Render one announcement from the shared notification centre.
+
+        A reminder is shown wherever the user is.  Anything else is
+        shown only when the subsystem it came from is *not* the one on
+        screen: that subsystem reports its own news itself, and a second
+        toast saying the same thing is noise.
+        """
+        if not notification.urgent and notification.source is self._visible_source():
+            return
+        timeout = _REMINDER_TOAST_SECONDS if notification.urgent else None
+        self.notify(
+            notification.body or notification.title,
+            title=notification.title,
+            severity=notification.severity,
+            timeout=timeout,
+        )
+        notify_terminal(notification.title, notification.body)
+        self.bell()
+
+    def _visible_source(self) -> NotificationSource | None:
+        """Which subsystem the user is looking at, if either."""
+        if not self.screen_stack:
+            return None
+        if isinstance(self.screen, CalendarScreen):
+            return NotificationSource.CALENDAR
+        if isinstance(self.screen, MainScreen):
+            return NotificationSource.MAIL
+        return None
 
     def _has_inbox_mail(self) -> bool:
         """True when any configured account has unread INBOX mail."""

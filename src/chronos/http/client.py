@@ -139,7 +139,12 @@ class Client:
 
             return resp
 
-        raise HttpStatusError(resp.status, resp.body, resp.headers)
+        # The loop returns, raises on a non-2xx, or raises once
+        # `_MAX_REDIRECTS` redirects have been followed, so falling out
+        # of it is not reachable — and naming `resp` here would read as
+        # though it were, when the type checkers are right that it may
+        # never have been bound.
+        raise AssertionError("unreachable: redirect loop fell through")
 
     def _do_request(
         self,

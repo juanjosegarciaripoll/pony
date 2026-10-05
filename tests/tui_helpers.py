@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +27,19 @@ from textual.widgets import DirectoryTree, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
+from chronos.credentials import (
+    DefaultCredentialsProvider as CalendarCredentialsProvider,
+)
+from chronos.domain import AccountConfig as CalendarAccountConfig
+from chronos.domain import AppConfig as CalendarAppConfig
+from chronos.domain import CalendarRef, ResourceRef
+from chronos.domain import PlaintextCredential as CalendarPlaintextCredential
+from chronos.index_store import SqliteIndexRepository as CalendarIndex
+from chronos.recurrence import rebuild_caches
+from chronos.storage import VdirMirrorRepository
+from chronos.storage_indexing import index_calendar
 from pony.accounts import build_mirrors
+from pony.calendar import CalendarRuntime
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     AccountConfig,
@@ -303,12 +317,61 @@ def seed_message(
     return saved.message_ref
 
 
+def make_calendar_runtime(
+    paths: AppPaths,
+    *,
+    events: Sequence[tuple[str, bytes]] = (),
+    calendar_name: str = "work",
+    account_name: str = "personal",
+) -> CalendarRuntime:
+    """Build a calendar runtime on real files under *paths*.
+
+    Each ``(uid, ics)`` in *events* is written to the mirror, indexed and
+    expanded into the occurrence cache, which is what the agenda renders
+    from — an event only in the mirror is invisible to the views.
+    """
+    mirror = VdirMirrorRepository(paths.data_dir / "calendar" / "mirror")
+    index = CalendarIndex(paths.data_dir / "calendar" / "index.sqlite3")
+    account = CalendarAccountConfig(
+        name=account_name,
+        url="https://caldav.example.com/dav/",
+        username="user@example.com",
+        credential=CalendarPlaintextCredential(password="x"),
+        mirror_path=paths.data_dir / "calendar" / "mirror" / account_name,
+        trash_retention_days=30,
+        include=(re.compile(".*"),),
+        exclude=(),
+        read_only=(),
+    )
+    for uid, ics in events:
+        mirror.write(ResourceRef(account_name, calendar_name, uid), ics)
+    if events:
+        ref = CalendarRef(account_name, calendar_name)
+        index_calendar(mirror=mirror, index=index, calendar=ref)
+        # `rebuild_caches` is the single funnel that fills the occurrence
+        # *and* alarm caches with one pinned window — the agenda renders
+        # from the first and reminders fire off the second.
+        rebuild_caches(index=index, calendar=ref, now=datetime.now(UTC), uids=None)
+    return CalendarRuntime(
+        config=CalendarAppConfig(
+            config_version=1,
+            use_utf8=False,
+            editor=None,
+            accounts=(account,),
+        ),
+        mirror=mirror,
+        index=index,
+        credentials=CalendarCredentialsProvider(env={}),
+    )
+
+
 def build_pony_app(
     *,
     label: str = "pony",
     accounts: Sequence[AnyAccount] | None = None,
     seed: Sequence[tuple[FolderRef, bytes]] = (),
     viewers: tuple[ViewerRule, ...] = (),
+    calendar: CalendarRuntime | None = None,
 ) -> tuple[
     TestPonyApp,
     AppConfig,
@@ -347,6 +410,7 @@ def build_pony_app(
         mirrors=dict(mirrors),
         credentials=credentials,
         config_path=paths.config_file,
+        calendar=calendar,
     )
     return app, config, paths, index, mirrors
 

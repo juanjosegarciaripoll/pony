@@ -114,12 +114,19 @@ def main(
     is_interactive: IsInteractiveFn | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    prog: str = "chronos",
 ) -> int:
+    """Run one calendar command.
+
+    `prog` names the program in usage and error messages. Pony Express
+    passes "pony calendar", which is how the user reached this parser
+    when the calendar runs as part of it.
+    """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     argv_for_parse = _rewrite_ics_shortcut(raw_argv)
-    parser = _build_parser()
+    parser = _build_parser(prog)
     args = parser.parse_args(argv_for_parse)
     # `sync` defaults to INFO so the per-calendar / per-chunk progress
     # logger.info(...) calls are visible without forcing the user to
@@ -221,9 +228,7 @@ def _default_context_factory(config_path: Path | None) -> CliContext:
         config=config,
         mirror=mirror,
         index=index,
-        creds=DefaultCredentialsProvider(
-            interactive_authorizer=_default_cli_authorizer
-        ),
+        creds=DefaultCredentialsProvider(interactive_authorizer=default_cli_authorizer),
         stdout=sys.stdout,
         stderr=sys.stderr,
         now=datetime.now(UTC),
@@ -335,7 +340,7 @@ def _configure_logging(
         logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-def _default_cli_authorizer(
+def default_cli_authorizer(
     account_name: str, spec: OAuthCredential, _token_path: Path
 ) -> StoredTokens:
     """Run an OAuth flow inline when sync hits an unauthorized account.
@@ -359,7 +364,7 @@ def _default_cli_authorizer(
             "stdin/stdout aren't a TTY. Re-run from an interactive "
             "terminal."
         )
-    use_remote_browser = _use_remote_browser_flow()
+    use_remote_browser = use_remote_browser_flow()
     flow = (
         _default_remote_browser_flow if use_remote_browser else _default_loopback_flow
     )
@@ -405,9 +410,9 @@ def _tui_unsupported_authorizer(
     )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="chronos", description="Terminal-first calendar client."
+        prog=prog, description="Terminal-first calendar client."
     )
     parser.add_argument(
         "--config",
@@ -1536,7 +1541,7 @@ def cmd_tui(
             account_name,
             spec,
             on_complete=on_complete,
-            remote_browser=_use_remote_browser_flow(),
+            remote_browser=use_remote_browser_flow(),
         )
         app_box[0].call_from_thread(app_box[0].push_screen, screen)  # pyright: ignore[reportUnknownMemberType]
         done.wait()
@@ -1910,7 +1915,7 @@ def cmd_oauth_authorize(
             "only meaningful for the oauth and google backends.\n"
         )
         return 2
-    use_remote_browser = remote_browser or _use_remote_browser_flow()
+    use_remote_browser = remote_browser or use_remote_browser_flow()
     flow = auth_flow or (
         _default_remote_browser_flow if use_remote_browser else _default_loopback_flow
     )
@@ -2080,7 +2085,7 @@ _TEXT_MODE_BROWSERS = frozenset(
 )
 
 
-def _use_remote_browser_flow() -> bool:
+def use_remote_browser_flow() -> bool:
     oauth_flow = _oauth_flow_mode()
     return oauth_flow == "remote-browser" or (
         oauth_flow == "auto" and not _has_local_graphical_browser()
