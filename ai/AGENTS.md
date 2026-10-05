@@ -83,9 +83,18 @@ Three techniques unlock most of what looks untestable:
   patch it to reach the interactive side.
 
 **Async tests are plain `async def` functions.** Do not use
-`unittest.IsolatedAsyncioTestCase`: it closes the event loop on teardown, and
-the contact-suggester tests in `tests/test_screens.py` call
-`asyncio.get_event_loop()` directly, so they fail depending on file order.
+`unittest.IsolatedAsyncioTestCase`: it closes the event loop on teardown, so
+anything later in the session that reaches for the running loop fails
+depending on file order. The contact-suggester tests in
+`tests/test_screens.py` used to be exactly that casualty — they now `await`
+directly instead of driving `asyncio.get_event_loop()`, so the trap is one
+step less sharp, but the rule stands.
+
+`tests_calendar/` still has three `IsolatedAsyncioTestCase` classes
+(`test_tui_flows.py`, `test_mcp_server.py`, `test_mcp_transport.py`), carried
+over with the calendar. They are harmless only because `testpaths` runs
+`tests/` first; do not add a fourth, and do not rely on that ordering in a
+new test.
 
 Rank by **absolute uncovered statements+branches**, not percentage. Regenerate
 the ranking rather than trusting this list — it is a snapshot:

@@ -1351,9 +1351,8 @@ async def test_contact_browser_mark_contact() -> None:
 # ===========================================================================
 
 
-def test_contact_suggester_get_suggestion_no_comma() -> None:
+async def test_contact_suggester_get_suggestion_no_comma() -> None:
     """Typing a prefix without comma gets a suggestion for the full field."""
-    import asyncio
 
     from tui_helpers import make_index, make_tmp_paths
 
@@ -1368,16 +1367,13 @@ def test_contact_suggester_get_suggestion_no_comma() -> None:
         )
     )
     suggester = ContactSuggester(index)
-    result = asyncio.get_event_loop().run_until_complete(
-        suggester.get_suggestion("ali")
-    )
+    result = await suggester.get_suggestion("ali")
     assert result is not None
     assert "alice@x.com" in result
 
 
-def test_contact_suggester_with_comma_completes_last_token() -> None:
+async def test_contact_suggester_with_comma_completes_last_token() -> None:
     """After a comma, the suggester completes only the last token."""
-    import asyncio
 
     from tui_helpers import make_index, make_tmp_paths
 
@@ -1392,17 +1388,14 @@ def test_contact_suggester_with_comma_completes_last_token() -> None:
         )
     )
     suggester = ContactSuggester(index)
-    result = asyncio.get_event_loop().run_until_complete(
-        suggester.get_suggestion("alice@x.com, bo")
-    )
+    result = await suggester.get_suggestion("alice@x.com, bo")
     assert result is not None
     assert "alice@x.com" in result
     assert "bob@x.com" in result
 
 
-def test_contact_suggester_short_prefix_returns_none() -> None:
+async def test_contact_suggester_short_prefix_returns_none() -> None:
     """Typed prefix with < 2 chars returns None."""
-    import asyncio
 
     from tui_helpers import make_index, make_tmp_paths
 
@@ -1411,13 +1404,12 @@ def test_contact_suggester_short_prefix_returns_none() -> None:
     paths = make_tmp_paths("suggester-3")
     index = make_index(paths)
     suggester = ContactSuggester(index)
-    result = asyncio.get_event_loop().run_until_complete(suggester.get_suggestion("a"))
+    result = await suggester.get_suggestion("a")
     assert result is None
 
 
-def test_contact_suggester_no_email_returns_none() -> None:
+async def test_contact_suggester_no_email_returns_none() -> None:
     """Contact with no email returns None suggestion."""
-    import asyncio
 
     from tui_helpers import make_index, make_tmp_paths
 
@@ -1430,9 +1422,7 @@ def test_contact_suggester_no_email_returns_none() -> None:
         contact=Contact(id=None, first_name="NoEmail", last_name="User", emails=())
     )
     suggester = ContactSuggester(index)
-    result = asyncio.get_event_loop().run_until_complete(
-        suggester.get_suggestion("noe")
-    )
+    result = await suggester.get_suggestion("noe")
     assert result is None
 
 

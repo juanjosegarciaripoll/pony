@@ -199,105 +199,109 @@ class ContactCompleterTest(unittest.TestCase):
         self.assertEqual((), self.complete("zzzz"))
 
 
-class AttendeeSuggesterTest(unittest.IsolatedAsyncioTestCase):
-    """The inline completion offered in the event editor's Invitees field."""
+def _suggester() -> object:
+    """The editor's inline completer, over a fixed address book."""
+    from chronos.tui.screens.event_edit_screen import _AttendeeSuggester
 
-    def setUp(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _AttendeeSuggester
+    def _completer(prefix: str, *, limit: int = 10) -> tuple[str, ...]:
+        known = ("Ana Lopez <ana@example.com>", "Bob <bob@example.com>")
+        matches = tuple(a for a in known if prefix.lower() in a.lower())
+        return matches[:limit]
 
-        def _completer(prefix: str, *, limit: int = 10) -> tuple[str, ...]:
-            known = ("Ana Lopez <ana@example.com>", "Bob <bob@example.com>")
-            matches = tuple(a for a in known if prefix.lower() in a.lower())
-            return matches[:limit]
-
-        self.suggester = _AttendeeSuggester(_completer)
-
-    async def test_the_first_match_is_offered(self) -> None:
-        self.assertEqual(
-            "Ana Lopez <ana@example.com>",
-            await self.suggester.get_suggestion("ana"),
-        )
-
-    async def test_addresses_already_entered_are_left_alone(self) -> None:
-        self.assertEqual(
-            "bob@example.com, Ana Lopez <ana@example.com>",
-            await self.suggester.get_suggestion("bob@example.com, ana"),
-        )
-
-    async def test_one_letter_offers_nothing(self) -> None:
-        self.assertIsNone(await self.suggester.get_suggestion("a"))
-
-    async def test_an_unknown_prefix_offers_nothing(self) -> None:
-        self.assertIsNone(await self.suggester.get_suggestion("zzz"))
+    return _AttendeeSuggester(_completer)
 
 
-class CalendarServicesWiringTest(unittest.IsolatedAsyncioTestCase):
-    async def test_the_calendar_is_given_a_sender_and_a_completer(self) -> None:
-        paths = make_tmp_paths("wiring")
-        runtime = make_calendar_runtime(paths)
-        self.addCleanup(runtime.close)
-        app, *_ = build_pony_app(label="wiring", calendar=runtime, with_contacts=True)
-        async with app.run_test() as pilot:
+async def test_the_first_match_is_offered() -> None:
+    suggester = _suggester()
+    assert (
+        await suggester.get_suggestion("ana")  # type: ignore[attr-defined]
+        == "Ana Lopez <ana@example.com>"
+    )
+
+
+async def test_addresses_already_entered_are_left_alone() -> None:
+    suggester = _suggester()
+    assert (
+        await suggester.get_suggestion("bob@example.com, ana")  # type: ignore[attr-defined]
+        == "bob@example.com, Ana Lopez <ana@example.com>"
+    )
+
+
+async def test_one_letter_offers_nothing() -> None:
+    suggester = _suggester()
+    assert await suggester.get_suggestion("a") is None  # type: ignore[attr-defined]
+
+
+async def test_an_unknown_prefix_offers_nothing() -> None:
+    suggester = _suggester()
+    assert await suggester.get_suggestion("zzz") is None  # type: ignore[attr-defined]
+
+
+async def test_the_calendar_is_given_a_sender_and_a_completer() -> None:
+    runtime = make_calendar_runtime(make_tmp_paths("wiring"))
+    app, *_ = build_pony_app(label="wiring", calendar=runtime, with_contacts=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        services = app.calendar_services
+        assert services.invitation_sender is not None
+        assert services.attendee_completer is not None
+    runtime.close()
+
+
+async def test_saving_an_event_with_attendees_posts_the_invitation() -> None:
+    runtime = make_calendar_runtime(make_tmp_paths("posting"))
+    app, *_ = build_pony_app(label="posting", calendar=runtime)
+    sent = Mock()
+    async with app.run_test() as pilot:
+        import pony.smtp_sender as smtp_module
+
+        original = smtp_module.send_message
+        smtp_module.send_message = sent  # type: ignore[assignment]
+        try:
             await pilot.pause()
-            services = app.calendar_services
-            self.assertIsNotNone(services.invitation_sender)
-            self.assertIsNotNone(services.attendee_completer)
+            sender = app.calendar_services.invitation_sender
+            assert sender is not None
+            sender(
+                ics=_EVENT_ICS,
+                attendees=("ana@example.com",),
+                organizer="acct@example.com",
+                summary="Design review",
+                is_update=False,
+            )
+            await pilot.pause()
+            await pilot.pause()
+        finally:
+            smtp_module.send_message = original  # type: ignore[assignment]
+    runtime.close()
+    assert sent.called
+    assert sent.call_args.kwargs["msg"]["To"] == "ana@example.com"
 
-    async def test_saving_an_event_with_attendees_posts_the_invitation(self) -> None:
-        paths = make_tmp_paths("posting")
-        runtime = make_calendar_runtime(paths)
-        self.addCleanup(runtime.close)
-        app, *_ = build_pony_app(label="posting", calendar=runtime)
-        sent = Mock()
-        async with app.run_test() as pilot:
-            import pony.smtp_sender as smtp_module
 
-            original = smtp_module.send_message
-            smtp_module.send_message = sent  # type: ignore[assignment]
-            try:
-                await pilot.pause()
-                sender = app.calendar_services.invitation_sender
-                assert sender is not None
-                sender(
-                    ics=_EVENT_ICS,
-                    attendees=("ana@example.com",),
-                    organizer="acct@example.com",
-                    summary="Design review",
-                    is_update=False,
-                )
-                await pilot.pause()
-                await pilot.pause()
-            finally:
-                smtp_module.send_message = original  # type: ignore[assignment]
-        self.assertTrue(sent.called)
-        self.assertEqual("ana@example.com", sent.call_args.kwargs["msg"]["To"])
+async def test_an_event_with_no_attendees_sends_nothing() -> None:
+    runtime = make_calendar_runtime(make_tmp_paths("no-attendees"))
+    app, *_ = build_pony_app(label="no-attendees", calendar=runtime)
+    sent = Mock()
+    async with app.run_test() as pilot:
+        import pony.smtp_sender as smtp_module
 
-    async def test_an_event_with_no_attendees_sends_nothing(self) -> None:
-        paths = make_tmp_paths("no-attendees")
-        runtime = make_calendar_runtime(paths)
-        self.addCleanup(runtime.close)
-        app, *_ = build_pony_app(label="no-attendees", calendar=runtime)
-        sent = Mock()
-        async with app.run_test() as pilot:
-            import pony.smtp_sender as smtp_module
-
-            original = smtp_module.send_message
-            smtp_module.send_message = sent  # type: ignore[assignment]
-            try:
-                await pilot.pause()
-                sender = app.calendar_services.invitation_sender
-                assert sender is not None
-                sender(
-                    ics=_EVENT_ICS,
-                    attendees=(),
-                    organizer="acct@example.com",
-                    summary="Design review",
-                    is_update=False,
-                )
-                await pilot.pause()
-            finally:
-                smtp_module.send_message = original  # type: ignore[assignment]
-        self.assertFalse(sent.called)
+        original = smtp_module.send_message
+        smtp_module.send_message = sent  # type: ignore[assignment]
+        try:
+            await pilot.pause()
+            sender = app.calendar_services.invitation_sender
+            assert sender is not None
+            sender(
+                ics=_EVENT_ICS,
+                attendees=(),
+                organizer="acct@example.com",
+                summary="Design review",
+                is_update=False,
+            )
+            await pilot.pause()
+        finally:
+            smtp_module.send_message = original  # type: ignore[assignment]
+    runtime.close()
+    assert not sent.called
 
 
 def test_the_calendar_screen_passes_the_completer_to_its_editor() -> None:
