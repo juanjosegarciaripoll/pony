@@ -5,7 +5,72 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0]
+### Added
+
+- **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`
+  mirror, a SQLite index with recurrence and alarm caches, and agenda, day,
+  multi-day and month views are now part of the program rather than a second
+  one beside it. ++f2++ puts the agenda in front of the mail reader and
+  ++f2++ again brings the mail back, with the folder, cursor row and scroll
+  position exactly as they were — the agenda is pushed over the mail screen,
+  not swapped for it. One process, one terminal, one configuration file.
+
+- **One configuration file for both halves**: mail keys stay at the top
+  level, where they always were, and the calendar's own settings live under
+  `[calendar]`, with `[[calendar.accounts]]` holding its CalDAV accounts.
+  `use_utf8`, `editor` and `theme` are read from the top of the file unless
+  `[calendar]` names its own — they describe the terminal and the user, not
+  one subsystem — while `config_version` is the opposite case and stays
+  singular, at the top. A file with no `[calendar]` table simply has no
+  calendar configured, and ++f2++ says so. The calendar's mirror, index and
+  OAuth tokens stay at the paths they already used, so an existing install
+  keeps everything it had synced; only the configuration moved.
+
+- **Reminders and new mail reach you in whichever half you are looking at**:
+  both sides announce through one notification space, and the application
+  renders each announcement once — a toast, the terminal bell, and a desktop
+  notification asked for through the terminal (OSC 777), which is what makes
+  a reminder arrive on the machine you are actually at rather than on the far
+  end of an SSH session. A reminder interrupts wherever you are; mail that a
+  sync has just fetched is announced only while the agenda is in front of
+  you, since the mail reader already reports its own syncs and a second toast
+  saying the same thing is noise. The calendar also keeps syncing while you
+  read mail, because a reminder can only fire for an event the local cache
+  knows about.
+
+- **Each half shows one line about the other**: the mail reader carries the
+  next event beside the open folder, and the agenda carries the unread mail
+  count beside its sync countdown. Neither line appears when there is nothing
+  to say.
+
+- **An invitation in your mail becomes a calendar event**: a message carrying
+  a `text/calendar` or `application/ics` part shows what it proposes above
+  its body, and ++i++ opens a dialog that settles which calendar it goes in
+  and what the organizer is told — accept, tentative, decline, or file it
+  without answering. Filing and replying are reported separately, because an
+  accepted invitation that reached the calendar but whose reply bounced is a
+  very different situation from one that never landed. A `METHOD:CANCEL`
+  removes the event instead, a re-sent invitation updates the one already
+  filed, and a plain event export with no organizer offers only to be filed
+  rather than inviting an RSVP to nobody.
+
+- **An event with attendees mails them the invitation**: saving one posts it
+  as a `METHOD:REQUEST` through the same SMTP path the composer uses. The
+  event is stored before the invitation is sent, so a failure to post is
+  reported as exactly that and never as a lost event, and the organizer is
+  dropped from the recipients — they are the one sending. Attendee addresses
+  complete from the same contact index the composer's address fields use,
+  which is the point of the two halves sharing a process: an invitation goes
+  to the people already in your mail.
+
+- **`pony calendar ...` runs any calendar command**: everything after
+  `calendar` belongs to the calendar's own parser, so its subcommands, flags
+  and `--help` are reached verbatim, against the same configuration file.
+  `pony doctor` reports on the calendar too — its accounts, index and mirror
+  — so a program that is also a calendar no longer answers for only half of
+  itself.
+
 ### Changed
 
 - **To: is one address per row, like Cc: and Bcc:**: the three recipient
@@ -49,9 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Attachments open in the viewer you configure**: a new `[viewers]` table
-  maps a MIME type to the program that opens it, so `"text/calendar" =
-  ["chronos", "import"]` sends an invite straight to a calendar application
-  instead of wherever the desktop happens to point. Each value is an argv list
+  maps a MIME type to the program that opens it, so `"application/pdf" =
+  ["zathura"]` sends a document straight to the reader you want instead of
+  wherever the desktop happens to point. Calendar types need no entry: ++i++
+  on a message carrying an `.ics` reads it in place. Each value is an argv list
   rather than a shell command line, so nothing about quoting differs between
   platforms, and the attachment path is appended as the final argument. Types
   not listed still go to the OS default handler, which is what every
