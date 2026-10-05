@@ -7,7 +7,12 @@ from email.message import EmailMessage
 from typing import Any
 from unittest.mock import Mock
 
-from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
+from textual.widgets import Button
+from tui_helpers import (
+    build_pony_app,
+    make_calendar_runtime,
+    make_tmp_paths,
+)
 
 from chronos.domain import CalendarRef
 from chronos.storage_indexing import index_calendar
@@ -129,6 +134,57 @@ async def test_the_reader_shows_what_an_invitation_proposes() -> None:
         assert invitation is not None
         assert invitation.summary == "Design review"
         assert invitation.organizer == "bob@example.com"
+
+
+async def test_an_ics_attached_as_a_file_is_found_too() -> None:
+    """An .ics sent as an attachment needs no external viewer.
+
+    This is what retires the `[viewers]` rule for text/calendar: `i`
+    reaches a plain event export, not only a METHOD:REQUEST riding as an
+    alternative part.
+    """
+    folder = FolderRef("acct", "INBOX")
+    message = EmailMessage()
+    message["From"] = "someone@example.com"
+    message["To"] = "acct@example.com"
+    message["Subject"] = "Seminar next week"
+    message["Date"] = "Mon, 02 Mar 2026 09:00:00 +0000"
+    message["Message-ID"] = "<ics-attachment@example.com>"
+    message.set_content("See attached.")
+    message.add_attachment(
+        _invite_ics(uid="seminar@example.com", method="PUBLISH", summary="Seminar"),
+        maintype="application",
+        subtype="ics",
+        filename="event.ics",
+    )
+    app, *_ = build_pony_app(label="inv-attached", seed=((folder, message.as_bytes()),))
+    async with app.run_test() as pilot:
+        await _open_first_message(pilot)
+        invitation = _main(app).query_one(MessageViewPanel).invitation
+        assert invitation is not None
+        assert invitation.summary == "Seminar"
+
+
+async def test_an_event_with_no_organizer_offers_only_filing() -> None:
+    """Nothing to reply to, so the dialog does not pretend otherwise."""
+    folder = FolderRef("acct", "INBOX")
+    ics = _invite_ics(method="PUBLISH").replace(
+        b"ORGANIZER:mailto:bob@example.com\r\n", b""
+    )
+    runtime = _calendar_with_one_calendar("inv-noorg")
+    app, *_ = build_pony_app(
+        label="inv-noorg",
+        seed=((folder, _invitation_mail(ics)),),
+        calendar=runtime,
+    )
+    async with app.run_test() as pilot:
+        await _open_first_message(pilot)
+        await pilot.press("i")
+        await pilot.pause()
+        assert isinstance(app.screen, InvitationScreen)
+        buttons = {b.id for b in app.screen.query(Button)}
+        assert "invitation-add" in buttons
+        assert "invitation-accept" not in buttons
 
 
 async def test_a_plain_message_carries_no_invitation() -> None:
