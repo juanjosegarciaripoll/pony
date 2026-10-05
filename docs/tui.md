@@ -137,6 +137,11 @@ Mail that a sync has just fetched is announced the same way, but only while
 the agenda is in front of you: the mail reader already reports its own sync
 results, and a second toast saying the same thing would be noise.
 
+The calendar keeps syncing in the background while you read mail, on the
+interval from `background_sync_interval_seconds`, so a reminder for
+something added on another device still arrives. It says nothing unless it
+fails, and then only to the log.
+
 ### Invitations
 
 A message carrying an invitation shows what it proposes above its body:

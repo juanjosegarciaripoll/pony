@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
-from chronos.tui.app import CALENDAR_CSS
+from chronos.tui.app import CALENDAR_CSS, SyncRunner
 from chronos.tui.app import TuiServices as CalendarServices
 from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
@@ -117,6 +118,7 @@ class PonyApp(App[None]):
         # application to push its screen onto.
         self._calendar_services: CalendarServices | None = None
         self._alarm_poller: AlarmPoller | None = None
+        self._calendar_syncing = False
         self.notifications = NotificationCenter()
         self.notifications.subscribe(self._announce)
         if theme_name is not None:
@@ -158,6 +160,7 @@ class PonyApp(App[None]):
                 _COMPANION_TICK_SECONDS, self._companion_tick, name="companion"
             )
             self._companion_tick()
+            self._arm_calendar_sync()
         await self._start_mcp_tcp_server()
 
     # ------------------------------------------------------------------
@@ -278,6 +281,60 @@ class PonyApp(App[None]):
             count = len(delivery.sent_to)
             plural = "" if count == 1 else "s"
             self.notify(f"Invitation sent to {count} attendee{plural}.")
+
+    def _arm_calendar_sync(self) -> None:
+        """Keep the calendar synced while the mail reader is in front.
+
+        The agenda runs its own periodic sync while it is open, but it
+        is only mounted when the user is looking at it — and a reminder
+        can only fire for an event the local alarm cache knows about.
+        Without this, a day spent reading mail would silently stop
+        announcing anything added from another device.
+        """
+        if self._calendar is None:
+            return
+        config = self._calendar.config
+        if not config.background_sync_enabled:
+            return
+        self.set_interval(
+            config.background_sync_interval_seconds,
+            self._calendar_sync_tick,
+            name="calendar-sync",
+        )
+
+    def _calendar_sync_tick(self) -> None:
+        if self._calendar_services is None or self._calendar_syncing:
+            return
+        if isinstance(self.screen, CalendarScreen):
+            # The agenda is up and running its own; two syncs would only
+            # contend for the calendar's lockfile.
+            return
+        runner = self._calendar_services.sync_runner
+        if runner is None:
+            return
+        self._calendar_syncing = True
+        self._run_calendar_sync(runner)
+
+    @work(thread=True, group="calendar-sync", exit_on_error=False)
+    def _run_calendar_sync(self, runner: SyncRunner) -> None:
+        """Sync the calendar on a worker thread, quietly.
+
+        A background sync the user did not ask for reports nothing on
+        success: its whole purpose is that the reminders and the next
+        event stay true without being talked about. Failures go to the
+        log, where a sync that has been failing all day can be found.
+        """
+        try:
+            runner()
+        except Exception:  # noqa: BLE001 — a background sync must not kill the app
+            self.log.warning("background calendar sync failed")
+        finally:
+            with contextlib.suppress(RuntimeError):
+                self.call_from_thread(self._calendar_sync_done)
+
+    def _calendar_sync_done(self) -> None:
+        self._calendar_syncing = False
+        self._refresh_companion_status()
 
     def _companion_tick(self) -> None:
         """Fire due reminders and refresh what each half says about the other."""

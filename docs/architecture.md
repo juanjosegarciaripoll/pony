@@ -364,6 +364,17 @@ Nothing is persisted. Mail and calendar each already keep the state that
 outlives a session (unread flags, an alarm's `fired_at`), so a second store
 would be a second truth.
 
+### Keeping the calendar current
+
+The agenda runs its own periodic sync while it is open, but it is only
+mounted when the user is looking at it — and a reminder can only fire for an
+event the local alarm cache knows about. `PonyApp` therefore runs the same
+sync on its own timer while the mail reader is in front, skipping its turn
+whenever the agenda is up so the two never contend for the calendar's
+lockfile. A background sync nobody asked for reports nothing on success and
+logs its failures; its whole purpose is that the reminders and the next
+event stay true without being talked about.
+
 ### One line about the other half
 
 Both screens expose the same `set_companion_status(text)` call, filled by the

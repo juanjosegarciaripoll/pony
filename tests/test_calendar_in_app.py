@@ -304,6 +304,58 @@ async def test_a_due_reminder_is_announced_by_the_poller_on_the_app() -> None:
         assert "Standup" in _toast_titles(app)
 
 
+async def test_the_calendar_syncs_while_the_mail_reader_is_in_front() -> None:
+    """A reminder can only fire for an event the local cache knows about."""
+    runtime = make_calendar_runtime(make_tmp_paths("bg-sync"))
+    app, *_ = build_pony_app(label="bg-sync", calendar=runtime)
+    runs: list[int] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        services = app.calendar_services
+        services.sync_runner = lambda **_kwargs: runs.append(1) or ()  # type: ignore[assignment,func-returns-value]
+        app._calendar_sync_tick()  # noqa: SLF001
+        await pilot.pause()
+        await pilot.pause()
+        assert runs, "the mail reader should keep the calendar synced"
+
+
+async def test_the_agenda_syncs_itself_while_it_is_open() -> None:
+    """Two periodic syncs would only contend for the calendar's lockfile."""
+    runtime = make_calendar_runtime(make_tmp_paths("bg-sync-agenda"))
+    app, *_ = build_pony_app(label="bg-sync-agenda", calendar=runtime)
+    runs: list[int] = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        services = app.calendar_services
+        services.sync_runner = lambda **_kwargs: runs.append(1) or ()  # type: ignore[assignment,func-returns-value]
+        await pilot.press("f2")
+        await pilot.pause()
+        app._calendar_sync_tick()  # noqa: SLF001
+        await pilot.pause()
+        assert not runs
+
+
+async def test_a_failing_background_sync_does_not_reach_the_user() -> None:
+    runtime = make_calendar_runtime(make_tmp_paths("bg-sync-fail"))
+    app, *_ = build_pony_app(label="bg-sync-fail", calendar=runtime)
+
+    def _explode(**_kwargs: object) -> tuple[object, ...]:
+        raise RuntimeError("the server is down")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.calendar_services.sync_runner = _explode  # type: ignore[assignment]
+        app._calendar_sync_tick()  # noqa: SLF001
+        await pilot.pause()
+        await pilot.pause()
+        # Reported to the log, not as a toast: the user did not ask.
+        assert "the server is down" not in " ".join(_toast_messages(app))
+        # And the guard is released, so the next tick can try again.
+        assert not app._calendar_syncing  # noqa: SLF001
+
+
 async def test_the_bundle_carries_the_runtime_and_a_sync_runner() -> None:
     runtime = make_calendar_runtime(make_tmp_paths("services"))
     app, *_ = build_pony_app(label="services")
