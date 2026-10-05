@@ -135,7 +135,7 @@ def _build_oauth_authorization(
         if interactive_authorizer is None:
             raise InvalidGrantError(
                 f"{account_name}: refresh token has been revoked — "
-                "run `chronos sync` from an interactive terminal to re-authorize"
+                "run `pony calendar sync` from an interactive terminal to re-authorize"
             )
         token_path.unlink(missing_ok=True)
         try:
@@ -148,7 +148,7 @@ def _build_oauth_authorization(
         if interactive_authorizer is None:
             raise CredentialResolutionError(
                 f"{account_name}: no stored OAuth tokens at {token_path}. "
-                "Run `chronos sync` from an interactive terminal to authorize."
+                "Run `pony calendar sync` from an interactive terminal to authorize."
             )
         try:
             tokens = interactive_authorizer(account_name, spec, token_path)

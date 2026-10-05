@@ -37,7 +37,35 @@ pony tui
 pony tui Personal
 ```
 
-See the [TUI](tui.md) page for full keyboard reference.
+See the [TUI](tui.md) page for full keyboard reference. Inside the TUI,
+++f2++ switches to the calendar.
+
+---
+
+## `pony calendar`
+
+Run a calendar command. Everything after `calendar` belongs to the
+calendar's own parser, so its subcommands, flags and help are reached
+verbatim:
+
+```
+pony calendar --help
+pony calendar sync
+pony calendar list
+pony calendar add --account personal --calendar work \
+    --summary "Design review" --start 2026-03-05T14:00 \
+    --attendee ana@example.com
+pony calendar import invite.ics
+pony calendar doctor --remote
+```
+
+The configuration comes from Pony's own file, where the calendar's settings
+live under `[calendar]` (see
+[Configuration](configuration.md#calendar)). Without that table the command
+reports that no calendar is configured.
+
+`pony calendar tui` opens the calendar on its own, without the mail reader;
+++f2++ inside `pony tui` is the usual way in.
 
 ---
 

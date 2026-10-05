@@ -400,12 +400,19 @@ def _with_method(ics: bytes, method: str) -> bytes:
     not scheduling messages.  Posting one as an invitation is exactly
     what makes it a scheduling message, so the property is added on the
     way out rather than stored.
+
+    It goes before the first subcomponent, not before the first VEVENT:
+    RFC 5545 puts the calendar's own properties ahead of its components,
+    and an event with a VTIMEZONE would otherwise take the METHOD after
+    that timezone block.
     """
     text = ics.decode("utf-8", errors="replace")
     if "\nMETHOD:" in text or text.startswith("METHOD:"):
         return ics
-    marker = "BEGIN:VEVENT"
-    position = text.find(marker)
+    opening = text.find("BEGIN:VCALENDAR")
+    if opening < 0:
+        return ics
+    position = text.find("BEGIN:", opening + len("BEGIN:VCALENDAR"))
     if position < 0:
         return ics
     return (text[:position] + f"METHOD:{method}\r\n" + text[position:]).encode("utf-8")

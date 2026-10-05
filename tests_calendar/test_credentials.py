@@ -254,7 +254,7 @@ class InteractiveAuthorizerTest(unittest.TestCase):
             provider.build_auth(account)
         message = str(ctx.exception)
         self.assertIn("no stored OAuth tokens", message)
-        self.assertIn("chronos sync", message)
+        self.assertIn("pony calendar sync", message)
 
     def test_authorizer_failure_surfaces_as_credential_error(self) -> None:
         from chronos.domain import OAuthCredential

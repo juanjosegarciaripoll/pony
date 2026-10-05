@@ -62,6 +62,20 @@ class WithMethodTest(unittest.TestCase):
     def test_bytes_without_an_event_are_returned_unchanged(self) -> None:
         self.assertEqual(b"not ics", _with_method(b"not ics", "REQUEST"))
 
+    def test_an_empty_calendar_is_returned_unchanged(self) -> None:
+        bare = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
+        self.assertEqual(bare, _with_method(bare, "REQUEST"))
+
+    def test_the_method_precedes_a_timezone_component(self) -> None:
+        # RFC 5545 puts the calendar's own properties ahead of its
+        # components, so a VTIMEZONE must not end up before the METHOD.
+        with_tz = _EVENT_ICS.replace(
+            b"BEGIN:VEVENT",
+            b"BEGIN:VTIMEZONE\r\nTZID:Europe/Madrid\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT",
+        )
+        out = _with_method(with_tz, "REQUEST").decode()
+        self.assertLess(out.index("METHOD:REQUEST"), out.index("BEGIN:VTIMEZONE"))
+
 
 class SendEventInvitationsTest(unittest.TestCase):
     def setUp(self) -> None:

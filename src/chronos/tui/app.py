@@ -230,7 +230,15 @@ class ChronosApp(App[None]):
     All real logic lives in `MainScreen`; the app is just a host. We
     push the main screen on mount instead of in `compose` so the
     constructor runs synchronously without touching any I/O.
+
+    Reached with `pony calendar` and with `pony calendar tui`. Inside
+    the mail client the same screens run on `PonyApp` instead, so what
+    the user sees is one product either way — hence the shared name in
+    the header and the terminal title.
     """
+
+    TITLE = "Pony Express"
+    SUB_TITLE = "Calendar"
 
     # Ctrl-P opens Textual's built-in command palette, which includes the
     # "Change theme" picker — the live in-app theme switcher. Kept enabled
@@ -256,7 +264,9 @@ class ChronosApp(App[None]):
 
     def on_mount(self) -> None:
         push_terminal_title()
-        set_terminal_title(f"Chronos {datetime.now().strftime('%d/%m/%Y')}")
+        set_terminal_title(
+            f"Pony Express — Calendar {datetime.now().strftime('%d/%m/%Y')}"
+        )
         self.push_screen(MainScreen())  # pyright: ignore[reportUnknownMemberType]
         if not self.is_headless:
             self._start_mcp_server()
@@ -305,7 +315,7 @@ class ChronosApp(App[None]):
         for alarm in pending:
             if alarm.db_id is None:
                 continue
-            title = alarm.summary or "Chronos reminder"
+            title = alarm.summary or "Reminder"
             message = alarm_message(alarm, now)
             self.notify(message, title=title, timeout=_ALARM_TOAST_SECS)
             self._write_to_terminal(osc777_notification(title, message))

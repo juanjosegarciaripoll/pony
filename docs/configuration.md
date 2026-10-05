@@ -179,6 +179,63 @@ trash_retention_days = 30
 
 ---
 
+## Calendar
+
+Pony Express and its calendar are one program, so they read one file. Mail
+keys stay at the top level; the calendar's own settings live under
+`[calendar]`, with `[[calendar.accounts]]` holding its CalDAV accounts.
+
+```toml
+config_version = 2
+use_utf8 = true
+
+[[accounts]]            # mail
+name = "work"
+# ...
+
+[calendar]
+background_sync_interval_seconds = 3600
+
+[[calendar.accounts]]   # CalDAV
+name = "personal"
+url = "https://caldav.example.com/dav/principals/user@example.com/"
+username = "user@example.com"
+credential = { backend = "env", variable = "PONY_PERSONAL_CALDAV_PASSWORD" }
+```
+
+Without a `[calendar]` table the calendar is simply not configured: ++f2++
+says so and the mail client runs on its own.
+
+`use_utf8`, `editor` and `theme` are read from the top of the file unless
+`[calendar]` names its own — they describe the terminal and the user, not
+one subsystem. `config_version` is the opposite case: one per file, at the
+top. A second one inside `[calendar]` is rejected.
+
+### Calendar options
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `background_sync_enabled` | bool | `true` | Sync calendars periodically while the agenda is open. |
+| `background_sync_interval_seconds` | int | `3600` | Seconds between those syncs. Must be positive. |
+
+### Calendar account fields
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | **Required.** Account name. |
+| `url` | string | — | **Required**, except for the `google` credential backend, which defaults it. |
+| `username` | string | — | **Required**, except for the `google` backend. |
+| `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `encrypted`, `oauth` or `google`. |
+| `mirror_path` | string | *(calendar data dir)* | Where the `.ics` mirror for this account lives. |
+| `trash_retention_days` | int | `30` | How long trashed events are kept. |
+| `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. |
+
+The calendar's mirror, index and OAuth tokens stay where the calendar
+already kept them, so an existing install keeps its synced data. Only the
+configuration file is shared.
+
+---
+
 ## IMAP account fields
 
 These apply when `account_type = "imap"` (the default if `account_type` is

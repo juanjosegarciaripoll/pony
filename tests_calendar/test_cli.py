@@ -297,7 +297,7 @@ class SyncCommandTest(CliTestCase):
 
         @contextlib.contextmanager
         def _contended(_path: Path):  # type: ignore[return]
-            raise SyncLockError("another chronos sync is already running (pid=1234)")
+            raise SyncLockError("another calendar sync is already running (pid=1234)")
             yield  # the bare yield is what makes this a generator
 
         with mock.patch("chronos.cli.acquire_sync_lock", new=_contended):
@@ -654,7 +654,7 @@ class SyncLockReleaseTest(CliTestCase):
             exit_code = cli.cmd_sync(ctx)
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("another chronos sync is already running", self.stderr.getvalue())
+        self.assertIn("another calendar sync is already running", self.stderr.getvalue())
 
 
 class BuildSyncRunnerTest(CliTestCase):
@@ -1311,7 +1311,7 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertIn("config not found", self.stderr.getvalue())
-        self.assertIn("chronos init", self.stderr.getvalue())
+        self.assertIn("pony calendar init", self.stderr.getvalue())
         self.assertFalse(self.config_path.exists())
 
     def test_interactive_user_creates_template_and_skips_editor(self) -> None:
@@ -2094,7 +2094,7 @@ class TuiUnsupportedAuthorizerTest(unittest.TestCase):
             )
         message = str(ctx.exception)
         self.assertIn("TUI", message)
-        self.assertIn("chronos sync", message)
+        self.assertIn("pony calendar sync", message)
 
 
 class ConfigEditCommandTest(ConfigEditingCliTestCase):

@@ -67,6 +67,7 @@ does nothing.
 | ++shift+p++ | Jump to previous account's INBOX |
 | ++shift+g++ | Goto-folder dialog: fuzzy-search every account/folder pair |
 | ++f1++ | Show the keybinding cheatsheet (centered modal) |
+| ++f2++ | Switch to the calendar (and back) |
 
 ### Message list
 
@@ -92,6 +93,76 @@ When the message view is focused (after opening a message):
 | ++space++ / ++page-down++ | Scroll down one page (or advance to next unread at bottom) |
 | ++less++ | Scroll to top |
 | ++greater++ | Scroll to bottom |
+| ++i++ | Answer the invitation on this message |
+
+---
+
+## The calendar
+
+++f2++ puts the agenda in front of the mail reader; ++f2++ again brings the
+mail back, with the folder, cursor row and scroll position exactly as they
+were. It is one program: the same process, the same configuration file, and
+one place reminders and new mail are announced.
+
+Without a `[calendar]` table in `config.toml`, ++f2++ says so and nothing
+else changes. See [Configuration](configuration.md#calendar) for the
+settings and `pony calendar --help` for the command-line side.
+
+While the mail reader is open, the header carries the next event beside the
+open folder:
+
+```
+ Pony Express — work/INBOX  Next: 10:45 Team standup
+```
+
+While the agenda is open, its title row carries the unread mail count beside
+the sync countdown:
+
+```
+ Grid · 2026-10-05 – 2026-10-08              Mail: 2 unread   ◷ 59:30
+```
+
+Neither line appears when there is nothing to say.
+
+### Reminders and new mail
+
+A calendar reminder falling due is announced wherever you are — in the
+agenda or in the middle of reading mail — as a toast, a terminal bell and a
+desktop notification. The notification is asked for through the terminal
+(OSC 777), which is what makes it arrive on the machine you are looking at
+rather than on the far end of an SSH session; terminals without support
+ignore it.
+
+Mail that a sync has just fetched is announced the same way, but only while
+the agenda is in front of you: the mail reader already reports its own sync
+results, and a second toast saying the same thing would be noise.
+
+### Invitations
+
+A message carrying an invitation shows what it proposes above its body:
+
+```
+ Invitation: Design review
+   When: Wed 07 Oct 2026 10:10 - 11:10
+   Where: Room 3
+   Organizer: bob@example.com
+   Attendees: you@example.com, ana@example.com
+   i — accept, decline or add to the calendar
+```
+
+++i++ opens a dialog that asks which calendar it goes in and what the
+organizer is told — ++a++ accept, ++t++ tentative, ++d++ decline, or *add
+only* to file it without answering. Accepting files the event and then mails
+a reply; the two are reported separately, so an event that was filed but
+whose reply could not be sent says so rather than claiming success.
+
+A cancellation (`METHOD:CANCEL`) removes the event instead, and a re-sent
+invitation updates the one already filed.
+
+Going the other way, saving an event that has attendees mails it to them as
+an invitation. The event is saved first, so a send failure never costs you
+the event. Attendee addresses complete from the same contact index the
+composer uses.
 
 ---
 

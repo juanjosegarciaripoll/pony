@@ -1,12 +1,22 @@
 # Pony Express — Agent Instructions
 
-Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI; SMTP out, optional Markdown compose.
+Terminal-first Python 3.13 MUA **and calendar**, one program:
+
+- Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI; SMTP out, optional Markdown compose.
+- Calendar (`src/chronos`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++).
+
+One config file, one notification space, one entry point (`pony`).
+The dependency arrow is **one way**: `pony` imports `chronos`, never the
+reverse. What the calendar needs from its host arrives as optional
+collaborators on `TuiServices` (`invitation_sender`, `attendee_completer`),
+so `tests_calendar/` still exercises the calendar standalone.
 
 ## Docs
 
 | File | Purpose |
 |---|---|
-| `docs/architecture.md` | Package layout, subsystems, data flow |
+| `docs/architecture.md` | Package layout, subsystems, data flow, **how mail and calendar are one program** |
+| `ai/calendar/README.md` | The calendar's own specs: sync, recurrence, MCP, scope |
 | `docs/synchronization.md` | Sync algorithm, schema, conflicts (see its Implementation reference) |
 | `ai/CONVENTIONS.md` | Quality gates, style, build |
 | `ai/STATUS.md` | Scope, goals, delivered + queued, deferred |
@@ -17,10 +27,10 @@ Terminal-first Python 3.13 MUA: IMAP sync → Maildir/mbox mirror → SQLite ind
 ## Rules
 
 1. **Read first.** Use `docs/architecture.md` to locate the right module.
-2. **Quality gates after every change:** `ruff check`, `ruff format --check`, `mypy`, `basedpyright`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`. The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
+2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright src`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
 3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
-4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp` — new ones need approval.
-5. **Keep docs in sync:** `config-sample.toml` ↔ config model; `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
+4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval.
+5. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
 6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
 7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
 8. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
@@ -48,6 +58,14 @@ Key test infrastructure:
 | Message list widget | `tests/test_message_list_panel.py` |
 | Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
 | Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
+| Calendar config section | `tests/test_calendar_config.py` |
+| Notification space | `tests/test_notifications.py` |
+| Mail + calendar in one app | `tests/test_calendar_in_app.py` — `build_pony_app(calendar=make_calendar_runtime(...))` |
+| Invitations (parsing, replies) | `tests/test_invitation.py` |
+| Invitations in the reader | `tests/test_invitation_flows.py` |
+| Invitations out of the calendar | `tests/test_invitation_sending.py` |
+| `pony calendar ...` | `tests/test_cli_calendar.py` |
+| Everything calendar-internal | `tests_calendar/` — the calendar's own suite, unchanged |
 | Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
 | Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
 
@@ -139,6 +157,11 @@ defensive, so re-deriving it is wasted effort:
 ## Local mutations
 
 TUI actions that round-trip to the server (archive, compose, folder create) set `uid IS NULL` on the index row. Sync planner is the sole observer — emitting `PushMoveOp` or `PushAppendOp`. No parallel queues or status flags. See `docs/synchronization.md`.
+
+The calendar works the same way with its own signal: `href IS NULL` on a
+component row means it should exist on the server but has not been
+confirmed there. Same rule — no pending-operations table on either side.
+See `ai/calendar/SYNCHRONIZATION.md`.
 
 ## Build
 

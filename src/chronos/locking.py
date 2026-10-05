@@ -65,7 +65,7 @@ def _posix_lock(lock_path: Path) -> Generator[None]:
                 fcntl.flock(fd, fcntl.LOCK_EX)  # type: ignore[attr-defined]
             else:
                 raise SyncLockError(
-                    f"another chronos sync is already running "
+                    f"another calendar sync is already running "
                     f"(pid={holder if holder is not None else '?'}); "
                     f"lockfile: {lock_path}"
                 ) from exc
@@ -102,7 +102,7 @@ def _windows_lock(lock_path: Path) -> Generator[None]:
                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
             else:
                 raise SyncLockError(
-                    f"another chronos sync is already running "
+                    f"another calendar sync is already running "
                     f"(pid={holder if holder is not None else '?'}); "
                     f"lockfile: {lock_path}"
                 ) from exc

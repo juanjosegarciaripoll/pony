@@ -126,9 +126,9 @@ def offer_bootstrap(
         stderr.write(f"config already exists at {config_path}\n")
         return 1
 
-    stdout.write(f"No chronos config at {config_path}.\n")
+    stdout.write(f"No calendar config at {config_path}.\n")
     if not _yes_default(prompt("Create a template now? [Y/n] ")):
-        stdout.write("Skipped. Run `chronos init` later to create one.\n")
+        stdout.write("Skipped. Run `pony calendar init` later to create one.\n")
         return 1
 
     write_template(config_path)
@@ -139,23 +139,27 @@ def offer_bootstrap(
             open_editor(config_path)
         except subprocess.CalledProcessError as exc:
             stderr.write(f"editor exited non-zero: {exc}\n")
-            stdout.write("You can edit the config later with `chronos config edit`.\n")
+            stdout.write(
+                "You can edit the config later with `pony calendar config edit`.\n"
+            )
             return 0
         except FileNotFoundError as exc:
             stderr.write(f"editor not found: {exc}\n")
-            stdout.write("Set $EDITOR or $VISUAL and run `chronos config edit`.\n")
+            stdout.write(
+                "Set $EDITOR or $VISUAL and run `pony calendar config edit`.\n"
+            )
             return 0
         try:
             load_config(config_path)
         except ConfigError as exc:
             stderr.write(f"config has errors: {exc}\n")
-            stderr.write("Re-run `chronos config edit` to fix and re-validate.\n")
+            stderr.write("Re-run `pony calendar config edit` to fix and re-validate.\n")
             return 1
 
     stdout.write(
         "\nNext steps:\n"
-        "  chronos sync         # fetch calendars from configured accounts\n"
-        "  chronos tui          # browse them\n"
+        "  pony calendar sync   # fetch calendars from configured accounts\n"
+        "  pony tui             # then press F2\n"
     )
     return 0
 

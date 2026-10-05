@@ -9,6 +9,13 @@ terminal interface built with [Textual](https://textual.textualize.io/).
 Outgoing mail is sent over SMTP with optional Markdown rendering to
 `multipart/alternative`.
 
+It is also a calendar. CalDAV sync, a local `.ics` mirror and an agenda live
+in the same program: `F2` switches between the mail reader and the
+calendar, both read one configuration file, and reminders and newly arrived
+mail are announced in whichever one you are looking at. An invitation in
+your mail files itself in the calendar and answers the organizer; an event
+with attendees mails them the invitation.
+
 ## Screenshots
 
 A three-pane reader — folder tree, message list, and preview — driven entirely
@@ -85,21 +92,25 @@ pony doctor
 # Sync and read mail
 pony sync
 pony tui
+
+# The calendar: F2 inside the TUI, or from the command line
+pony calendar sync
+pony calendar list
 ```
 
 ## Development
 
 ```bash
 # Lint
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ tests_calendar/
+uv run ruff format --check src/ tests/ tests_calendar/
 
 # Type check
-uv run mypy src/
+uv run mypy
 uv run basedpyright src/
 
-# Tests
-uv run python -m pytest tests/
+# Tests (mail + calendar)
+uv run python -m pytest
 
 # Build documentation locally
 uv sync --group docs

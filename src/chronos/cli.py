@@ -206,8 +206,8 @@ def _handle_missing_config(
     if not interactive:
         stderr.write(
             f"config not found: {config_path}\n"
-            f"Run `chronos init` to create one, then "
-            f"`chronos account add ...` to configure an account.\n"
+            f"Run `pony calendar init` to create one, then "
+            f"`pony calendar account add ...` to configure an account.\n"
         )
         return 2
     return offer_bootstrap(
@@ -406,7 +406,7 @@ def _tui_unsupported_authorizer(
     raise OAuthError(
         f"account {account_name!r} needs OAuth authorization, but the TUI "
         "cannot complete the flow inline. Quit the TUI and run "
-        "`chronos sync` from the terminal to authorize."
+        "`pony calendar sync` from the terminal to authorize."
     )
 
 
@@ -461,7 +461,7 @@ def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
         "reset",
         help=(
             "Delete the local SQLite index and vdir mirror so the next "
-            "`chronos sync` rebuilds them from scratch. Configuration and "
+            "`pony calendar sync` rebuilds them from scratch. Configuration and "
             "OAuth tokens are preserved."
         ),
     )
@@ -476,7 +476,7 @@ def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Skip the live-instance guard. Use when a stale presence file "
-            "blocks reset even though no chronos process is actually running."
+            "blocks reset even though no calendar process is actually running."
         ),
     )
 
@@ -564,7 +564,7 @@ def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
     sub.add_parser(
         "mcp",
         help=(
-            "Run the MCP server. Bridges to a running chronos instance if "
+            "Run the MCP server. Bridges to a running calendar instance if "
             "detected; otherwise runs self-contained over stdio."
         ),
     )
@@ -1019,9 +1019,9 @@ def cmd_reset(
         live = is_server_reachable(mcp_state_file or mcp_server_state_path())
         if live is not None:
             ctx.stderr.write(
-                f"refusing to reset: chronos TUI / MCP server is running "
+                f"refusing to reset: the calendar TUI / MCP server is running "
                 f"(port {live.port}).\n"
-                "Close it and re-run `chronos reset`.\n"
+                "Close it and re-run `pony calendar reset`.\n"
             )
             return 2
 
@@ -1030,7 +1030,7 @@ def cmd_reset(
         ctx.stdout.write(f"  {path}\n")
     ctx.stdout.write(
         "Configuration and OAuth tokens are preserved. "
-        "The next `chronos sync` will repopulate the index and mirror "
+        "The next `pony calendar sync` will repopulate the index and mirror "
         "from scratch.\n"
     )
 
@@ -1066,7 +1066,9 @@ def cmd_reset(
                     # moment we close the connection a few lines above.
                     path.unlink(missing_ok=True)
 
-            ctx.stdout.write("Reset complete. Run `chronos sync` to repopulate.\n")
+            ctx.stdout.write(
+                "Reset complete. Run `pony calendar sync` to repopulate.\n"
+            )
             return 0
     except SyncLockError as exc:
         ctx.stderr.write(f"refusing to reset: {exc}\n")
@@ -1416,7 +1418,7 @@ def _sync_after_import(
         answer = prompt(f"Sync account {account_name!r} now? [Y/n]: ")
         if answer.strip().lower() not in ("", "y", "yes"):
             ctx.stdout.write(
-                "Not synced; run `chronos sync` to push the imported changes.\n"
+                "Not synced; run `pony calendar sync` to push the imported changes.\n"
             )
             return 0
     return cmd_sync(ctx, account=account_name)
@@ -1450,7 +1452,7 @@ def _resolve_import_calendar(
     calendars = list(ctx.index.list_calendars())
     if not calendars:
         ctx.stderr.write(
-            "import: no calendars in local index; run `chronos sync` first\n"
+            "import: no calendars in local index; run `pony calendar sync` first\n"
         )
         return None
 
@@ -1704,13 +1706,13 @@ def cmd_init(stdout: TextIO, stderr: TextIO, *, config_path: Path) -> int:
     if config_path.exists():
         stderr.write(
             f"config already exists at {config_path}. "
-            "Use `chronos config edit` to modify it.\n"
+            "Use `pony calendar config edit` to modify it.\n"
         )
         return 1
     write_template(config_path)
     stdout.write(
         f"Wrote template to {config_path}\n"
-        "Edit it directly, or run `chronos account add ...` to populate.\n"
+        "Edit it directly, or run `pony calendar account add ...` to populate.\n"
     )
     return 0
 
@@ -1839,7 +1841,9 @@ def cmd_config_edit(
     open_editor: EditorFn,
 ) -> int:
     if not config_path.exists():
-        stderr.write(f"config not found: {config_path}. Run `chronos init` first.\n")
+        stderr.write(
+            f"config not found: {config_path}. Run `pony calendar init` first.\n"
+        )
         return 1
     # Copy the current contents into a temp file; the user edits there.
     # On validation success we atomically replace the original; on failure

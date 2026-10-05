@@ -59,6 +59,28 @@ class SplitCalendarArgvTest(unittest.TestCase):
         self.assertEqual(["--theme", "calendar", "tui"], head)
         self.assertIsNone(tail)
 
+    def test_an_option_value_spelled_with_equals_is_stepped_over(self) -> None:
+        head, tail = _split_calendar_argv(["--config=c.toml", "calendar", "sync"])
+        self.assertEqual(["--config=c.toml", "calendar"], head)
+        self.assertEqual(["sync"], tail)
+
+    def test_the_word_calendar_inside_a_subcommand_is_left_alone(self) -> None:
+        # Only the subcommand position counts. Cutting at any later
+        # "calendar" would swallow the rest of that command's arguments
+        # — this one used to lose the recipient entirely.
+        argv = ["compose", "--subject", "calendar", "--to", "her@example.com"]
+        head, tail = _split_calendar_argv(argv)
+        self.assertEqual(argv, head)
+        self.assertIsNone(tail)
+
+    def test_a_search_for_the_word_calendar_is_left_alone(self) -> None:
+        head, tail = _split_calendar_argv(["search", "calendar"])
+        self.assertEqual(["search", "calendar"], head)
+        self.assertIsNone(tail)
+
+    def test_an_empty_argument_list_is_not_a_calendar_invocation(self) -> None:
+        self.assertEqual(([], None), _split_calendar_argv([]))
+
     def test_an_empty_tail_is_still_a_calendar_invocation(self) -> None:
         head, tail = _split_calendar_argv(["calendar"])
         self.assertEqual(["calendar"], head)

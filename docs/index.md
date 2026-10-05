@@ -12,6 +12,13 @@ indexes it in SQLite for fast search, and presents it through a keyboard-driven
 terminal interface. Outgoing mail is sent over SMTP with optional Markdown
 rendering to `multipart/alternative`.
 
+It is also a calendar. CalDAV sync, a local `.ics` mirror and an agenda live
+in the same program: ++f2++ switches between the mail reader and the
+calendar, both read one configuration file, and reminders and newly arrived
+mail are announced in whichever half you are looking at. An invitation in
+your mail files itself in the calendar and answers the organizer; an event
+with attendees mails them the invitation.
+
 ![Pony Express main screen](assets/main-screen.png)
 
 !!! note
@@ -31,6 +38,8 @@ rendering to `multipart/alternative`.
 | **Contacts** | Person-centric address book with multiple emails per contact, aliases, interactive browser/editor with mark/merge/delete, BBDB import/export for Emacs interop |
 | **Credentials** | Four backends: plaintext, environment variable, external command, OS-encrypted blob |
 | **Diagnostics** | `pony doctor` checks config, index, mirror integrity, and dependencies; reports orphan files and stale index entries |
+| **Calendar** | CalDAV sync with CTag / `sync-collection` / full reconciliation paths, a local `.ics` mirror, recurrence and alarm caches, and agenda / day / multi-day / month views — reached with ++f2++ or `pony calendar ...` |
+| **Invitations** | A `text/calendar` part is shown as an invitation and filed with one key, replying to the organizer; saving an event with attendees mails them the invitation, with addresses completed from your contacts |
 
 ## Requirements
 
@@ -116,6 +125,12 @@ variable overrides.
 
 The SQLite index lives at `<data_dir>/index.sqlite3`. Mirror directories are
 specified per-account in the config file and can live anywhere.
+
+The calendar keeps its own state — `.ics` mirror, index, OAuth tokens —
+under its own data directory (`~/.local/share/chronos/`,
+`%APPDATA%\chronos\` on Windows, `~/Library/Application Support/chronos/`
+on macOS). Only the configuration file is shared, so a calendar that was
+already in use keeps everything it had synced.
 
 ### Environment overrides
 

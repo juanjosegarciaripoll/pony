@@ -450,9 +450,8 @@ def _expand_bare_filename(
     return ["view", *tokens]
 
 
-# Pony's own options that take a value, so `_split_calendar_argv` can
-# tell `pony --theme calendar tui` (a theme named "calendar") from
-# `pony --theme nord calendar list` (the calendar command).
+# Pony's own options that take a separate value, so the scan below can
+# step over the value as well as the option.
 _VALUE_OPTIONS = frozenset({"--config", "--theme"})
 
 
@@ -462,19 +461,33 @@ def _split_calendar_argv(
     """Cut the argument list at the `calendar` command.
 
     Returns ``(pony_tokens, calendar_tokens)``, the second being None
-    when this is not a calendar invocation.  Splitting by hand is what
-    makes the pass-through faithful: `argparse.REMAINDER` still tries to
-    parse a leading `--flag` itself, so `pony calendar --help` would
-    print a wrapper's help and `pony calendar --config f list` would be
-    rejected outright, when both belong to the calendar's parser.
+    when this is not a calendar invocation.
+
+    Splitting by hand is what makes the pass-through faithful:
+    `argparse.REMAINDER` still tries to parse a leading `--flag` itself,
+    so `pony calendar --help` would print a wrapper's help and
+    `pony calendar --config f list` would be rejected outright, when
+    both belong to the calendar's own parser.
+
+    Only the subcommand position is considered — the first token that is
+    neither an option nor an option's value. Anything later that happens
+    to read "calendar" belongs to the subcommand, and cutting there
+    would quietly swallow the rest of its arguments
+    (``pony compose --subject calendar --to her@example.com``).
     """
     tokens = list(sys.argv[1:] if argv is None else argv)
-    for position, token in enumerate(tokens):
-        if token != "calendar":
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _VALUE_OPTIONS:
+            index += 2  # the option and the value that follows it
             continue
-        if position > 0 and tokens[position - 1] in _VALUE_OPTIONS:
-            continue  # the value of `--config` / `--theme`, not the command
-        return tokens[: position + 1], tokens[position + 1 :]
+        if token.startswith("-"):
+            index += 1  # a flag, or `--config=path` carrying its own value
+            continue
+        break
+    if index < len(tokens) and tokens[index] == "calendar":
+        return tokens[: index + 1], tokens[index + 1 :]
     return tokens, None
 
 
