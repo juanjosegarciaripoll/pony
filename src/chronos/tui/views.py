@@ -1,0 +1,552 @@
+"""Pure projection helpers used by every view screen.
+
+Window arithmetic and index queries live here so tests exercise them
+without spinning up a Textual app. Screens are then thin shells that
+call these and render the results.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
+from enum import StrEnum
+
+from rich.text import Text
+
+from chronos.domain import (
+    AppConfig,
+    CalendarRef,
+    ComponentRef,
+    LocalStatus,
+    Occurrence,
+    ParsedAlarm,
+    StoredComponent,
+    VEvent,
+    VTodo,
+)
+from chronos.ical_parser import extract_alarm_triggers, extract_attendees
+from chronos.protocols import IndexRepository, MirrorRepository
+
+DEFAULT_AGENDA_DAYS = 14
+
+# Marks the time of an event in progress, in the agenda and on the
+# timeline's current-slot label.
+IN_PROGRESS_MARK = "▸"
+
+
+class ViewKind(StrEnum):
+    """Top-level view modes. `a` selects AGENDA; the `1`–`7` number
+    keys select the timeline (`1` → DAY, `2`–`7` → GRID of that width).
+
+    Older versions had separate Day/Week/Month/Todos views. Those
+    collapsed into:
+
+    - `AGENDA` — flat list, window controlled by `AgendaWindow`
+    - `DAY`    — single-day timeline grid (the `1` key)
+    - `GRID`   — multi-day timeline grid, 2–7 days wide (the `2`–`7`
+                 keys)
+    - `MONTH`  — calendar-style month grid (the `M` key)
+
+    VTodos are rendered inline as full-day items in every view; there
+    is no longer a dedicated Todos screen.
+    """
+
+    AGENDA = "agenda"
+    DAY = "day"
+    GRID = "grid"
+    MONTH = "month"
+
+
+class AgendaWindow(StrEnum):
+    """Sub-mode of `ViewKind.AGENDA` controlled by `d` / `w` / `m`.
+
+    Maps to the same windowing helpers the standalone Day/Week/Month
+    views used to drive: `day_window`, `week_window`, `month_window`.
+    """
+
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+
+
+@dataclass(frozen=True, kw_only=True)
+class CalendarSelection:
+    """Set of (account, calendar) pairs the user is currently viewing.
+
+    Empty selection means "all calendars across all accounts".
+    """
+
+    refs: frozenset[CalendarRef]
+
+    def contains(self, ref: CalendarRef) -> bool:
+        return not self.refs or ref in self.refs
+
+
+@dataclass(frozen=True, kw_only=True)
+class OccurrenceRow:
+    """Joined occurrence + its parent component, ready to render."""
+
+    occurrence: Occurrence
+    component: StoredComponent
+
+
+def _local_midnight(d: date) -> datetime:
+    # datetime.combine produces a naive datetime; .astimezone() with no
+    # argument presumes naive == system local and attaches the local
+    # tzinfo. The result is a tz-aware "local midnight" for `d`. The
+    # SQL layer converts back to UTC for the index query, so callers
+    # don't need to do that themselves.
+    return datetime.combine(d, time.min).astimezone()
+
+
+def day_window(viewed: date) -> tuple[datetime, datetime]:
+    start = _local_midnight(viewed)
+    return start, start + timedelta(days=1)
+
+
+def week_window(viewed: date) -> tuple[datetime, datetime]:
+    monday = viewed - timedelta(days=viewed.weekday())
+    start = _local_midnight(monday)
+    return start, start + timedelta(days=7)
+
+
+def month_window(viewed: date) -> tuple[datetime, datetime]:
+    first = viewed.replace(day=1)
+    if first.month == 12:
+        nxt = first.replace(year=first.year + 1, month=1)
+    else:
+        nxt = first.replace(month=first.month + 1)
+    return _local_midnight(first), _local_midnight(nxt)
+
+
+def agenda_window(
+    today: date, days: int = DEFAULT_AGENDA_DAYS
+) -> tuple[datetime, datetime]:
+    start = _local_midnight(today)
+    return start, start + timedelta(days=days)
+
+
+def all_calendar_refs(
+    config: AppConfig, mirror: MirrorRepository
+) -> tuple[CalendarRef, ...]:
+    refs: list[CalendarRef] = []
+    for account in config.accounts:
+        for calendar_name in mirror.list_calendars(account.name):
+            refs.append(CalendarRef(account.name, calendar_name))
+    return tuple(refs)
+
+
+def gather_occurrences(
+    *,
+    index: IndexRepository,
+    calendars: Iterable[CalendarRef],
+    selection: CalendarSelection,
+    window: tuple[datetime, datetime],
+) -> tuple[OccurrenceRow, ...]:
+    """Query each calendar for occurrences in `window`, joining components.
+
+    Trashed components are dropped. VTodos with a `due` (or `dtstart`)
+    inside the window are injected as synthetic full-day rows so the
+    user sees their tasks alongside events without a separate todos
+    view. Result is sorted by start time, then by
+    `(account, calendar, uid)` for deterministic output.
+    """
+    rows: list[OccurrenceRow] = []
+    for calendar in calendars:
+        if not selection.contains(calendar):
+            continue
+        components = {c.ref: c for c in index.list_calendar_components(calendar)}
+        occurrences = index.query_occurrences(calendar, window[0], window[1])
+        for occ in occurrences:
+            component = components.get(occ.ref)
+            if component is None:
+                continue
+            if component.local_status == LocalStatus.TRASHED:
+                continue
+            rows.append(OccurrenceRow(occurrence=occ, component=component))
+        # Inject VTodos as full-day rows. The `occurrences` cache
+        # only ever contains VEvents (sync's `populate_occurrences`
+        # iterates VEvent masters), so we don't double-count by
+        # adding VTodos here.
+        for component in components.values():
+            if not isinstance(component, VTodo):
+                continue
+            if component.local_status != LocalStatus.ACTIVE:
+                continue
+            anchor = component.due or component.dtstart
+            if anchor is None:
+                continue
+            if not (window[0] <= anchor < window[1]):
+                continue
+            day_start = datetime.combine(
+                anchor.astimezone(UTC).date(), time.min, tzinfo=UTC
+            )
+            rows.append(
+                OccurrenceRow(
+                    occurrence=Occurrence(
+                        ref=component.ref,
+                        start=day_start,
+                        end=day_start + timedelta(days=1),
+                        recurrence_id=None,
+                        is_override=False,
+                    ),
+                    component=component,
+                )
+            )
+    rows.sort(key=_row_sort_key)
+    return tuple(rows)
+
+
+def gather_todos(
+    *,
+    index: IndexRepository,
+    calendars: Iterable[CalendarRef],
+    selection: CalendarSelection,
+) -> tuple[VTodo, ...]:
+    out: list[VTodo] = []
+    for calendar in calendars:
+        if not selection.contains(calendar):
+            continue
+        for component in index.list_calendar_components(calendar):
+            if (
+                isinstance(component, VTodo)
+                and component.local_status == LocalStatus.ACTIVE
+            ):
+                out.append(component)
+    out.sort(key=_todo_sort_key)
+    return tuple(out)
+
+
+def format_friendly_start(start: datetime, today: date) -> str:
+    """Render a datetime using day-of-week / Today / Tomorrow shortcuts.
+
+    Converts to the system local timezone so displayed times match the
+    clock on the user's machine.
+    """
+    moment = start.astimezone()
+    moment_date = moment.date()
+    delta = (moment_date - today).days
+    time_str = moment.strftime("%H:%M")
+    if delta == 0:
+        return f"Today {time_str}"
+    if delta == 1:
+        return f"Tomorrow {time_str}"
+    if delta == -1:
+        return f"Yesterday {time_str}"
+    if 1 < delta < 7:
+        return f"{moment.strftime('%a')} {time_str}"
+    if -7 < delta < -1:
+        return f"Last {moment.strftime('%a')} {time_str}"
+    if moment.year == today.year:
+        return f"{moment.strftime('%a %d %b')} {time_str}"
+    return f"{moment.strftime('%a %d %b %Y')} {time_str}"
+
+
+def format_duration(start: datetime, end: datetime | None) -> str:
+    """Compact human-readable duration: 30m, 1h, 1h30m, 1d, 1d6h."""
+    if end is None:
+        return ""
+    seconds = int((end - start).total_seconds())
+    if seconds <= 0:
+        return ""
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    return "".join(parts) or "0m"
+
+
+def format_event_row(
+    row: OccurrenceRow,
+    today: date,
+    *,
+    now: datetime | None = None,
+    active_style: str = "bold",
+) -> tuple[str | Text, str | Text, str | Text, str | Text, str | Text, str | Text]:
+    """Six cells for the agenda DataTable: Day, Time, Duration,
+    Summary, Calendar, Location.
+
+    Day and Time are split into separate columns so `EventList` can
+    blank the Day cell on rows that share the previous row's day,
+    producing a paper-agenda look where each day is announced once.
+    The view title carries the year, so the Day cell never repeats it.
+
+    When `now` is supplied and the occurrence has fully ended (its
+    `end`, or `start` if there's no end, is strictly before `now`),
+    every cell is wrapped in a Rich `Text` with a `dim` style so the
+    row renders muted. A row in progress at `now` is wrapped in
+    `active_style` instead, with `IN_PROGRESS_MARK` before its time.
+    Future rows return plain strings — DataTable accepts a mix of
+    `str` and `Text` cells.
+
+    VTodo rows (and any synthesised full-day occurrence) get a
+    📋 marker on the summary, "all day" in the Time column, and an
+    empty Duration cell so the eye doesn't see "1d" repeated for
+    every todo.
+    """
+    is_full_day = _is_full_day(row.occurrence)
+    is_todo = isinstance(row.component, VTodo)
+    day = _format_event_day(row.occurrence.start, today)
+    if is_full_day:
+        event_time = "all day"
+        duration = ""
+    else:
+        event_time = row.occurrence.start.astimezone().strftime("%H:%M")
+        duration = format_duration(row.occurrence.start, row.occurrence.end)
+    raw_summary = row.component.summary or "(no summary)"
+    summary = f"📋 {raw_summary}" if is_todo else raw_summary
+    calendar = row.component.ref.calendar_name
+    location = row.component.location or ""
+    cells = (day, event_time, duration, summary, calendar, location)
+    if now is not None and is_in_progress(row.occurrence, now):
+        cells = (day, f"{IN_PROGRESS_MARK} {event_time}", *cells[2:])
+        styled = tuple(Text(c, style=active_style) for c in cells)
+        return styled[0], styled[1], styled[2], styled[3], styled[4], styled[5]
+    if now is None or not _occurrence_is_past(row.occurrence, now):
+        return cells
+    dimmed = tuple(Text(c, style="dim") for c in cells)
+    return dimmed[0], dimmed[1], dimmed[2], dimmed[3], dimmed[4], dimmed[5]
+
+
+def _format_event_day(start: datetime, today: date) -> str:
+    """Day label for the agenda Day column.
+
+    `Yesterday` / `Today` / `Tomorrow` for those three special days;
+    everything else as `DD MMM ddd` ("26 May Tue", "30 Apr Wed").
+    The format is fixed-width-ish (10 chars max) so the column
+    width pin in `EventList` stays predictable, and never includes
+    the year — the view title carries that.
+    """
+    moment = start.astimezone()
+    delta = (moment.date() - today).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Tomorrow"
+    if delta == -1:
+        return "Yesterday"
+    return moment.strftime("%d %b %a")
+
+
+def _is_full_day(occurrence: Occurrence) -> bool:
+    """A whole-day span: >= ~23h long and beginning at midnight in UTC
+    (VALUE=DATE all-day) or in the local timezone.
+
+    Standard all-day events parse to UTC midnight, but some clients
+    (Outlook/Apple/Thunderbird) store them as local midnight-to-midnight
+    (e.g. ``DTSTART;TZID=Europe/Madrid:...T000000``), which lands off UTC
+    midnight. Accepting either anchor keeps both kinds out of the hour
+    grid. The 23h floor stays DST-tolerant; the end is left unchecked
+    because a 23h+ span anchored at midnight is already unambiguous and an
+    end-at-midnight test breaks across DST transitions.
+    """
+    if occurrence.end is None:
+        return False
+    if occurrence.end - occurrence.start < timedelta(hours=23):
+        return False
+    return (
+        occurrence.start.astimezone(UTC).time() == time.min
+        or occurrence.start.astimezone().time() == time.min
+    )
+
+
+def _occurrence_is_past(occurrence: Occurrence, now: datetime) -> bool:
+    boundary = occurrence.end or occurrence.start
+    return boundary < now
+
+
+def is_in_progress(occurrence: Occurrence, now: datetime) -> bool:
+    """True when a timed occurrence is running at `now`.
+
+    Full-day spans are excluded: they would be "in progress" all day
+    long, so highlighting them says nothing about the current moment.
+    """
+    if occurrence.end is None or _is_full_day(occurrence):
+        return False
+    return occurrence.start <= now < occurrence.end
+
+
+def in_progress_keys(
+    rows: Sequence[OccurrenceRow], now: datetime
+) -> frozenset[tuple[ComponentRef, datetime]]:
+    """`(ref, start)` of every row in progress at `now`.
+
+    Keyed by start as well as ref so only the running instance of a
+    recurring event counts, not its siblings on other days.
+    """
+    return frozenset(
+        (row.component.ref, row.occurrence.start)
+        for row in rows
+        if is_in_progress(row.occurrence, now)
+    )
+
+
+def format_todo_row(todo: VTodo) -> tuple[str, str, str, str]:
+    due = (
+        todo.due.astimezone().strftime("%Y-%m-%d %H:%M") if todo.due is not None else ""
+    )
+    summary = todo.summary or "(no summary)"
+    calendar = todo.ref.calendar_name
+    status = todo.status or ""
+    return due, summary, calendar, status
+
+
+def search_components(
+    *,
+    components: Sequence[StoredComponent],
+    query: str,
+) -> tuple[StoredComponent, ...]:
+    """Substring search over summary/description/location.
+
+    Used by `SearchDialogScreen` for the live search box. The full
+    `index.search()` FTS path is reserved for the MCP server; the TUI
+    runs in-memory over already-loaded components for responsiveness
+    and to avoid re-querying SQLite on every keystroke.
+    """
+    needle = query.strip().lower()
+    if not needle:
+        return ()
+    out: list[StoredComponent] = []
+    for component in components:
+        if component.local_status == LocalStatus.TRASHED:
+            continue
+        haystack = " ".join(
+            field
+            for field in (
+                component.summary,
+                component.description,
+                component.location,
+            )
+            if field
+        ).lower()
+        if needle in haystack:
+            out.append(component)
+    return tuple(out)
+
+
+def _row_sort_key(row: OccurrenceRow) -> tuple[datetime, str, str, str]:
+    return (
+        row.occurrence.start,
+        row.component.ref.account_name,
+        row.component.ref.calendar_name,
+        row.component.ref.uid,
+    )
+
+
+def _todo_sort_key(todo: VTodo) -> tuple[datetime, str]:
+    due = todo.due or datetime.max.replace(tzinfo=UTC)
+    return due, todo.ref.uid
+
+
+_DETAIL_LABEL_WIDTH = len("Reminders:")  # the longest label in the grid
+
+
+def render_event_detail(component: StoredComponent, today: date) -> str:
+    """Multi-line component summary used by the detail pane.
+
+    Layout (labels right-aligned so the colons line up):
+
+         Summary: <text>
+          Source: <calendar> (<account>)
+        Location: <text or '(no location)'>
+           Start: <friendly date + time or '(not set)'>
+             End: <friendly date + time or '(not set)'>
+          Status: <status>          # only when present
+
+        Notes:
+        <description or '(no notes)'>
+
+    Times go through `format_friendly_start` so 'Today 09:00' /
+    'Tomorrow 14:00' / 'Tue 09:00' / 'Wed 15 May 09:00' shorthand
+    matches the row list. The iCal `UID` is not shown — it's an
+    implementation detail of the storage layer, not user-facing data.
+    """
+    lines: list[str] = [
+        _detail_field("Summary", component.summary or "(no summary)"),
+        _detail_field(
+            "Source",
+            f"{component.ref.calendar_name} ({component.ref.account_name})",
+        ),
+        _detail_field("Location", component.location or "(no location)"),
+    ]
+    if isinstance(component, VEvent):
+        lines.append(_detail_field("Start", _detail_when(component.dtstart, today)))
+        lines.append(_detail_field("End", _detail_when(component.dtend, today)))
+    else:
+        if component.dtstart is not None:
+            lines.append(_detail_field("Start", _detail_when(component.dtstart, today)))
+        lines.append(_detail_field("Due", _detail_when(component.due, today)))
+    if component.status:
+        lines.append(_detail_field("Status", component.status))
+    if isinstance(component, VEvent):
+        attendees = extract_attendees(component.raw_ics, component.ref.uid)
+        if attendees:
+            lines.append(_detail_field("Attendees", ", ".join(attendees)))
+    alarms = extract_alarm_triggers(component.raw_ics, component.ref.uid)
+    if alarms:
+        alarm_str = ", ".join(_format_alarm(a) for a in alarms)
+        lines.append(_detail_field("Reminders", alarm_str))
+    lines.extend(["", "Notes:", component.description or "(no notes)"])
+    return "\n".join(lines)
+
+
+def _detail_field(label: str, value: str) -> str:
+    # Right-align so the colons line up; values then start at the
+    # same column on every row.
+    return f"{label + ':':>{_DETAIL_LABEL_WIDTH}} {value}"
+
+
+def _detail_when(value: datetime | None, today: date) -> str:
+    if value is None:
+        return "(not set)"
+    return format_friendly_start(value, today)
+
+
+def _format_alarm(alarm: ParsedAlarm) -> str:
+    """Human-readable alarm description for the detail pane."""
+    if isinstance(alarm.trigger_offset, datetime):
+        return f"at {alarm.trigger_offset.astimezone().strftime('%d %b %H:%M')}"
+    total_secs = int(alarm.trigger_offset.total_seconds())
+    anchor = alarm.trigger_related.lower()  # "start" or "end"
+    if total_secs == 0:
+        return f"at {anchor}"
+    relation = "before" if total_secs < 0 else "after"
+    mins = abs(total_secs) // 60
+    if mins < 60:
+        return f"{mins} min {relation} {anchor}"
+    hours, rem = divmod(mins, 60)
+    if rem == 0:
+        return f"{hours} h {relation} {anchor}"
+    return f"{hours}h{rem}m {relation} {anchor}"
+
+
+__all__ = [
+    "DEFAULT_AGENDA_DAYS",
+    "IN_PROGRESS_MARK",
+    "AgendaWindow",
+    "CalendarSelection",
+    "OccurrenceRow",
+    "ViewKind",
+    "agenda_window",
+    "all_calendar_refs",
+    "day_window",
+    "format_duration",
+    "format_event_row",
+    "format_friendly_start",
+    "format_todo_row",
+    "gather_occurrences",
+    "gather_todos",
+    "in_progress_keys",
+    "is_in_progress",
+    "month_window",
+    "render_event_detail",
+    "search_components",
+    "week_window",
+]

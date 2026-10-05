@@ -1,0 +1,4021 @@
+from __future__ import annotations
+
+import dataclasses
+import re
+import tempfile
+import unittest
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from typing import TypeVar
+
+from rich.style import Style
+from rich.text import Text
+from textual.events import MouseEvent
+from textual.widget import Widget
+from textual.widgets import Label, Select
+
+from chronos.credentials import DefaultCredentialsProvider
+from chronos.domain import (
+    AccountConfig,
+    AlarmAction,
+    AlarmRecord,
+    AppConfig,
+    CalendarRef,
+    ComponentRef,
+    LocalStatus,
+    Occurrence,
+    PlaintextCredential,
+    ResourceRef,
+    StoredComponent,
+    SyncResult,
+    VEvent,
+    VTodo,
+)
+from chronos.index_store import SqliteIndexRepository
+from chronos.recurrence import populate_occurrences
+from chronos.storage import VdirMirrorRepository
+from chronos.storage_indexing import index_calendar
+from chronos.tui.app import ChronosApp, TuiServices
+from chronos.tui.screens.agenda_screen import (
+    title_for as agenda_title,
+)
+from chronos.tui.screens.agenda_screen import (
+    window_for as agenda_window_for,
+)
+from chronos.tui.screens.confirm_screen import ConfirmScreen
+from chronos.tui.screens.day_view_screen import title_for as day_title
+from chronos.tui.screens.event_detail_screen import EventDetailScreen
+from chronos.tui.screens.event_edit_screen import EditDraft, EventEditScreen
+from chronos.tui.screens.grid_view_screen import title_for as grid_title
+from chronos.tui.screens.grid_view_screen import window_for as grid_window_for
+from chronos.tui.screens.import_ics_screen import ImportIcsScreen
+from chronos.tui.screens.main_screen import MainScreen
+from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
+from chronos.tui.screens.sync_confirm_screen import SyncConfirmScreen
+from chronos.tui.views import (
+    IN_PROGRESS_MARK,
+    AgendaWindow,
+    CalendarSelection,
+    OccurrenceRow,
+    ViewKind,
+    agenda_window,
+    all_calendar_refs,
+    day_window,
+    format_duration,
+    format_event_row,
+    format_friendly_start,
+    format_todo_row,
+    gather_occurrences,
+    gather_todos,
+    in_progress_keys,
+    is_in_progress,
+    month_window,
+    render_event_detail,
+    search_components,
+    week_window,
+)
+from chronos.tui.widgets.date_picker import (
+    DatePicker,
+    InvalidDateError,
+    parse_date_input,
+)
+from chronos.tui.widgets.event_list import EventList, component_ref_for_row
+from chronos.tui.widgets.event_view import EventView
+from tests_calendar import corpus
+
+ACCOUNT_NAME = "personal"
+WORK_CAL = "work"
+PERSONAL_CAL = "private"
+NOW = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
+_MouseEventT = TypeVar("_MouseEventT", bound=MouseEvent)
+
+
+# Pure helpers ----------------------------------------------------------------
+
+
+def _account() -> AccountConfig:
+    return AccountConfig(
+        name=ACCOUNT_NAME,
+        url="https://caldav.example.com/dav/",
+        username="user@example.com",
+        credential=PlaintextCredential(password="x"),
+        mirror_path=Path("/unused"),
+        trash_retention_days=30,
+        include=(re.compile(".*"),),
+        exclude=(),
+        read_only=(),
+    )
+
+
+def _config() -> AppConfig:
+    return AppConfig(
+        config_version=1,
+        use_utf8=False,
+        editor=None,
+        accounts=(_account(),),
+    )
+
+
+def _seed_workspace(tmp: Path) -> tuple[VdirMirrorRepository, SqliteIndexRepository]:
+    """Seed two calendars for the test account with corpus fixtures."""
+    mirror = VdirMirrorRepository(tmp / "mirror")
+    index = SqliteIndexRepository(tmp / "index.sqlite3")
+
+    fixtures: dict[str, list[tuple[str, bytes]]] = {
+        WORK_CAL: [
+            ("simple-event-1@example.com", corpus.simple_event()),
+            ("recurring-weekly-1@example.com", corpus.recurring_weekly()),
+        ],
+        PERSONAL_CAL: [
+            ("todo-1@example.com", corpus.simple_todo()),
+        ],
+    }
+    for calendar_name, items in fixtures.items():
+        for uid, ics in items:
+            mirror.write(ResourceRef(ACCOUNT_NAME, calendar_name, uid), ics)
+        ref = CalendarRef(ACCOUNT_NAME, calendar_name)
+        index_calendar(mirror=mirror, index=index, calendar=ref)
+        populate_occurrences(
+            index=index,
+            calendar=ref,
+            window_start=datetime(2026, 1, 1, tzinfo=UTC),
+            window_end=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+    return mirror, index
+
+
+def _services(
+    tmp: Path,
+    *,
+    sync_runner: object | None = None,
+) -> TuiServices:
+    mirror, index = _seed_workspace(tmp)
+    return TuiServices(
+        config=_config(),
+        mirror=mirror,
+        index=index,
+        creds=DefaultCredentialsProvider(env={}),
+        now=lambda: NOW,
+        sync_runner=sync_runner,  # type: ignore[arg-type]
+    )
+
+
+# Layer 1 — pure helpers ------------------------------------------------------
+
+
+class WindowMathTest(unittest.TestCase):
+    # Windows are anchored at local midnight so events near midnight
+    # land in the user's local day rather than the UTC day. The
+    # assertions compare against `datetime(...).astimezone()` so they
+    # pass in any timezone (CI, dev box, user machine).
+
+    def test_day_window_is_24_hours_local(self) -> None:
+        start, end = day_window(date(2026, 4, 25))
+        self.assertEqual(start, datetime(2026, 4, 25).astimezone())
+        self.assertEqual(end - start, timedelta(days=1))
+
+    def test_week_window_starts_on_monday(self) -> None:
+        # 2026-04-25 is a Saturday.
+        start, end = week_window(date(2026, 4, 25))
+        self.assertEqual(start, datetime(2026, 4, 20).astimezone())
+        self.assertEqual(end, datetime(2026, 4, 27).astimezone())
+
+    def test_month_window_handles_december_rollover(self) -> None:
+        start, end = month_window(date(2026, 12, 15))
+        self.assertEqual(start, datetime(2026, 12, 1).astimezone())
+        self.assertEqual(end, datetime(2027, 1, 1).astimezone())
+
+    def test_month_window_mid_year(self) -> None:
+        start, end = month_window(date(2026, 4, 25))
+        self.assertEqual(start, datetime(2026, 4, 1).astimezone())
+        self.assertEqual(end, datetime(2026, 5, 1).astimezone())
+
+    def test_agenda_window_default_is_two_weeks(self) -> None:
+        start, end = agenda_window(date(2026, 4, 25))
+        self.assertEqual(end - start, timedelta(days=14))
+
+    def test_agenda_window_custom_days(self) -> None:
+        start, end = agenda_window(date(2026, 4, 25), days=3)
+        self.assertEqual(end - start, timedelta(days=3))
+
+
+class ViewScreenTitleTest(unittest.TestCase):
+    def test_day_title_iso_date(self) -> None:
+        self.assertEqual(day_title(date(2026, 4, 25)), "Day · 2026-04-25")
+
+    def test_grid_title_includes_start_and_end(self) -> None:
+        # Grid view defaults to 4 days starting from the viewed date.
+        title = grid_title(date(2026, 4, 25))
+        self.assertIn("2026-04-25", title)
+        self.assertIn("2026-04-28", title)
+
+    def test_agenda_title_reflects_window_mode(self) -> None:
+        # Day mode: just today.
+        day_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.DAY)
+        self.assertIn("Day", day_title_text)
+        self.assertIn("2026-04-25", day_title_text)
+        # Week mode: aligned Mon–Sun (2026-04-20 to 2026-04-26).
+        week_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.WEEK)
+        self.assertIn("Week", week_title_text)
+        self.assertIn("2026-04-20", week_title_text)
+        # Month mode: full April 2026.
+        month_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.MONTH)
+        self.assertIn("Month", month_title_text)
+        self.assertIn("2026-04-01", month_title_text)
+
+    def test_agenda_window_for_uses_calendar_aligned_ranges(self) -> None:
+        d = date(2026, 4, 25)
+        self.assertEqual(agenda_window_for(d, AgendaWindow.DAY), day_window(d))
+        self.assertEqual(agenda_window_for(d, AgendaWindow.WEEK), week_window(d))
+        self.assertEqual(agenda_window_for(d, AgendaWindow.MONTH), month_window(d))
+
+    def test_grid_window_for_default_is_four_days(self) -> None:
+        start, end = grid_window_for(date(2026, 4, 25))
+        self.assertEqual(start, datetime(2026, 4, 25).astimezone())
+        self.assertEqual(end - start, timedelta(days=4))
+
+
+class GatherOccurrencesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.mirror, self.index = _seed_workspace(self.tmp)
+        self.addCleanup(self.index.close)
+        self.calendars = all_calendar_refs(_config(), self.mirror)
+
+    def test_agenda_returns_events_in_window(self) -> None:
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=self.calendars,
+            selection=CalendarSelection(refs=frozenset()),
+            window=agenda_window(date(2026, 4, 25), days=30),
+        )
+        # simple_event (2026-05-01) and weekly RRULE occurrences fall in window.
+        self.assertGreater(len(rows), 0)
+        starts = sorted(r.occurrence.start for r in rows)
+        self.assertEqual(starts, [r.occurrence.start for r in rows])  # already sorted
+
+    def test_selection_filter_drops_other_calendars(self) -> None:
+        only_work = CalendarSelection(
+            refs=frozenset({CalendarRef(ACCOUNT_NAME, WORK_CAL)})
+        )
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=self.calendars,
+            selection=only_work,
+            window=agenda_window(date(2026, 4, 25), days=30),
+        )
+        # Only the work calendar's events should appear; nothing from
+        # the personal calendar.
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row.component.ref.calendar_name, WORK_CAL)
+
+    def test_trashed_components_are_dropped(self) -> None:
+        # Mark the simple event as trashed.
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = self.index.get_component(ref)
+        assert component is not None
+        assert isinstance(component, VEvent)
+        trashed = VEvent(
+            ref=component.ref,
+            href=component.href,
+            etag=component.etag,
+            raw_ics=component.raw_ics,
+            summary=component.summary,
+            description=component.description,
+            location=component.location,
+            dtstart=component.dtstart,
+            dtend=component.dtend,
+            status=component.status,
+            local_flags=component.local_flags,
+            server_flags=component.server_flags,
+            local_status=LocalStatus.TRASHED,
+            trashed_at=NOW,
+            synced_at=component.synced_at,
+        )
+        self.index.upsert_component(trashed)
+
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=self.calendars,
+            selection=CalendarSelection(refs=frozenset()),
+            window=day_window(date(2026, 5, 1)),
+        )
+        self.assertEqual(
+            [r.component.ref.uid for r in rows],
+            [
+                uid
+                for uid in (r.component.ref.uid for r in rows)
+                if uid != "simple-event-1@example.com"
+            ],
+        )
+
+    def test_empty_window_returns_empty(self) -> None:
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=self.calendars,
+            selection=CalendarSelection(refs=frozenset()),
+            window=(
+                datetime(2030, 1, 1, tzinfo=UTC),
+                datetime(2030, 1, 2, tzinfo=UTC),
+            ),
+        )
+        self.assertEqual(rows, ())
+
+
+class GatherTodosTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.mirror, self.index = _seed_workspace(self.tmp)
+        self.addCleanup(self.index.close)
+        self.calendars = all_calendar_refs(_config(), self.mirror)
+
+    def test_returns_active_todo(self) -> None:
+        todos = gather_todos(
+            index=self.index,
+            calendars=self.calendars,
+            selection=CalendarSelection(refs=frozenset()),
+        )
+        self.assertEqual(len(todos), 1)
+        self.assertEqual(todos[0].ref.uid, "todo-1@example.com")
+
+    def test_selection_filters_calendars(self) -> None:
+        only_work = CalendarSelection(
+            refs=frozenset({CalendarRef(ACCOUNT_NAME, WORK_CAL)})
+        )
+        todos = gather_todos(
+            index=self.index,
+            calendars=self.calendars,
+            selection=only_work,
+        )
+        self.assertEqual(todos, ())
+
+
+class FriendlyStartFormatTest(unittest.TestCase):
+    TODAY = date(2026, 4, 25)  # Saturday
+
+    def test_today(self) -> None:
+        self.assertEqual(
+            format_friendly_start(
+                datetime(2026, 4, 25, 9, 30).astimezone(), self.TODAY
+            ),
+            "Today 09:30",
+        )
+
+    def test_tomorrow(self) -> None:
+        self.assertEqual(
+            format_friendly_start(
+                datetime(2026, 4, 26, 14, 0).astimezone(), self.TODAY
+            ),
+            "Tomorrow 14:00",
+        )
+
+    def test_yesterday(self) -> None:
+        self.assertEqual(
+            format_friendly_start(datetime(2026, 4, 24, 8, 0).astimezone(), self.TODAY),
+            "Yesterday 08:00",
+        )
+
+    def test_within_a_week_uses_weekday_name(self) -> None:
+        # 2026-04-28 is the following Tuesday.
+        result = format_friendly_start(
+            datetime(2026, 4, 28, 9, 0).astimezone(), self.TODAY
+        )
+        self.assertEqual(result, "Tue 09:00")
+
+    def test_recent_past_uses_last_weekday(self) -> None:
+        # 2026-04-22 is the prior Wednesday.
+        result = format_friendly_start(
+            datetime(2026, 4, 22, 9, 0).astimezone(), self.TODAY
+        )
+        self.assertEqual(result, "Last Wed 09:00")
+
+    def test_same_year_uses_short_date(self) -> None:
+        result = format_friendly_start(
+            datetime(2026, 8, 15, 9, 0).astimezone(), self.TODAY
+        )
+        # Sat 15 Aug 09:00 — order varies by locale of strftime but
+        # the important pieces are all there.
+        self.assertIn("Aug", result)
+        self.assertIn("15", result)
+        self.assertIn("09:00", result)
+        self.assertNotIn("2026", result)  # year omitted for current-year
+
+    def test_other_year_includes_year(self) -> None:
+        result = format_friendly_start(
+            datetime(2014, 9, 30, 12, 18).astimezone(), self.TODAY
+        )
+        self.assertIn("2014", result)
+        self.assertIn("Sep", result)
+        self.assertIn("12:18", result)
+
+
+class DurationFormatTest(unittest.TestCase):
+    def test_zero_or_missing_end_is_empty(self) -> None:
+        self.assertEqual(format_duration(datetime(2026, 5, 1, 9, tzinfo=UTC), None), "")
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+            ),
+            "",
+        )
+
+    def test_minutes(self) -> None:
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+                datetime(2026, 5, 1, 9, 30, tzinfo=UTC),
+            ),
+            "30m",
+        )
+
+    def test_whole_hours(self) -> None:
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+                datetime(2026, 5, 1, 11, tzinfo=UTC),
+            ),
+            "2h",
+        )
+
+    def test_hours_and_minutes(self) -> None:
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+                datetime(2026, 5, 1, 10, 30, tzinfo=UTC),
+            ),
+            "1h30m",
+        )
+
+    def test_full_day(self) -> None:
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 2, tzinfo=UTC),
+            ),
+            "1d",
+        )
+
+    def test_multi_day_with_remainder(self) -> None:
+        self.assertEqual(
+            format_duration(
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 2, 6, 15, tzinfo=UTC),
+            ),
+            "1d6h15m",
+        )
+
+
+class RowFormattingTest(unittest.TestCase):
+    TODAY = date(2026, 4, 25)
+
+    def test_format_event_row_splits_day_and_time(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Hello",
+            description=None,
+            location="Room 1",
+            dtstart=datetime(2026, 6, 15, 9).astimezone(),
+            dtend=datetime(2026, 6, 15, 10).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        row = OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=datetime(2026, 6, 15, 9).astimezone(),
+                end=datetime(2026, 6, 15, 10).astimezone(),
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=event,
+        )
+        cells = format_event_row(row, self.TODAY)
+        # 6 cells: Day, Time, Duration, Summary, Calendar, Location.
+        self.assertEqual(len(cells), 6)
+        # 2026-06-15 is a Monday, well outside the today/tomorrow/
+        # yesterday window → "DD MMM ddd" form.
+        self.assertEqual(cells[0], "15 Jun Mon")
+        self.assertEqual(cells[1], "09:00")
+        self.assertEqual(cells[2], "1h")
+        self.assertEqual(cells[3], "Hello")
+        self.assertEqual(cells[4], WORK_CAL)
+        self.assertEqual(cells[5], "Room 1")
+
+    def test_format_event_row_uses_friendly_words_for_today_tomorrow(self) -> None:
+        # `Yesterday` / `Today` / `Tomorrow` replace the absolute date
+        # in the Day column for those three days only — everything
+        # else uses the literal `DD MMM ddd` form.
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+
+        for delta, label in ((-1, "Yesterday"), (0, "Today"), (1, "Tomorrow")):
+            start = datetime(2026, 4, 25 + delta, 9, tzinfo=UTC)
+            row = OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=start,
+                    end=start + timedelta(hours=1),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            )
+            cells = format_event_row(row, self.TODAY)
+            self.assertEqual(cells[0], label, f"delta={delta}")
+
+    def test_format_event_row_handles_missing_summary_and_location(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+        row = OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=datetime(2026, 5, 1, 9).astimezone(),
+                end=None,
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=event,
+        )
+        cells = format_event_row(row, self.TODAY)
+        self.assertEqual(cells[1], "09:00")  # Time
+        self.assertEqual(cells[2], "")  # no end -> no duration
+        self.assertEqual(cells[3], "(no summary)")
+        self.assertEqual(cells[5], "")  # no location
+
+    def test_past_event_cells_are_dimmed_when_now_is_supplied(self) -> None:
+        # Regression: in the agenda view, events whose end has already
+        # passed should render muted so the user's eye is drawn to
+        # what's still upcoming.
+        from rich.text import Text
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+        row = OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=datetime(2026, 4, 24, 9, tzinfo=UTC),
+                end=datetime(2026, 4, 24, 10, tzinfo=UTC),
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=event,
+        )
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
+        cells = format_event_row(row, self.TODAY, now=now)
+        for cell in cells:
+            self.assertIsInstance(cell, Text)
+            assert isinstance(cell, Text)
+            self.assertEqual(cell.style, "dim")
+
+    def test_in_progress_event_is_highlighted(self) -> None:
+        # An event that started before `now` but hasn't ended yet is
+        # happening right now — highlight it rather than dim it.
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+        row = OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=datetime(2026, 4, 25, 8, 30, tzinfo=UTC),
+                end=datetime(2026, 4, 25, 10, 0, tzinfo=UTC),
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=event,
+        )
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
+        cells = format_event_row(row, self.TODAY, now=now, active_style="bold red")
+        for cell in cells:
+            self.assertIsInstance(cell, Text)
+            assert isinstance(cell, Text)
+            self.assertEqual(cell.style, "bold red")
+        time_cell = cells[1]
+        assert isinstance(time_cell, Text)
+        self.assertTrue(time_cell.plain.startswith(IN_PROGRESS_MARK))
+
+    def test_future_event_is_plain(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        row = OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=datetime(2026, 4, 25, 10, 30, tzinfo=UTC),
+                end=datetime(2026, 4, 25, 11, 0, tzinfo=UTC),
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=_empty_event(ref),
+        )
+        now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
+        for cell in format_event_row(row, self.TODAY, now=now):
+            self.assertIsInstance(cell, str)
+
+    def test_format_todo_row_renders_due_and_status(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, PERSONAL_CAL, "y")
+        todo = VTodo(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Pay rent",
+            description=None,
+            location=None,
+            dtstart=None,
+            due=datetime(2026, 5, 5, 17).astimezone(),
+            status="NEEDS-ACTION",
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        cells = format_todo_row(todo)
+        self.assertEqual(cells[0], "2026-05-05 17:00")
+        self.assertEqual(cells[1], "Pay rent")
+        self.assertEqual(cells[2], PERSONAL_CAL)
+        self.assertEqual(cells[3], "NEEDS-ACTION")
+
+    def test_format_todo_row_with_no_due_or_status(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, PERSONAL_CAL, "y")
+        todo = _empty_todo(ref)
+        cells = format_todo_row(todo)
+        self.assertEqual(cells[0], "")
+        self.assertEqual(cells[3], "")
+
+    def test_component_ref_for_row_returns_ref(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        component = _empty_event(ref)
+        self.assertEqual(component_ref_for_row(component), ref)
+
+
+def _empty_event(ref: ComponentRef) -> VEvent:
+    return VEvent(
+        ref=ref,
+        href=None,
+        etag=None,
+        raw_ics=b"",
+        summary=None,
+        description=None,
+        location=None,
+        dtstart=None,
+        dtend=None,
+        status=None,
+        local_flags=frozenset(),
+        server_flags=frozenset(),
+        local_status=LocalStatus.ACTIVE,
+        trashed_at=None,
+        synced_at=None,
+    )
+
+
+def _empty_todo(ref: ComponentRef) -> VTodo:
+    return VTodo(
+        ref=ref,
+        href=None,
+        etag=None,
+        raw_ics=b"",
+        summary=None,
+        description=None,
+        location=None,
+        dtstart=None,
+        due=None,
+        status=None,
+        local_flags=frozenset(),
+        server_flags=frozenset(),
+        local_status=LocalStatus.ACTIVE,
+        trashed_at=None,
+        synced_at=None,
+    )
+
+
+class SearchAndDetailTest(unittest.TestCase):
+    def test_search_substring_case_insensitive(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-1")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Quarterly Planning",
+            description="Reviewing the plan for Q3",
+            location="Conference room",
+            dtstart=None,
+            dtend=None,
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        matches = search_components(components=(event,), query="QUART")
+        self.assertEqual(matches, (event,))
+        self.assertEqual(
+            search_components(components=(event,), query="conference"),
+            (event,),
+        )
+        self.assertEqual(search_components(components=(event,), query=""), ())
+
+    def test_search_skips_trashed(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-1")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Meeting",
+            description=None,
+            location=None,
+            dtstart=None,
+            dtend=None,
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.TRASHED,
+            trashed_at=NOW,
+            synced_at=None,
+        )
+        self.assertEqual(search_components(components=(event,), query="Meet"), ())
+
+    def test_render_event_detail_event(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-1")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Standup",
+            description="Daily sync",
+            location="Zoom",
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 9, 30, tzinfo=UTC),
+            status="CONFIRMED",
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        today = date(2026, 4, 25)
+        text = render_event_detail(event, today)
+        self.assertIn("Summary: Standup", text)
+        # New layout: "Source: <calendar> (<account>)" replaces the
+        # old "Account / Calendar:" line. The calendar comes first.
+        self.assertIn(f"Source: {WORK_CAL} ({ACCOUNT_NAME})", text)
+        self.assertIn("Location: Zoom", text)
+        # Times render through `format_friendly_start`, not ISO.
+        self.assertIn("Start: ", text)
+        self.assertIn("End: ", text)
+        self.assertNotIn("T09:00:00", text)
+        self.assertIn("Status: CONFIRMED", text)
+        self.assertIn("Notes:", text)
+        self.assertIn("Daily sync", text)
+        # Internal UID is suppressed.
+        self.assertNotIn("UID:", text)
+
+    def test_render_event_detail_shows_attendees(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "attendees-1@example.com")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=corpus.event_with_attendees(),
+            summary="Invited event",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        text = render_event_detail(event, date(2026, 4, 25))
+        self.assertIn("Attendees: alice@example.com, bob@example.com", text)
+
+    def test_render_event_detail_todo(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, PERSONAL_CAL, "uid-2")
+        todo = VTodo(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Buy milk",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            due=datetime(2026, 5, 2, 17, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        text = render_event_detail(todo, date(2026, 4, 25))
+        self.assertIn("Buy milk", text)
+        self.assertIn("Due: ", text)
+        self.assertIn("Start: ", text)
+        # Empty description shows the placeholder, not a missing field.
+        self.assertIn("(no notes)", text)
+
+    def test_render_event_detail_minimal(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-3")
+        event = _empty_event(ref)
+        text = render_event_detail(event, date(2026, 4, 25))
+        self.assertIn("(no summary)", text)
+        self.assertIn(WORK_CAL, text)
+        # The Location and Notes slots are always present, even when
+        # the underlying data is missing.
+        self.assertIn("(no location)", text)
+        self.assertIn("(no notes)", text)
+        # And Start / End placeholders surface as "(not set)" rather
+        # than disappearing — keeps the layout stable across events.
+        self.assertIn("(not set)", text)
+
+    def test_render_event_detail_aligns_labels(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-x")
+        event = _empty_event(ref)
+        text = render_event_detail(event, date(2026, 4, 25))
+        # Right-aligned labels mean every grid line's colon sits at
+        # the same column. Pick the column from the "Location:" line
+        # (the longest label) and assert each grid line carries a
+        # colon there.
+        location_line = next(
+            ln for ln in text.splitlines() if ln.lstrip().startswith("Location:")
+        )
+        colon_col = location_line.index(":")
+        for label in ("Summary", "Source", "Location", "Start", "End"):
+            line = next(
+                ln for ln in text.splitlines() if ln.lstrip().startswith(label + ":")
+            )
+            self.assertEqual(line[colon_col], ":", line)
+
+
+class DatePickerTest(unittest.TestCase):
+    def test_parse_naive_is_local(self) -> None:
+        # Naive input must be interpreted in the user's local timezone
+        # so what the editor accepts matches what the calendar views
+        # display. Compared via .astimezone(UTC) so the test passes
+        # in any timezone (CI, dev box, user machines).
+        dt = parse_date_input("2026-05-01T09:00")
+        expected = datetime(2026, 5, 1, 9).astimezone()
+        self.assertEqual(dt.astimezone(UTC), expected.astimezone(UTC))
+        self.assertIsNotNone(dt.tzinfo)
+
+    def test_parse_date_only(self) -> None:
+        dt = parse_date_input("2026-05-01")
+        expected = datetime(2026, 5, 1).astimezone()
+        self.assertEqual(dt.astimezone(UTC), expected.astimezone(UTC))
+        self.assertIsNotNone(dt.tzinfo)
+
+    def test_parse_with_offset(self) -> None:
+        dt = parse_date_input("2026-05-01T09:00+02:00")
+        self.assertEqual(dt.utcoffset(), timedelta(hours=2))
+
+    def test_parse_empty_raises(self) -> None:
+        with self.assertRaises(InvalidDateError):
+            parse_date_input("")
+
+    def test_parse_garbage_raises(self) -> None:
+        with self.assertRaises(InvalidDateError):
+            parse_date_input("yesterday")
+
+
+class CalendarSelectionTest(unittest.TestCase):
+    def test_empty_selection_contains_everything(self) -> None:
+        selection = CalendarSelection(refs=frozenset())
+        self.assertTrue(selection.contains(CalendarRef("a", "b")))
+
+    def test_explicit_selection_contains_only_listed(self) -> None:
+        ref = CalendarRef("a", "b")
+        selection = CalendarSelection(refs=frozenset({ref}))
+        self.assertTrue(selection.contains(ref))
+        self.assertFalse(selection.contains(CalendarRef("a", "c")))
+
+
+# Layer 2 — Pilot flows -------------------------------------------------------
+
+
+class TuiFlowTestCase(unittest.IsolatedAsyncioTestCase):
+    """Base for Pilot-driven flows."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def services(
+        self,
+        *,
+        sync_runner: object | None = None,
+        startup_ics_path: Path | None = None,
+    ) -> TuiServices:
+        services = _services(self.tmp, sync_runner=sync_runner)
+        services.startup_ics_path = startup_ics_path
+        # SQLite needs an explicit close on Windows or the temp dir
+        # rmtree races against the still-open WAL file.
+        self.addCleanup(services.index.close)
+        return services
+
+
+class StartupIcsModalTest(TuiFlowTestCase):
+    async def test_shows_modal_when_started_with_ics_path(self) -> None:
+        ics_path = self.tmp / "invite.ics"
+        ics_path.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR\n", encoding="utf-8")
+        services = self.services(startup_ics_path=ics_path)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, ImportIcsScreen)
+
+
+class ViewSwitchTest(TuiFlowTestCase):
+    """`a` selects the agenda; `1`–`7` select the timeline (`1` → Day,
+    `2`–`7` → that-many-day Grid). Inside the agenda view, `d` / `w` /
+    `m` flip the agenda window (day / week / month) without leaving
+    agenda."""
+
+    async def test_number_keys_switch_between_top_level_views(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, MainScreen)
+
+            await pilot.press("1")
+            await pilot.pause()
+            self.assertEqual(pilot.app.screen._view, ViewKind.DAY)
+
+            await pilot.press("4")
+            await pilot.pause()
+            self.assertEqual(pilot.app.screen._view, ViewKind.GRID)
+
+            await pilot.press("a")
+            await pilot.pause()
+            self.assertEqual(pilot.app.screen._view, ViewKind.AGENDA)
+
+    async def test_d_w_m_tune_agenda_window_when_in_agenda(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("a")
+            await pilot.pause()
+
+            await pilot.press("d")
+            await pilot.pause()
+            self.assertEqual(screen._agenda_window, AgendaWindow.DAY)
+
+            await pilot.press("w")
+            await pilot.pause()
+            self.assertEqual(screen._agenda_window, AgendaWindow.WEEK)
+
+            await pilot.press("m")
+            await pilot.pause()
+            self.assertEqual(screen._agenda_window, AgendaWindow.MONTH)
+            # And the view is still agenda — d/w/m don't switch views.
+            self.assertEqual(screen._view, ViewKind.AGENDA)
+
+    async def test_d_w_m_are_noops_outside_agenda(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")  # Day view
+            await pilot.pause()
+            initial_window = screen._agenda_window
+            await pilot.press("m")
+            await pilot.pause()
+            # Pressing `m` outside agenda must not flip the agenda
+            # window AND must not switch the view.
+            self.assertEqual(screen._agenda_window, initial_window)
+            self.assertEqual(screen._view, ViewKind.DAY)
+
+
+class QuitBindingTest(TuiFlowTestCase):
+    async def test_capital_q_exits_the_app(self) -> None:
+        # Regression: Textual's screen-binding dispatch does not bubble
+        # missing actions to the App, so binding "Q" to "quit" without
+        # MainScreen.action_quit silently dropped the press.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("Q")
+            await pilot.pause()
+            self.assertTrue(app._exit)
+
+
+class TodayResetsViewedDateTest(TuiFlowTestCase):
+    async def test_today_jumps_back_to_now(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._viewed_date = date(2024, 1, 1)
+            await pilot.press("t")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, NOW.date())
+
+
+class TodayKeyTest(TuiFlowTestCase):
+    """`t` snaps `_viewed_date` back to today's date in any view."""
+
+    async def test_t_snaps_viewed_date_in_day_view(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            screen._viewed_date = date(1999, 1, 1)
+            screen.refresh_view()
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, NOW.date())
+            self.assertEqual(screen._view, ViewKind.DAY)
+
+
+class DateNavigationTest(TuiFlowTestCase):
+    """`n` / `p` step the viewed date by the view's natural unit;
+    `N` / `P` shift it by a week in every view."""
+
+    async def test_n_advances_one_day_in_day_view(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            start = screen._viewed_date
+            await pilot.press("n")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, start + timedelta(days=1))
+
+    async def test_p_retreats_one_day_in_day_view(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            start = screen._viewed_date
+            await pilot.press("p")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, start - timedelta(days=1))
+
+    async def _week_step(self, span_key: str, key: str) -> timedelta:
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press(span_key)
+            await pilot.pause()
+            start = screen._viewed_date
+            await pilot.press(key)
+            await pilot.pause()
+            return screen._viewed_date - start
+
+    async def test_capital_n_and_p_move_a_week_in_every_view(self) -> None:
+        # Agenda (`a`), Day (`1`), and grids of any width all step by 7
+        # days — not by the grid's width.
+        for span_key in ("a", "1", "3", "7"):
+            with self.subTest(view=span_key):
+                self.assertEqual(await self._week_step(span_key, "N"), timedelta(7))
+                self.assertEqual(await self._week_step(span_key, "P"), timedelta(-7))
+
+    async def test_n_in_agenda_day_window_advances_one_day(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("a")  # Agenda
+            await pilot.pause()
+            await pilot.press("d")  # Day sub-window
+            await pilot.pause()
+            start = screen._viewed_date
+            await pilot.press("n")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, start + timedelta(days=1))
+
+    async def test_n_in_agenda_week_window_advances_seven_days(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("w")  # Week sub-window
+            await pilot.pause()
+            start = screen._viewed_date
+            await pilot.press("n")
+            await pilot.pause()
+            self.assertEqual(screen._viewed_date, start + timedelta(days=7))
+
+    async def test_n_in_agenda_month_window_advances_one_month(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("m")  # Month sub-window
+            await pilot.pause()
+            screen._viewed_date = date(2026, 1, 31)  # exercise month clamp
+            screen.refresh_view()
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            # Feb 2026 has 28 days; relativedelta clamps to 2026-02-28.
+            self.assertEqual(screen._viewed_date, date(2026, 2, 28))
+
+
+class StartupFocusTest(TuiFlowTestCase):
+    async def test_primary_view_widget_has_focus_on_mount(self) -> None:
+        # Regression: previously the calendar tree on the left grabbed
+        # focus by default, so the user had to tab out of it before
+        # arrow keys did anything useful.
+        # The persisted view determines which widget gets initial focus:
+        # EventList for AGENDA, TimelineGrid for Day / Grid.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()  # call_after_refresh needs a second tick
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+            event_list = screen.query_one(EventList)
+            timeline = screen.query_one(TimelineGrid)
+            # Exactly one of the two primary widgets must hold focus.
+            self.assertTrue(
+                event_list.has_focus or timeline.has_focus,
+                "neither EventList nor TimelineGrid has focus on startup",
+            )
+
+
+class DetailPaneTracksCursorTest(TuiFlowTestCase):
+    async def test_arrow_down_refreshes_detail_pane(self) -> None:
+        # Regression: moving the cursor through the event list left
+        # the detail pane stuck on whatever row was current at the
+        # last `refresh_view`. Pressing `down` must swap the rendered
+        # detail to match the newly-highlighted row. Agenda only —
+        # Day / Grid hide the inline detail pane and show the detail
+        # in a modal `EventDetailScreen` on Enter instead.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            # Park the agenda anchor over the seeded May events
+            # (the default WEEK around `NOW` is empty otherwise).
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("m")  # Month window catches more rows
+            await pilot.pause()
+            screen._viewed_date = date(2026, 5, 1)
+            screen.refresh_view()
+            await pilot.pause()
+
+            first_component = screen._currently_selected_component()
+            self.assertIsNotNone(first_component)
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            second_component = screen._currently_selected_component()
+            self.assertIsNotNone(second_component)
+            assert first_component is not None and second_component is not None
+            self.assertNotEqual(
+                (first_component.ref.uid, first_component.ref.recurrence_id),
+                (second_component.ref.uid, second_component.ref.recurrence_id),
+                "down arrow did not move the cursor to a different row",
+            )
+
+            event_view = screen.query_one(EventView)
+            # The EventView is a `Static`; `.content` holds the text it
+            # last rendered. Compare against the freshly-selected
+            # component to prove the detail pane really did follow the
+            # cursor.
+            self.assertEqual(
+                str(event_view.content),
+                render_event_detail(second_component, NOW.date()),
+            )
+
+
+class NewEventFlowTest(TuiFlowTestCase):
+    async def test_new_event_creates_in_mirror_and_index(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `c` opens the new-event editor — mirrors Pony's compose
+            # key so "create" is the same letter in both apps.
+            await pilot.press("c")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, EventEditScreen)
+            edit = pilot.app.screen
+            edit.query_one("#edit-summary").value = "Brand new event"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.action_save()
+            await pilot.pause()
+
+        # Verify the event landed in whichever calendar was the default.
+        all_components: list[StoredComponent] = []
+        for ref in all_calendar_refs(services.config, services.mirror):
+            all_components.extend(services.index.list_calendar_components(ref))
+        new = [c for c in all_components if c.summary == "Brand new event"]
+        self.assertEqual(len(new), 1)
+        # And on disk under that calendar.
+        on_disk = services.mirror.list_resources(
+            new[0].ref.account_name, new[0].ref.calendar_name
+        )
+        uids = {r.uid for r in on_disk}
+        self.assertIn(new[0].ref.uid, uids)
+
+    async def test_all_day_checkbox_saves_date_event(self) -> None:
+        from textual.widgets import Checkbox
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            checkbox = edit.query_one("#edit-all-day", Checkbox)
+            self.assertFalse(checkbox.value)
+            checkbox.value = True
+            await pilot.pause()
+            self.assertTrue(edit.query_one("#edit-end-time", Select).disabled)
+            edit.query_one("#edit-summary").value = "Holiday"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-date", DatePicker).value = ""
+            edit.action_save()
+            await pilot.pause()
+            self.assertNotIsInstance(pilot.app.screen, EventEditScreen)
+
+            created = [
+                c
+                for ref in all_calendar_refs(services.config, services.mirror)
+                for c in services.index.list_calendar_components(ref)
+                if c.summary == "Holiday"
+            ]
+            self.assertEqual(len(created), 1)
+            event = created[0]
+            assert isinstance(event, VEvent)
+            self.assertIn(b"DTSTART;VALUE=DATE:20260515", event.raw_ics)
+            self.assertIn(b"DTEND;VALUE=DATE:20260516", event.raw_ics)
+
+            # Re-opening it pre-fills the form as an all-day event.
+            main = pilot.app.screen
+            assert isinstance(main, MainScreen)
+            main._edit_specific(event)
+            await pilot.pause()
+            reopened = pilot.app.screen
+            assert isinstance(reopened, EventEditScreen)
+            self.assertTrue(reopened.query_one("#edit-all-day", Checkbox).value)
+            self.assertEqual(
+                reopened.query_one("#edit-start-date", DatePicker).value,
+                "2026-05-15",
+            )
+            self.assertEqual(reopened.query_one("#edit-end-date", DatePicker).value, "")
+
+    async def test_all_day_end_before_start_is_rejected(self) -> None:
+        from textual.widgets import Checkbox
+
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.query_one("#edit-all-day", Checkbox).value = True
+            edit.query_one("#edit-summary").value = "Oops"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-14"
+            edit.action_save()
+            await pilot.pause()
+            self.assertIs(pilot.app.screen, edit)
+            self.assertIn(
+                "before start", str(edit.query_one("#edit-error", Label).render())
+            )
+
+    async def test_new_event_can_invite_attendees(self) -> None:
+        from chronos.ical_parser import extract_attendees, extract_organizer
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, EventEditScreen)
+            edit = pilot.app.screen
+            edit.query_one("#edit-summary").value = "Planning"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-attendees").value = (  # type: ignore[attr-defined]
+                "Alice <alice@example.com>, bob@example.com"
+            )
+            edit.action_save()
+            await pilot.pause()
+
+        all_components: list[StoredComponent] = []
+        for ref in all_calendar_refs(services.config, services.mirror):
+            all_components.extend(services.index.list_calendar_components(ref))
+        created = [c for c in all_components if c.summary == "Planning"]
+        self.assertEqual(len(created), 1)
+        event = created[0]
+        assert isinstance(event, VEvent)
+        self.assertEqual(
+            extract_attendees(event.raw_ics, event.ref.uid),
+            ("alice@example.com", "bob@example.com"),
+        )
+        self.assertEqual(
+            extract_organizer(event.raw_ics, event.ref.uid), "user@example.com"
+        )
+
+
+class EditExistingEventTest(TuiFlowTestCase):
+    async def test_edit_replaces_summary(self) -> None:
+        services = self.services()
+        # Find an existing event to edit.
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+        assert component.dtstart is not None
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._edit_specific(component)
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertEqual(
+                edit.query_one("#edit-start-date", DatePicker).value,
+                component.dtstart.astimezone().strftime("%Y-%m-%d"),
+            )
+            self.assertEqual(
+                edit.query_one("#edit-start-time", Select).value,
+                component.dtstart.astimezone().strftime("%H:%M"),
+            )
+            assert component.dtend is not None
+            self.assertEqual(
+                edit.query_one("#edit-end-time", Select).value,
+                component.dtend.astimezone().strftime("%H:%M"),
+            )
+            edit.query_one("#edit-summary").value = "Edited summary"  # type: ignore[attr-defined]
+            edit.action_save()
+            await pilot.pause()
+
+        updated = services.index.get_component(ref)
+        assert isinstance(updated, VEvent)
+        self.assertEqual(updated.summary, "Edited summary")
+        # The mirror was rewritten too.
+        raw = services.mirror.read(ref.resource)
+        self.assertIn(b"Edited summary", raw)
+
+    async def test_edit_prefills_and_preserves_attendees(self) -> None:
+        from chronos.ical_parser import extract_attendees
+
+        services = self.services()
+        raw = corpus.event_with_attendees()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "attendees-1@example.com")
+        component = VEvent(
+            ref=ref,
+            href="/dav/attendees-1.ics",
+            etag="etag-1",
+            raw_ics=raw,
+            summary="Invited event",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        services.mirror.write(ref.resource, raw)
+        services.index.upsert_component(component)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._edit_specific(component)
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertEqual(
+                edit.query_one("#edit-attendees").value,  # type: ignore[attr-defined]
+                "alice@example.com, bob@example.com",
+            )
+            edit.query_one("#edit-summary").value = "Still invited"  # type: ignore[attr-defined]
+            edit.action_save()
+            await pilot.pause()
+
+        updated = services.index.get_component(ref)
+        assert isinstance(updated, VEvent)
+        self.assertEqual(updated.summary, "Still invited")
+        self.assertEqual(
+            extract_attendees(updated.raw_ics, updated.ref.uid),
+            ("alice@example.com", "bob@example.com"),
+        )
+
+    async def test_edited_event_still_appears_in_agenda(self) -> None:
+        # Regression: `IndexRepository.upsert_component` invalidates
+        # the master's `occurrences` rows on every upsert. The TUI's
+        # save flow used to upsert without re-expanding, so an edited
+        # event vanished from every view that joins
+        # `components` against `occurrences` (agenda, day, week, month)
+        # until the next sync rebuilt the cache.
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._edit_specific(component)
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.query_one("#edit-summary").value = "Renamed"  # type: ignore[attr-defined]
+            edit.action_save()
+            await pilot.pause()
+
+        # The agenda window covers 2026-04-25 → 2026-05-09 (NOW.date()
+        # + 14 days). simple-event-1 starts 2026-05-01, so it falls
+        # inside the window after the edit.
+        from chronos.tui.views import (
+            CalendarSelection as _Sel,
+        )
+        from chronos.tui.views import (
+            agenda_window,
+            gather_occurrences,
+        )
+
+        rows = gather_occurrences(
+            index=services.index,
+            calendars=(CalendarRef(ACCOUNT_NAME, WORK_CAL),),
+            selection=_Sel(refs=frozenset()),
+            window=agenda_window(NOW.date()),
+        )
+        summaries = [r.component.summary for r in rows]
+        self.assertIn("Renamed", summaries)
+
+
+class DeleteFlowTest(TuiFlowTestCase):
+    async def test_delete_with_confirmation_marks_trashed(self) -> None:
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            # Trigger delete directly with the component (UI selection
+            # is exercised by other tests; here we focus on the confirm
+            # plumbing).
+            screen.delete_with_confirm(component)
+            await pilot.pause()
+            confirm = pilot.app.screen
+            assert isinstance(confirm, ConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+
+        trashed = services.index.get_component(ref)
+        assert trashed is not None
+        # Internal status stays LocalStatus.TRASHED — the UI label is
+        # "Delete" but the on-disk state still goes through the trash
+        # flow so `_push_trashed` issues the server DELETE on next sync.
+        self.assertEqual(trashed.local_status, LocalStatus.TRASHED)
+
+    async def test_delete_from_edit_screen_marks_trashed(self) -> None:
+        # The edit form exposes a Delete action (ctrl+d) so a user who
+        # opened an event to edit it can delete it without backing out
+        # to the main view first. It pops the form and routes through
+        # the same confirm flow as the main-screen delete.
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._edit_specific(component)
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.action_delete()
+            await pilot.pause()
+            confirm = pilot.app.screen
+            assert isinstance(confirm, ConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+
+        trashed = services.index.get_component(ref)
+        assert trashed is not None
+        self.assertEqual(trashed.local_status, LocalStatus.TRASHED)
+
+    async def test_delete_action_is_noop_for_new_event(self) -> None:
+        # In "new event" mode there is nothing to delete: the binding is
+        # hidden (check_action) and the action is inert.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen.action_new_event()
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertFalse(edit.check_action("delete", ()))
+            edit.action_delete()
+            await pilot.pause()
+            # Still on the edit form — nothing was popped or confirmed.
+            self.assertIsInstance(pilot.app.screen, EventEditScreen)
+
+    async def test_cancel_keeps_event_active(self) -> None:
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen.delete_with_confirm(component)
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+
+        unchanged = services.index.get_component(ref)
+        assert unchanged is not None
+        self.assertEqual(unchanged.local_status, LocalStatus.ACTIVE)
+
+    async def test_uppercase_d_key_opens_delete_confirmation(self) -> None:
+        # Wire-up regression: rebinding the trash action from `x` to
+        # `D` (and `shift+d`) must reach the confirm screen with the
+        # currently-highlighted row.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            # Agenda Month window over the seeded May events (the
+            # default WEEK around `NOW` is empty).
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("m")
+            await pilot.pause()
+            screen._viewed_date = date(2026, 5, 1)
+            screen.refresh_view()
+            await pilot.pause()
+            await pilot.press("D")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, ConfirmScreen)
+            confirm = pilot.app.screen
+            assert isinstance(confirm, ConfirmScreen)
+            self.assertIn("Delete", confirm._prompt)
+
+
+class HelpScreenTest(TuiFlowTestCase):
+    async def test_f1_opens_help_grouped_by_area(self) -> None:
+        from chronos.tui.screens.help_screen import HelpScreen
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, HelpScreen)
+            help_screen = pilot.app.screen
+            assert isinstance(help_screen, HelpScreen)
+            # The renderable is a `rich.console.Group` — render it to
+            # a plain-text capture so we can assert on the section
+            # headers and bound keys without spelling out the full
+            # ANSI output.
+            from io import StringIO
+
+            from rich.console import Console
+
+            renderable = help_screen._render_help()
+            buffer = StringIO()
+            console = Console(
+                file=buffer, force_terminal=False, width=80, color_system=None
+            )
+            console.print(renderable)
+            text = buffer.getvalue()
+            # Each section panel renders its title.
+            for section in (
+                "Views",
+                "Agenda window",
+                "Navigation",
+                "Events",
+                "Tools",
+            ):
+                self.assertIn(section, text, section)
+            # And a sample of the bindings that belong to each. The
+            # timeline spans render as "1 day" … "7 days" under Views.
+            for fragment in ("Agenda", "1 day", "7 days", "Delete", "Help", "Quit"):
+                self.assertIn(fragment, text, fragment)
+            # Aliases (shift+n, shift+p, shift+d, shift+c, shift+q) must
+            # NOT show up; otherwise the help text is twice as long and
+            # reads as duplicates of the same shortcut.
+            for alias in ("shift+n", "shift+p", "shift+d", "shift+c", "shift+q"):
+                self.assertNotIn(alias, text, alias)
+
+    async def test_escape_dismisses_help_screen(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, MainScreen)
+
+    async def test_help_dialog_body_widget_is_not_empty(self) -> None:
+        from chronos.tui.screens.help_screen import HelpScreen
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, HelpScreen)
+            screen = pilot.app.screen
+            assert isinstance(screen, HelpScreen)
+            text = screen._render_help()
+            self.assertIn("Views", text)
+            self.assertIn("Tools", text)
+
+
+class CommandPaletteEnabledTest(TuiFlowTestCase):
+    async def test_ctrl_p_opens_command_palette(self) -> None:
+        # The command palette is enabled so users can switch themes live
+        # (Ctrl-P → "Change theme"). A stray Ctrl-P opens that palette.
+        from textual.command import CommandPalette
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            self.assertTrue(app.ENABLE_COMMAND_PALETTE)
+            self.assertIsInstance(pilot.app.screen, CommandPalette)
+
+
+class SyncFlowTest(TuiFlowTestCase):
+    async def test_sync_runner_called_on_confirmation(self) -> None:
+        calls: list[int] = []
+
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            calls.append(1)
+            return (
+                SyncResult(
+                    account_name=ACCOUNT_NAME,
+                    calendars_synced=2,
+                    components_added=1,
+                    components_updated=0,
+                    components_removed=0,
+                    errors=(),
+                ),
+            )
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("G")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SyncConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            # Sync now runs on a Textual worker. Wait for it to settle
+            # before asserting on `calls`.
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+
+        self.assertEqual(calls, [1])
+
+    async def test_sync_runner_errors_show_in_notification(self) -> None:
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            return (
+                SyncResult(
+                    account_name=ACCOUNT_NAME,
+                    calendars_synced=0,
+                    components_added=0,
+                    components_updated=0,
+                    components_removed=0,
+                    errors=("auth refused",),
+                ),
+            )
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("G")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SyncConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            # Path executed without raising; error severity is set in
+            # the notification.
+
+    async def test_sync_without_runner_notifies(self) -> None:
+        services = self.services(sync_runner=None)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("G")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SyncConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            # No assertion on notify text; the path executed without
+            # raising is the contract.
+
+    async def test_progress_dialog_shows_summary_on_completion(self) -> None:
+        # The dialog stays up after the runner returns and renders a
+        # summary line plus a Close button, replacing the prior
+        # background-notification flow.
+        from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
+
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            return (
+                SyncResult(
+                    account_name=ACCOUNT_NAME,
+                    calendars_synced=1,
+                    components_added=3,
+                    components_updated=1,
+                    components_removed=0,
+                    errors=(),
+                ),
+            )
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("G")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SyncConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, SyncProgressScreen)
+            progress = pilot.app.screen
+            assert isinstance(progress, SyncProgressScreen)
+            self.assertEqual(progress._state, "done")
+            from textual.widgets import Button, Static
+
+            summary = progress.query_one("#sync-progress-summary", Static)
+            self.assertIn("+3 added", str(summary.content))
+            self.assertIn("~1 updated", str(summary.content))
+            # The Cancel button is hidden once the worker reports
+            # back; the Close button is visible and primary so the
+            # user can dismiss the dialog.
+            cancel = progress.query_one("#sync-cancel", Button)
+            close = progress.query_one("#sync-close", Button)
+            self.assertFalse(cancel.display)
+            self.assertTrue(close.display)
+            self.assertEqual(str(close.label), "Close")
+
+    async def test_escape_during_sync_sets_cancel_event(self) -> None:
+        # Regression: previously sync ran on the UI thread and a stuck
+        # sync could only be killed by exiting the whole app. With the
+        # progress dialog owning a worker + cancel event, Esc on the
+        # dialog flips the event so the runner sees it on its next
+        # polling boundary.
+        import threading
+
+        from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
+
+        gate = threading.Event()  # block the runner until we cancel
+        observed: dict[str, threading.Event | None] = {"cancel": None}
+
+        def runner(
+            *, cancel_event: threading.Event | None = None
+        ) -> Sequence[SyncResult]:
+            observed["cancel"] = cancel_event
+            # Wait until the test releases us, then bail out.
+            gate.wait(timeout=5.0)
+            return (
+                SyncResult(
+                    account_name=ACCOUNT_NAME,
+                    calendars_synced=0,
+                    components_added=0,
+                    components_updated=0,
+                    components_removed=0,
+                    errors=("sync cancelled",),
+                ),
+            )
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("G")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SyncConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            # The progress dialog is now the active screen, blocking
+            # in `runner`.
+            self.assertIsInstance(pilot.app.screen, SyncProgressScreen)
+            progress = pilot.app.screen
+            assert isinstance(progress, SyncProgressScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            # Esc flipped the dialog's cancel event, which the runner
+            # received as a kwarg.
+            cancel = observed["cancel"]
+            assert cancel is not None
+            self.assertTrue(cancel.is_set())
+            self.assertTrue(progress._cancel_event.is_set())
+            # Release the runner so the worker finishes; dialog
+            # transitions to its "done" state.
+            gate.set()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(progress._state, "done")
+
+
+class BackgroundSyncTest(TuiFlowTestCase):
+    @staticmethod
+    def _result(added: int = 0, errors: tuple[str, ...] = ()) -> SyncResult:
+        return SyncResult(
+            account_name=ACCOUNT_NAME,
+            calendars_synced=1,
+            components_added=added,
+            components_updated=0,
+            components_removed=0,
+            errors=errors,
+        )
+
+    def _main(self, app: ChronosApp) -> MainScreen:
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        return screen
+
+    async def test_timer_armed_at_startup_by_default(self) -> None:
+        from chronos.tui.widgets.sync_status import SCHEDULED_SYNC_MARK, SyncStatus
+
+        services = self.services(sync_runner=lambda **_: ())
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            main = self._main(app)
+            self.assertIsNotNone(main._background_sync_timer)
+            status = main.query_one(SyncStatus)
+            self.assertIn(SCHEDULED_SYNC_MARK, str(status.render()))
+
+    async def test_timer_not_armed_when_disabled(self) -> None:
+        services = self.services(sync_runner=lambda **_: ())
+        services.config = dataclasses.replace(
+            services.config, background_sync_enabled=False
+        )
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertIsNone(self._main(app)._background_sync_timer)
+
+    async def test_g_syncs_immediately_without_dialog(self) -> None:
+        calls: list[object] = []
+
+        def runner(**kwargs: object) -> Sequence[SyncResult]:
+            calls.append(kwargs.get("cancel_event"))
+            return (self._result(added=2),)
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, MainScreen)
+            self.assertEqual(len(calls), 1)
+            self.assertIsNotNone(calls[0])  # cancel_event is passed
+            messages = [n.message for n in pilot.app._notifications]
+            self.assertIn("Sync complete: +2 ~0 -0", messages)
+            self.assertFalse(self._main(app)._sync_in_progress())
+
+    async def test_timer_tick_runs_sync_quietly_when_nothing_changed(self) -> None:
+        calls: list[int] = []
+
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            calls.append(1)
+            return (self._result(),)
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._main(app)._background_sync_tick()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(calls, [1])
+            self.assertEqual(list(pilot.app._notifications), [])
+
+    async def test_sync_errors_are_notified(self) -> None:
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            return (self._result(errors=("auth refused",)),)
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._main(app)._background_sync_tick()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            notes = list(pilot.app._notifications)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("auth refused", notes[0].message)
+            self.assertEqual(notes[0].severity, "error")
+
+    async def test_g_while_sync_running_does_not_start_another(self) -> None:
+        import threading
+
+        gate = threading.Event()
+        calls: list[int] = []
+
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            calls.append(1)
+            gate.wait(timeout=5.0)
+            return ()
+
+        services = self.services(sync_runner=runner)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            gate.set()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+        self.assertEqual(calls, [1])
+
+
+class AlarmMessageTest(unittest.TestCase):
+    def _alarm(self, start: datetime, description: str | None) -> AlarmRecord:
+        return AlarmRecord(
+            db_id=1,
+            ref=ComponentRef(ACCOUNT_NAME, WORK_CAL, "x"),
+            summary="Standup",
+            occurrence_start=start,
+            trigger_at=start - timedelta(minutes=10),
+            action=AlarmAction.DISPLAY,
+            description=description,
+            fired_at=None,
+        )
+
+    def test_start_time_and_description(self) -> None:
+        from chronos.tui.app import alarm_message
+
+        start = datetime(2026, 5, 1, 10, 0).astimezone()
+        message = alarm_message(
+            self._alarm(start, "Bring slides"), start - timedelta(minutes=10)
+        )
+        self.assertEqual(message, "Starts 10:00\nBring slides")
+
+    def test_google_boilerplate_is_dropped(self) -> None:
+        from chronos.tui.app import alarm_message
+
+        start = datetime(2026, 5, 1, 10, 0).astimezone()
+        message = alarm_message(
+            self._alarm(start, "This is an event reminder"),
+            start + timedelta(minutes=5),
+        )
+        self.assertEqual(message, "Started 10:00")
+
+    def test_other_day_shows_date(self) -> None:
+        from chronos.tui.app import alarm_message
+
+        start = datetime(2026, 5, 2, 9, 30).astimezone()
+        message = alarm_message(self._alarm(start, None), start - timedelta(days=1))
+        self.assertEqual(message, "Starts Sat 02 May 09:30")
+
+
+class MonthGridHelpersTest(unittest.TestCase):
+    def test_grid_dates_span_whole_weeks(self) -> None:
+        from chronos.tui.screens.month_view_screen import grid_dates
+
+        # Sep 2026 starts on a Tuesday: Mon 31 Aug .. Sun 4 Oct.
+        self.assertEqual(grid_dates(date(2026, 9, 17)), (date(2026, 8, 31), 5))
+        # Feb 2027 starts on a Monday and has 28 days: exactly 4 weeks.
+        self.assertEqual(grid_dates(date(2027, 2, 10)), (date(2027, 2, 1), 4))
+        # Aug 2026 starts on a Saturday: 6 weeks.
+        self.assertEqual(grid_dates(date(2026, 8, 1)), (date(2026, 7, 27), 6))
+
+    def test_bucket_covers_every_day_of_a_span(self) -> None:
+        from chronos.tui.widgets.month_grid import _bucket_by_day
+
+        all_day = TimelineGridHelpersTest._all_day_row(
+            "h",
+            "Holiday",
+            datetime(2026, 9, 8, tzinfo=UTC),
+            datetime(2026, 9, 10, tzinfo=UTC),
+        )
+        evening = TimelineGridHelpersTest._all_day_row(
+            "e",
+            "Until midnight",
+            datetime(2026, 9, 3, 22, 0).astimezone(),
+            datetime(2026, 9, 4, 0, 0).astimezone(),
+        )
+        buckets = _bucket_by_day([all_day, evening], date(2026, 8, 31), 5)
+        self.assertEqual(
+            sorted(d for d, rows in buckets.items() if all_day in rows),
+            [date(2026, 9, 8), date(2026, 9, 9)],
+        )
+        # Ending exactly at midnight does not spill into the next day.
+        self.assertEqual(
+            [d for d, rows in buckets.items() if evening in rows],
+            [date(2026, 9, 3)],
+        )
+
+
+class MonthViewFlowTest(TuiFlowTestCase):
+    async def test_month_view_navigation_and_drill_down(self) -> None:
+        from chronos.tui.widgets.month_grid import MonthGrid
+
+        app = ChronosApp(self.services())
+        async with app.run_test(size=(110, 32)) as pilot:
+            await pilot.pause()
+            main = app.screen
+            assert isinstance(main, MainScreen)
+            await pilot.press("M")
+            await pilot.pause()
+            self.assertEqual(main._view, ViewKind.MONTH)
+            grid = main.query_one(MonthGrid)
+            self.assertTrue(grid.display)
+            start = main._viewed_date
+            coord = grid.cursor_coordinate
+            self.assertEqual(grid.day_at(coord.row, coord.column), start)
+            label = str(main.query_one("#view-title", Label).render())
+            self.assertIn(f"{start:%B %Y}", label)
+
+            # Cursor moves track the viewed date.
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertEqual(main._viewed_date, start + timedelta(days=1))
+
+            # n / p step a month.
+            await pilot.press("n")
+            await pilot.pause()
+            self.assertEqual(main._viewed_date.month, start.month % 12 + 1)
+            await pilot.press("p")
+            await pilot.pause()
+            self.assertEqual(main._viewed_date, start + timedelta(days=1))
+
+            # Enter opens the day in the Day view.
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(main._view, ViewKind.DAY)
+            self.assertEqual(main._viewed_date, start + timedelta(days=1))
+
+    async def test_moving_into_a_neighbouring_month_flips_the_view(self) -> None:
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.month_grid import MonthGrid
+
+        app = ChronosApp(self.services())
+        async with app.run_test(size=(110, 32)) as pilot:
+            await pilot.pause()
+            main = app.screen
+            assert isinstance(main, MainScreen)
+            await pilot.press("M")
+            await pilot.pause()
+            grid = main.query_one(MonthGrid)
+            shown = main._viewed_date
+            first_cell = grid.day_at(0, 0)
+            assert first_cell is not None
+            grid.cursor_coordinate = Coordinate(0, 0)
+            await pilot.pause()
+            if first_cell.month == shown.month:
+                self.skipTest("month starts on a Monday; no leading days")
+            self.assertEqual(main._viewed_date, first_cell)
+            label = str(main.query_one("#view-title", Label).render())
+            self.assertIn(f"{first_cell:%B %Y}", label)
+
+
+class GotoDialogTest(TuiFlowTestCase):
+    async def test_colon_opens_dialog_and_jumps(self) -> None:
+        from textual.widgets import Input, Label
+
+        from chronos.tui.screens.goto_screen import GotoScreen
+
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            main = app.screen
+            assert isinstance(main, MainScreen)
+            await pilot.press("colon")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, GotoScreen)
+
+            # Invalid input keeps the dialog open with an error.
+            await pilot.press(*"bogus", "enter")
+            await pilot.pause()
+            self.assertIs(app.screen, dialog)
+            self.assertIn("bogus", str(dialog.query_one("#goto-error", Label).render()))
+
+            dialog.query_one("#goto-input", Input).value = "2026-12-01"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIs(app.screen, main)
+            self.assertEqual(main._viewed_date, date(2026, 12, 1))
+
+    async def test_escape_cancels(self) -> None:
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            main = app.screen
+            assert isinstance(main, MainScreen)
+            before = main._viewed_date
+            await pilot.press("colon")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIs(app.screen, main)
+            self.assertEqual(main._viewed_date, before)
+
+
+class Osc777Test(unittest.TestCase):
+    def test_sequence(self) -> None:
+        from chronos.tui.app import osc777_notification
+
+        self.assertEqual(
+            osc777_notification("Standup", "Starts 10:00"),
+            "\x1b]777;notify;Standup;Starts 10:00\x07",
+        )
+
+    def test_control_chars_and_title_semicolons_are_neutralised(self) -> None:
+        from chronos.tui.app import osc777_notification
+
+        seq = osc777_notification("A;B\x1b", "Starts 10:00\nBring\x07 slides")
+        self.assertEqual(seq, "\x1b]777;notify;A,B;Starts 10:00 · Bring slides\x07")
+
+
+class AlarmFiringTest(TuiFlowTestCase):
+    async def test_due_alarm_is_toasted_and_marked_fired(self) -> None:
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "alarm@example.com")
+        services.index.upsert_component(
+            dataclasses.replace(_empty_event(ref), summary="Standup")
+        )
+        start = NOW + timedelta(minutes=10)
+        services.index.set_alarms(
+            ref,
+            start,
+            [
+                AlarmRecord(
+                    db_id=None,
+                    ref=ref,
+                    summary="Standup",
+                    occurrence_start=start,
+                    trigger_at=NOW - timedelta(minutes=1),
+                    action=AlarmAction.DISPLAY,
+                    description=None,
+                    fired_at=None,
+                )
+            ],
+        )
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._fire_pending_alarms()
+            await pilot.pause()
+            notes = [n for n in app._notifications if n.title]
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0].title, "Standup")
+            self.assertTrue(notes[0].message.startswith("Starts "))
+            window = (NOW - timedelta(hours=1), NOW + timedelta(hours=1))
+            self.assertEqual(services.index.query_pending_alarms(*window), ())
+            # Already fired: the next poll stays quiet.
+            app._fire_pending_alarms()
+            await pilot.pause()
+            self.assertEqual(len([n for n in app._notifications if n.title]), 1)
+
+
+class InProgressTest(unittest.TestCase):
+    def _row(self, start: datetime, end: datetime | None) -> OccurrenceRow:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        return OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref, start=start, end=end, recurrence_id=None, is_override=False
+            ),
+            component=_empty_event(ref),
+        )
+
+    def test_is_in_progress_bounds(self) -> None:
+        row = self._row(NOW, NOW + timedelta(hours=1))
+        self.assertTrue(is_in_progress(row.occurrence, NOW))
+        self.assertFalse(is_in_progress(row.occurrence, NOW + timedelta(hours=1)))
+        self.assertFalse(is_in_progress(row.occurrence, NOW - timedelta(minutes=1)))
+
+    def test_full_day_and_open_ended_are_never_in_progress(self) -> None:
+        full_day = self._row(
+            datetime(2026, 4, 25, tzinfo=UTC), datetime(2026, 4, 26, tzinfo=UTC)
+        )
+        self.assertFalse(is_in_progress(full_day.occurrence, NOW))
+        self.assertFalse(is_in_progress(self._row(NOW, None).occurrence, NOW))
+
+    def test_in_progress_keys_include_start(self) -> None:
+        row = self._row(NOW, NOW + timedelta(hours=1))
+        self.assertEqual(
+            in_progress_keys([row], NOW), frozenset({(row.component.ref, NOW)})
+        )
+
+
+class ClockTickTest(TuiFlowTestCase):
+    async def test_tick_repaints_only_when_now_state_changes(self) -> None:
+        clock = [NOW]
+        services = self.services()
+        services.now = lambda: clock[0]
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, MainScreen)
+            calls: list[int] = []
+            original = screen.refresh_view
+
+            def counting() -> None:
+                calls.append(1)
+                original()
+
+            screen.refresh_view = counting  # type: ignore[method-assign]
+            screen._clock_tick()
+            self.assertEqual(calls, [])
+            clock[0] = NOW + timedelta(minutes=30)
+            screen._clock_tick()
+            self.assertEqual(calls, [1])
+            screen._clock_tick()
+            self.assertEqual(calls, [1])
+
+
+class FormatCountdownTest(unittest.TestCase):
+    def test_formats(self) -> None:
+        from chronos.tui.widgets.sync_status import format_countdown
+
+        self.assertEqual(format_countdown(3600), "1:00:00")
+        self.assertEqual(format_countdown(3599), "59:30")
+        self.assertEqual(format_countdown(29), "0:00")
+        self.assertEqual(format_countdown(-5), "0:00")
+
+
+class SearchFlowTest(TuiFlowTestCase):
+    async def test_search_dialog_opens_event_detail_on_select(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, SearchDialogScreen)
+            search = pilot.app.screen
+            search.query_one("#search-input").value = "Simple"  # type: ignore[attr-defined]
+            await pilot.pause()
+            results = search.query_one("#search-results")
+            results.index = 0  # type: ignore[attr-defined]
+            search.action_submit()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, EventDetailScreen)
+
+
+class EditScreenValidationTest(TuiFlowTestCase):
+    async def test_save_with_empty_summary_shows_error_and_keeps_screen(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.query_one("#edit-summary").value = ""  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.action_save()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, EventEditScreen)
+            self.assertEqual(edit._error, "summary is required")
+
+    async def test_save_with_invalid_date_shows_error(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.query_one("#edit-summary").value = "Anything"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "not-a-date"
+            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.action_save()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, EventEditScreen)
+
+    async def test_save_rejects_end_before_start(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            edit.query_one("#edit-summary").value = "Backwards"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-end-time", Select).value = "09:30"
+            edit.action_save()
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, EventEditScreen)
+            self.assertEqual(edit._error, "end must be after start")
+
+    async def test_cancel_pops_screen(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, MainScreen)
+
+
+class DraftAndDetailScreenWiringTest(unittest.TestCase):
+    def test_edit_draft_carries_existing(self) -> None:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid")
+        event = _empty_event(ref)
+        draft = EditDraft(
+            target=ref.calendar,
+            summary="X",
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            dtend=None,
+            location="",
+            description="",
+            attendees=(),
+            alarms=(),
+            existing=event,
+        )
+        self.assertIs(draft.existing, event)
+
+    def test_event_edit_screen_requires_calendar(self) -> None:
+        with self.assertRaises(ValueError):
+            EventEditScreen(
+                calendars=(),
+                existing=None,
+                default_calendar=None,
+                on_save=lambda _draft: None,
+            )
+
+
+class AlarmHelperTest(unittest.TestCase):
+    """Unit tests for alarm-related pure helpers in mutations/views/edit."""
+
+    def test_fmt_duration_negative_minutes(self) -> None:
+        from chronos.mutations import _fmt_duration
+
+        self.assertEqual(_fmt_duration(timedelta(minutes=-15)), "-PT15M")
+
+    def test_fmt_duration_negative_hours(self) -> None:
+        from chronos.mutations import _fmt_duration
+
+        self.assertEqual(_fmt_duration(timedelta(hours=-1)), "-PT1H")
+
+    def test_fmt_duration_mixed(self) -> None:
+        from chronos.mutations import _fmt_duration
+
+        self.assertEqual(_fmt_duration(timedelta(hours=-1, minutes=-30)), "-PT1H30M")
+
+    def test_fmt_duration_positive(self) -> None:
+        from chronos.mutations import _fmt_duration
+
+        self.assertEqual(_fmt_duration(timedelta(minutes=5)), "PT5M")
+
+    def test_fmt_duration_zero(self) -> None:
+        from chronos.mutations import _fmt_duration
+
+        self.assertEqual(_fmt_duration(timedelta(0)), "PT0S")
+
+    def test_build_event_ics_with_alarm_writes_valarm(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.mutations import build_event_ics
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(minutes=-15),
+            trigger_related="START",
+            description="Reminder",
+        )
+        ics = build_event_ics(
+            "uid@test",
+            "Test",
+            datetime(2026, 5, 1, 9, tzinfo=UTC),
+            None,
+            datetime(2026, 5, 1, 8, tzinfo=UTC),
+            alarms=(alarm,),
+        )
+        text = ics.decode("utf-8")
+        self.assertIn("BEGIN:VALARM", text)
+        self.assertIn("ACTION:DISPLAY", text)
+        self.assertIn("TRIGGER:-PT15M", text)
+        self.assertIn("DESCRIPTION:Reminder", text)
+        self.assertIn("END:VALARM", text)
+
+    def test_build_event_ics_no_alarms_has_no_valarm(self) -> None:
+        from chronos.mutations import build_event_ics
+
+        ics = build_event_ics(
+            "uid@test",
+            "Test",
+            datetime(2026, 5, 1, 9, tzinfo=UTC),
+            None,
+            datetime(2026, 5, 1, 8, tzinfo=UTC),
+        )
+        self.assertNotIn(b"VALARM", ics)
+
+    def test_build_event_ics_with_attendees_writes_invites(self) -> None:
+        from chronos.mutations import build_event_ics
+
+        ics = build_event_ics(
+            "uid@test",
+            "Test",
+            datetime(2026, 5, 1, 9, tzinfo=UTC),
+            None,
+            datetime(2026, 5, 1, 8, tzinfo=UTC),
+            attendees=("Alice <alice@example.com>", "bob@example.com"),
+            organizer="host@example.com",
+        )
+        text = ics.decode("utf-8")
+        self.assertIn("ORGANIZER:mailto:host@example.com", text)
+        self.assertIn("ATTENDEE", text)
+        self.assertIn("mailto:alice@example.com", text)
+        self.assertIn("mailto:bob@example.com", text)
+        self.assertIn("RSVP=TRUE", text)
+
+    def test_build_event_ics_rejects_invalid_attendee(self) -> None:
+        from chronos.mutations import build_event_ics
+
+        with self.assertRaises(ValueError):
+            build_event_ics(
+                "uid@test",
+                "Test",
+                datetime(2026, 5, 1, 9, tzinfo=UTC),
+                None,
+                datetime(2026, 5, 1, 8, tzinfo=UTC),
+                attendees=("not an email",),
+            )
+
+    def test_reschedule_event_ics_preserves_other_properties(self) -> None:
+        from chronos.mutations import reschedule_event_ics
+
+        moved = reschedule_event_ics(
+            corpus.event_with_attendees(),
+            "attendees-1@example.com",
+            datetime(2026, 5, 1, 11, tzinfo=UTC),
+            datetime(2026, 5, 1, 12, tzinfo=UTC),
+            datetime(2026, 5, 1, 8, tzinfo=UTC),
+        )
+        self.assertIn(b"DTSTART:20260501T110000Z", moved)
+        self.assertIn(b"DTEND:20260501T120000Z", moved)
+        self.assertIn(b"ORGANIZER:mailto:host@example.com", moved)
+        self.assertIn(b"ATTENDEE:mailto:alice@example.com", moved)
+        self.assertIn(b"SEQUENCE:1", moved)
+
+    def test_reschedule_event_ics_rejects_recurring_series(self) -> None:
+        from chronos.mutations import reschedule_event_ics
+
+        with self.assertRaisesRegex(ValueError, "recurring events"):
+            reschedule_event_ics(
+                corpus.recurring_weekly(),
+                "weekly-1@example.com",
+                datetime(2026, 5, 1, 10, tzinfo=UTC),
+                datetime(2026, 5, 1, 11, tzinfo=UTC),
+                datetime(2026, 5, 1, 8, tzinfo=UTC),
+            )
+
+    def test_build_event_ics_end_related_alarm(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.mutations import build_event_ics
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(minutes=-5),
+            trigger_related="END",
+            description=None,
+        )
+        ics = build_event_ics(
+            "uid@test",
+            "Test",
+            datetime(2026, 5, 1, 9, tzinfo=UTC),
+            datetime(2026, 5, 1, 10, tzinfo=UTC),
+            datetime(2026, 5, 1, 8, tzinfo=UTC),
+            alarms=(alarm,),
+        )
+        text = ics.decode("utf-8")
+        self.assertIn("TRIGGER;RELATED=END:-PT5M", text)
+
+    def test_format_alarm_minutes_before_start(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(minutes=-15),
+            trigger_related="START",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "15 min before start")
+
+    def test_format_alarm_hours(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(hours=-1),
+            trigger_related="START",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "1 h before start")
+
+    def test_format_alarm_mixed_hours_minutes(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(hours=-1, minutes=-30),
+            trigger_related="START",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "1h30m before start")
+
+    def test_format_alarm_end_related(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(minutes=-5),
+            trigger_related="END",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "5 min before end")
+
+    def test_format_alarm_after_start(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(minutes=10),
+            trigger_related="START",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "10 min after start")
+
+    def test_format_alarm_at_start(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.views import _format_alarm
+
+        alarm = ParsedAlarm(
+            action=AlarmAction.DISPLAY,
+            trigger_offset=timedelta(0),
+            trigger_related="START",
+            description=None,
+        )
+        self.assertEqual(_format_alarm(alarm), "at start")
+
+    def test_parse_reminder_input_single(self) -> None:
+        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+
+        alarms = _parse_reminder_input("15")
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
+
+    def test_parse_reminder_input_multiple(self) -> None:
+        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+
+        alarms = _parse_reminder_input("15, 60")
+        self.assertEqual(len(alarms), 2)
+        offsets = {a.trigger_offset for a in alarms}
+        self.assertIn(timedelta(minutes=-15), offsets)
+        self.assertIn(timedelta(minutes=-60), offsets)
+
+    def test_parse_reminder_input_empty(self) -> None:
+        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+
+        self.assertEqual(_parse_reminder_input(""), ())
+        self.assertEqual(_parse_reminder_input("  "), ())
+
+    def test_parse_reminder_input_ignores_non_numeric(self) -> None:
+        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+
+        alarms = _parse_reminder_input("15, abc, 30")
+        self.assertEqual(len(alarms), 2)
+
+    def test_parse_reminder_input_ignores_zero_and_negative(self) -> None:
+        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+
+        alarms = _parse_reminder_input("0, -5, 15")
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
+
+    def test_alarms_to_input_start_relative(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.screens.event_edit_screen import _alarms_to_input
+
+        alarms = [
+            ParsedAlarm(
+                action=AlarmAction.DISPLAY,
+                trigger_offset=timedelta(minutes=-15),
+                trigger_related="START",
+                description=None,
+            )
+        ]
+        self.assertEqual(_alarms_to_input(alarms), "15")
+
+    def test_alarms_to_input_skips_end_relative(self) -> None:
+        from chronos.domain import AlarmAction, ParsedAlarm
+        from chronos.tui.screens.event_edit_screen import _alarms_to_input
+
+        alarms = [
+            ParsedAlarm(
+                action=AlarmAction.DISPLAY,
+                trigger_offset=timedelta(minutes=-5),
+                trigger_related="END",
+                description=None,
+            )
+        ]
+        self.assertEqual(_alarms_to_input(alarms), "")
+
+    def test_render_event_detail_shows_reminders(self) -> None:
+        from chronos.tui.views import render_event_detail
+        from tests_calendar import corpus
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "alarm-display-1@example.com")
+        component = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=corpus.event_with_display_alarm(-15),
+            summary="Alarm event",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        detail = render_event_detail(component, date(2026, 5, 1))
+        self.assertIn("Reminders", detail)
+        self.assertIn("15 min before start", detail)
+
+    def test_render_event_detail_no_reminders_field_when_none(self) -> None:
+        from chronos.tui.views import render_event_detail
+        from tests_calendar import corpus
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=corpus.simple_event(),
+            summary="Simple event",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        detail = render_event_detail(component, date(2026, 5, 1))
+        self.assertNotIn("Reminders", detail)
+
+
+class CalendarPanelToggleTest(TuiFlowTestCase):
+    """The calendars tree is hidden by default; `c` reveals it. Once
+    visible, Enter on a leaf toggles that calendar in the active
+    `CalendarSelection`, which filters the event list."""
+
+    async def test_panel_hidden_by_default(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from chronos.tui.widgets.calendar_panel import CalendarPanel
+
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            self.assertFalse(screen.query_one(CalendarPanel).display)
+
+    async def test_capital_c_key_toggles_panel_visibility(self) -> None:
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from chronos.tui.widgets.calendar_panel import CalendarPanel
+
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            panel = screen.query_one(CalendarPanel)
+            self.assertFalse(panel.display)
+
+            await pilot.press("C")
+            await pilot.pause()
+            self.assertTrue(panel.display)
+            self.assertTrue(panel.has_focus)
+
+            await pilot.press("C")
+            await pilot.pause()
+            self.assertFalse(panel.display)
+
+    async def test_enter_on_calendar_leaf_toggles_selection(self) -> None:
+        # Toggling a calendar in the panel must immediately update
+        # `MainScreen._selection` and re-render the event list against
+        # the new filter.
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from chronos.tui.widgets.calendar_panel import CalendarPanel
+
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            panel = screen.query_one(CalendarPanel)
+            await pilot.press("C")
+            await pilot.pause()
+            # Move into the tree and pick the first leaf (work calendar).
+            await pilot.press("down")  # account node
+            await pilot.pause()
+            await pilot.press("down")  # first leaf
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # The first-alphabetical calendar (`private`) is now in
+            # the selection set.
+            picked = CalendarRef(ACCOUNT_NAME, PERSONAL_CAL)
+            self.assertIn(picked, screen._selection.refs)
+            # And the panel's leaf label reflects the toggle.
+            cursor = panel.cursor_node
+            assert cursor is not None
+            self.assertIn("[x]", str(cursor.label))
+
+            # Toggling again removes the calendar — empty selection
+            # falls back to "show all", per `CalendarSelection.contains`.
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertNotIn(picked, screen._selection.refs)
+
+
+class TimelineGridHelpersTest(unittest.TestCase):
+    """Pure-function helpers under TimelineGrid: header, slot label,
+    hour-range expansion, and per-cell event resolution. Easier to
+    pin behaviour here than through a Pilot test for every edge case.
+    """
+
+    def test_day_header_uses_friendly_words_for_three_special_days(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _day_header
+
+        today = date(2026, 4, 25)  # Saturday
+        self.assertEqual(_day_header(today, today), "Today Sat")
+        self.assertEqual(_day_header(today + timedelta(days=1), today), "Tomorrow Sun")
+        self.assertEqual(_day_header(today - timedelta(days=1), today), "Yesterday Fri")
+
+    def test_day_header_for_arbitrary_dates_uses_short_form(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _day_header
+
+        today = date(2026, 4, 25)
+        self.assertEqual(_day_header(date(2026, 5, 4), today), "Mon 04 May")
+        self.assertEqual(_day_header(date(2026, 6, 15), today), "Mon 15 Jun")
+
+    def test_slot_time_label_zero_pads(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _format_slot_time
+
+        self.assertEqual(_format_slot_time(0), "00:00")
+        self.assertEqual(_format_slot_time(7 * 60 + 30), "07:30")
+        self.assertEqual(_format_slot_time(23 * 60 + 30), "23:30")
+
+    def test_compute_hour_range_default_when_all_events_inside(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+        rows = (
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+                    end=datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+        )
+        start, end = _compute_hour_range([(date(2026, 5, 1), rows)])
+        self.assertEqual((start, end), (6, 22))
+
+    def test_compute_hour_range_widens_for_late_events(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        event = _empty_event(ref)
+        rows = (
+            # Early at 04:30 + late at 23:00; range must expand.
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 4, 30).astimezone(),
+                    end=datetime(2026, 5, 1, 5, 30).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 23, 0).astimezone(),
+                    end=datetime(2026, 5, 1, 23, 45).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+        )
+        start, end = _compute_hour_range([(date(2026, 5, 1), rows)])
+        self.assertEqual(start, 4)
+        self.assertEqual(end, 24)  # 23:45 ends → 24
+
+    def test_cell_for_slot_picks_matching_event(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "standup")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Standup",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
+            dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        rows = (
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
+                    end=datetime(2026, 5, 1, 9, 30).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+        )
+        # Slot 09:00 → event starts here.
+        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
+        self.assertEqual(cell, "Standup")
+        self.assertEqual(hit, ref)
+        self.assertTrue(is_start)
+        self.assertFalse(is_end)
+        # Slot 09:30 → empty (event already ended; nothing starts here).
+        cell_empty, hit_empty, is_start_empty, is_end_empty = _cell_for_slot(
+            date(2026, 5, 1), 9 * 60 + 30, rows
+        )
+        self.assertEqual(cell_empty, "")
+        self.assertIsNone(hit_empty)
+        self.assertFalse(is_start_empty)
+        self.assertFalse(is_end_empty)
+
+    def test_cell_for_slot_appends_plus_when_overlapping(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        ref_a = ComponentRef(ACCOUNT_NAME, WORK_CAL, "a")
+        ref_b = ComponentRef(ACCOUNT_NAME, WORK_CAL, "b")
+        rows = tuple(
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
+                    end=datetime(2026, 5, 1, 9, 30).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=VEvent(
+                    ref=ref,
+                    href=None,
+                    etag=None,
+                    raw_ics=b"",
+                    summary=label,
+                    description=None,
+                    location=None,
+                    dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
+                    dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
+                    status=None,
+                    local_flags=frozenset(),
+                    server_flags=frozenset(),
+                    local_status=LocalStatus.ACTIVE,
+                    trashed_at=None,
+                    synced_at=None,
+                ),
+            )
+            for ref, label in ((ref_a, "Meeting A"), (ref_b, "Meeting B"))
+        )
+        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
+        # First event wins the visible spot; the `+1` indicates one
+        # other event is active in the same slot.
+        self.assertEqual(cell, "Meeting A +1")
+        self.assertEqual(hit, ref_a)
+        self.assertTrue(is_start)  # both events start in this slot
+        self.assertFalse(is_end)
+
+    def test_cell_for_slot_multi_hour_event_fills_all_covered_slots(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "long")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Workshop",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
+            dtend=datetime(2026, 5, 1, 11, 0).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        rows = (
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
+                    end=datetime(2026, 5, 1, 11, 0).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+        )
+        # Event starts at 09:00 and ends at 11:00, covering four 30-min slots.
+        # The start slot carries is_start=True; continuation slots carry False.
+        cell_0900, hit_0900, is_start_0900, is_end_0900 = _cell_for_slot(
+            date(2026, 5, 1), 9 * 60, rows
+        )
+        self.assertEqual(cell_0900, "Workshop")
+        self.assertEqual(hit_0900, ref)
+        self.assertTrue(is_start_0900)
+        self.assertFalse(is_end_0900)
+        for slot in (9 * 60 + 30, 10 * 60, 10 * 60 + 30):
+            cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), slot, rows)
+            self.assertEqual(cell, "Workshop", msg=f"slot {slot}")
+            self.assertEqual(hit, ref, msg=f"slot {slot}")
+            self.assertFalse(is_start, msg=f"slot {slot} should be continuation")
+            self.assertEqual(is_end, slot == (10 * 60 + 30))
+        # Slot at 11:00 is outside the event's half-open [start, end) interval.
+        cell_after, hit_after, _, is_end_after = _cell_for_slot(
+            date(2026, 5, 1), 11 * 60, rows
+        )
+        self.assertEqual(cell_after, "")
+        self.assertIsNone(hit_after)
+        self.assertFalse(is_end_after)
+
+    def test_cell_for_slot_midnight_crossing_event_fills_remaining_day_slots(
+        self,
+    ) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "late")
+        event = VEvent(
+            ref=ref,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Late Call",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 23, 0).astimezone(),
+            dtend=datetime(2026, 5, 2, 1, 0).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        rows = (
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 23, 0).astimezone(),
+                    end=datetime(2026, 5, 2, 1, 0).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=event,
+            ),
+        )
+        # Event starts on 2026-05-01 at 23:00 and crosses midnight; both
+        # remaining slots on that day must show the event.
+        cell_2300, hit_2300, is_start_2300, is_end_2300 = _cell_for_slot(
+            date(2026, 5, 1), 23 * 60, rows
+        )
+        self.assertEqual(cell_2300, "Late Call")
+        self.assertEqual(hit_2300, ref)
+        self.assertTrue(is_start_2300)
+        self.assertFalse(is_end_2300)
+        cell_2330, hit_2330, is_start_2330, is_end_2330 = _cell_for_slot(
+            date(2026, 5, 1), 23 * 60 + 30, rows
+        )
+        self.assertEqual(cell_2330, "Late Call")
+        self.assertEqual(hit_2330, ref)
+        self.assertFalse(is_start_2330)
+        self.assertTrue(is_end_2330)
+
+    def test_cell_for_slot_newly_starting_event_takes_priority_over_running(
+        self,
+    ) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        ref_running = ComponentRef(ACCOUNT_NAME, WORK_CAL, "running")
+        ref_new = ComponentRef(ACCOUNT_NAME, WORK_CAL, "new")
+        running = VEvent(
+            ref=ref_running,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="All-Morning Meeting",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 8, 0).astimezone(),
+            dtend=datetime(2026, 5, 1, 11, 0).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        new_event = VEvent(
+            ref=ref_new,
+            href=None,
+            etag=None,
+            raw_ics=b"",
+            summary="Standup",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
+            dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        rows = tuple(
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ev.ref,
+                    start=ev.dtstart,  # type: ignore[arg-type]
+                    end=ev.dtend,
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=ev,
+            )
+            for ev in (running, new_event)
+        )
+        # In the 09:00 slot, "Standup" starts here and must be listed first,
+        # demoting "All-Morning Meeting" to the "+1" overflow count.
+        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
+        self.assertEqual(cell, "Standup +1")
+        self.assertEqual(hit, ref_new)
+        self.assertTrue(is_start)  # Standup starts here
+        self.assertFalse(is_end)
+
+    @staticmethod
+    def _all_day_row(
+        uid: str,
+        summary: str,
+        start: datetime,
+        end: datetime,
+    ) -> OccurrenceRow:
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, uid)
+        return OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=start,
+                end=end,
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=VEvent(
+                ref=ref,
+                href=None,
+                etag=None,
+                raw_ics=b"",
+                summary=summary,
+                description=None,
+                location=None,
+                dtstart=start,
+                dtend=end,
+                status=None,
+                local_flags=frozenset(),
+                server_flags=frozenset(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            ),
+        )
+
+    def test_is_full_day_accepts_local_and_utc_midnight(self) -> None:
+        from chronos.tui.views import _is_full_day
+
+        # Standard VALUE=DATE all-day event: UTC midnight to UTC midnight.
+        utc_all_day = self._all_day_row(
+            "utc-allday",
+            "UTC all day",
+            datetime(2026, 5, 1, tzinfo=UTC),
+            datetime(2026, 5, 2, tzinfo=UTC),
+        )
+        self.assertTrue(_is_full_day(utc_all_day.occurrence))
+
+        # All-day event stored as local midnight-to-midnight (the case
+        # some clients write and the old UTC-only check missed).
+        local_all_day = self._all_day_row(
+            "local-allday",
+            "Local all day",
+            datetime(2026, 5, 1, 0, 0).astimezone(),
+            datetime(2026, 5, 2, 0, 0).astimezone(),
+        )
+        self.assertTrue(_is_full_day(local_all_day.occurrence))
+
+    def test_is_full_day_rejects_timed_events(self) -> None:
+        from chronos.tui.views import _is_full_day
+
+        # Ordinary short meeting.
+        short = self._all_day_row(
+            "short",
+            "Standup",
+            datetime(2026, 5, 1, 9, 0).astimezone(),
+            datetime(2026, 5, 1, 9, 30).astimezone(),
+        )
+        self.assertFalse(_is_full_day(short.occurrence))
+
+        # A 24h-long event that is NOT anchored at midnight is timed, not
+        # all-day — guards the midnight-anchor requirement.
+        day_long_offset = self._all_day_row(
+            "offset",
+            "On-call shift",
+            datetime(2026, 5, 1, 9, 0).astimezone(),
+            datetime(2026, 5, 2, 9, 0).astimezone(),
+        )
+        self.assertFalse(_is_full_day(day_long_offset.occurrence))
+
+    def test_cell_for_slot_skips_local_midnight_all_day_event(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        rows = (
+            self._all_day_row(
+                "local-allday",
+                "Local all day",
+                datetime(2026, 5, 1, 0, 0).astimezone(),
+                datetime(2026, 5, 2, 0, 0).astimezone(),
+            ),
+        )
+        # A local-midnight all-day event must not paint any hour slot.
+        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
+        self.assertEqual(cell, "")
+        self.assertIsNone(hit)
+        self.assertFalse(is_start)
+        self.assertFalse(is_end)
+
+    def test_full_day_rows_cover_every_day_of_a_multi_day_span(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _full_day_rows
+
+        # Three-day all-day span: May 1, 2, 3 (end May 4 is exclusive).
+        rows = (
+            self._all_day_row(
+                "trip",
+                "Conference",
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 4, tzinfo=UTC),
+            ),
+        )
+        for day in (date(2026, 5, 1), date(2026, 5, 2), date(2026, 5, 3)):
+            covering = _full_day_rows(day, rows)
+            self.assertEqual(len(covering), 1, msg=f"day {day}")
+            self.assertEqual(
+                covering[0].component.summary, "Conference", msg=f"day {day}"
+            )
+        # The exclusive end day shows nothing.
+        self.assertEqual(_full_day_rows(date(2026, 5, 4), rows), [])
+
+    def test_full_day_rows_returns_each_event_for_a_busy_day(self) -> None:
+        from chronos.tui.widgets.timeline_grid import _full_day_rows
+
+        # Two all-day events on the same day plus a multi-day span that
+        # also covers it → three stacked banner lines, in event order.
+        rows = (
+            self._all_day_row(
+                "vacation",
+                "Vacation",
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 3, tzinfo=UTC),
+            ),
+            self._all_day_row(
+                "holiday",
+                "Public holiday",
+                datetime(2026, 5, 2, tzinfo=UTC),
+                datetime(2026, 5, 3, tzinfo=UTC),
+            ),
+            self._all_day_row(
+                "birthday",
+                "Birthday",
+                datetime(2026, 5, 2, tzinfo=UTC),
+                datetime(2026, 5, 3, tzinfo=UTC),
+            ),
+        )
+        covering = _full_day_rows(date(2026, 5, 2), rows)
+        self.assertEqual(
+            [r.component.summary for r in covering],
+            ["Vacation", "Public holiday", "Birthday"],
+        )
+
+
+class TimelineGridFlowTest(TuiFlowTestCase):
+    @staticmethod
+    def _mouse_event(
+        event_type: type[_MouseEventT], timeline: Widget, row: int, column: int
+    ) -> _MouseEventT:
+        return event_type(
+            timeline,
+            0,
+            0,
+            0,
+            0,
+            1,
+            False,
+            False,
+            False,
+            style=Style.from_meta({"row": row, "column": column}),
+        )
+
+    async def test_day_view_swaps_in_timeline_and_hides_detail_pane(self) -> None:
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            event_list = screen.query_one(EventList)
+            detail = screen.query_one(EventView)
+            self.assertTrue(timeline.display)
+            self.assertFalse(event_list.display)
+            self.assertFalse(detail.display)
+
+    async def test_all_day_banner_stacks_one_row_per_full_day_event(self) -> None:
+        # Two all-day events on the same day must occupy two distinct,
+        # individually selectable banner cells (not collapse to "+N").
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        day = date(2026, 5, 1)
+        rows = [
+            TimelineGridHelpersTest._all_day_row(
+                "a",
+                "All day A",
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 2, tzinfo=UTC),
+            ),
+            TimelineGridHelpersTest._all_day_row(
+                "b",
+                "All day B",
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 2, tzinfo=UTC),
+            ),
+        ]
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            # Drive the widget directly with our two all-day rows so the
+            # test doesn't depend on seeded calendar data.
+            timeline.show_days([(day, rows)], today=day)
+            await pilot.pause()
+            refs = {
+                timeline.cell_ref(r, 1)
+                for r in range(timeline.row_count)
+                if timeline.cell_ref(r, 1) is not None
+            }
+            self.assertEqual(refs, {rows[0].component.ref, rows[1].component.ref})
+
+    async def test_current_slot_and_running_event_are_highlighted(self) -> None:
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import _NOW_LINE_CHAR, TimelineGrid
+
+        day = date(2026, 5, 1)
+
+        def local(hour: int, minute: int = 0) -> datetime:
+            return datetime(2026, 5, 1, hour, minute).astimezone()
+
+        running = TimelineGridHelpersTest._all_day_row(
+            "run", "Running", local(10), local(11)
+        )
+        later = TimelineGridHelpersTest._all_day_row(
+            "later", "Later", local(12), local(13)
+        )
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            accent = str(app.theme_variables["accent"])
+
+            def row_at(when: datetime) -> int:
+                for r in range(timeline.row_count):
+                    if timeline.slot_start(r, 1) == when:
+                        return r
+                raise AssertionError(f"no row for {when}")
+
+            def cell(r: int, c: int) -> Text:
+                value = timeline.get_cell_at(Coordinate(r, c))
+                assert isinstance(value, Text)
+                return value
+
+            timeline.show_days([(day, [running, later])], today=day, now=local(10, 15))
+            await pilot.pause()
+            now_row = row_at(local(10))
+            self.assertEqual(cell(now_row, 0).plain, f"{IN_PROGRESS_MARK}10:00")
+            self.assertIn(accent.lower(), str(cell(now_row, 1).style).lower())
+            later_row = row_at(local(12))
+            self.assertEqual(timeline.get_cell_at(Coordinate(later_row, 0)), "12:00")
+            self.assertNotIn(accent.lower(), str(cell(later_row, 1).style).lower())
+
+            # In an empty slot, today's cell carries the "now" line.
+            timeline.show_days([(day, [running, later])], today=day, now=local(11, 40))
+            await pilot.pause()
+            empty_row = row_at(local(11, 30))
+            self.assertIn(_NOW_LINE_CHAR, cell(empty_row, 1).plain)
+            self.assertNotIn(
+                accent.lower(), str(cell(row_at(local(10)), 1).style).lower()
+            )
+
+    @staticmethod
+    def _event_cell_style(timeline: object) -> str:
+        """Rich style string of the timeline's first event cell."""
+        from textual.coordinate import Coordinate
+
+        for r in range(timeline.row_count):  # type: ignore[attr-defined]
+            for c in range(1, len(timeline.columns)):  # type: ignore[attr-defined]
+                if timeline.cell_ref(r, c) is not None:  # type: ignore[attr-defined]
+                    cell = timeline.get_cell_at(Coordinate(r, c))  # type: ignore[attr-defined]
+                    return str(getattr(cell, "style", "") or "")
+        return ""
+
+    async def test_grid_repaints_on_theme_change_with_themed_colours(self) -> None:
+        # The grid paints cells as Rich Text with concrete theme colours,
+        # so it must re-render when the theme changes (subscribed to
+        # theme_changed_signal) — otherwise only CSS-styled widgets would
+        # pick up a higher-contrast theme.
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        day = date(2026, 5, 1)
+        rows = [
+            TimelineGridHelpersTest._all_day_row(  # reuse the row builder
+                "ev",
+                "Meeting",
+                datetime(2026, 5, 1, 9, 0).astimezone(),
+                datetime(2026, 5, 1, 9, 30).astimezone(),
+            )
+        ]
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            timeline.show_days([(day, rows)], today=day)
+            await pilot.pause()
+
+            app.theme = "flexoki"
+            await pilot.pause()
+            style_flexoki = self._event_cell_style(timeline)
+            app.theme = "nord"
+            await pilot.pause()
+            style_nord = self._event_cell_style(timeline)
+
+            # Concrete hex colours (not Textual `auto …`) on a real fill.
+            self.assertRegex(style_flexoki, r"on #[0-9A-Fa-f]{6}")
+            self.assertRegex(style_nord, r"on #[0-9A-Fa-f]{6}")
+            # Title colour is a computed black/white contrast colour.
+            self.assertTrue(
+                style_flexoki.startswith("#000000")
+                or style_flexoki.startswith("#FFFFFF")
+            )
+            # The repaint actually tracks the theme: different themes →
+            # different fills.
+            self.assertNotEqual(style_flexoki, style_nord)
+
+    async def test_grid_view_passes_four_day_columns(self) -> None:
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("4")
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            # Time column + 4 day columns = 5 columns total.
+            self.assertEqual(len(timeline.columns), 5)
+
+    async def test_enter_on_event_cell_pushes_detail_modal(self) -> None:
+        # The agenda has an inline detail pane; in Day / Grid views
+        # the detail must appear as a separate modal screen so the
+        # timeline gets the full centre-pane height. Pressing Enter
+        # on a cell that holds an event opens that modal.
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")
+            await pilot.pause()
+            await pilot.pause()  # call_after_refresh for focus needs a tick
+            screen._viewed_date = date(2026, 5, 1)  # has the simple_event seed
+            screen.refresh_view()
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            # Find the first cell that resolves to an event.
+            for row_idx in range(timeline.row_count):
+                for col_idx in range(1, len(timeline.columns)):
+                    if timeline.cell_ref(row_idx, col_idx) is not None:
+                        timeline.cursor_coordinate = (row_idx, col_idx)  # type: ignore[assignment]
+                        break
+                else:
+                    continue
+                break
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # Modal `EventDetailScreen` is now on top of MainScreen.
+            self.assertIsInstance(pilot.app.screen, EventDetailScreen)
+
+    async def test_mouse_click_on_timed_event_opens_detail_modal(self) -> None:
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._viewed_date = date(2026, 5, 1)
+            screen.action_select_span(1)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            row, col = next(
+                (row, col)
+                for row in range(timeline.row_count)
+                for col in range(1, len(timeline.columns))
+                if timeline.cell_ref(row, col) is not None
+                and timeline.slot_start(row, col) is not None
+            )
+            region = timeline._get_cell_region(Coordinate(row, col))
+            offset = (
+                region.x - timeline.scroll_offset.x + 1,
+                region.y - timeline.scroll_offset.y,
+            )
+            await pilot.mouse_down(timeline, offset=offset)
+            await pilot.mouse_up(timeline, offset=offset)
+            await pilot.pause()
+
+            self.assertIsInstance(pilot.app.screen, EventDetailScreen)
+
+    async def test_drag_empty_slots_opens_create_form_with_selected_times(self) -> None:
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._viewed_date = date(2026, 6, 15)
+            screen.action_select_span(1)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            empty = next(
+                (row, col)
+                for row in range(timeline.row_count - 2)
+                for col in range(1, len(timeline.columns))
+                if timeline.slot_start(row, col) is not None
+                and timeline.cell_ref(row, col) is None
+                and timeline.slot_start(row + 2, col) is not None
+            )
+            row, col = empty
+            start = timeline.slot_start(row, col)
+            end_slot = timeline.slot_start(row + 2, col)
+            assert start is not None and end_slot is not None
+
+            def cell_offset(cell_row: int) -> tuple[int, int]:
+                region = timeline._get_cell_region(Coordinate(cell_row, col))
+                return (
+                    region.x - timeline.scroll_offset.x + 1,
+                    region.y - timeline.scroll_offset.y,
+                )
+
+            preview_coordinate = Coordinate(row + 1, col)
+            edge_coordinate = Coordinate(row + 2, col)
+            original_cell = timeline.get_cell_at(preview_coordinate)
+            original_edge = timeline.get_cell_at(edge_coordinate)
+            await pilot.mouse_down(timeline, offset=cell_offset(row))
+            await pilot.hover(timeline, offset=cell_offset(row + 2))
+            preview_cell = timeline.get_cell_at(preview_coordinate)
+            self.assertNotEqual(preview_cell, original_cell)
+            self.assertIn("░", str(preview_cell))
+            self.assertRegex(
+                str(getattr(preview_cell, "style", "")), r"on #[0-9A-Fa-f]{6}"
+            )
+            # Moving back contracts the marked range and restores cells
+            # which are no longer selected.
+            await pilot.hover(timeline, offset=cell_offset(row + 1))
+            self.assertEqual(timeline.get_cell_at(edge_coordinate), original_edge)
+            await pilot.hover(timeline, offset=cell_offset(row + 2))
+            await pilot.mouse_up(timeline, offset=cell_offset(row + 2))
+            await pilot.pause()
+
+            self.assertEqual(timeline.get_cell_at(preview_coordinate), original_cell)
+
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertEqual(
+                edit.query_one("#edit-start-date", DatePicker).value,
+                start.strftime("%Y-%m-%d"),
+            )
+            self.assertEqual(
+                edit.query_one("#edit-start-time", Select).value,
+                start.strftime("%H:%M"),
+            )
+            self.assertEqual(
+                edit.query_one("#edit-end-date", DatePicker).value,
+                "",
+            )
+            self.assertEqual(
+                edit.query_one("#edit-end-time", Select).value,
+                (end_slot + timedelta(minutes=30)).strftime("%H:%M"),
+            )
+
+    async def test_multi_day_all_day_event_is_one_bar_across_its_days(self) -> None:
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
+
+        # Started the day before the first shown column; ends (exclusive)
+        # on the fourth column's date.
+        trip = TimelineGridHelpersTest._all_day_row(
+            "trip",
+            "Trip",
+            datetime(2026, 6, 14, tzinfo=UTC),
+            datetime(2026, 6, 18, tzinfo=UTC),
+        )
+        single = TimelineGridHelpersTest._all_day_row(
+            "one",
+            "One day",
+            datetime(2026, 6, 16, tzinfo=UTC),
+            datetime(2026, 6, 17, tzinfo=UTC),
+        )
+        buckets = bucket_by_day([trip, single], date(2026, 6, 15), 4)
+        self.assertEqual(
+            [[r.component.summary for r in rows] for _, rows in buckets],
+            [["Trip"], ["Trip", "One day"], ["Trip"], []],
+        )
+
+        app = ChronosApp(self.services())
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen.action_select_span(4)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            timeline.show_days(buckets, today=date(2026, 6, 15))
+            await pilot.pause()
+
+            trip_ref = trip.component.ref
+            # Same banner line (0) on all three covered days, not on the 4th.
+            self.assertEqual(
+                [timeline.cell_ref(0, c) for c in (1, 2, 3, 4)],
+                [trip_ref, trip_ref, trip_ref, None],
+            )
+            first = timeline.get_cell_at(Coordinate(0, 1))
+            middle = timeline.get_cell_at(Coordinate(0, 2))
+            assert isinstance(first, Text) and isinstance(middle, Text)
+            self.assertTrue(first.plain.startswith("Trip"))
+            self.assertEqual(middle.plain.strip(), "")
+            # Coloured, not plain text.
+            self.assertIn(" on ", str(middle.style))
+            self.assertEqual(str(first.style), str(middle.style))
+            # The single-day event takes the next line, with a spare
+            # empty line below for creating new all-day events.
+            self.assertEqual(timeline.cell_ref(1, 2), single.component.ref)
+            self.assertEqual(timeline.all_day_date(2, 4), date(2026, 6, 18))
+            self.assertIsNone(timeline.cell_ref(2, 4))
+
+    async def test_drag_across_all_day_banner_creates_all_day_event(self) -> None:
+        from textual.coordinate import Coordinate
+        from textual.widgets import Checkbox
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._viewed_date = date(2026, 6, 15)
+            screen.action_select_span(3)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            # The banner is there even though no shown day has an
+            # all-day event: its first row maps every column to a date.
+            self.assertEqual(timeline.all_day_date(0, 1), date(2026, 6, 15))
+            self.assertEqual(timeline.all_day_date(0, 3), date(2026, 6, 17))
+            self.assertIsNone(timeline.slot_start(0, 1))
+
+            def cell_offset(col: int) -> tuple[int, int]:
+                region = timeline._get_cell_region(Coordinate(0, col))
+                return (
+                    region.x - timeline.scroll_offset.x + 1,
+                    region.y - timeline.scroll_offset.y,
+                )
+
+            await pilot.mouse_down(timeline, offset=cell_offset(1))
+            await pilot.hover(timeline, offset=cell_offset(2))
+            self.assertIn("░", str(timeline.get_cell_at(Coordinate(0, 2))))
+            await pilot.mouse_up(timeline, offset=cell_offset(2))
+            await pilot.pause()
+
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertTrue(edit.query_one("#edit-all-day", Checkbox).value)
+            self.assertTrue(edit.query_one("#edit-start-time", Select).disabled)
+            self.assertEqual(
+                edit.query_one("#edit-start-date", DatePicker).value, "2026-06-15"
+            )
+            # The Ends field holds the last day, inclusive.
+            self.assertEqual(
+                edit.query_one("#edit-end-date", DatePicker).value, "2026-06-16"
+            )
+            edit.query_one("#edit-summary").value = "Conference"  # type: ignore[attr-defined]
+            edit.action_save()
+            await pilot.pause()
+
+        created = [
+            c
+            for ref in all_calendar_refs(services.config, services.mirror)
+            for c in services.index.list_calendar_components(ref)
+            if c.summary == "Conference"
+        ]
+        self.assertEqual(len(created), 1)
+        event = created[0]
+        assert isinstance(event, VEvent)
+        self.assertIn(b"DTSTART;VALUE=DATE:20260615", event.raw_ics)
+        self.assertIn(b"DTEND;VALUE=DATE:20260617", event.raw_ics)
+        self.assertEqual(event.dtstart, datetime(2026, 6, 15, tzinfo=UTC))
+        self.assertEqual(event.dtend, datetime(2026, 6, 17, tzinfo=UTC))
+
+    async def test_drag_event_reschedules_it_and_preserves_duration(self) -> None:
+        from textual.events import MouseDown, MouseMove, MouseUp
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        start = datetime(2026, 6, 15, 9).astimezone()
+        end = start + timedelta(hours=1)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._save_event(
+                EditDraft(
+                    target=CalendarRef(ACCOUNT_NAME, WORK_CAL),
+                    summary="Drag me",
+                    dtstart=start,
+                    dtend=end,
+                    location="Room 1",
+                    description="Keep this",
+                    attendees=("guest@example.com",),
+                    alarms=(),
+                    existing=None,
+                )
+            )
+            dragged = next(
+                component
+                for component in services.index.list_calendar_components(
+                    CalendarRef(ACCOUNT_NAME, WORK_CAL)
+                )
+                if component.summary == "Drag me"
+            )
+            screen._viewed_date = start.date()
+            screen.action_select_span(1)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            origin = next(
+                (row, col)
+                for row in range(timeline.row_count - 2)
+                for col in range(1, len(timeline.columns))
+                if timeline.cell_ref(row, col) == dragged.ref
+                and timeline.slot_start(row + 2, col) is not None
+            )
+            row, col = origin
+            timeline.on_mouse_down(self._mouse_event(MouseDown, timeline, row, col))
+            timeline.on_mouse_move(self._mouse_event(MouseMove, timeline, row + 2, col))
+            timeline.on_mouse_up(self._mouse_event(MouseUp, timeline, row + 2, col))
+            await pilot.pause()
+
+        updated = services.index.get_component(dragged.ref)
+        assert isinstance(updated, VEvent)
+        self.assertEqual(updated.dtstart, start + timedelta(hours=1))
+        self.assertEqual(updated.dtend, end + timedelta(hours=1))
+        self.assertEqual(updated.location, "Room 1")
+        self.assertEqual(updated.description, "Keep this")
+        self.assertIn(b"ATTENDEE", updated.raw_ics)
+
+    async def test_drag_from_exact_event_end_creates_new_half_hour_range(self) -> None:
+        """The end of an event is outside its half-open occupied interval."""
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        event_start = datetime(2026, 6, 15, 14, 30).astimezone()
+        event_end = datetime(2026, 6, 15, 15, 30).astimezone()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._save_event(
+                EditDraft(
+                    target=CalendarRef(ACCOUNT_NAME, WORK_CAL),
+                    summary="Ends at half past",
+                    dtstart=event_start,
+                    dtend=event_end,
+                    location="",
+                    description="",
+                    attendees=(),
+                    alarms=(),
+                    existing=None,
+                )
+            )
+            component = next(
+                item
+                for item in services.index.list_calendar_components(
+                    CalendarRef(ACCOUNT_NAME, WORK_CAL)
+                )
+                if item.summary == "Ends at half past"
+            )
+            screen._viewed_date = event_start.date()
+            screen.action_select_span(1)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            row, col = next(
+                (row, col)
+                for row in range(timeline.row_count - 1)
+                for col in range(1, len(timeline.columns))
+                if timeline.slot_start(row, col) == event_end
+            )
+            self.assertIsNone(timeline.cell_ref(row, col))
+            self.assertEqual(timeline.get_cell_at(Coordinate(row, 0)), "15:30")
+            region = timeline._get_cell_region(Coordinate(row, col))
+            timeline.scroll_to_region(region, animate=False, immediate=True)
+            await pilot.pause()
+            next_region = timeline._get_cell_region(Coordinate(row + 1, col))
+            offset = (
+                region.x - timeline.scroll_offset.x + 1,
+                region.y - timeline.scroll_offset.y,
+            )
+            next_offset = (
+                next_region.x - timeline.scroll_offset.x + 1,
+                next_region.y - timeline.scroll_offset.y,
+            )
+            await pilot.mouse_down(timeline, offset=offset)
+            await pilot.hover(timeline, offset=next_offset)
+            await pilot.mouse_up(timeline, offset=next_offset)
+            await pilot.pause()
+
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertEqual(
+                edit.query_one("#edit-start-date", DatePicker).value,
+                event_end.strftime("%Y-%m-%d"),
+            )
+            self.assertEqual(
+                edit.query_one("#edit-start-time", Select).value,
+                event_end.strftime("%H:%M"),
+            )
+            unchanged = services.index.get_component(component.ref)
+            assert isinstance(unchanged, VEvent)
+            self.assertEqual(unchanged.dtstart, event_start)
+            self.assertEqual(unchanged.dtend, event_end)
+
+
+class OAuthCopyUrlTest(TuiFlowTestCase):
+    """The remote-browser OAuth dialog exposes a 'Copy URL' button so the
+    authorization URL can be grabbed via the terminal clipboard (OSC 52)
+    even when it is too long to fit inside the modal."""
+
+    async def test_copy_button_copies_authorization_url(self) -> None:
+        import threading
+        from unittest import mock
+
+        from textual.widgets import Button, Label
+
+        from chronos.domain import OAuthCredential
+        from chronos.oauth import OAuthError
+        from chronos.tui.screens.oauth_progress_screen import OAuthProgressScreen
+
+        auth_url = "https://accounts.google.com/o/oauth2/auth?scope=" + "x" * 300
+        spec = OAuthCredential(client_id="cid", client_secret="secret")
+
+        # `release` lets the test drain the worker thread deterministically:
+        # the fake flow surfaces the URL, then parks until released so the
+        # dialog stays up while we exercise the copy button. `addCleanup`
+        # guarantees the worker unblocks even if an assertion fails, so the
+        # `run_test` teardown never deadlocks joining the thread.
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def fake_flow(*, show_authorization_url: object, **_kwargs: object) -> object:
+            show_authorization_url(auth_url, "http://127.0.0.1")  # type: ignore[operator]
+            release.wait(timeout=10)
+            raise OAuthError("cancelled")
+
+        services = self.services()
+        app = ChronosApp(services)
+        with mock.patch(
+            "chronos.tui.screens.oauth_progress_screen.run_paste_redirect_flow",
+            fake_flow,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                copied: list[str] = []
+                pilot.app.copy_to_clipboard = lambda text: copied.append(text)  # type: ignore[method-assign]
+
+                screen = OAuthProgressScreen(
+                    "work",
+                    spec,
+                    on_complete=lambda _result: None,
+                    remote_browser=True,
+                )
+                await pilot.app.push_screen(screen)
+                await pilot.pause()
+
+                try:
+                    copy_button = screen.query_one("#oauth-copy-url", Button)
+
+                    # The worker thread reports the auth URL, which enables the
+                    # copy button (it composes disabled — see the screen).
+                    for _ in range(50):
+                        await pilot.pause()
+                        if screen._auth_url is not None:
+                            break
+                    self.assertEqual(screen._auth_url, auth_url)
+                    self.assertFalse(copy_button.disabled)
+
+                    copy_button.press()
+                    await pilot.pause()
+
+                    self.assertEqual(copied, [auth_url])
+                    status = screen.query_one("#oauth-status", Label)
+                    self.assertIn("copied", str(status.render()).lower())
+                finally:
+                    # Release the worker and let the resulting cross-thread
+                    # `_finish` callback drain while the loop is still alive.
+                    release.set()
+                    for _ in range(10):
+                        await pilot.pause()

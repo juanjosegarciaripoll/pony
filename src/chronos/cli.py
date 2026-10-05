@@ -1,0 +1,2222 @@
+from __future__ import annotations
+
+import argparse
+import contextlib
+import dataclasses
+import logging
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal, TextIO
+
+from chronos.authorization import Authorization
+from chronos.bootstrap import (
+    IsInteractiveFn,
+    PromptFn,
+    default_is_interactive,
+    default_prompt,
+    offer_bootstrap,
+    write_template,
+)
+from chronos.caldav import CalDAVError, CalDAVHttpSession
+from chronos.config import ConfigError
+from chronos.config import load as load_config
+from chronos.config import save as save_config
+from chronos.credentials import CredentialResolutionError, DefaultCredentialsProvider
+from chronos.domain import (
+    GOOGLE_CALDAV_URL,
+    AccountConfig,
+    AppConfig,
+    CalendarRef,
+    CommandCredential,
+    ComponentRef,
+    CredentialSpec,
+    EnvCredential,
+    GoogleCredential,
+    LocalStatus,
+    OAuthCredential,
+    PlaintextCredential,
+    ResourceRef,
+    StoredComponent,
+    SyncResult,
+    VEvent,
+    VTodo,
+)
+from chronos.ical_parser import extract_attendees, extract_organizer
+from chronos.index_store import SqliteIndexRepository
+from chronos.locking import SyncLockError, acquire_sync_lock
+from chronos.mutations import (
+    build_event_ics,
+    edited_flags,
+    generate_uid,
+    is_all_day_span,
+    trashed_copy,
+)
+from chronos.oauth import (
+    OAuthError,
+    StoredTokens,
+    run_loopback_flow,
+    run_paste_redirect_flow,
+    save_tokens,
+)
+from chronos.paths import (
+    default_config_path,
+    default_index_path,
+    default_mirror_dir,
+    default_mirror_path,
+    oauth_token_path,
+    sync_lock_path,
+    user_data_dir,
+)
+from chronos.protocols import (
+    CalDAVSession,
+    CredentialsProvider,
+    IndexRepository,
+    MirrorRepository,
+)
+from chronos.services import ProgressFn, format_report, run_doctor
+from chronos.storage import VdirMirrorRepository
+from chronos.sync import SyncCancelled, sync_account
+
+SessionFactory = Callable[[AccountConfig, Authorization], CalDAVSession]
+ContextFactory = Callable[[Path | None], "CliContext"]
+EditorFn = Callable[[Path], None]
+InputFn = Callable[[str], str]
+
+
+@dataclass
+class CliContext:
+    config: AppConfig
+    mirror: MirrorRepository
+    index: IndexRepository
+    creds: CredentialsProvider
+    stdout: TextIO
+    stderr: TextIO
+    now: datetime
+    session_factory: SessionFactory | None = None
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    context_factory: ContextFactory | None = None,
+    open_editor: EditorFn | None = None,
+    prompt: PromptFn | None = None,
+    is_interactive: IsInteractiveFn | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    argv_for_parse = _rewrite_ics_shortcut(raw_argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv_for_parse)
+    # `sync` defaults to INFO so the per-calendar / per-chunk progress
+    # logger.info(...) calls are visible without forcing the user to
+    # type `-v`. Other commands stay at WARNING (quiet by default).
+    _configure_logging(
+        args.verbose,
+        err,
+        default_level=logging.INFO if args.command == "sync" else logging.WARNING,
+    )
+    config_path: Path = args.config or default_config_path()
+
+    # Config-editing commands operate on the TOML file without needing the
+    # mirror / index / credential plumbing.
+    if args.command == "init":
+        return cmd_init(out, err, config_path=config_path)
+    if args.command == "account":
+        return _dispatch_account(args, out, err, config_path=config_path)
+    if args.command == "config":
+        return _dispatch_config(
+            args, out, err, config_path=config_path, open_editor=open_editor
+        )
+    if args.command == "oauth":
+        return _dispatch_oauth(args, out, err, config_path=config_path)
+
+    # `tui --list-themes` just enumerates Textual's bundled themes; it
+    # needs no config, mirror, or index, so handle it before the data-path
+    # plumbing below.
+    if args.command == "tui" and getattr(args, "list_themes", False):
+        for name in _available_theme_names():
+            out.write(f"{name}\n")
+        return 0
+
+    # Data commands need a config. If none exists, offer to bootstrap one
+    # interactively; otherwise print a helpful message and exit. Tests
+    # that inject a `context_factory` bring their own config and bypass
+    # this check.
+    if context_factory is None and not config_path.exists():
+        return _handle_missing_config(
+            out,
+            err,
+            config_path=config_path,
+            prompt=prompt,
+            open_editor=open_editor,
+            is_interactive=is_interactive,
+        )
+
+    # Data commands need a full context.
+    owns_context = context_factory is None
+    factory = context_factory or _default_context_factory
+    try:
+        ctx = factory(args.config)
+    except ConfigError as exc:
+        err.write(f"config error: {exc}\n")
+        return 2
+    try:
+        return _dispatch(
+            args,
+            ctx,
+            prompt=prompt or default_prompt,
+            is_interactive=is_interactive or default_is_interactive,
+        )
+    finally:
+        if owns_context:
+            ctx.index.close()
+
+
+def _handle_missing_config(
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    prompt: PromptFn | None,
+    open_editor: EditorFn | None,
+    is_interactive: IsInteractiveFn | None,
+) -> int:
+    interactive = (is_interactive or default_is_interactive)()
+    if not interactive:
+        stderr.write(
+            f"config not found: {config_path}\n"
+            f"Run `chronos init` to create one, then "
+            f"`chronos account add ...` to configure an account.\n"
+        )
+        return 2
+    return offer_bootstrap(
+        stdout,
+        stderr,
+        config_path=config_path,
+        prompt=prompt or default_prompt,
+        open_editor=open_editor or _default_open_editor,
+    )
+
+
+def _default_context_factory(config_path: Path | None) -> CliContext:
+    path = config_path or default_config_path()
+    config = load_config(path)
+    mirror = VdirMirrorRepository(user_data_dir() / "mirror")
+    index = SqliteIndexRepository(default_index_path())
+    return CliContext(
+        config=config,
+        mirror=mirror,
+        index=index,
+        creds=DefaultCredentialsProvider(
+            interactive_authorizer=_default_cli_authorizer
+        ),
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        now=datetime.now(UTC),
+    )
+
+
+_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+_LOG_DATEFMT = "%H:%M:%S"
+_SUBCOMMANDS = frozenset(
+    {
+        "sync",
+        "reset",
+        "list",
+        "show",
+        "add",
+        "edit",
+        "rm",
+        "doctor",
+        "tui",
+        "mcp",
+        "import",
+        "init",
+        "account",
+        "config",
+        "oauth",
+    }
+)
+
+
+def _rewrite_ics_shortcut(argv: Sequence[str]) -> list[str]:
+    """Translate `chronos file.ics` into `chronos tui --import-ics file.ics`."""
+    if not argv:
+        return list(argv)
+    first_positional: str | None = None
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in ("--config",):
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        first_positional = token
+        break
+    if first_positional is None:
+        return list(argv)
+    if first_positional in _SUBCOMMANDS:
+        return list(argv)
+    candidate = Path(first_positional)
+    if candidate.suffix.lower() != ".ics":
+        return list(argv)
+    before = list(argv[:i])
+    after = list(argv[i + 1 :])
+    return [*before, "tui", "--import-ics", first_positional, *after]
+
+
+class _DropH3DowngradeFilter(logging.Filter):
+    """Drop urllib3's per-request "Retrying after MustDowngradeError" line.
+
+    Some HTTP libraries advertise HTTP/3 and then fall back to HTTP/2,
+    logging a WARNING for each request. The retry is automatic and
+    harmless; the warning just clutters the sync output. We still want
+    every other WARNING (real network errors, redirects, etc.).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "MustDowngradeError" not in message
+
+
+def _configure_logging(
+    verbose_count: int,
+    stream: TextIO,
+    *,
+    default_level: int = logging.WARNING,
+) -> None:
+    """Wire `logging` to stderr based on `-v` / `CHRONOS_LOG_LEVEL`.
+
+    `default_level` is what we use when neither -v nor the env var is
+    set — `cmd_sync` lifts it to INFO so the per-calendar progress
+    messages are visible without typing -v.
+
+    `-v` lifts to INFO regardless of the default, `-vv` to DEBUG. The
+    `CHRONOS_LOG_LEVEL` env var (DEBUG/INFO/WARNING/ERROR) overrides
+    everything so users can crank verbosity without re-typing flags.
+    """
+    env = os.environ.get("CHRONOS_LOG_LEVEL", "").upper().strip()
+    if env in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        level = getattr(logging, env)
+    elif verbose_count >= 2:
+        level = logging.DEBUG
+    elif verbose_count == 1:
+        level = logging.INFO
+    else:
+        level = default_level
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    handler.addFilter(_DropH3DowngradeFilter())
+    root = logging.getLogger()
+    # Clear pre-existing handlers so repeated `main()` calls (tests)
+    # don't accumulate duplicates.
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+    # urllib3's per-request DEBUG noise is only useful at -vv; keep it
+    # at WARNING for -v so INFO-level sync progress stays readable.
+    if level > logging.DEBUG:
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+def _default_cli_authorizer(
+    account_name: str, spec: OAuthCredential, _token_path: Path
+) -> StoredTokens:
+    """Run an OAuth flow inline when sync hits an unauthorized account.
+
+    Wired into `_default_context_factory` so plain `chronos sync` "just
+    works" the first time. Local desktop sessions open a browser and
+    capture the loopback redirect. Headless terminals use the
+    remote-browser flow: open the URL elsewhere, then paste the final
+    redirect URL back into chronos.
+
+    Refuses to prompt when stdin/stdout aren't a TTY — cron / scripted
+    invocations get a clean error rather than silently blocking on a
+    browser or paste prompt that may never finish. Network and HTTP
+    failures from the OAuth provider are surfaced loudly on stdout (not
+    just stderr) so the user notices them right after the "authorization
+    required" preface.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise OAuthError(
+            f"account {account_name!r} needs OAuth authorization, but "
+            "stdin/stdout aren't a TTY. Re-run from an interactive "
+            "terminal."
+        )
+    use_remote_browser = _use_remote_browser_flow()
+    flow = (
+        _default_remote_browser_flow if use_remote_browser else _default_loopback_flow
+    )
+    action = (
+        "Use a browser on another machine and paste the final redirect URL.\n"
+        if use_remote_browser
+        else "Opening your browser to the provider's consent screen...\n"
+    )
+    sys.stdout.write(f"\n[{account_name}] OAuth authorization required. {action}")
+    sys.stdout.flush()
+    try:
+        return flow(spec, sys.stdout)
+    except OAuthError as exc:
+        sys.stdout.write(
+            f"\n[{account_name}] OAuth setup failed: {exc}\n"
+            "  - Verify client_id and client_secret in config.toml.\n"
+            "  - For Google: the OAuth client must be of type 'Desktop "
+            "app' (the same type Thunderbird uses); Web/TV types reject "
+            "the loopback redirect.\n"
+        )
+        sys.stdout.flush()
+        raise
+    except Exception as exc:
+        # Network/HTTP errors are not OAuthError; convert
+        # them so the credentials provider's standard wrapping applies.
+        sys.stdout.write(
+            f"\n[{account_name}] OAuth setup failed (network/HTTP "
+            f"error): {type(exc).__name__}: {exc}\n"
+        )
+        sys.stdout.flush()
+        raise OAuthError(
+            f"network/HTTP error reaching OAuth provider: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _tui_unsupported_authorizer(
+    account_name: str, _spec: OAuthCredential, _token_path: Path
+) -> StoredTokens:
+    raise OAuthError(
+        f"account {account_name!r} needs OAuth authorization, but the TUI "
+        "cannot complete the flow inline. Quit the TUI and run "
+        "`chronos sync` from the terminal to authorize."
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="chronos", description="Terminal-first calendar client."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to config.toml (defaults to platform user-config dir).",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help=(
+            "Increase log verbosity (-v INFO, -vv DEBUG). The "
+            "CHRONOS_LOG_LEVEL env var is also honoured "
+            "(DEBUG/INFO/WARNING/ERROR)."
+        ),
+    )
+    parser.set_defaults(command="tui")
+    sub = parser.add_subparsers(dest="command")
+
+    sync_p = sub.add_parser(
+        "sync", help="Synchronise configured accounts with their servers."
+    )
+    sync_p.add_argument(
+        "--account",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Sync only the named account instead of every configured "
+            "account. Useful for isolating one account while debugging."
+        ),
+    )
+    sync_p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Drop every calendar's stored CTag before syncing so this run "
+            "re-enters the slow path for every calendar (re-fetches all "
+            "resources and rebuilds the local occurrences cache). Use this "
+            "to recover from a stale cache without manually editing SQLite."
+        ),
+    )
+
+    reset_p = sub.add_parser(
+        "reset",
+        help=(
+            "Delete the local SQLite index and vdir mirror so the next "
+            "`chronos sync` rebuilds them from scratch. Configuration and "
+            "OAuth tokens are preserved."
+        ),
+    )
+    reset_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+    reset_p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Skip the live-instance guard. Use when a stale presence file "
+            "blocks reset even though no chronos process is actually running."
+        ),
+    )
+
+    list_p = sub.add_parser("list", help="List events and todos.")
+    list_p.add_argument("--account", default=None)
+    list_p.add_argument("--calendar", default=None)
+    list_p.add_argument("--limit", type=int, default=50)
+    list_p.add_argument("--since", type=_parse_dt, default=None)
+    list_p.add_argument("--until", type=_parse_dt, default=None)
+
+    show_p = sub.add_parser("show", help="Show one component by UID.")
+    show_p.add_argument("uid")
+
+    add_p = sub.add_parser("add", help="Add a new VEVENT.")
+    add_p.add_argument("--account", required=True)
+    add_p.add_argument("--calendar", required=True)
+    add_p.add_argument("--summary", required=True)
+    add_p.add_argument("--start", type=_parse_dt, required=True)
+    add_p.add_argument("--end", type=_parse_dt, default=None)
+    add_p.add_argument("--uid", default=None)
+    add_p.add_argument(
+        "--attendee",
+        action="append",
+        default=None,
+        metavar="EMAIL",
+        help="Invite an attendee. May be passed multiple times.",
+    )
+
+    edit_p = sub.add_parser("edit", help="Edit an existing VEVENT (local-only in v1).")
+    edit_p.add_argument("uid")
+    edit_p.add_argument("--summary", default=None)
+    edit_p.add_argument("--start", type=_parse_dt, default=None)
+    edit_p.add_argument("--end", type=_parse_dt, default=None)
+    edit_p.add_argument(
+        "--attendee",
+        action="append",
+        default=None,
+        metavar="EMAIL",
+        help="Replace attendees. May be passed multiple times.",
+    )
+
+    rm_p = sub.add_parser("rm", help="Mark a component as trashed.")
+    rm_p.add_argument("uid")
+
+    doctor_p = sub.add_parser("doctor", help="Run diagnostics on the local state.")
+    doctor_p.add_argument(
+        "--remote",
+        action="store_true",
+        help=(
+            "Also authenticate and run redacted CalDAV discovery/query probes. "
+            "Reports counts only; does not print tokens, hrefs, or event bodies."
+        ),
+    )
+    doctor_p.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Stream live, timestamped step progress to stderr and raise log "
+            "level to DEBUG. Use with --remote to see which step a stalled "
+            "probe is blocked on."
+        ),
+    )
+
+    tui_p = sub.add_parser("tui", help="Launch the Textual UI.")
+    tui_p.add_argument(
+        "--import-ics",
+        type=Path,
+        default=None,
+        dest="import_ics",
+        help=argparse.SUPPRESS,
+    )
+    tui_p.add_argument(
+        "--theme",
+        metavar="THEME",
+        default=None,
+        help="Textual theme name (overrides config). See --list-themes.",
+    )
+    tui_p.add_argument(
+        "--list-themes",
+        action="store_true",
+        dest="list_themes",
+        help="Print available Textual theme names and exit.",
+    )
+
+    sub.add_parser(
+        "mcp",
+        help=(
+            "Run the MCP server. Bridges to a running chronos instance if "
+            "detected; otherwise runs self-contained over stdio."
+        ),
+    )
+
+    import_p = sub.add_parser(
+        "import",
+        help="Ingest one or more .ics files into a local calendar.",
+    )
+    import_p.add_argument(
+        "paths",
+        nargs="+",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "One or more .ics files or directories (directories are walked "
+            "non-recursively for *.ics files)."
+        ),
+    )
+    import_p.add_argument(
+        "--account",
+        default=None,
+        help="Target account name. Prompted interactively if omitted.",
+    )
+    import_p.add_argument(
+        "--calendar",
+        default=None,
+        help="Target calendar name. Prompted interactively if omitted.",
+    )
+    import_p.add_argument(
+        "--on-conflict",
+        choices=("skip", "replace", "rename"),
+        default="skip",
+        dest="on_conflict",
+        help=(
+            "What to do when a UID already exists locally: "
+            "skip (default), replace (overwrite), or rename (new UID)."
+        ),
+    )
+    import_p.add_argument(
+        "--no-sync",
+        action="store_false",
+        dest="sync",
+        help="Do not sync the target account after importing.",
+    )
+    import_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Sync after importing without asking for confirmation.",
+    )
+
+    sub.add_parser(
+        "init",
+        help="Write a minimal config.toml if none exists at the target path.",
+    )
+
+    account_p = sub.add_parser("account", help="Manage accounts in config.toml.")
+    account_sub = account_p.add_subparsers(dest="account_cmd", required=True)
+
+    account_add = account_sub.add_parser("add", help="Append a new account.")
+    account_add.add_argument("--name", required=True)
+    account_add.add_argument(
+        "--url",
+        default=None,
+        help=(
+            "CalDAV root URL. Required for every backend except 'google', "
+            "which defaults to Google's CalDAV root."
+        ),
+    )
+    account_add.add_argument(
+        "--username",
+        default=None,
+        help=(
+            "Account username. Required for every backend except 'google', "
+            "where the OAuth identity supplies it and this can be omitted."
+        ),
+    )
+    account_add.add_argument(
+        "--credential-backend",
+        choices=("plaintext", "env", "command", "oauth", "google"),
+        required=True,
+    )
+    account_add.add_argument(
+        "--credential-value",
+        default=None,
+        help=(
+            "For plaintext: the password. For env: the variable name. "
+            "For command: the command line (shlex-split). Unused for "
+            "the oauth and google backends — pass --client-id + "
+            "--client-secret instead."
+        ),
+    )
+    account_add.add_argument(
+        "--client-id",
+        default=None,
+        help=(
+            "OAuth 2.0 client ID (required when --credential-backend is "
+            "'oauth' or 'google')."
+        ),
+    )
+    account_add.add_argument(
+        "--client-secret",
+        default=None,
+        help=(
+            "OAuth 2.0 client secret (required when --credential-backend "
+            "is 'oauth' or 'google')."
+        ),
+    )
+    account_add.add_argument(
+        "--oauth-scope",
+        default="https://www.googleapis.com/auth/calendar",
+        help=(
+            "OAuth scope; defaults to Google Calendar read+write. "
+            "Ignored for the 'google' backend (which fixes the scope)."
+        ),
+    )
+    account_add.add_argument(
+        "--mirror-path",
+        type=Path,
+        default=None,
+        help=(
+            "Where to mirror this account's .ics files. Defaults to "
+            "<user-data-dir>/mirror/<account-name>."
+        ),
+    )
+    account_add.add_argument("--trash-retention-days", type=int, default=30)
+
+    account_sub.add_parser("list", help="Show configured accounts.")
+
+    account_rm = account_sub.add_parser("rm", help="Remove an account by name.")
+    account_rm.add_argument("name")
+
+    config_p = sub.add_parser("config", help="Manage config.toml.")
+    config_sub = config_p.add_subparsers(dest="config_cmd", required=True)
+    config_sub.add_parser(
+        "edit",
+        help="Open config.toml in $EDITOR; validate and save on close.",
+    )
+
+    oauth_p = sub.add_parser(
+        "oauth",
+        help="OAuth 2.0 authorisation flows for accounts.",
+    )
+    oauth_sub = oauth_p.add_subparsers(dest="oauth_cmd", required=True)
+    oauth_authorize = oauth_sub.add_parser(
+        "authorize",
+        help="Re-run OAuth authorization for an account and save tokens.",
+    )
+    oauth_authorize.add_argument("--account", required=True)
+    oauth_authorize.add_argument(
+        "--remote-browser",
+        action="store_true",
+        help=(
+            "Force use when the browser runs on another machine: print the "
+            "authorization URL and prompt for the final redirected URL."
+        ),
+    )
+
+    return parser
+
+
+def _dispatch(
+    args: argparse.Namespace,
+    ctx: CliContext,
+    *,
+    prompt: PromptFn,
+    is_interactive: IsInteractiveFn,
+) -> int:
+    command = str(args.command) if args.command is not None else "tui"
+    if command == "sync":
+        return cmd_sync(
+            ctx,
+            force=bool(getattr(args, "force", False)),
+            account=getattr(args, "account", None),
+        )
+    if command == "reset":
+        return cmd_reset(
+            ctx,
+            yes=bool(getattr(args, "yes", False)),
+            force=bool(getattr(args, "force", False)),
+        )
+    if command == "list":
+        return cmd_list(
+            ctx,
+            account=args.account,
+            calendar=args.calendar,
+            limit=args.limit,
+            since=args.since,
+            until=args.until,
+        )
+    if command == "show":
+        return cmd_show(ctx, uid=args.uid)
+    if command == "add":
+        return cmd_add(
+            ctx,
+            account_name=args.account,
+            calendar_name=args.calendar,
+            summary=args.summary,
+            start=args.start,
+            end=args.end,
+            uid=args.uid,
+            attendees=tuple(args.attendee or ()),
+        )
+    if command == "edit":
+        return cmd_edit(
+            ctx,
+            uid=args.uid,
+            summary=args.summary,
+            start=args.start,
+            end=args.end,
+            attendees=args.attendee,
+        )
+    if command == "rm":
+        return cmd_rm(ctx, uid=args.uid)
+    if command == "doctor":
+        return cmd_doctor(
+            ctx,
+            remote=bool(getattr(args, "remote", False)),
+            debug=bool(getattr(args, "debug", False)),
+        )
+    if command == "tui":
+        # `--list-themes` is handled early in main(); here we resolve the
+        # theme to apply (cli > config > default) and validate it.
+        theme, theme_err = _resolve_theme(
+            getattr(args, "theme", None), ctx.config.theme
+        )
+        if theme_err is not None:
+            return theme_err
+        return cmd_tui(
+            ctx,
+            startup_ics_path=getattr(args, "import_ics", None),
+            theme=theme,
+        )
+    if command == "mcp":
+        return cmd_mcp(ctx)
+    if command == "import":
+        return cmd_import(
+            ctx,
+            paths=list(args.paths),
+            account_name=args.account,
+            calendar_name=args.calendar,
+            on_conflict=args.on_conflict,
+            prompt=prompt,
+            is_interactive=is_interactive,
+            sync=bool(args.sync),
+            yes=bool(args.yes),
+        )
+    ctx.stderr.write(f"unknown command: {command}\n")
+    return 2
+
+
+def _dispatch_account(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+) -> int:
+    sub = str(args.account_cmd)
+    if sub == "add":
+        return cmd_account_add(
+            stdout,
+            stderr,
+            config_path=config_path,
+            name=args.name,
+            url=args.url,
+            username=args.username,
+            backend=args.credential_backend,
+            value=args.credential_value,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+            oauth_scope=args.oauth_scope,
+            mirror_path=args.mirror_path,
+            trash_retention_days=args.trash_retention_days,
+        )
+    if sub == "list":
+        return cmd_account_list(stdout, stderr, config_path=config_path)
+    if sub == "rm":
+        return cmd_account_rm(stdout, stderr, config_path=config_path, name=args.name)
+    stderr.write(f"unknown account subcommand: {sub}\n")
+    return 2
+
+
+def _dispatch_config(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    open_editor: EditorFn | None,
+) -> int:
+    sub = str(args.config_cmd)
+    if sub == "edit":
+        return cmd_config_edit(
+            stdout,
+            stderr,
+            config_path=config_path,
+            open_editor=open_editor or _default_open_editor,
+        )
+    stderr.write(f"unknown config subcommand: {sub}\n")
+    return 2
+
+
+def _dispatch_oauth(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+) -> int:
+    sub = str(args.oauth_cmd)
+    if sub == "authorize":
+        return cmd_oauth_authorize(
+            stdout,
+            stderr,
+            config_path=config_path,
+            account_name=args.account,
+            remote_browser=bool(getattr(args, "remote_browser", False)),
+        )
+    stderr.write(f"unknown oauth subcommand: {sub}\n")
+    return 2
+
+
+# Commands --------------------------------------------------------------------
+
+
+def cmd_sync(
+    ctx: CliContext, *, force: bool = False, account: str | None = None
+) -> int:
+    accounts = ctx.config.accounts
+    if account is not None:
+        accounts = tuple(a for a in accounts if a.name == account)
+        if not accounts:
+            known = ", ".join(a.name for a in ctx.config.accounts) or "(none)"
+            ctx.stderr.write(
+                f"sync: no account named {account!r}; configured accounts: {known}\n"
+            )
+            return 2
+    try:
+        with acquire_sync_lock(sync_lock_path()):
+            if force:
+                if account is not None:
+                    cleared = ctx.index.clear_account_sync_state(account)
+                    scope = f"account {account!r}"
+                else:
+                    cleared = ctx.index.clear_all_sync_state()
+                    scope = "every calendar"
+                ctx.stdout.write(
+                    f"--force: cleared sync state for {cleared} calendar(s); "
+                    f"{scope} will re-enter the slow path.\n"
+                )
+            return _cmd_sync_locked(ctx, accounts=accounts)
+    except SyncLockError as exc:
+        ctx.stderr.write(f"{exc}\n")
+        return 2
+
+
+def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> int:
+    factory = ctx.session_factory or _default_session_factory
+    fails = 0
+    for account in accounts:
+        try:
+            auth = ctx.creds.build_auth(account)
+        except CredentialResolutionError as exc:
+            ctx.stderr.write(f"[{account.name}] {exc}\n")
+            fails += 1
+            continue
+        try:
+            session = factory(account, auth)
+        except NotImplementedError as exc:
+            ctx.stderr.write(f"[{account.name}] {exc}\n")
+            fails += 1
+            continue
+        except CalDAVError as exc:
+            # The default factory may raise CalDAVError when constructing
+            # the session — e.g. Google email discovery failing — so the
+            # per-account loop must keep going instead of crashing.
+            ctx.stderr.write(f"[{account.name}] CalDAV error: {exc}\n")
+            fails += 1
+            continue
+        try:
+            result = sync_account(
+                account=account,
+                session=session,
+                mirror=ctx.mirror,
+                index=ctx.index,
+                now=ctx.now,
+            )
+        except CalDAVError as exc:
+            ctx.stderr.write(f"[{account.name}] CalDAV error: {exc}\n")
+            fails += 1
+            continue
+        # Give the auth strategy a chance to persist rotated state
+        # (OAuth access tokens refreshed during sync). Basic auth
+        # leaves this unset.
+        if auth.on_commit is not None:
+            auth.on_commit()
+        ctx.stdout.write(
+            f"{account.name}: {result.calendars_synced} calendars "
+            f"(+{result.components_added} "
+            f"~{result.components_updated} "
+            f"-{result.components_removed})\n"
+        )
+        for err in result.errors:
+            ctx.stderr.write(f"[{account.name}] {err}\n")
+    return 1 if fails else 0
+
+
+def cmd_reset(
+    ctx: CliContext,
+    *,
+    yes: bool = False,
+    force: bool = False,
+    index_path: Path | None = None,
+    mirror_dir: Path | None = None,
+    mcp_state_file: Path | None = None,
+    lock_path: Path | None = None,
+) -> int:
+    """Wipe the local index + mirror.
+
+    This is the user-facing escape hatch for "my local cache is wedged
+    and `--force` isn't enough" — it deletes the SQLite index (plus
+    `-wal` / `-shm` sidecars) and the entire vdir mirror tree.
+    Configuration and OAuth tokens are deliberately untouched, so the
+    next `chronos sync` knows where to fetch from but starts with a
+    blank slate.
+
+    `index_path` and `mirror_dir` default to the platform-standard
+    locations from `paths.py`; tests inject tmpdir-rooted overrides.
+    """
+    target_index = index_path or default_index_path()
+    target_mirror = mirror_dir or default_mirror_dir()
+
+    targets: list[Path] = []
+    if target_index.exists():
+        targets.append(target_index)
+        for suffix in ("-wal", "-shm"):
+            sidecar = target_index.with_name(target_index.name + suffix)
+            if sidecar.exists():
+                targets.append(sidecar)
+    if target_mirror.exists():
+        targets.append(target_mirror)
+
+    if not targets:
+        ctx.stdout.write("Nothing to reset (no local index or mirror found).\n")
+        return 0
+
+    if not force:
+        from chronos.mcp_server import is_server_reachable
+        from chronos.paths import mcp_server_state_path
+
+        live = is_server_reachable(mcp_state_file or mcp_server_state_path())
+        if live is not None:
+            ctx.stderr.write(
+                f"refusing to reset: chronos TUI / MCP server is running "
+                f"(port {live.port}).\n"
+                "Close it and re-run `chronos reset`.\n"
+            )
+            return 2
+
+    ctx.stdout.write("Reset will delete:\n")
+    for path in targets:
+        ctx.stdout.write(f"  {path}\n")
+    ctx.stdout.write(
+        "Configuration and OAuth tokens are preserved. "
+        "The next `chronos sync` will repopulate the index and mirror "
+        "from scratch.\n"
+    )
+
+    if not yes:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            ctx.stderr.write(
+                "Refusing to reset non-interactively. Pass --yes to confirm.\n"
+            )
+            return 1
+        ctx.stdout.write("Type 'yes' to confirm: ")
+        ctx.stdout.flush()
+        answer = sys.stdin.readline().strip().lower()
+        if answer != "yes":
+            ctx.stdout.write("Cancelled.\n")
+            return 1
+
+    effective_lock = lock_path or sync_lock_path()
+    lock_cm = (
+        acquire_sync_lock(effective_lock) if not force else contextlib.nullcontext()
+    )
+    try:
+        with lock_cm:
+            # Close any open connections / file handles so Windows lets us
+            # delete the underlying files.
+            ctx.index.close()
+
+            for path in targets:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    # `-wal` / `-shm` may disappear between the targets snapshot
+                    # and the unlink: SQLite checkpoints + cleans them up the
+                    # moment we close the connection a few lines above.
+                    path.unlink(missing_ok=True)
+
+            ctx.stdout.write("Reset complete. Run `chronos sync` to repopulate.\n")
+            return 0
+    except SyncLockError as exc:
+        ctx.stderr.write(f"refusing to reset: {exc}\n")
+        return 2
+
+
+def cmd_list(
+    ctx: CliContext,
+    *,
+    account: str | None,
+    calendar: str | None,
+    limit: int,
+    since: datetime | None,
+    until: datetime | None,
+) -> int:
+    components = _collect_components(ctx, account=account, calendar=calendar)
+    components = [c for c in components if c.local_status == LocalStatus.ACTIVE]
+    if since is not None:
+        components = [c for c in components if c.dtstart and c.dtstart >= since]
+    if until is not None:
+        components = [c for c in components if c.dtstart and c.dtstart < until]
+    components.sort(key=_sort_key)
+    for component in components[:limit]:
+        ctx.stdout.write(_format_row(component) + "\n")
+    return 0
+
+
+def cmd_show(ctx: CliContext, *, uid: str) -> int:
+    matches = _find_by_uid(ctx, uid)
+    if not matches:
+        ctx.stderr.write(f"not found: {uid}\n")
+        return 1
+    if len(matches) > 1:
+        ctx.stderr.write(f"ambiguous uid {uid!r} matches multiple calendars:\n")
+        for match in matches:
+            ctx.stderr.write(f"  {match.ref.account_name}/{match.ref.calendar_name}\n")
+        return 2
+    _render_detail(matches[0], ctx.stdout)
+    return 0
+
+
+def cmd_add(
+    ctx: CliContext,
+    *,
+    account_name: str,
+    calendar_name: str,
+    summary: str,
+    start: datetime,
+    end: datetime | None,
+    uid: str | None,
+    attendees: Sequence[str] = (),
+) -> int:
+    if not any(a.name == account_name for a in ctx.config.accounts):
+        ctx.stderr.write(f"unknown account: {account_name}\n")
+        return 2
+    resolved_uid = uid or generate_uid(
+        account_name, calendar_name, summary, start, ctx.now
+    )
+    try:
+        ics = build_event_ics(
+            resolved_uid,
+            summary,
+            start,
+            end,
+            ctx.now,
+            attendees=attendees,
+            organizer=_organizer_for(account_name, ctx.config),
+        )
+    except ValueError as exc:
+        ctx.stderr.write(f"add: {exc}\n")
+        return 2
+    ctx.mirror.write(ResourceRef(account_name, calendar_name, resolved_uid), ics)
+    ref = ComponentRef(account_name, calendar_name, resolved_uid)
+    component = VEvent(
+        ref=ref,
+        href=None,
+        etag=None,
+        raw_ics=ics,
+        summary=summary,
+        description=None,
+        location=None,
+        dtstart=start,
+        dtend=end,
+        status=None,
+        local_flags=frozenset(),
+        server_flags=frozenset(),
+        local_status=LocalStatus.ACTIVE,
+        trashed_at=None,
+        synced_at=None,
+    )
+    ctx.index.upsert_component(component)
+    ctx.stdout.write(f"{resolved_uid}\n")
+    return 0
+
+
+def cmd_edit(
+    ctx: CliContext,
+    *,
+    uid: str,
+    summary: str | None,
+    start: datetime | None,
+    end: datetime | None,
+    attendees: Sequence[str] | None = None,
+) -> int:
+    matches = _find_by_uid(ctx, uid)
+    if not matches:
+        ctx.stderr.write(f"not found: {uid}\n")
+        return 1
+    if len(matches) > 1:
+        ctx.stderr.write(f"ambiguous uid {uid!r}\n")
+        return 2
+    current = matches[0]
+    if not isinstance(current, VEvent):
+        ctx.stderr.write("edit: only VEVENT is supported in v1\n")
+        return 2
+    new_summary = summary if summary is not None else (current.summary or "")
+    new_start = start if start is not None else current.dtstart
+    new_end = end if end is not None else current.dtend
+    if new_start is None:
+        ctx.stderr.write("edit: missing DTSTART\n")
+        return 2
+    existing_attendees = extract_attendees(current.raw_ics, current.ref.uid)
+    organizer = extract_organizer(current.raw_ics, current.ref.uid)
+    if organizer is None:
+        organizer = _organizer_for(current.ref.account_name, ctx.config)
+    try:
+        new_ics = build_event_ics(
+            current.ref.uid,
+            new_summary,
+            new_start,
+            new_end,
+            ctx.now,
+            attendees=existing_attendees if attendees is None else attendees,
+            organizer=organizer,
+            # Keep all-day events as VALUE=DATE when the span still is one.
+            all_day=is_all_day_span(new_start, new_end),
+        )
+    except ValueError as exc:
+        ctx.stderr.write(f"edit: {exc}\n")
+        return 2
+    ctx.mirror.write(current.ref.resource, new_ics)
+    updated = VEvent(
+        ref=current.ref,
+        href=current.href,
+        etag=current.etag,
+        raw_ics=new_ics,
+        summary=new_summary,
+        description=current.description,
+        location=current.location,
+        dtstart=new_start,
+        dtend=new_end,
+        status=current.status,
+        local_flags=edited_flags(current),
+        server_flags=current.server_flags,
+        local_status=current.local_status,
+        trashed_at=current.trashed_at,
+        synced_at=current.synced_at,
+    )
+    ctx.index.upsert_component(updated)
+    ctx.stdout.write(f"{current.ref.uid}\n")
+    return 0
+
+
+def cmd_rm(ctx: CliContext, *, uid: str) -> int:
+    matches = _find_by_uid(ctx, uid)
+    if not matches:
+        ctx.stderr.write(f"not found: {uid}\n")
+        return 1
+    for component in matches:
+        trashed = trashed_copy(component, trashed_at=ctx.now)
+        ctx.index.upsert_component(trashed)
+    ctx.stdout.write(f"trashed {len(matches)}\n")
+    return 0
+
+
+def cmd_doctor(ctx: CliContext, *, remote: bool = False, debug: bool = False) -> int:
+    session_factory = (
+        (ctx.session_factory or _default_session_factory) if remote else None
+    )
+    progress: ProgressFn | None = None
+    if debug:
+        # Raise the root logger to DEBUG so per-request HTTP/CalDAV logs
+        # surface, and stream live step progress to stderr so a stalled
+        # probe is attributable to the last line printed.
+        logging.getLogger().setLevel(logging.DEBUG)
+        progress = _doctor_progress(ctx.stderr)
+    report = run_doctor(
+        config=ctx.config,
+        mirror=ctx.mirror,
+        index=ctx.index,
+        creds=ctx.creds,
+        session_factory=session_factory,
+        progress=progress,
+    )
+    ctx.stdout.write(format_report(report))
+    return report.exit_code
+
+
+def _doctor_progress(stderr: TextIO) -> ProgressFn:
+    """Stderr progress sink that timestamps each step and flushes eagerly.
+
+    Eager flush matters: the value of `--debug` is seeing which step a
+    hung probe is blocked on, which only works if the line is on screen
+    before the blocking call returns.
+    """
+    start = time.monotonic()
+
+    def emit(message: str) -> None:
+        elapsed = time.monotonic() - start
+        stderr.write(f"[doctor +{elapsed:6.1f}s] {message}\n")
+        stderr.flush()
+
+    return emit
+
+
+def cmd_mcp(ctx: CliContext) -> int:
+    """Run the MCP server.
+
+    Bridges to a running chronos instance when one is detected via the
+    state file; otherwise runs self-contained over stdio.  Nothing may
+    print to stdout while the server runs (stdin/stdout carry the
+    JSON-RPC stream).
+    """
+    import asyncio
+
+    from chronos.mcp_server import run_mcp_stdio
+
+    asyncio.run(run_mcp_stdio(index=ctx.index, mirror=ctx.mirror))
+    return 0
+
+
+def cmd_import(
+    ctx: CliContext,
+    *,
+    paths: list[Path],
+    account_name: str | None,
+    calendar_name: str | None,
+    on_conflict: Literal["skip", "replace", "rename"],
+    prompt: PromptFn,
+    is_interactive: IsInteractiveFn,
+    sync: bool = True,
+    yes: bool = False,
+) -> int:
+    """Ingest .ics files into a local calendar, then sync its account.
+
+    Resolves the target calendar interactively when ``--account`` /
+    ``--calendar`` are omitted.  In non-interactive mode both flags are
+    required; missing either returns exit code 2.
+
+    When anything was imported, the target account is synced so the
+    changes reach the server.  Interactive sessions are asked first
+    (unless ``yes``); ``sync=False`` skips the step entirely.
+    """
+    from chronos.ingest import IngestError, ingest_ics_bytes
+
+    target = _resolve_import_calendar(
+        ctx,
+        account_name=account_name,
+        calendar_name=calendar_name,
+        prompt=prompt,
+        is_interactive=is_interactive,
+    )
+    if target is None:
+        return 2
+
+    files: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            files.extend(sorted(p.glob("*.ics")))
+        elif p.exists():
+            files.append(p)
+        else:
+            ctx.stderr.write(f"import: {p}: no such file or directory\n")
+
+    if not files:
+        ctx.stderr.write("import: no .ics files found\n")
+        return 2
+
+    total_imported = total_updated = total_cancelled = 0
+    total_skipped = total_replaced = total_renamed = 0
+    all_details: list[str] = []
+    errors = 0
+
+    for file_path in files:
+        try:
+            payload = file_path.read_bytes()
+        except OSError as exc:
+            ctx.stderr.write(f"import: {file_path}: {exc}\n")
+            errors += 1
+            continue
+        try:
+            report = ingest_ics_bytes(
+                payload,
+                target=target,
+                mirror=ctx.mirror,
+                index=ctx.index,
+                on_conflict=on_conflict,
+            )
+        except IngestError as exc:
+            ctx.stderr.write(f"import: {file_path}: {exc}\n")
+            errors += 1
+            continue
+        total_imported += report.imported
+        total_updated += report.updated
+        total_cancelled += report.cancelled
+        total_skipped += report.skipped
+        total_replaced += report.replaced
+        total_renamed += report.renamed
+        all_details.extend(report.details)
+
+    ctx.stdout.write(
+        f"imported {total_imported}, updated {total_updated}, "
+        f"cancelled {total_cancelled}, skipped {total_skipped}, "
+        f"replaced {total_replaced}, renamed {total_renamed}\n"
+    )
+    for detail in all_details:
+        ctx.stdout.write(f"  {detail}\n")
+
+    acted = (
+        total_imported
+        + total_updated
+        + total_cancelled
+        + total_replaced
+        + total_renamed
+    )
+    sync_code = 0
+    if acted > 0 and sync:
+        sync_code = _sync_after_import(
+            ctx,
+            account_name=target.account_name,
+            prompt=prompt,
+            ask=is_interactive() and not yes,
+        )
+
+    if errors > 0:
+        return 1
+    if acted == 0 and total_skipped > 0:
+        return 1  # everything skipped — signal to scripts
+    return sync_code
+
+
+def _sync_after_import(
+    ctx: CliContext, *, account_name: str, prompt: PromptFn, ask: bool
+) -> int:
+    """Sync `account_name`, asking for confirmation first when `ask`."""
+    if ask:
+        answer = prompt(f"Sync account {account_name!r} now? [Y/n]: ")
+        if answer.strip().lower() not in ("", "y", "yes"):
+            ctx.stdout.write(
+                "Not synced; run `chronos sync` to push the imported changes.\n"
+            )
+            return 0
+    return cmd_sync(ctx, account=account_name)
+
+
+def _resolve_import_calendar(
+    ctx: CliContext,
+    *,
+    account_name: str | None,
+    calendar_name: str | None,
+    prompt: PromptFn,
+    is_interactive: IsInteractiveFn,
+) -> CalendarRef | None:
+    """Return the target `CalendarRef`, prompting when flags are absent.
+
+    Returns ``None`` and writes to stderr on any unresolvable situation.
+    """
+    if account_name is not None and calendar_name is not None:
+        known_accounts = {a.name for a in ctx.config.accounts}
+        if account_name not in known_accounts:
+            ctx.stderr.write(f"import: unknown account {account_name!r}\n")
+            return None
+        return CalendarRef(account_name=account_name, calendar_name=calendar_name)
+
+    if not is_interactive():
+        ctx.stderr.write(
+            "import: --account and --calendar are required in non-interactive mode\n"
+        )
+        return None
+
+    calendars = list(ctx.index.list_calendars())
+    if not calendars:
+        ctx.stderr.write(
+            "import: no calendars in local index; run `chronos sync` first\n"
+        )
+        return None
+
+    if account_name is not None:
+        calendars = [c for c in calendars if c.account_name == account_name]
+        if not calendars:
+            ctx.stderr.write(f"import: no calendars for account {account_name!r}\n")
+            return None
+
+    if len(calendars) == 1:
+        return calendars[0]
+
+    ctx.stdout.write("Select target calendar:\n")
+    for i, cal in enumerate(calendars, 1):
+        ctx.stdout.write(f"  {i}. {cal.account_name}/{cal.calendar_name}\n")
+
+    raw = prompt(f"Enter number [1-{len(calendars)}]: ")
+    try:
+        choice = int(raw.strip())
+    except ValueError:
+        ctx.stderr.write("import: invalid selection\n")
+        return None
+    if not (1 <= choice <= len(calendars)):
+        ctx.stderr.write("import: selection out of range\n")
+        return None
+    return calendars[choice - 1]
+
+
+def _available_theme_names() -> list[str]:
+    """Names of every Textual theme bundled in this install, sorted."""
+    from textual.app import App
+
+    return sorted(App().available_themes)
+
+
+def _resolve_theme(
+    cli_theme: str | None, config_theme: str | None
+) -> tuple[str | None, int | None]:
+    """Pick the effective theme and validate it against Textual's themes.
+
+    Precedence: `--theme` flag > config `theme` > `DEFAULT_THEME`. Returns
+    `(name, None)` on success, or `(None, error_code)` when the requested
+    name is not a known theme (so the caller can exit non-zero).
+    """
+    from chronos.tui.app import DEFAULT_THEME
+
+    effective = cli_theme or config_theme or DEFAULT_THEME
+    available = _available_theme_names()
+    if effective not in available:
+        names = ", ".join(available)
+        print(
+            f"error: unknown theme {effective!r}. Available: {names}",
+            file=sys.stderr,
+        )
+        return None, 1
+    return effective, None
+
+
+def cmd_tui(
+    ctx: CliContext,
+    *,
+    startup_ics_path: Path | None = None,
+    theme: str | None = None,
+) -> int:
+    # Imported lazily so `chronos --help` and other commands don't pull
+    # Textual into the import graph.
+    from chronos.tui import ChronosApp, TuiServices
+    from chronos.tui.screens.oauth_progress_screen import OAuthProgressScreen
+
+    # The TUI authorizer runs the OAuth loopback flow inside the app
+    # itself. We use a late-binding box because `app` doesn't exist yet
+    # when `build_sync_runner` captures the authorizer closure.
+    app_box: list[ChronosApp] = []
+
+    def tui_authorizer(
+        account_name: str, spec: OAuthCredential, _token_path: Path
+    ) -> StoredTokens:
+        import threading
+
+        result_box: list[StoredTokens | BaseException] = []
+        done = threading.Event()
+
+        def on_complete(result: StoredTokens | BaseException) -> None:
+            result_box.append(result)
+            done.set()
+
+        screen = OAuthProgressScreen(
+            account_name,
+            spec,
+            on_complete=on_complete,
+            remote_browser=_use_remote_browser_flow(),
+        )
+        app_box[0].call_from_thread(app_box[0].push_screen, screen)  # pyright: ignore[reportUnknownMemberType]
+        done.wait()
+
+        outcome = result_box[0]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    tui_ctx = dataclasses.replace(
+        ctx,
+        creds=DefaultCredentialsProvider(interactive_authorizer=tui_authorizer),
+    )
+    services = TuiServices(
+        config=tui_ctx.config,
+        mirror=tui_ctx.mirror,
+        index=tui_ctx.index,
+        creds=tui_ctx.creds,
+        now=lambda: datetime.now(UTC),
+        sync_runner=build_sync_runner(tui_ctx),
+        startup_ics_path=startup_ics_path,
+    )
+    app = ChronosApp(services, theme_name=theme)
+    app_box.append(app)
+    with _redirect_logs_to_file():
+        app.run()
+    return 0
+
+
+def _redirect_logs_to_file() -> _LogRedirector:
+    """Route the root logger to `tui.log` for the duration of the TUI.
+
+    Sync emits per-calendar / per-batch progress at INFO; with the
+    default stderr handler still in place those lines paint over
+    Textual's screen and corrupt the rendering. The file handler
+    keeps the user's logs available (`tail -f $XDG_DATA_HOME/chronos/
+    tui.log`) without touching stderr while the app owns the terminal.
+    """
+    log_path = user_data_dir() / "tui.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return _LogRedirector(log_path)
+
+
+class _LogRedirector:
+    def __init__(self, log_path: Path) -> None:
+        self._log_path = log_path
+        self._previous_handlers: list[logging.Handler] = []
+        self._previous_level = logging.WARNING
+        self._file_handler: logging.FileHandler | None = None
+
+    def __enter__(self) -> _LogRedirector:
+        root = logging.getLogger()
+        self._previous_handlers = list(root.handlers)
+        self._previous_level = root.level
+        handler = logging.FileHandler(self._log_path, mode="a", encoding="utf-8")
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        handler.addFilter(_DropH3DowngradeFilter())
+        self._file_handler = handler
+        root.handlers = [handler]
+        # Sync's progress logs are at INFO; lift the root level so
+        # they actually land in the file even if the parent CLI
+        # invocation defaulted to WARNING.
+        root.setLevel(min(self._previous_level, logging.INFO))
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        root = logging.getLogger()
+        if self._file_handler is not None:
+            self._file_handler.close()
+        root.handlers = self._previous_handlers
+        root.setLevel(self._previous_level)
+
+
+def build_sync_runner(
+    ctx: CliContext,
+) -> Callable[..., Sequence[SyncResult]]:
+    """Closure that runs `sync_account` over every configured account.
+
+    Mirrors `cmd_sync`, but returns the per-account `SyncResult`s
+    instead of writing to stdout. Per-account exceptions are caught
+    and reported in the result's `errors` tuple so a single bad
+    credential doesn't take the whole sync down.
+
+    The runner accepts an optional `cancel_event` keyword. The TUI
+    sets this event from another thread to interrupt a long-running
+    sync; `sync_account` checks it at calendar boundaries and raises
+    `SyncCancelled`, which the runner translates into a per-account
+    error rather than letting it tear through the worker.
+    """
+    factory = ctx.session_factory or _default_session_factory
+
+    def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
+        try:
+            with acquire_sync_lock(sync_lock_path()):
+                return _run_locked(cancel_event)
+        except SyncLockError as exc:
+            # Surface the lock contention as a SyncResult so the TUI's
+            # banner shows the message instead of crashing the worker.
+            return (_failure_result("(sync)", str(exc)),)
+
+    def _run_locked(
+        cancel_event: threading.Event | None,
+    ) -> Sequence[SyncResult]:
+        results: list[SyncResult] = []
+        for account in ctx.config.accounts:
+            if cancel_event is not None and cancel_event.is_set():
+                results.append(_failure_result(account.name, "sync cancelled"))
+                continue
+            try:
+                auth = ctx.creds.build_auth(account)
+            except CredentialResolutionError as exc:
+                results.append(_failure_result(account.name, str(exc)))
+                continue
+            try:
+                session = factory(account, auth)
+            except NotImplementedError as exc:
+                results.append(_failure_result(account.name, str(exc)))
+                continue
+            except CalDAVError as exc:
+                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
+                continue
+            try:
+                result = sync_account(
+                    account=account,
+                    session=session,
+                    mirror=ctx.mirror,
+                    index=ctx.index,
+                    now=ctx.now,
+                    cancel_event=cancel_event,
+                )
+            except SyncCancelled:
+                results.append(_failure_result(account.name, "sync cancelled"))
+                continue
+            except CalDAVError as exc:
+                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
+                continue
+            except OAuthError as exc:
+                results.append(_failure_result(account.name, f"OAuth: {exc}"))
+                continue
+            if auth.on_commit is not None:
+                auth.on_commit()
+            results.append(result)
+        return tuple(results)
+
+    return run
+
+
+def _failure_result(account_name: str, message: str) -> SyncResult:
+    return SyncResult(
+        account_name=account_name,
+        calendars_synced=0,
+        components_added=0,
+        components_updated=0,
+        components_removed=0,
+        errors=(message,),
+    )
+
+
+def cmd_init(stdout: TextIO, stderr: TextIO, *, config_path: Path) -> int:
+    if config_path.exists():
+        stderr.write(
+            f"config already exists at {config_path}. "
+            "Use `chronos config edit` to modify it.\n"
+        )
+        return 1
+    write_template(config_path)
+    stdout.write(
+        f"Wrote template to {config_path}\n"
+        "Edit it directly, or run `chronos account add ...` to populate.\n"
+    )
+    return 0
+
+
+def cmd_account_add(
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    name: str,
+    url: str | None,
+    username: str | None,
+    backend: str,
+    value: str | None,
+    client_id: str | None,
+    client_secret: str | None,
+    oauth_scope: str,
+    mirror_path: Path | None,
+    trash_retention_days: int,
+) -> int:
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    if any(a.name == name for a in config.accounts):
+        stderr.write(f"account already exists: {name}\n")
+        return 1
+    try:
+        credential = _build_credential(
+            backend,
+            value=value,
+            client_id=client_id,
+            client_secret=client_secret,
+            oauth_scope=oauth_scope,
+        )
+    except ValueError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    if isinstance(credential, GoogleCredential):
+        resolved_url = url or GOOGLE_CALDAV_URL
+        resolved_username = username or ""
+    else:
+        if not url:
+            stderr.write(f"backend {backend!r} requires --url\n")
+            return 2
+        if not username:
+            stderr.write(f"backend {backend!r} requires --username\n")
+            return 2
+        resolved_url = url
+        resolved_username = username
+    import re  # local import: avoid module-level coupling for one-shot CLI
+
+    resolved_mirror_path = mirror_path or default_mirror_path(name)
+    new_account = AccountConfig(
+        name=name,
+        url=resolved_url,
+        username=resolved_username,
+        credential=credential,
+        mirror_path=resolved_mirror_path,
+        trash_retention_days=trash_retention_days,
+        include=(re.compile(".*"),),
+        exclude=(),
+        read_only=(),
+    )
+    updated = AppConfig(
+        config_version=config.config_version,
+        use_utf8=config.use_utf8,
+        editor=config.editor,
+        accounts=(*config.accounts, new_account),
+    )
+    save_config(updated, config_path)
+    stdout.write(f"Added account {name} to {config_path}\n")
+    return 0
+
+
+def cmd_account_list(stdout: TextIO, stderr: TextIO, *, config_path: Path) -> int:
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    if not config.accounts:
+        stdout.write("(no accounts configured)\n")
+        return 0
+    for account in config.accounts:
+        backend = _credential_backend(account.credential)
+        stdout.write(
+            f"{account.name}\t{account.url}\t{account.username}\tbackend={backend}\n"
+        )
+    return 0
+
+
+def cmd_account_rm(
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    name: str,
+) -> int:
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    remaining = tuple(a for a in config.accounts if a.name != name)
+    if len(remaining) == len(config.accounts):
+        stderr.write(f"account not found: {name}\n")
+        return 1
+    updated = AppConfig(
+        config_version=config.config_version,
+        use_utf8=config.use_utf8,
+        editor=config.editor,
+        accounts=remaining,
+    )
+    save_config(updated, config_path)
+    stdout.write(f"Removed account {name} from {config_path}\n")
+    return 0
+
+
+def cmd_config_edit(
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    open_editor: EditorFn,
+) -> int:
+    if not config_path.exists():
+        stderr.write(f"config not found: {config_path}. Run `chronos init` first.\n")
+        return 1
+    # Copy the current contents into a temp file; the user edits there.
+    # On validation success we atomically replace the original; on failure
+    # the original is untouched.
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix="chronos-edit-",
+        suffix=".toml",
+        dir=config_path.parent,
+        delete=False,
+    ) as tmp:
+        tmp.write(config_path.read_bytes())
+        tmp_path = Path(tmp.name)
+    try:
+        try:
+            open_editor(tmp_path)
+        except subprocess.CalledProcessError:
+            stderr.write("editor exited non-zero; config unchanged.\n")
+            return 1
+        except FileNotFoundError as exc:
+            stderr.write(f"editor not found: {exc}\n")
+            return 1
+        try:
+            config = load_config(tmp_path)
+        except ConfigError as exc:
+            stderr.write(f"config parse error: {exc}\n")
+            stderr.write("Original config left unchanged.\n")
+            return 1
+        save_config(config, config_path)
+        stdout.write(f"Saved {config_path}\n")
+        return 0
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def cmd_oauth_authorize(
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    config_path: Path,
+    account_name: str,
+    auth_flow: Callable[[OAuthCredential, TextIO], StoredTokens] | None = None,
+    remote_browser: bool = False,
+) -> int:
+    """Re-run OAuth authorization for an account.
+
+    Usually unnecessary — the first `chronos sync` for an unauthorized
+    account auto-runs the same flow inline. Useful when the user wants
+    to re-consent to new scopes, swap OAuth clients, or reset a revoked
+    refresh token without waiting for the next sync to discover it.
+    """
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    account = next((a for a in config.accounts if a.name == account_name), None)
+    if account is None:
+        stderr.write(f"account not found: {account_name}\n")
+        return 1
+    credential = account.credential
+    if isinstance(credential, GoogleCredential):
+        oauth_credential = OAuthCredential(
+            client_id=credential.client_id,
+            client_secret=credential.client_secret,
+        )
+    elif isinstance(credential, OAuthCredential):
+        oauth_credential = credential
+    else:
+        stderr.write(
+            f"account {account_name!r} does not use an OAuth backend "
+            f"(has {type(credential).__name__}). `oauth authorize` is "
+            "only meaningful for the oauth and google backends.\n"
+        )
+        return 2
+    use_remote_browser = remote_browser or _use_remote_browser_flow()
+    flow = auth_flow or (
+        _default_remote_browser_flow if use_remote_browser else _default_loopback_flow
+    )
+    try:
+        tokens = flow(oauth_credential, stdout)
+    except OAuthError as exc:
+        stderr.write(f"{exc}\n")
+        return 1
+    token_path = oauth_credential.token_path or oauth_token_path(account_name)
+    save_tokens(token_path, tokens)
+    stdout.write(f"Tokens saved to {token_path}\n")
+    return 0
+
+
+# Helpers ---------------------------------------------------------------------
+
+
+def _default_open_editor(path: Path) -> None:
+    cmd = [*pick_editor(), str(path)]
+    subprocess.run(cmd, check=True)
+
+
+def pick_editor(
+    *,
+    env: Mapping[str, str] | None = None,
+    platform: str | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> list[str]:
+    """Resolve a command list for an interactive editor.
+
+    Priority follows POSIX convention plus a platform-default fallback:
+
+    1. `$VISUAL` (full-screen / GUI editors).
+    2. `$EDITOR` (line editors).
+    3. Platform default — `notepad` on Windows, `nano` if installed,
+       else `vi` (POSIX-required, present on every Unix).
+    """
+    real_env = env if env is not None else os.environ
+    real_platform = platform if platform is not None else sys.platform
+    real_which = which if which is not None else shutil.which
+    for var in ("VISUAL", "EDITOR"):
+        value = real_env.get(var)
+        if value:
+            return shlex.split(value)
+    if real_platform.startswith("win"):
+        return ["notepad"]
+    if real_which("nano") is not None:
+        return ["nano"]
+    return ["vi"]
+
+
+def _build_credential(
+    backend: str,
+    *,
+    value: str | None,
+    client_id: str | None,
+    client_secret: str | None,
+    oauth_scope: str,
+) -> CredentialSpec:
+    if backend == "google":
+        if not client_id or not client_secret:
+            raise ValueError("google backend requires --client-id and --client-secret")
+        return GoogleCredential(client_id=client_id, client_secret=client_secret)
+    if backend == "oauth":
+        if not client_id or not client_secret:
+            raise ValueError("oauth backend requires --client-id and --client-secret")
+        return OAuthCredential(
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=oauth_scope,
+        )
+    if value is None:
+        raise ValueError(f"backend {backend!r} requires --credential-value")
+    if backend == "plaintext":
+        return PlaintextCredential(password=value)
+    if backend == "env":
+        return EnvCredential(variable=value)
+    if backend == "command":
+        return CommandCredential(command=tuple(shlex.split(value)))
+    raise ValueError(f"unknown credential backend: {backend}")
+
+
+def _credential_backend(spec: CredentialSpec) -> str:
+    if isinstance(spec, PlaintextCredential):
+        return "plaintext"
+    if isinstance(spec, EnvCredential):
+        return "env"
+    if isinstance(spec, CommandCredential):
+        return "command"
+    if isinstance(spec, OAuthCredential):
+        return "oauth"
+    if isinstance(spec, GoogleCredential):
+        return "google"
+    return "encrypted"
+
+
+def _default_loopback_flow(credential: OAuthCredential, stdout: TextIO) -> StoredTokens:
+    """Default flow for production: OAuth 2.0 loopback (RFC 8252 + PKCE)."""
+    stdout.write(
+        "Opening browser. If it doesn't open automatically, copy the URL "
+        "printed above into your browser. Waiting for the redirect...\n"
+    )
+    stdout.flush()
+    return run_loopback_flow(
+        client_id=credential.client_id,
+        client_secret=credential.client_secret,
+        scope=credential.scope,
+    )
+
+
+def _default_remote_browser_flow(
+    credential: OAuthCredential,
+    stdout: TextIO,
+    *,
+    input_fn: InputFn | None = None,
+) -> StoredTokens:
+    """OAuth flow for SSH/headless use where the browser is elsewhere."""
+    read_input = input_fn or input
+
+    def show_authorization_url(auth_url: str, redirect_uri: str) -> None:
+        stdout.write(
+            "\nOpen this URL in the browser on your local machine:\n\n"
+            f"{auth_url}\n\n"
+            "After Google signs you in, the browser will redirect to:\n"
+            f"{redirect_uri}\n\n"
+            "Because that address is local to your browser machine, the page may "
+            "show a connection error. Copy the full URL from the browser address "
+            "bar and paste it below.\n"
+        )
+        stdout.flush()
+
+    return run_paste_redirect_flow(
+        client_id=credential.client_id,
+        client_secret=credential.client_secret,
+        scope=credential.scope,
+        show_authorization_url=show_authorization_url,
+        read_callback_url=lambda: read_input("Redirect URL: "),
+    )
+
+
+def _oauth_flow_mode(
+    env: Mapping[str, str] | None = None,
+) -> Literal["auto", "browser", "remote-browser"]:
+    value = (env if env is not None else os.environ).get("CHRONOS_OAUTH_FLOW", "")
+    normalized = value.strip().lower().replace("_", "-")
+    if normalized in {"", "auto"}:
+        return "auto"
+    if normalized in {"browser", "loopback", "local-browser"}:
+        return "browser"
+    if normalized in {"remote", "remote-browser", "paste"}:
+        return "remote-browser"
+    raise OAuthError(
+        "invalid CHRONOS_OAUTH_FLOW; expected auto, browser, or remote-browser"
+    )
+
+
+_TEXT_MODE_BROWSERS = frozenset(
+    {
+        "browsh",
+        "elinks",
+        "links",
+        "links2",
+        "lynx",
+        "w3m",
+        "www-browser",
+    }
+)
+
+
+def _use_remote_browser_flow() -> bool:
+    oauth_flow = _oauth_flow_mode()
+    return oauth_flow == "remote-browser" or (
+        oauth_flow == "auto" and not _has_local_graphical_browser()
+    )
+
+
+def _has_local_graphical_browser(
+    env: Mapping[str, str] | None = None,
+    platform: str | None = None,
+) -> bool:
+    real_env = env if env is not None else os.environ
+    real_platform = platform if platform is not None else sys.platform
+    if not _browser_env_allows_graphical(real_env):
+        return False
+    if real_platform.startswith(("darwin", "win")):
+        return True
+    return bool(real_env.get("DISPLAY") or real_env.get("WAYLAND_DISPLAY"))
+
+
+def _browser_env_allows_graphical(env: Mapping[str, str]) -> bool:
+    raw = env.get("BROWSER", "")
+    if not raw.strip():
+        return True
+    entries = [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
+    if not entries:
+        return True
+    for entry in entries:
+        try:
+            parts = shlex.split(entry)
+        except ValueError:
+            parts = entry.split()
+        if not parts:
+            continue
+        if Path(parts[0]).name.lower() not in _TEXT_MODE_BROWSERS:
+            return True
+    return False
+
+
+def _default_session_factory(
+    account: AccountConfig, authorization: Authorization
+) -> CalDAVSession:
+    return CalDAVHttpSession(url=account.url, authorization=authorization)
+
+
+def _collect_components(
+    ctx: CliContext, *, account: str | None, calendar: str | None
+) -> list[StoredComponent]:
+    out: list[StoredComponent] = []
+    for acct in ctx.config.accounts:
+        if account is not None and acct.name != account:
+            continue
+        for cal_name in ctx.mirror.list_calendars(acct.name):
+            if calendar is not None and cal_name != calendar:
+                continue
+            out.extend(
+                ctx.index.list_calendar_components(CalendarRef(acct.name, cal_name))
+            )
+    return out
+
+
+def _find_by_uid(ctx: CliContext, uid: str) -> list[StoredComponent]:
+    matches: list[StoredComponent] = []
+    for acct in ctx.config.accounts:
+        for cal_name in ctx.mirror.list_calendars(acct.name):
+            ref = ComponentRef(acct.name, cal_name, uid)
+            component = ctx.index.get_component(ref)
+            if component is not None:
+                matches.append(component)
+    return matches
+
+
+def _parse_dt(raw: str) -> datetime:
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _organizer_for(account_name: str, config: AppConfig) -> str | None:
+    for account in config.accounts:
+        if account.name != account_name:
+            continue
+        username = account.username.strip()
+        return username if "@" in username else None
+    return None
+
+
+def _sort_key(component: StoredComponent) -> datetime:
+    return component.dtstart or datetime.max.replace(tzinfo=UTC)
+
+
+def _format_row(component: StoredComponent) -> str:
+    start = component.dtstart.isoformat() if component.dtstart else "?"
+    kind = "EVENT" if isinstance(component, VEvent) else "TODO "
+    summary = component.summary or "(no summary)"
+    return f"{start}  {kind}  {component.ref.uid:40s}  {summary}"
+
+
+def _render_detail(component: StoredComponent, stdout: TextIO) -> None:
+    stdout.write(f"UID: {component.ref.uid}\n")
+    stdout.write(f"Account: {component.ref.account_name}\n")
+    stdout.write(f"Calendar: {component.ref.calendar_name}\n")
+    stdout.write(f"Kind: {'VEVENT' if isinstance(component, VEvent) else 'VTODO'}\n")
+    stdout.write(f"Summary: {component.summary or ''}\n")
+    if component.description:
+        stdout.write(f"Description: {component.description}\n")
+    if component.location:
+        stdout.write(f"Location: {component.location}\n")
+    if component.dtstart:
+        stdout.write(f"Start: {component.dtstart.isoformat()}\n")
+    if isinstance(component, VEvent) and component.dtend:
+        stdout.write(f"End: {component.dtend.isoformat()}\n")
+    if isinstance(component, VEvent):
+        attendees = extract_attendees(component.raw_ics, component.ref.uid)
+        if attendees:
+            stdout.write(f"Attendees: {', '.join(attendees)}\n")
+    if isinstance(component, VTodo) and component.due:
+        stdout.write(f"Due: {component.due.isoformat()}\n")
+    if component.status:
+        stdout.write(f"Status: {component.status}\n")
+    stdout.write(f"LocalStatus: {component.local_status.value}\n")
+    if component.href:
+        stdout.write(f"Href: {component.href}\n")
+    if component.etag:
+        stdout.write(f"ETag: {component.etag}\n")
+
+
+__all__ = [
+    "CliContext",
+    "SessionFactory",
+    "cmd_add",
+    "cmd_doctor",
+    "cmd_edit",
+    "cmd_list",
+    "cmd_rm",
+    "cmd_show",
+    "cmd_sync",
+    "main",
+]

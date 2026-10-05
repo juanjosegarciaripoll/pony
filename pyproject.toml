@@ -1,7 +1,7 @@
 [project]
 name = "pony"
 version = "1.0.0"
-description = "Pony Express standalone mail user agent"
+description = "Pony Express — terminal mail client with an integrated calendar"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -11,6 +11,10 @@ dependencies = [
     "markdown-it-py>=3.0.0",
     "textual>=8.2.3",
     "tinymcp",
+    # Calendar subsystem (src/chronos): iCalendar parsing and the
+    # recurrence expansion both CalDAV sync and the agenda views need.
+    "icalendar>=7.3",
+    "python-dateutil>=2.9",
 ]
 
 [tool.uv.sources]
@@ -24,7 +28,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pony"]
+packages = ["src/pony", "src/chronos"]
 
 [tool.ruff]
 line-length = 88
@@ -34,39 +38,56 @@ target-version = "py313"
 select = ["E", "F", "I", "B", "UP", "N", "ARG", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pony"]
+known-first-party = ["pony", "chronos"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["pony"]
+packages = ["pony", "chronos"]
 
 [[tool.mypy.overrides]]
 module = "imapclient.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "icalendar.*"
+ignore_missing_imports = true
+
+# Both halves of the sync lockfile need a targeted ignore, and which one
+# is redundant depends on the platform mypy runs on: typeshed hides
+# fcntl's attributes from Windows and msvcrt's from everything else.
+# Keeping both means the file checks on either, at the cost of this one
+# unused-ignore exemption.
+[[tool.mypy.overrides]]
+module = "chronos.locking"
+warn_unused_ignores = false
+
 [tool.basedpyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["src", "tests"]
+include = ["src", "tests", "tests_calendar"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
+testpaths = ["tests", "tests_calendar"]
 pythonpath = ["."]
 addopts = [
     "--cov=pony",
+    "--cov=chronos",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=85",
+    # Opt-in: talks to a real CalDAV server, like tests/test_imap_live.py.
+    "--ignore=tests_calendar/test_caldav_integration.py",
 ]
 
 [tool.coverage.run]
 branch = true
-source = ["src/pony"]
+source = ["src/pony", "src/chronos"]
 omit = [
     "src/pony/__main__.py",
+    "src/chronos/__main__.py",
 ]
 
 [tool.coverage.report]
@@ -88,6 +109,7 @@ dev = [
     "pytest-cov>=7.0",
     "pytest-instafail>=0.5.0",
     "ruff>=0.15.10",
+    "types-python-dateutil>=2.9",
 ]
 docs = [
     "mkdocs-material>=9.6.0",
