@@ -16,6 +16,7 @@ from chronos.protocols import (
     IndexRepository,
     MirrorRepository,
 )
+from chronos.tui.bindings import BindingType
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.terminal import (
     osc777_notification,
@@ -108,6 +109,11 @@ class TuiServices:
     # with a contact store — Pony Express passes the same source its own
     # composer completes from. None falls back to a plain text field.
     attendee_completer: AttendeeCompleter | None = None
+    # Keys the host binds that are worth listing on the calendar's help
+    # screen — the one that switches back to the other half of the
+    # program. Empty when the calendar runs on its own and there is
+    # nothing to switch to.
+    host_bindings: Sequence[BindingType] = ()
 
 
 @runtime_checkable

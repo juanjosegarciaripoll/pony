@@ -13,7 +13,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from textual.widgets import Label
+from textual.widgets import Label, Static
 from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
 
 from chronos.tui.app import TuiServices
@@ -184,6 +184,68 @@ async def test_asking_for_calendar_services_without_one_is_an_error() -> None:
         except RuntimeError:
             return
         raise AssertionError("expected RuntimeError")
+
+
+async def test_the_mail_help_panel_lists_the_calendar_keys() -> None:
+    """A key nobody can find is a key that does not exist."""
+    app, *_ = build_pony_app(
+        label="help-mail", calendar=make_calendar_runtime(make_tmp_paths("help-mail"))
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("f1")
+        await pilot.pause()
+        text = " ".join(str(widget.render()) for widget in app.screen.query(Static))
+        assert "F2" in text
+        assert "i" in text
+        assert "invitation" in text.lower()
+
+
+async def test_the_calendar_help_panel_lists_the_way_back() -> None:
+    app, *_ = build_pony_app(
+        label="help-cal", calendar=make_calendar_runtime(make_tmp_paths("help-cal"))
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.press("f1")
+        await pilot.pause()
+        text = " ".join(str(widget.render()) for widget in app.screen.query(Static))
+        assert "f2" in text.lower()
+        assert "Mail" in text
+
+
+def test_the_calendar_help_takes_its_key_from_the_real_binding() -> None:
+    """The help cannot name a key that moved: it is read off BINDINGS."""
+    from textual.binding import Binding
+
+    from pony.tui.app import PonyApp
+
+    switch = [
+        b
+        for b in PonyApp.BINDINGS
+        if isinstance(b, Binding) and b.action == "toggle_calendar"
+    ]
+    assert len(switch) == 1
+    assert switch[0].key == "f2"
+    # The description serves both footers and both help screens, so it
+    # names the pair rather than one destination.
+    assert "Mail" in switch[0].description
+    assert "Calendar" in switch[0].description
+
+
+async def test_a_calendarless_app_offers_no_switch_in_the_calendar_help() -> None:
+    """Standalone, there is nothing to switch to, so nothing is listed."""
+    from chronos.tui.app import TuiServices
+
+    runtime = make_calendar_runtime(make_tmp_paths("help-standalone"))
+    services = TuiServices(
+        config=runtime.config,
+        mirror=runtime.mirror,
+        index=runtime.index,
+        creds=runtime.credentials,
+    )
+    assert services.host_bindings == ()
+    runtime.close()
 
 
 # ---------------------------------------------------------------------------

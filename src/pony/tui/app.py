@@ -79,7 +79,10 @@ class PonyApp(App[None]):
     BINDINGS = [
         Binding("Q", "quit", "Quit", priority=True),
         Binding("f1", "show_help", "Help"),
-        Binding("f2", "toggle_calendar", "Calendar"),
+        # One description serves both footers and both help screens,
+        # so it names the pair rather than the destination: "Calendar"
+        # reads wrong from inside the calendar.
+        Binding("f2", "toggle_calendar", "Mail / Calendar"),
     ]
 
     def action_show_help(self) -> None:
@@ -154,6 +157,15 @@ class PonyApp(App[None]):
                 host=self,
                 invitation_sender=self._post_invitation,
                 contacts=self._contacts,
+                # Read off this class's own bindings rather than spelled
+                # out again, so the calendar's help can never name a key
+                # that moved.
+                host_bindings=[
+                    binding
+                    for binding in self.BINDINGS
+                    if isinstance(binding, Binding)
+                    and binding.action == "toggle_calendar"
+                ],
             )
             self._alarm_poller = AlarmPoller(self._calendar.index)
             self.set_interval(

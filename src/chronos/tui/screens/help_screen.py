@@ -57,7 +57,18 @@ _SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ),
     (
         "Tools",
-        frozenset({"sync", "search", "show_help", "quit", "toggle_calendars"}),
+        frozenset(
+            {
+                "sync",
+                "search",
+                "show_help",
+                "quit",
+                "toggle_calendars",
+                # Contributed by a host application that puts the
+                # calendar beside something else (Pony Express's F2).
+                "toggle_calendar",
+            }
+        ),
     ),
 )
 

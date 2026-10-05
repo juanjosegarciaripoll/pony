@@ -67,7 +67,7 @@ does nothing.
 | ++shift+p++ | Jump to previous account's INBOX |
 | ++shift+g++ | Goto-folder dialog: fuzzy-search every account/folder pair |
 | ++f1++ | Show the keybinding cheatsheet (centered modal) |
-| ++f2++ | Switch to the calendar (and back) |
+| ++f2++ | Switch between mail and the calendar |
 
 ### Message list
 

@@ -33,6 +33,7 @@ from chronos.domain import OAuthCredential
 from chronos.oauth import StoredTokens
 from chronos.protocols import IndexRepository as CalendarIndexRepository
 from chronos.tui.app import AttendeeCompleter, InvitationSender, TuiServices
+from chronos.tui.bindings import BindingType
 from chronos.tui.views import (
     CalendarSelection,
     all_calendar_refs,
@@ -76,6 +77,7 @@ def build_calendar_services(
     now: Callable[[], datetime] | None = None,
     invitation_sender: InvitationSender | None = None,
     contacts: ContactRepository | None = None,
+    host_bindings: Sequence[BindingType] = (),
 ) -> TuiServices:
     """Bundle what the calendar screens need, hosted inside *host*.
 
@@ -86,8 +88,10 @@ def build_calendar_services(
 
     *invitation_sender* and *contacts* are what the calendar gains from
     running inside a mail client: it can post an invitation, and it can
-    complete an attendee from the address book.  Both are optional, and
-    without them the calendar behaves as it does on its own.
+    complete an attendee from the address book.  *host_bindings* are the
+    host's own keys worth listing on the calendar's help screen.  All
+    three are optional, and without them the calendar behaves as it does
+    on its own.
     """
     credentials = DefaultCredentialsProvider(
         interactive_authorizer=_in_app_authorizer(host)
@@ -116,6 +120,7 @@ def build_calendar_services(
         attendee_completer=(
             contact_completer(contacts) if contacts is not None else None
         ),
+        host_bindings=tuple(host_bindings),
     )
 
 

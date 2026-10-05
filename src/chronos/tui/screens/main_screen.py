@@ -397,7 +397,8 @@ class MainScreen(Screen[None]):
         self.app.push_screen(confirm)  # pyright: ignore[reportUnknownMemberType]
 
     def action_show_help(self) -> None:
-        self.app.push_screen(HelpScreen(main_bindings()))  # pyright: ignore[reportUnknownMemberType]
+        bindings = [*main_bindings(), *self._services().host_bindings]
+        self.app.push_screen(HelpScreen(bindings))  # pyright: ignore[reportUnknownMemberType]
 
     def action_sync(self) -> None:
         """Sync every account now, in the background (`g`).

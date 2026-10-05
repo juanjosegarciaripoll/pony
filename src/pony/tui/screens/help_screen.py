@@ -92,6 +92,13 @@ _RIGHT_SECTIONS: tuple[_Section, ...] = (
         ),
     ),
     _Section(
+        "Calendar",
+        (
+            ("F2", "Agenda (F2 again returns)"),
+            ("i", "Answer invitation on this message"),
+        ),
+    ),
+    _Section(
         "This panel",
         (
             ("F1", "Toggle this help"),
