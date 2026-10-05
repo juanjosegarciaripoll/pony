@@ -2,10 +2,12 @@
 
 The public surface is intentionally small:
 
-- ``ConfigError``   – the single exception type for all config problems
-- ``AppConfig``     – re-exported from ``pony.domain`` for caller convenience
-- ``load_config``   – read a TOML/JSON file and return a validated AppConfig
-- ``parse_config``  – validate an already-loaded raw dict and return AppConfig
+- ``ConfigError``     – the single exception type for all config problems
+- ``AppConfig``       – re-exported from ``pony.domain`` for caller convenience
+- ``load_config``     – read a TOML/JSON file and return a validated AppConfig
+- ``parse_config``    – validate an already-loaded raw dict and return AppConfig
+- ``read_raw_config`` – read the file without validating it, for the
+  calendar section that ``pony.calendar`` owns
 
 Everything else is a private implementation detail.
 """
@@ -50,15 +52,22 @@ class ConfigError(ValueError):
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Load application configuration from a TOML or JSON file."""
     path = config_path or AppPaths.default().config_file
+    return parse_config(read_raw_config(path), base_dir=path.parent)
+
+
+def read_raw_config(path: Path) -> object:
+    """Read the config file and return its raw mapping, unvalidated.
+
+    Mail validation happens in :func:`parse_config`; the ``[calendar]``
+    table is validated by :mod:`pony.calendar`, which reads the same
+    file through here rather than parsing it a second time.
+    """
     if not path.exists():
         raise ConfigError(f"config file not found: {path}")
-
     try:
-        data = _read_config_data(path)
+        return _read_config_data(path)
     except (json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"invalid config syntax in file: {path}") from error
-
-    return parse_config(data, base_dir=path.parent)
 
 
 def parse_config(

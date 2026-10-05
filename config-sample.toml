@@ -257,3 +257,41 @@ host = "smtp.example.com"
 path   = "mirrors/spool"     # directory containing the mbox file(s)
 format = "mbox"
 trash_retention_days = 30
+
+# ---------------------------------------------------------------------------
+# Calendar
+# ---------------------------------------------------------------------------
+# Pony Express and its calendar are one program: F2 switches between the
+# mail reader and the agenda, reminders and new mail are announced in
+# both, and both read this file.  Without a [calendar] table the
+# calendar is simply not configured and F2 says so.
+#
+# `use_utf8`, `editor` and `theme` come from the top of this file unless
+# repeated here.  There is one `config_version`, also at the top.
+
+# [calendar]
+# While the agenda is open it syncs every calendar account in the
+# background.  The first automatic run fires one interval after startup;
+# `g` syncs immediately and restarts the countdown.
+# background_sync_enabled = true
+# background_sync_interval_seconds = 3600
+
+# Basic auth: Nextcloud, Radicale, Apple Calendar, Baikal, ...
+# [[calendar.accounts]]
+# name = "personal"
+# url = "https://caldav.example.com/dav/principals/user@example.com/"
+# username = "user@example.com"
+# credential = { backend = "env", variable = "PONY_PERSONAL_CALDAV_PASSWORD" }
+# # mirror_path is optional; defaults to <calendar-data-dir>/mirror/<name>.
+# # trash_retention_days defaults to 30.
+# # include / exclude / read_only are Python regexes matched with
+# # re.fullmatch against the calendar name; default include = [".*"].
+
+# Google Calendar.  The "google" backend fills in the CalDAV URL, OAuth
+# scope and username, so only the client_id/client_secret from your
+# Google Cloud project are needed (the OAuth client must be of type
+# "Desktop app").  Tokens are stored under the calendar's data
+# directory, not here.
+# [[calendar.accounts]]
+# name = "google"
+# credential = { backend = "google", client_id = "12345.apps.googleusercontent.com", client_secret = "GOCSPX-..." }
