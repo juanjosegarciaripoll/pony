@@ -1,9 +1,9 @@
 """Render documentation screenshots of the Pony Express TUI.
 
 Drives the real Textual screens headlessly over the synthetic store from
-``scripts/demo_seed.py`` (no network, no real account), exports each screen
-as SVG via Textual, then rasterises to PNG with Inkscape.  Output lands in
-``docs/assets/``.
+``scripts/demo_seed.py`` (no network, no real account, no real calendar),
+exports each screen as SVG via Textual, then rasterises to PNG with Inkscape.
+Output lands in ``docs/assets/``.
 
     uv run python scripts/capture_screenshots.py
 
@@ -22,7 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from demo_seed import build_demo  # noqa: E402
+from demo_seed import NOW, build_demo  # noqa: E402
 
 from pony.tui.app import ComposeApp, ContactsApp, PonyApp  # noqa: E402
 from pony.tui.widgets.message_list import MessageListPanel  # noqa: E402
@@ -65,14 +65,29 @@ def _to_png(svg_path: Path, name: str) -> None:
     print(f"  wrote {out.relative_to(REPO_ROOT)}")
 
 
-async def _capture_main(demo, svg_dir: Path) -> None:
-    app = _CaptureApp(
+def _mail_app(demo) -> _CaptureApp:
+    """A capture app with the demo calendar attached.
+
+    The calendar is passed even to the mail captures: F2 belongs in the
+    footer and the next event belongs in the header, and a screenshot
+    taken without one would show neither.
+    """
+    return _CaptureApp(
         config=demo.config,
         index=demo.index,
         mirrors=demo.mirrors,
         credentials=demo.credentials,
         contacts=demo.index,
+        calendar=demo.calendar,
+        # Pin the clock to the demo's, so the agenda opens on the day the
+        # events are on and the next-event line has something to name.
+        # Without this the screenshots would drift with the wall clock.
+        now=lambda: NOW,
     )
+
+
+async def _capture_main(demo, svg_dir: Path) -> None:
+    app = _mail_app(demo)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         # Move to the message with an attachment so both the list marker and
@@ -85,13 +100,7 @@ async def _capture_main(demo, svg_dir: Path) -> None:
 
 
 async def _capture_search(demo, svg_dir: Path) -> None:
-    app = _CaptureApp(
-        config=demo.config,
-        index=demo.index,
-        mirrors=demo.mirrors,
-        credentials=demo.credentials,
-        contacts=demo.index,
-    )
+    app = _mail_app(demo)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         app.screen._run_search("review")  # type: ignore[attr-defined]
@@ -134,13 +143,64 @@ async def _capture_contacts(demo, svg_dir: Path) -> None:
         _write_svg(app.export_screenshot(), "contacts", svg_dir)
 
 
+async def _capture_calendar(demo, svg_dir: Path) -> None:
+    """The agenda, reached the way a user reaches it."""
+    app = _mail_app(demo)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+        # Choose the view explicitly rather than inheriting a remembered
+        # one: the multi-day grid is the view that most obviously reads
+        # as a calendar.
+        await pilot.press("4")
+        await pilot.pause()
+        await pilot.pause()
+        _write_svg(app.export_screenshot(), "calendar", svg_dir)
+
+
+async def _capture_invitation(demo, svg_dir: Path) -> None:
+    """A message carrying an invitation, and the dialog that answers it."""
+    app = _mail_app(demo)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.screen.query_one(MessageListPanel).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        _write_svg(app.export_screenshot(), "invitation", svg_dir)
+        await pilot.press("i")
+        await pilot.pause()
+        _write_svg(app.export_screenshot(), "invitation-dialog", svg_dir)
+
+
+def _isolate_calendar_state(root: Path) -> None:
+    """Point the calendar's data directory at *root* for this process.
+
+    The calendar remembers its last view in a file under that directory
+    and reads it back on mount. Left alone, a capture would open on
+    whichever view the person running it happens to prefer — and could
+    overwrite their choice — so the screenshots would not be reproducible
+    and would carry a trace of a real install. Patching the resolver
+    covers every platform branch, which setting `XDG_DATA_HOME` would
+    not.
+    """
+    import chronos.paths
+
+    root.mkdir(parents=True, exist_ok=True)
+    chronos.paths.user_data_dir = lambda: root  # type: ignore[assignment]
+
+
 async def _run() -> list[tuple[str, Path]]:
     tmp = Path(tempfile.mkdtemp(prefix="pony-shots-"))
+    _isolate_calendar_state(tmp / "calendar-state")
     svg_dir = tmp / "svg"
     svg_dir.mkdir(parents=True, exist_ok=True)
     demo = build_demo(tmp / "store")
     print(f"Seeded demo store; capturing SVG into {svg_dir}")
     await _capture_main(demo, svg_dir)
+    await _capture_calendar(demo, svg_dir)
+    await _capture_invitation(demo, svg_dir)
     await _capture_search(demo, svg_dir)
     await _capture_compose(demo, svg_dir)
     await _capture_contacts(demo, svg_dir)

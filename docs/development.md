@@ -35,16 +35,21 @@ All three checks must pass before merging:
 
 ```bash
 # Lint and format
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ tests_calendar/
+uv run ruff format --check src/ tests/ tests_calendar/
 
 # Type checking (both checkers must pass)
-uv run mypy src/
-uv run basedpyright src/
+uv run mypy
+uv run basedpyright
 
-# Tests
-uv run python -m pytest tests/
+# Tests — both suites, with the coverage gate
+uv run python -m pytest
 ```
+
+`uv run mypy` checks both packages (`pony` and `chronos`) from the
+configuration in `pyproject.toml`; passing a path would check only part of
+the project. `pytest` with no arguments runs `tests/` and `tests_calendar/`
+and enforces the coverage floor — never pass `--no-cov`.
 
 ### Lint
 
@@ -60,12 +65,19 @@ warnings in basedpyright that are suppressed with inline comments.
 
 ### Tests
 
-Tests use Python's built-in `unittest` framework, organized in `tests/`.
-Run them with pytest for better output:
+Tests use Python's built-in `unittest` framework. There are two suites:
+`tests/` covers the mail client and everything that joins the two halves,
+and `tests_calendar/` is the calendar's own suite, which still exercises it
+standalone. Both run together:
 
 ```bash
-uv run python -m pytest tests/ -v
+uv run python -m pytest -v
 ```
+
+Async tests are plain `async def` functions. Do not use
+`unittest.IsolatedAsyncioTestCase`: it closes the event loop on teardown,
+and anything later in the session that reaches for the running loop then
+fails depending on file order.
 
 The test suite includes:
 
@@ -82,6 +94,12 @@ The test suite includes:
 - **Mirror integrity tests**: orphan file detection, stale index row detection
 - **Renderer tests**: HTML stripping (style/script block removal), nested email
   rendering
+- **Calendar-in-the-app tests**: switching between the two subsystems, the
+  shared notification space, the line each half shows about the other, and
+  the invitation flows in both directions
+- **Calendar tests** (`tests_calendar/`): CalDAV reconciliation against
+  `FakeCalDAVSession`, recurrence expansion, the occurrence and alarm
+  caches, iTIP ingest, and the calendar's own screens
 
 ## Building documentation
 
@@ -192,13 +210,17 @@ only after every build succeeds.
 
 ```
 pony/
-  src/pony/           # main package
-  tests/              # test suite
+  src/pony/           # mail: the main package
+  src/chronos/        # calendar: CalDAV, recurrence, agenda screens
+  tests/              # mail test suite, plus the two halves together
+  tests_calendar/     # the calendar's own test suite
   docs/               # documentation (MkDocs source)
   .github/workflows/  # CI/CD workflows
   mkdocs.yml          # MkDocs configuration
   pyproject.toml      # project metadata and tool config
   ai/                 # agent-facing docs (architecture, conventions, status)
+  ai/calendar/        # the calendar's own specifications
+  scripts/            # build, demo seeding, documentation screenshots
   config-sample.toml  # annotated config template
   CHANGELOG.md        # release history
   LICENSE             # MIT license

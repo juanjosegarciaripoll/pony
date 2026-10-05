@@ -23,15 +23,23 @@ from the keyboard:
 
 ![Pony Express main screen](docs/assets/main-screen.png)
 
+`F2` switches to the agenda — same program, same process:
+
+![The agenda](docs/assets/calendar.png)
+
 <table>
   <tr>
     <td width="50%"><img src="docs/assets/compose.png" alt="Composer"><br><sub><b>Composer</b> — To/Cc/Bcc, subject, attachments, and an optional Markdown body.</sub></td>
     <td width="50%"><img src="docs/assets/search.png" alt="Search results"><br><sub><b>Search</b> — fast SQLite-backed query across a folder or account.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/assets/contacts.png" alt="Contacts browser"><br><sub><b>Contacts</b> — harvested from your mail, searchable and editable.</sub></td>
+    <td width="50%"><img src="docs/assets/invitation.png" alt="An invitation in the reader"><br><sub><b>Invitations</b> — an <code>.ics</code> in your mail is read in place; <code>i</code> files it and answers the organizer.</sub></td>
+    <td width="50%"><img src="docs/assets/contacts.png" alt="Contacts browser"><br><sub><b>Contacts</b> — harvested from your mail, searchable and editable; the calendar completes attendees from the same store.</sub></td>
+  </tr>
+  <tr>
     <td width="50%" valign="top"><sub>The screens above are rendered from synthetic demo data — no real
-    account is involved. Regenerate them with<br><code>uv run python scripts/capture_screenshots.py</code>.</sub></td>
+    account, mailbox or calendar is involved, and the capture is isolated from any
+    installed one. Regenerate them with<br><code>uv run python scripts/capture_screenshots.py</code>.</sub></td>
   </tr>
 </table>
 

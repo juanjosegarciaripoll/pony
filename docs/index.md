@@ -21,10 +21,15 @@ with attendees mails them the invitation.
 
 ![Pony Express main screen](assets/main-screen.png)
 
+++f2++ switches to the agenda and back:
+
+![The agenda](assets/calendar.png)
+
 !!! note
     All screenshots in this documentation are rendered from synthetic demo
-    data — no real account is involved. Regenerate them with
-    `uv run python scripts/capture_screenshots.py`.
+    data — no real account, mailbox or calendar is involved, and the capture
+    runs against its own throwaway store rather than any installed one.
+    Regenerate them with `uv run python scripts/capture_screenshots.py`.
 
 ## Features
 

@@ -4,8 +4,16 @@ title: Synchronization
 
 # Synchronization
 
-This page explains how Pony Express synchronises your mail with an IMAP server,
-how conflicts are resolved, and what you need to know to avoid surprises.
+This page explains how Pony Express synchronises your **mail** with an IMAP
+server, how conflicts are resolved, and what you need to know to avoid
+surprises.
+
+The calendar has a separate engine against CalDAV, with its own fast,
+medium and full reconciliation paths. It follows the same principle — the
+local files are authoritative and nothing is destroyed to resolve a
+conflict — and is described in `ai/calendar/SYNCHRONIZATION.md`. Its
+equivalent of the `uid IS NULL` marker below is `href IS NULL` on a
+component row.
 
 ## How sync works
 

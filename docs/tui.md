@@ -104,6 +104,8 @@ mail back, with the folder, cursor row and scroll position exactly as they
 were. It is one program: the same process, the same configuration file, and
 one place reminders and new mail are announced.
 
+![The agenda](assets/calendar.png)
+
 Without a `[calendar]` table in `config.toml`, ++f2++ says so and nothing
 else changes. See [Configuration](configuration.md#calendar) for the
 settings and `pony calendar --help` for the command-line side.
@@ -155,11 +157,15 @@ A message carrying an invitation shows what it proposes above its body:
    i — accept, decline or add to the calendar
 ```
 
+![An invitation in the reader](assets/invitation.png)
+
 ++i++ opens a dialog that asks which calendar it goes in and what the
 organizer is told — ++a++ accept, ++t++ tentative, ++d++ decline, or *add
 only* to file it without answering. Accepting files the event and then mails
 a reply; the two are reported separately, so an event that was filed but
 whose reply could not be sent says so rather than claiming success.
+
+![Answering an invitation](assets/invitation-dialog.png)
 
 A cancellation (`METHOD:CANCEL`) removes the event instead, and a re-sent
 invitation updates the one already filed.

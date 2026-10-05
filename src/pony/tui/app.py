@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -104,6 +104,7 @@ class PonyApp(App[None]):
         theme_name: str | None = None,
         ui_state_path: Path | None = None,
         calendar: CalendarRuntime | None = None,
+        now: Callable[[], datetime] | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -122,6 +123,10 @@ class PonyApp(App[None]):
         self._calendar_services: CalendarServices | None = None
         self._alarm_poller: AlarmPoller | None = None
         self._calendar_syncing = False
+        # One clock for everything time-dependent on this side: which
+        # reminders are due, and which event comes next. Injectable so a
+        # screenshot run or a test can pin it.
+        self._now = now if now is not None else (lambda: datetime.now(UTC))
         self.notifications = NotificationCenter()
         self.notifications.subscribe(self._announce)
         if theme_name is not None:
@@ -160,6 +165,7 @@ class PonyApp(App[None]):
                 # Read off this class's own bindings rather than spelled
                 # out again, so the calendar's help can never name a key
                 # that moved.
+                now=self._now,
                 host_bindings=[
                     binding
                     for binding in self.BINDINGS
@@ -364,7 +370,7 @@ class PonyApp(App[None]):
         if self._alarm_poller is None:
             return
         try:
-            due = self._alarm_poller.due(datetime.now(UTC))
+            due = self._alarm_poller.due(self._now())
         except Exception:  # noqa: BLE001 — a failed poll must not kill the app
             self.log.warning("calendar alarm poll failed")
             return
@@ -387,7 +393,7 @@ class PonyApp(App[None]):
             try:
                 status = next_event_status(
                     self._calendar_services,
-                    now=datetime.now(UTC),
+                    now=self._now(),
                     use_utf8=self._config.use_utf8,
                 )
             except Exception:  # noqa: BLE001 — a status line is not worth a crash

@@ -278,6 +278,27 @@ async def test_the_mail_reader_shows_the_next_event() -> None:
         assert "Standup" in app.sub_title
 
 
+async def test_the_clock_can_be_pinned() -> None:
+    """One injectable clock decides what is next and what is due.
+
+    The documentation screenshots rely on it: without a fixed clock the
+    agenda would open on a day with nothing on it, and the next-event
+    line would have nothing to name.
+    """
+    pinned = datetime(2026, 6, 23, 11, 30, tzinfo=UTC)
+    uid = "standup@example.com"
+    runtime = make_calendar_runtime(
+        make_tmp_paths("pinned"),
+        events=((uid, _event_ics(uid, "Standup", pinned + timedelta(minutes=30))),),
+    )
+    app, *_ = build_pony_app(label="pinned", calendar=runtime, now=lambda: pinned)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Relative to the pinned clock, not to the wall clock — against
+        # which this event is years in the past.
+        assert "Standup" in app.sub_title
+
+
 async def test_an_empty_calendar_leaves_the_folder_context_alone() -> None:
     """With nothing scheduled the mail reader shows only its folder."""
     app, *_ = build_pony_app(

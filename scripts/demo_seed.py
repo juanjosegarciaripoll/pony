@@ -1,9 +1,13 @@
 """Build a throwaway Pony Express data set for documentation screenshots.
 
-This module fabricates a self-contained mail store — synthetic accounts,
-messages, and contacts — using only Pony's public repositories.  It never
-contacts a network or touches a real account; everything lives under a
-caller-supplied temp directory.  ``scripts/capture_screenshots.py`` drives a
+This module fabricates a self-contained mail store *and calendar* —
+synthetic accounts, messages, contacts and events — using only Pony's public
+repositories.  It never contacts a network or touches a real account;
+everything lives under a caller-supplied temp directory.  The calendar is
+built the same way: its mirror and index are created under that directory
+rather than at the platform paths a real install uses, and its account is
+marked `background_sync_enabled = False` so nothing can reach for a CalDAV
+server during a capture.  ``scripts/capture_screenshots.py`` drives a
 headless Textual session over the result and exports PNG stills.
 
 Run directly to dump a store somewhere and poke at it:
@@ -14,13 +18,23 @@ Run directly to dump a store somewhere and poke at it:
 from __future__ import annotations
 
 import dataclasses
+import re
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
-from email.utils import format_datetime
+from email.utils import format_datetime, parseaddr
 from pathlib import Path
 
+from chronos.credentials import DefaultCredentialsProvider as CalendarCredentials
+from chronos.domain import AccountConfig as CalendarAccount
+from chronos.domain import AppConfig as CalendarConfig
+from chronos.domain import CalendarRef, PlaintextCredential, ResourceRef
+from chronos.index_store import SqliteIndexRepository as CalendarIndex
+from chronos.recurrence import rebuild_caches
+from chronos.storage import VdirMirrorRepository
+from chronos.storage_indexing import index_calendar
+from pony.calendar import CalendarRuntime
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     AccountConfig,
@@ -38,8 +52,12 @@ from pony.paths import AppPaths
 from pony.protocols import CredentialsProvider
 from pony.storage import MaildirMirrorRepository
 
-# A fixed clock so regenerated screenshots are byte-stable from run to run.
-NOW = datetime(2026, 6, 23, 17, 30, tzinfo=UTC)
+# A fixed clock so regenerated screenshots are stable from run to run.
+# Deliberately local rather than UTC: the agenda renders in local time, so
+# a UTC-anchored clock would drop the current-time marker at the bottom of
+# the grid (or off it) for anyone east of Greenwich, and the day would look
+# finished before it started.
+NOW = datetime(2026, 6, 23, 13, 30).astimezone()
 OWNER = "you@ponyexpress.dev"
 
 
@@ -53,6 +71,7 @@ class DemoData:
     mirrors: dict[str, MaildirMirrorRepository]
     credentials: CredentialsProvider
     paths: AppPaths
+    calendar: CalendarRuntime
 
 
 @dataclass(frozen=True)
@@ -64,10 +83,31 @@ class _Msg:
     flags: tuple[MessageFlag, ...] = ()
     attachment: str | None = None
     to: str = OWNER
+    # When set, the message carries a text/calendar invitation for an
+    # event this many minutes after NOW.
+    invitation: tuple[str, str, int, int, str] | None = None
 
 
 # A plausible developer inbox.  Senders double as harvested contacts below.
 _INBOX: tuple[_Msg, ...] = (
+    _Msg(
+        sender="Margaret Hamilton <mhamilton@mit.edu>",
+        subject="Invitation: Flight software design review",
+        body=(
+            "Blocking out Thursday afternoon for the design review. Agenda "
+            "to follow — shout if the slot clashes.\n\nMargaret"
+        ),
+        age_minutes=6,
+        # Two days out, so it is clearly a proposal rather than
+        # something already on the agenda.
+        invitation=(
+            "design-review",
+            "Flight software design review",
+            2 * 24 * 60 + 90,
+            90,
+            "Auditorium",
+        ),
+    ),
     _Msg(
         sender="Grace Hopper <grace.hopper@navy.mil>",
         subject="Re: Compiler review notes",
@@ -337,6 +377,11 @@ _CONTACTS: tuple[Contact, ...] = (
 )
 
 
+def _address_of(sender: str) -> str:
+    """The bare address out of ``Name <addr@example.com>``."""
+    return parseaddr(sender)[1] or sender
+
+
 def _raw(msg: _Msg) -> bytes:
     """Render one ``_Msg`` to RFC 5322 bytes."""
     mail = EmailMessage()
@@ -346,6 +391,21 @@ def _raw(msg: _Msg) -> bytes:
     mail["Date"] = format_datetime(NOW - timedelta(minutes=msg.age_minutes))
     mail["Message-ID"] = f"<{abs(hash((msg.sender, msg.subject)))}@ponyexpress.dev>"
     mail.set_content(msg.body)
+    if msg.invitation is not None:
+        uid, summary, offset, minutes, location = msg.invitation
+        ics = _event_ics(
+            uid,
+            summary,
+            NOW + timedelta(minutes=offset),
+            minutes,
+            location,
+            organizer=_address_of(msg.sender),
+            attendees=(OWNER, "grace.hopper@navy.mil"),
+            method="REQUEST",
+        )
+        mail.add_alternative(
+            ics.decode(), subtype="calendar", params={"method": "REQUEST"}
+        )
     if msg.attachment is not None:
         # Pad to a plausible document size so the UI shows e.g. "18 KB".
         payload = b"%PDF-1.4\n% demo trajectory figures\n" + b"\x00" * 18_000
@@ -384,6 +444,118 @@ def _seed_folder(
             base_flags=frozenset(msg.flags),
         )
         index.insert_message(message=projected)
+
+
+# ---------------------------------------------------------------------------
+# Calendar
+# ---------------------------------------------------------------------------
+
+# Offsets are relative to NOW rather than to a wall-clock hour, so the
+# agenda reads the same whatever timezone the screenshots are taken in:
+# a populated day with something just finished, something next, and the
+# current-time marker in the middle of it. Summaries avoid naming a time
+# of day for the same reason.
+_EVENTS: tuple[tuple[str, str, int, int, str], ...] = (
+    # (uid, summary, minutes relative to NOW, duration, location)
+    ("standup", "Standup", -240, 15, "Room 2"),
+    ("review", "Compiler review with Grace", -180, 60, "Room 2"),
+    ("lunch", "Lunch", -90, 60, "Canteen"),
+    ("1on1", "1:1 with Katherine", 60, 30, ""),
+    ("design", "Trajectory design review", 150, 90, "Auditorium"),
+    ("retro", "Sprint retrospective", 240, 45, "Room 4"),
+)
+
+_SHARED_EVENTS: tuple[tuple[str, str, int, int, str], ...] = (
+    ("maintenance", "Mainframe maintenance window", -270, 120, "Machine room"),
+    ("seminar", "Seminar: sorting networks", 180, 60, "Lecture hall"),
+)
+
+
+def _event_ics(
+    uid: str,
+    summary: str,
+    start: datetime,
+    minutes: int,
+    location: str,
+    *,
+    organizer: str = "",
+    attendees: tuple[str, ...] = (),
+    method: str = "",
+) -> bytes:
+    """One VEVENT, optionally shaped as an iTIP scheduling message."""
+    end = (start + timedelta(minutes=minutes)).astimezone(UTC)
+    start = start.astimezone(UTC)
+    stamp = "%Y%m%dT%H%M%SZ"
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Pony Express//EN"]
+    if method:
+        lines.append(f"METHOD:{method}")
+    lines += [
+        "BEGIN:VEVENT",
+        f"UID:{uid}@ponyexpress.dev",
+        f"DTSTAMP:{start.strftime(stamp)}",
+        f"DTSTART:{start.strftime(stamp)}",
+        f"DTEND:{end.strftime(stamp)}",
+        f"SUMMARY:{summary}",
+    ]
+    if location:
+        lines.append(f"LOCATION:{location}")
+    if organizer:
+        lines.append(f"ORGANIZER:mailto:{organizer}")
+    for attendee in attendees:
+        lines.append(f"ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{attendee}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def _build_calendar(root: Path) -> CalendarRuntime:
+    """Seed a two-calendar store under *root*, with no account to sync to.
+
+    The credential is a placeholder the capture never resolves: nothing in
+    a screenshot run syncs, and `background_sync_enabled = False` keeps the
+    timer from arming in the first place.
+    """
+    mirror = VdirMirrorRepository(root / "mirror")
+    index = CalendarIndex(root / "index.sqlite3")
+    account_name = "Personal"
+
+    for calendar_name, events in (
+        ("Calendar", _EVENTS),
+        ("Shared", _SHARED_EVENTS),
+    ):
+        for uid, summary, offset, minutes, location in events:
+            mirror.write(
+                ResourceRef(account_name, calendar_name, f"{uid}@ponyexpress.dev"),
+                _event_ics(
+                    uid, summary, NOW + timedelta(minutes=offset), minutes, location
+                ),
+            )
+        ref = CalendarRef(account_name, calendar_name)
+        index_calendar(mirror=mirror, index=index, calendar=ref)
+        rebuild_caches(index=index, calendar=ref, now=NOW, uids=None)
+
+    account = CalendarAccount(
+        name=account_name,
+        url="https://caldav.ponyexpress.dev/dav/",
+        username="you",
+        credential=PlaintextCredential(password="demo"),
+        mirror_path=root / "mirror" / account_name,
+        trash_retention_days=30,
+        include=(re.compile(".*"),),
+        exclude=(),
+        read_only=(),
+    )
+    return CalendarRuntime(
+        config=CalendarConfig(
+            config_version=1,
+            use_utf8=True,
+            editor=None,
+            accounts=(account,),
+            background_sync_enabled=False,
+        ),
+        mirror=mirror,
+        index=index,
+        credentials=CalendarCredentials(env={}),
+    )
 
 
 def build_demo(root: Path) -> DemoData:
@@ -459,6 +631,7 @@ def build_demo(root: Path) -> DemoData:
         mirrors={account.name: mirror},
         credentials=credentials,
         paths=paths,
+        calendar=_build_calendar(data_dir / "calendar"),
     )
 
 

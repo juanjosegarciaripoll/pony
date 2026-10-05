@@ -14,6 +14,13 @@ index. It works entirely against the local mirror and SQLite index that
 `pony sync` maintains; no IMAP connection is opened while the MCP server is
 running.
 
+!!! note "Mail tools only"
+    `pony mcp` and the server a running TUI exposes serve the **mail**
+    half. The calendar has an MCP surface of its own — read tools plus an
+    iTIP-aware `import_ics` — reached with `pony calendar mcp`. The two are
+    not yet served from one endpoint; a client that wants both needs two
+    entries.
+
 ## Architecture
 
 There is a single command — `pony mcp` — and a single transport — stdio

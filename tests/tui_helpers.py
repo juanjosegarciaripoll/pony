@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import re
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -373,6 +373,7 @@ def build_pony_app(
     viewers: tuple[ViewerRule, ...] = (),
     calendar: CalendarRuntime | None = None,
     with_contacts: bool = False,
+    now: Callable[[], datetime] | None = None,
 ) -> tuple[
     TestPonyApp,
     AppConfig,
@@ -417,6 +418,7 @@ def build_pony_app(
         contacts=index if with_contacts else None,
         config_path=paths.config_file,
         calendar=calendar,
+        now=now,
     )
     return app, config, paths, index, mirrors
 

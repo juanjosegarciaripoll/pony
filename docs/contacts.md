@@ -163,6 +163,13 @@ contact. Results are ranked by message count (most-contacted first).
 activates on the address currently being typed and preserves addresses already
 entered.
 
+**The calendar completes from the same contacts.** The Invitees field in the
+event editor offers the same addresses as the composer, inline rather than as
+a dropdown: the first match appears as ghost text and ++right++ accepts it.
+Addresses already entered are left alone, exactly as in the composer. This is
+what the two halves sharing one process buys — an invitation goes to the
+people already in your mail, with no second address book to maintain.
+
 ---
 
 ## BBDB import and export (Emacs interop)
