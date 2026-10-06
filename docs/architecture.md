@@ -241,19 +241,20 @@ passed at construction time, not by calling private App methods.
 `SyncConfirmScreen` takes an `on_confirm` callback rather than reaching back
 into the app.
 
-Alongside the modal `g` sync flow there is a non-blocking background sync
-(`ctrl+g`, the `sync-bg` worker) that auto-confirms every folder and shows a
-spinner on the `FolderPanel` border title; it can also run on a config-gated
-periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
-The same border title carries the schedule: once a periodic sync is armed —
-by the config gate at mount, or by `ctrl+g`, which arms repeats — the panel
-shows a clock and a live countdown to the next run (`Folders ◷ 9:30`). The
-countdown repaints every 30 s and is rounded down to the same step, so the
-title never shows precision it has not got. `MainScreen` recomputes the
-deadline whenever it arms the timer and on every tick, because a Textual
-`Timer` does not expose its next firing time. A sync
-in flight outranks the countdown, so the spinner replaces it and it returns
-when the sync ends.
+Alongside the modal `g` sync flow there is a non-blocking background sync that
+auto-confirms every folder and shows a spinner on the `FolderPanel` border
+title. It does not belong to the screen: `PonyApp` owns a `PeriodicSync`
+(see [Periodic sync](#periodic-sync)) that runs it on a thread of its own,
+config-gated by `background_sync_enabled` / `background_sync_interval_seconds`.
+`ctrl+g` asks that scheduler for a run now, which also starts the cadence if
+the config gate is off. The same border title carries the schedule: when a
+periodic sync is scheduled the panel shows a clock and a live countdown to
+the next run (`Folders ◷ 9:30`), read straight off the scheduler's deadline,
+so a run that was deferred or triggered by hand is reflected rather than
+guessed. The countdown repaints every 30 s and is rounded down to the same
+step, so the title never shows precision it has not got. A sync in flight
+outranks the countdown, so the spinner replaces it and it returns when the
+sync ends.
 `MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and
 streams rows back to the UI thread in batches, so opening a 10k-row folder
 never freezes the event loop.
@@ -314,7 +315,7 @@ hosts its screens.
 ```
 src/chronos/
   config.py domain.py paths.py protocols.py
-  storage.py index_store.py storage_indexing.py locking.py
+  storage.py index_store.py storage_indexing.py locking.py scheduler.py
   ical_parser.py recurrence.py mutations.py ingest.py
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   cli.py mcp_server.py
@@ -376,16 +377,38 @@ Nothing is persisted. Mail and calendar each already keep the state that
 outlives a session (unread flags, an alarm's `fired_at`), so a second store
 would be a second truth.
 
-### Keeping the calendar current
+### Periodic sync
 
-The agenda runs its own periodic sync while it is open, but it is only
-mounted when the user is looking at it — and a reminder can only fire for an
-event the local alarm cache knows about. `PonyApp` therefore runs the same
-sync on its own timer while the mail reader is in front, skipping its turn
-whenever the agenda is up so the two never contend for the calendar's
-lockfile. A background sync nobody asked for reports nothing on success and
-logs its failures; its whole purpose is that the reminders and the next
-event stay true without being talked about.
+Both halves sync themselves on a timetable, and neither timetable belongs to
+a screen. `chronos/scheduler.py` holds one small, subsystem-agnostic class,
+`PeriodicSync`: a daemon thread that runs a sync runner every *interval*
+seconds, hands it a cancel event, and reports each run through callbacks. It
+lives in `chronos` because the dependency arrow points that way — the mail
+half imports it for its own sync, over its own result type (`MailSyncScheduler`
+in `pony/sync.py`, `CalendarSyncScheduler` in `chronos/protocols.py`).
+
+The applications own the instances: `PonyApp` starts one per half on mount
+and stops both on unmount, and `ChronosApp` starts the calendar's when the
+calendar runs alone. That is what makes the cadence independent of what is on
+screen, which is the whole point — Textual destroys a popped screen and its
+timers with it, so the agenda's old screen-owned timer restarted from zero
+every time the user pressed ++f2++, and the mail application needed a second
+timer of its own to cover the gap. One thread each replaces all of that.
+
+Screens are observers. They read `next_run_at` to paint their countdown, call
+`request_now()` for the key the user pressed, and are told how a run went
+through `on_sync_started` / `on_sync_finished`, which the application marshals
+onto the UI thread — the callbacks themselves arrive on the scheduler thread,
+which is why the class stays free of Textual.
+
+Two syncs against one account at the same time is what must not happen. The
+foreground flows own their own worker, so they claim the scheduler's slot
+(`try_claim` / `release`, or the `hold()` context manager) for as long as they
+hold it, the user's thinking time in a confirmation dialog included. A
+periodic turn that finds the slot taken is **postponed, not dropped**: it
+tries again shortly. A run nobody asked for reports nothing on success and
+logs its failures; its whole purpose is that the mail, the reminders and the
+next event stay true without being talked about.
 
 ### One line about the other half
 

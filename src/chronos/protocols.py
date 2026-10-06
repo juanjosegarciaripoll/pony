@@ -19,6 +19,7 @@ from chronos.domain import (
     SyncResult,
     SyncState,
 )
+from chronos.scheduler import PeriodicSync, SyncOutcome
 
 
 class CalDAVSession(Protocol):
@@ -143,3 +144,14 @@ class CredentialsProvider(Protocol):
 
 class SyncService(Protocol):
     def sync_account(self, account: AccountConfig) -> SyncResult: ...
+
+
+type CalendarSyncScheduler = PeriodicSync[Sequence[SyncResult]]
+"""The calendar's periodic sync, spelled once for everyone who holds one.
+
+The scheduler itself is subsystem-agnostic — the mail half runs the same
+class over its own result type — so what makes this one the calendar's is
+only what its runner returns.
+"""
+
+type CalendarSyncOutcome = SyncOutcome[Sequence[SyncResult]]

@@ -10,9 +10,13 @@ else in this suite; the pure helpers are ``unittest`` classes.
 
 from __future__ import annotations
 
+import threading
 import unittest
+import unittest.mock
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from textual.pilot import Pilot
 from textual.widgets import Label, Static
 from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
 
@@ -404,56 +408,141 @@ async def test_a_due_reminder_is_announced_by_the_poller_on_the_app() -> None:
         assert "Standup" in _toast_titles(app)
 
 
-async def test_the_calendar_syncs_while_the_mail_reader_is_in_front() -> None:
-    """A reminder can only fire for an event the local cache knows about."""
+async def _until(pilot: Pilot[None], check: Callable[[], bool], message: str) -> None:
+    """Pump the app until `check` holds — the syncs are threads now."""
+    for _ in range(200):
+        if check():
+            return
+        await pilot.pause(0.01)
+    raise AssertionError(message)
+
+
+async def test_both_syncs_run_on_threads_the_app_owns() -> None:
+    """Neither cadence belongs to a screen, so neither depends on one.
+
+    A Textual timer dies with the screen that armed it, and the agenda is
+    unmounted every time F2 goes back to the mail reader. Both syncs are
+    threads the application starts instead.
+    """
+    import dataclasses
+
     runtime = make_calendar_runtime(make_tmp_paths("bg-sync"))
-    app, *_ = build_pony_app(label="bg-sync", calendar=runtime)
-    runs: list[int] = []
+    app, cfg, *_ = build_pony_app(label="bg-sync", calendar=runtime)
+    app._config = dataclasses.replace(cfg, background_sync_enabled=True)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        services = app.calendar_services
-        services.sync_runner = lambda **_kwargs: runs.append(1) or ()  # type: ignore[assignment,func-returns-value]
-        app._calendar_sync_tick()  # noqa: SLF001
-        await pilot.pause()
-        await pilot.pause()
-        assert runs, "the mail reader should keep the calendar synced"
+        mail, calendar = app.mail_sync, app.calendar_services.sync_scheduler
+        assert mail is not None and calendar is not None
+        assert mail.started, "the mail reader's own sync should be running"
+        assert calendar.started, "the calendar's sync should be running"
+
+    # And both are stopped with the application.
+    assert not mail.started
+    assert not calendar.started
 
 
-async def test_the_agenda_syncs_itself_while_it_is_open() -> None:
-    """Two periodic syncs would only contend for the calendar's lockfile."""
-    runtime = make_calendar_runtime(make_tmp_paths("bg-sync-agenda"))
-    app, *_ = build_pony_app(label="bg-sync-agenda", calendar=runtime)
-    runs: list[int] = []
+async def test_the_calendar_keeps_its_countdown_across_f2() -> None:
+    """Switching halves must not restart the calendar's clock.
+
+    The agenda's timer used to be armed in its `on_mount`, so every visit
+    began the wait again — at the hourly default, a sync that never came.
+    """
+    runtime = make_calendar_runtime(make_tmp_paths("f2-countdown"))
+    app, *_ = build_pony_app(label="f2-countdown", calendar=runtime)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        services = app.calendar_services
-        services.sync_runner = lambda **_kwargs: runs.append(1) or ()  # type: ignore[assignment,func-returns-value]
+        scheduler = app.calendar_services.sync_scheduler
+        assert scheduler is not None
+        before = scheduler.next_run_at
+        assert before is not None
+
+        await pilot.press("f2")  # into the agenda
+        await pilot.pause()
+        await pilot.press("f2")  # and back to the mail reader
+        await pilot.pause()
+        await pilot.press("f2")  # and in again
+        await pilot.pause()
+
+        # Same deadline throughout: the thread never noticed.
+        assert scheduler.next_run_at == before
+
+
+async def test_the_mail_sync_runs_while_the_agenda_is_in_front() -> None:
+    """Reading the agenda does not stop mail arriving."""
+    from pony.sync import ImapSyncService
+
+    runtime = make_calendar_runtime(make_tmp_paths("mail-under-agenda"))
+    app, *_ = build_pony_app(label="mail-under-agenda", calendar=runtime)
+    synced = threading.Event()
+
+    def _sync(_self: ImapSyncService, **_kwargs: object) -> object:
+        synced.set()
+        raise RuntimeError("stop here: the sync ran, which is the point")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
         await pilot.press("f2")
         await pilot.pause()
-        app._calendar_sync_tick()  # noqa: SLF001
-        await pilot.pause()
-        assert not runs
+        assert isinstance(pilot.app.screen, CalendarScreen)
+
+        scheduler = app.mail_sync
+        assert scheduler is not None
+        with unittest.mock.patch.object(ImapSyncService, "sync", _sync):
+            scheduler.start()
+            assert scheduler.request_now()
+            await _until(pilot, synced.is_set, "mail did not sync under the agenda")
+
+
+async def test_the_calendar_sync_runs_while_the_mail_reader_is_in_front() -> None:
+    """A reminder can only fire for an event the local cache knows about."""
+    runtime = make_calendar_runtime(make_tmp_paths("cal-under-mail"))
+    app, *_ = build_pony_app(label="cal-under-mail", calendar=runtime)
+    ran = threading.Event()
+
+    def _runner(**_kwargs: object) -> tuple[object, ...]:
+        ran.set()
+        return ()
+
+    with unittest.mock.patch(
+        "pony.tui.calendar_host.build_sync_runner", return_value=_runner
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, MainScreen)
+            scheduler = app.calendar_services.sync_scheduler
+            assert scheduler is not None
+            assert scheduler.request_now()
+            await _until(pilot, ran.is_set, "the calendar never synced")
 
 
 async def test_a_failing_background_sync_does_not_reach_the_user() -> None:
     runtime = make_calendar_runtime(make_tmp_paths("bg-sync-fail"))
     app, *_ = build_pony_app(label="bg-sync-fail", calendar=runtime)
+    tried = threading.Event()
 
     def _explode(**_kwargs: object) -> tuple[object, ...]:
+        tried.set()
         raise RuntimeError("the server is down")
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.calendar_services.sync_runner = _explode  # type: ignore[assignment]
-        app._calendar_sync_tick()  # noqa: SLF001
-        await pilot.pause()
-        await pilot.pause()
-        # Reported to the log, not as a toast: the user did not ask.
-        assert "the server is down" not in " ".join(_toast_messages(app))
-        # And the guard is released, so the next tick can try again.
-        assert not app._calendar_syncing  # noqa: SLF001
+    with unittest.mock.patch(
+        "pony.tui.calendar_host.build_sync_runner", return_value=_explode
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scheduler = app.calendar_services.sync_scheduler
+            assert scheduler is not None
+            assert scheduler.request_now()
+            await _until(pilot, tried.is_set, "the sync never ran")
+            await _until(pilot, lambda: not scheduler.running, "the sync never ended")
+            for _ in range(5):
+                await pilot.pause()
+            # Reported to the log, not as a toast: the user did not ask, and
+            # the agenda is not even mounted to report it to.
+            assert "the server is down" not in " ".join(_toast_messages(app))
+            # The slot is free again, so the next run can try.
+            assert not scheduler.running
 
 
 async def test_the_bundle_carries_the_runtime_and_a_sync_runner() -> None:

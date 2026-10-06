@@ -4,7 +4,7 @@ import dataclasses
 import re
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar
@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from rich.style import Style
 from rich.text import Text
 from textual.events import MouseEvent
+from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Label, Select
 
@@ -34,7 +35,9 @@ from chronos.domain import (
     VTodo,
 )
 from chronos.index_store import SqliteIndexRepository
+from chronos.protocols import CalendarSyncOutcome
 from chronos.recurrence import populate_occurrences
+from chronos.scheduler import SyncOutcome
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
 from chronos.tui.app import ChronosApp, TuiServices
@@ -1936,19 +1939,45 @@ class BackgroundSyncTest(TuiFlowTestCase):
         assert isinstance(screen, MainScreen)
         return screen
 
-    async def test_timer_armed_at_startup_by_default(self) -> None:
+    @staticmethod
+    def _sync_outcome(
+        *, manual: bool, added: int = 0, errors: tuple[str, ...] = ()
+    ) -> CalendarSyncOutcome:
+        result = SyncResult(
+            account_name=ACCOUNT_NAME,
+            calendars_synced=1,
+            components_added=added,
+            components_updated=0,
+            components_removed=0,
+            errors=errors,
+        )
+        return SyncOutcome(result=(result,), error=None, manual=manual)
+
+    async def test_the_scheduler_belongs_to_the_app_and_runs_by_default(self) -> None:
+        """The cadence is the application's, not the screen's.
+
+        A screen's timer dies with the screen; this one is a thread the
+        app starts on mount and stops on unmount, so the agenda being
+        popped cannot stop the calendar syncing.
+        """
         from chronos.tui.widgets.sync_status import SCHEDULED_SYNC_MARK, SyncStatus
 
         services = self.services(sync_runner=lambda **_: ())
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            main = self._main(app)
-            self.assertIsNotNone(main._background_sync_timer)
-            status = main.query_one(SyncStatus)
+            scheduler = services.sync_scheduler
+            assert scheduler is not None
+            self.assertTrue(scheduler.started)
+            self.assertIsNotNone(scheduler.next_run_at)
+            # The screen shows the deadline it reads off the scheduler.
+            status = self._main(app).query_one(SyncStatus)
             self.assertIn(SCHEDULED_SYNC_MARK, str(status.render()))
+        # Stopped with the application, so a test or a quit leaves no
+        # thread behind.
+        self.assertFalse(scheduler.started)
 
-    async def test_timer_not_armed_when_disabled(self) -> None:
+    async def test_the_scheduler_does_not_run_when_disabled(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
         services.config = dataclasses.replace(
             services.config, background_sync_enabled=False
@@ -1956,7 +1985,31 @@ class BackgroundSyncTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            self.assertIsNone(self._main(app)._background_sync_timer)
+            scheduler = services.sync_scheduler
+            assert scheduler is not None
+            self.assertFalse(scheduler.started)
+            self.assertIsNone(scheduler.next_run_at)
+
+    async def test_g_syncs_once_without_starting_a_cadence_when_disabled(self) -> None:
+        """Turning background sync off is not undone by one manual sync."""
+        calls: list[int] = []
+
+        def runner(**_kwargs: object) -> Sequence[SyncResult]:
+            calls.append(1)
+            return ()
+
+        services = self.services(sync_runner=runner)
+        services.config = dataclasses.replace(
+            services.config, background_sync_enabled=False
+        )
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("g")
+            scheduler = services.sync_scheduler
+            assert scheduler is not None
+            await self._until(pilot, lambda: bool(calls), "the sync never ran")
+            self.assertFalse(scheduler.started)
 
     async def test_g_syncs_immediately_without_dialog(self) -> None:
         calls: list[object] = []
@@ -1979,38 +2032,63 @@ class BackgroundSyncTest(TuiFlowTestCase):
             self.assertIn("Sync complete: +2 ~0 -0", messages)
             self.assertFalse(self._main(app)._sync_in_progress())
 
-    async def test_timer_tick_runs_sync_quietly_when_nothing_changed(self) -> None:
-        calls: list[int] = []
-
-        def runner(**_kwargs: object) -> Sequence[SyncResult]:
-            calls.append(1)
-            return (self._result(),)
-
-        services = self.services(sync_runner=runner)
+    async def test_a_periodic_run_says_nothing_when_nothing_changed(self) -> None:
+        """A sync nobody asked for is silent unless it has news."""
+        services = self.services(sync_runner=lambda **_: ())
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            self._main(app)._background_sync_tick()
-            await pilot.app.workers.wait_for_complete()
+            self._main(app).on_sync_finished(self._sync_outcome(manual=False))
             await pilot.pause()
-            self.assertEqual(calls, [1])
             self.assertEqual(list(pilot.app._notifications), [])
 
-    async def test_sync_errors_are_notified(self) -> None:
-        def runner(**_kwargs: object) -> Sequence[SyncResult]:
-            return (self._result(errors=("auth refused",)),)
-
-        services = self.services(sync_runner=runner)
+    async def test_a_periodic_run_reports_what_it_changed(self) -> None:
+        services = self.services(sync_runner=lambda **_: ())
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            self._main(app)._background_sync_tick()
-            await pilot.app.workers.wait_for_complete()
+            self._main(app).on_sync_finished(self._sync_outcome(manual=False, added=2))
+            await pilot.pause()
+            messages = [n.message for n in pilot.app._notifications]
+            self.assertIn("Sync complete: +2 ~0 -0", messages)
+
+    async def test_sync_errors_are_notified(self) -> None:
+        services = self.services(sync_runner=lambda **_: ())
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            outcome = self._sync_outcome(manual=False, errors=("auth refused",))
+            self._main(app).on_sync_finished(outcome)
             await pilot.pause()
             notes = list(pilot.app._notifications)
             self.assertEqual(len(notes), 1)
             self.assertIn("auth refused", notes[0].message)
             self.assertEqual(notes[0].severity, "error")
+
+    async def test_a_failed_run_is_reported(self) -> None:
+        services = self.services(sync_runner=lambda **_: ())
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            failure: CalendarSyncOutcome = SyncOutcome(
+                result=None, error=RuntimeError("the server is down"), manual=False
+            )
+            self._main(app).on_sync_finished(failure)
+            await pilot.pause()
+            notes = list(pilot.app._notifications)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("the server is down", notes[0].message)
+            self.assertEqual(notes[0].severity, "error")
+
+    async def _until(
+        self, pilot: Pilot[None], check: Callable[[], bool], message: str
+    ) -> None:
+        """Pump the app until `check` holds, rather than sleeping blind."""
+        for _ in range(200):
+            if check():
+                return
+            await pilot.pause(0.01)
+        raise AssertionError(message)
 
     async def test_g_while_sync_running_does_not_start_another(self) -> None:
         import threading

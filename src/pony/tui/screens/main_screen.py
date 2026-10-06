@@ -10,15 +10,13 @@ import tempfile
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
-from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
@@ -60,7 +58,15 @@ from ...protocols import (
     IndexRepository,
     MirrorRepository,
 )
-from ...sync import ImapSyncService, ProgressInfo, SyncPlan, SyncResult
+from ...sync import (
+    ImapSyncService,
+    MailSyncOutcome,
+    MailSyncScheduler,
+    ProgressInfo,
+    SyncPlan,
+    SyncResult,
+    build_sync_service,
+)
 from ..terminal import (
     format_terminal_title,
     launch_file,
@@ -76,6 +82,7 @@ from ..widgets.message_view import MessageViewPanel
 
 if TYPE_CHECKING:
     from ...calendar import CalendarRuntime
+    from ..app import MailSyncHost
     from .invitation_screen import InvitationChoice
 
 
@@ -194,7 +201,9 @@ class MainScreen(Screen[None]):
         self._current_folder_ref: FolderRef | None = None
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
-        self._background_sync_timer: Timer | None = None
+        # True while the foreground flow holds the scheduler's slot, so
+        # the periodic thread defers instead of opening a second session.
+        self._holds_sync_slot = False
         self._ui_state_path = ui_state_path
         self._pane_sizes = load_pane_sizes(ui_state_path)
 
@@ -212,16 +221,15 @@ class MainScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        """Install the periodic background-sync timer when configured.
+        """Show when the next automatic sync falls due, if one is scheduled.
 
-        No sync runs at startup — the first automatic run fires after one
-        interval.  When disabled, no timer is installed until manual
-        ``ctrl+g`` starts a sync and arms one.  The action's in-progress guard
-        makes overlapping ticks safe.
+        The sync itself belongs to the application, on a thread that does
+        not care which screen is in front; this screen only reports its
+        schedule. No sync runs at startup — the first automatic run fires
+        one interval after the application mounted.
         """
         self._apply_pane_sizes()
-        if self._config.background_sync_enabled:
-            self._arm_background_sync_timer()
+        self._show_next_background_sync()
 
     # ------------------------------------------------------------------
     # Resizable panes
@@ -295,39 +303,17 @@ class MainScreen(Screen[None]):
     def action_grow_list(self) -> None:
         self._resize_panes(list_delta=RESIZE_STEP)
 
-    def _arm_background_sync_timer(self) -> None:
-        """Ensure the periodic background-sync timer is running.
-
-        ``ctrl+g`` starts a sync immediately and uses this helper to schedule
-        the next automatic run one full interval later.  Config-enabled
-        startup uses the same timer, but without an immediate first sync.
-        """
-        if self._background_sync_timer is None:
-            self._background_sync_timer = self.set_interval(
-                self._config.background_sync_interval_seconds,
-                self._background_sync_tick,
-                name="background-sync",
-            )
-        else:
-            self._background_sync_timer.reset()
-        self._show_next_background_sync()
-
     def _show_next_background_sync(self) -> None:
         """Tell the folder panel when the next automatic sync falls due.
 
-        The Textual ``Timer`` does not expose its next firing time, so the
-        deadline is recomputed here from the interval at each of the two
-        points that decide it: arming (or resetting) the timer, and the
-        timer firing.
+        The deadline is the scheduler's own, read off it rather than
+        recomputed from the interval, so the countdown stays honest even
+        when a run was deferred or triggered by hand.
         """
-        self.query_one(FolderPanel).set_next_sync(
-            monotonic() + self._config.background_sync_interval_seconds
-        )
-
-    def _background_sync_tick(self) -> None:
-        """Timer callback: run sync without re-arming/resetting the timer."""
-        self._show_next_background_sync()
-        self._start_background_sync(arm_repeat=False)
+        scheduler = self._scheduler()
+        deadline = None if scheduler is None else scheduler.next_run_at
+        if deadline is not None:
+            self.query_one(FolderPanel).set_next_sync(deadline)
 
     # ------------------------------------------------------------------
     # Message routing
@@ -525,24 +511,42 @@ class MainScreen(Screen[None]):
 
         Returns ``None`` (and notifies) when no credentials provider is
         configured — matching the guard at the top of ``action_sync``.
-        Shared by the foreground and background sync entry points.
+        The engine itself is assembled by `build_sync_service`, which the
+        application's periodic scheduler uses too: it cannot reach into a
+        screen for one.
         """
         if self._credentials is None:
             self.app.notify("No credentials provider.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
             return None
-
-        mirrors = self._mirrors
-        credentials = self._credentials
-
-        def mirror_factory(acc: AccountConfig) -> MirrorRepository:
-            return mirrors[acc.name]
-
-        return ImapSyncService(
+        return build_sync_service(
             config=self._config,
-            mirror_factory=mirror_factory,
             index=self._index,
-            credentials=credentials,
+            mirrors=self._mirrors,
+            credentials=self._credentials,
         )
+
+    def _claim_sync_slot(self) -> bool:
+        """Take the scheduler's slot for the foreground sync flow.
+
+        Held from here until the confirmation dialog is dismissed — the
+        user's thinking time included — because during that window a
+        periodic sync would open a second IMAP session on the same
+        account. The scheduler defers its turn rather than losing it.
+        """
+        scheduler = self._scheduler()
+        if scheduler is None:
+            return True
+        if not scheduler.try_claim():
+            return False
+        self._holds_sync_slot = True
+        return True
+
+    def _release_sync_slot(self) -> None:
+        scheduler = self._scheduler()
+        if self._holds_sync_slot and scheduler is not None:
+            scheduler.release()
+        self._holds_sync_slot = False
+        self._show_next_background_sync()
 
     def action_sync(self) -> None:
         """Run the two-pass sync flow with in-TUI confirmation."""
@@ -551,6 +555,9 @@ class MainScreen(Screen[None]):
             return
         service = self._build_sync_service()
         if service is None:
+            return
+        if not self._claim_sync_slot():
+            self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
             return
         self._sync_service = service
         self._sync_plan = None
@@ -562,6 +569,10 @@ class MainScreen(Screen[None]):
         )
 
         def _on_dismiss(result: bool | None) -> None:
+            # Every way out of the foreground flow ends with this dialog
+            # being dismissed — cancelled, nothing to sync, planning
+            # failed, or executed — so this is where the slot goes back.
+            self._release_sync_slot()
             if result is False:
                 self.app.notify("Sync cancelled.")  # pyright: ignore[reportUnknownMemberType]
             self.call_after_refresh(self._refresh_after_sync)
@@ -605,8 +616,6 @@ class MainScreen(Screen[None]):
             self._on_plan_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
         elif worker.name == "sync-exec":
             self._on_exec_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
-        elif worker.name == "sync-bg":
-            self._on_bg_sync_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
 
     def _on_plan_complete(self, worker: Worker[SyncPlan]) -> None:
         """Planning finished — show the confirm screen or report error."""
@@ -714,18 +723,35 @@ class MainScreen(Screen[None]):
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             self.app.screen.update_progress(info)  # pyright: ignore[reportUnknownMemberType]
 
+    def _scheduler(self) -> MailSyncScheduler | None:
+        """The periodic sync, which the application owns.
+
+        It runs on its own thread, so it keeps going while the agenda is
+        in front of this screen and survives anything that happens to the
+        screen itself. All this screen does is show when the next run is
+        due and ask for one when the user presses the key.
+        """
+        # `self.app` is typed as App[Any]; cast it to the host protocol
+        # so the lookup is statically checked. Imported only under
+        # TYPE_CHECKING — `app.py` imports this screen, so a runtime
+        # import would cycle.
+        return cast("MailSyncHost", self.app).mail_sync
+
     def _sync_in_progress(self) -> bool:
         """True when a sync is active or awaiting its confirmation.
 
-        Covers both the running workers (plan/exec/bg) and the gap in the
-        foreground flow where the ``SyncConfirmScreen`` modal is open
-        waiting for the user to Proceed — during that window no worker
-        runs, but starting another sync would overlap IMAP sessions on
-        the same account.
+        Covers the periodic thread, the running workers (plan/exec) and
+        the gap in the foreground flow where the ``SyncConfirmScreen``
+        modal is open waiting for the user to Proceed — during that window
+        no worker runs, but starting another sync would overlap IMAP
+        sessions on the same account.
         """
         from .sync_confirm_screen import SyncConfirmScreen
 
-        active = {"sync-plan", "sync-exec", "sync-bg"}
+        scheduler = self._scheduler()
+        if scheduler is not None and scheduler.running:
+            return True
+        active = {"sync-plan", "sync-exec"}
         if any(
             w.name in active and w.is_running
             for w in self.workers  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
@@ -737,45 +763,47 @@ class MainScreen(Screen[None]):
         )
 
     def action_background_sync(self) -> None:
-        """Run a non-blocking, auto-confirm-everything sync.
-
-        Triggered manually by ``ctrl+g``.  The manual trigger starts a sync
-        now and arms/resets the periodic timer so future background syncs
-        repeat from this point.
-        """
-        self._start_background_sync(arm_repeat=True)
-
-    def _start_background_sync(self, *, arm_repeat: bool) -> None:
-        """Start one background sync, optionally arming periodic repeats.
+        """Run a non-blocking, auto-confirm-everything sync (``ctrl+g``).
 
         Unlike ``action_sync`` it shows no modal and assumes "yes" to every
         confirmation, including the mass-deletion guard — ``sync()`` confirms
         all folders internally.  A spinner on the FolderPanel border title is
         the only visual clue.
+
+        The manual trigger also starts the periodic cadence and counts the
+        next run from here, which is how ``ctrl+g`` has always behaved even
+        when ``background_sync_enabled`` is off.
         """
+        scheduler = self._scheduler()
+        if scheduler is None:
+            self.app.notify("Background sync is not wired in this build.")  # pyright: ignore[reportUnknownMemberType]
+            return
         if self._sync_in_progress():
             self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
             return
-        service = self._build_sync_service()
-        if service is None:
+        scheduler.start()
+        if not scheduler.request_now():
+            self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
             return
-        if arm_repeat:
-            self._arm_background_sync_timer()
-        self.query_one(FolderPanel).set_syncing(True)
-        # exit_on_error=False: a background failure is reported as a toast in
-        # _on_bg_sync_complete, never an app-killing fatal error.
-        self.run_worker(service.sync, name="sync-bg", thread=True, exit_on_error=False)
+        self._show_next_background_sync()
 
-    def _on_bg_sync_complete(self, worker: Worker[SyncResult]) -> None:
-        """Background sync finished — stop the spinner and report."""
+    def on_sync_started(self) -> None:
+        """The scheduler began a run; called on the UI thread by the app."""
+        self.query_one(FolderPanel).set_syncing(True)
+
+    def on_sync_finished(self, outcome: MailSyncOutcome) -> None:
+        """The scheduler finished a run; called on the UI thread by the app."""
         self.query_one(FolderPanel).set_syncing(False)
-        if worker.state == worker.state.ERROR:
-            err = worker.error
-            msg = str(err) if err else "unknown error"
-            self.app.notify(f"Background sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
+        self._show_next_background_sync()
+        if outcome.error is not None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Background sync failed: {outcome.error}", severity="error"
+            )
             return
-        self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
-        self._announce_new_mail(worker.result)
+        if outcome.result is None:
+            return
+        self.app.notify(self._sync_result_summary(outcome.result))  # pyright: ignore[reportUnknownMemberType]
+        self._announce_new_mail(outcome.result)
         self.call_after_refresh(self._refresh_after_sync)
 
     # ------------------------------------------------------------------

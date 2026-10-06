@@ -28,7 +28,7 @@ All v1 capabilities implemented and tested:
 - Mass-deletion confirmation (`>20%` server-side) surfaced per-folder in CLI and TUI plans; `--yes` / `Y` applies them.
 - Local-mirror rescan with mtime sidecar cache and a lean storage-key projection on cold scans.
 - Scoped `pony reset --account NAME` rebuild path.
-- Background/periodic sync: non-blocking `ctrl+g` worker that auto-confirms every folder, plus a config-gated periodic timer (`background_sync_enabled` / `background_sync_interval_seconds`).
+- Background/periodic sync: non-blocking `ctrl+g` run that auto-confirms every folder, plus a config-gated periodic thread (`background_sync_enabled` / `background_sync_interval_seconds`). Both halves schedule themselves through `chronos.scheduler.PeriodicSync`, owned by the application rather than by a screen, so the cadence does not depend on which subsystem is in front.
 - RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
 - Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
 - Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.

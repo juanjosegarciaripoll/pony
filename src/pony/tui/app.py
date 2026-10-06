@@ -7,12 +7,16 @@ import contextlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.screen import Screen
 
-from chronos.tui.app import CALENDAR_CSS, SyncRunner
+from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
+from chronos.scheduler import PeriodicSync
+from chronos.tui.app import CALENDAR_CSS
 from chronos.tui.app import TuiServices as CalendarServices
 from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
@@ -28,6 +32,7 @@ from ..protocols import (
     IndexRepository,
     MirrorRepository,
 )
+from ..sync import MailSyncOutcome, MailSyncScheduler, build_sync_service
 from .calendar_host import (
     AlarmPoller,
     build_calendar_services,
@@ -49,6 +54,20 @@ _COMPANION_TICK_SECONDS = 30.0
 
 # A reminder stays on screen long enough to be read after looking away.
 _REMINDER_TOAST_SECONDS = 120.0
+
+
+@runtime_checkable
+class MailSyncHost(Protocol):
+    """The application the mail reader lives on, as the screen sees it.
+
+    `MainScreen` reads the periodic sync off `self.app`, so whatever hosts
+    it has to offer one — `PonyApp` does. Spelled as a protocol for the
+    same reason the calendar has `CalendarHost`: the screen cannot import
+    the application module, which imports the screen.
+    """
+
+    @property
+    def mail_sync(self) -> MailSyncScheduler | None: ...
 
 
 class PonyApp(App[None]):
@@ -122,7 +141,12 @@ class PonyApp(App[None]):
         # application to push its screen onto.
         self._calendar_services: CalendarServices | None = None
         self._alarm_poller: AlarmPoller | None = None
-        self._calendar_syncing = False
+        # Both periodic syncs, each on a thread of its own, started on
+        # mount and stopped on unmount. They belong to the application
+        # rather than to a screen because a screen's timer dies when the
+        # screen is popped, and the user switches halves with F2 all day.
+        self._mail_sync: MailSyncScheduler | None = None
+        self._calendar_sync: CalendarSyncScheduler | None = None
         # One clock for everything time-dependent on this side: which
         # reminders are due, and which event comes next. Injectable so a
         # screenshot run or a test can pin it.
@@ -178,7 +202,7 @@ class PonyApp(App[None]):
                 _COMPANION_TICK_SECONDS, self._companion_tick, name="companion"
             )
             self._companion_tick()
-            self._arm_calendar_sync()
+        self._start_schedulers()
         await self._start_mcp_tcp_server()
 
     # ------------------------------------------------------------------
@@ -307,59 +331,136 @@ class PonyApp(App[None]):
             plural = "" if count == 1 else "s"
             self.notify(f"Invitation sent to {count} attendee{plural}.")
 
-    def _arm_calendar_sync(self) -> None:
-        """Keep the calendar synced while the mail reader is in front.
+    def _start_schedulers(self) -> None:
+        """Start both periodic syncs, each on its own thread.
 
-        The agenda runs its own periodic sync while it is open, but it
-        is only mounted when the user is looking at it — and a reminder
-        can only fire for an event the local alarm cache knows about.
-        Without this, a day spent reading mail would silently stop
-        announcing anything added from another device.
+        Neither depends on what is on screen. The calendar's used to be
+        the mail reader's problem — the agenda only syncs while it is
+        mounted, and a reminder can only fire for an event the local
+        alarm cache knows about — and the mail reader's used to live on
+        its own screen. Now one thread each keeps both halves current
+        whichever one the user is looking at, and the screens read the
+        countdown off them.
+
+        Each is config-gated as before: with background sync disabled the
+        thread is not started, and the manual key still works.
         """
-        if self._calendar is None:
-            return
-        config = self._calendar.config
-        if not config.background_sync_enabled:
-            return
-        self.set_interval(
-            config.background_sync_interval_seconds,
-            self._calendar_sync_tick,
-            name="calendar-sync",
-        )
+        self._start_mail_scheduler()
+        self._start_calendar_scheduler()
 
-    def _calendar_sync_tick(self) -> None:
-        if self._calendar_services is None or self._calendar_syncing:
+    def _start_mail_scheduler(self) -> None:
+        service = build_sync_service(
+            config=self._config,
+            index=self._index,
+            mirrors=self._mirrors,
+            credentials=self._credentials,
+        )
+        scheduler: MailSyncScheduler = PeriodicSync(
+            name="mail-sync",
+            # A mail sync has no cancellation point, so the keyword is
+            # swallowed here rather than threaded into the engine.
+            runner=lambda **_kwargs: service.sync(),
+            interval=self._config.background_sync_interval_seconds,
+            on_started=self._on_mail_sync_started,
+            on_finished=self._on_mail_sync_finished,
+        )
+        self._mail_sync = scheduler
+        if self._config.background_sync_enabled:
+            scheduler.start()
+
+    def _start_calendar_scheduler(self) -> None:
+        services = self._calendar_services
+        if self._calendar is None or services is None:
             return
-        if isinstance(self.screen, CalendarScreen):
-            # The agenda is up and running its own; two syncs would only
-            # contend for the calendar's lockfile.
-            return
-        runner = self._calendar_services.sync_runner
+        runner = services.sync_runner
         if runner is None:
             return
-        self._calendar_syncing = True
-        self._run_calendar_sync(runner)
+        scheduler: CalendarSyncScheduler = PeriodicSync(
+            name="calendar-sync",
+            runner=runner,
+            interval=self._calendar.config.background_sync_interval_seconds,
+            on_started=self._on_calendar_sync_started,
+            on_finished=self._on_calendar_sync_finished,
+        )
+        self._calendar_sync = scheduler
+        services.sync_scheduler = scheduler
+        if self._calendar.config.background_sync_enabled:
+            scheduler.start()
 
-    @work(thread=True, group="calendar-sync", exit_on_error=False)
-    def _run_calendar_sync(self, runner: SyncRunner) -> None:
-        """Sync the calendar on a worker thread, quietly.
+    def _stop_schedulers(self) -> None:
+        for scheduler in (self._mail_sync, self._calendar_sync):
+            if scheduler is not None:
+                scheduler.stop()
 
-        A background sync the user did not ask for reports nothing on
-        success: its whole purpose is that the reminders and the next
-        event stay true without being talked about. Failures go to the
-        log, where a sync that has been failing all day can be found.
+    @property
+    def mail_sync(self) -> MailSyncScheduler | None:
+        """The mail reader's periodic sync, for the screen that shows it."""
+        return self._mail_sync
+
+    # -- scheduler callbacks, all arriving on a scheduler thread ----------
+
+    def _on_mail_sync_started(self) -> None:
+        self._on_ui_thread(self._mail_screen_started)
+
+    def _on_mail_sync_finished(self, outcome: MailSyncOutcome) -> None:
+        self._on_ui_thread(lambda: self._mail_screen_finished(outcome))
+
+    def _on_calendar_sync_started(self) -> None:
+        self._on_ui_thread(self._calendar_screen_started)
+
+    def _on_calendar_sync_finished(self, outcome: CalendarSyncOutcome) -> None:
+        self._on_ui_thread(lambda: self._calendar_screen_finished(outcome))
+
+    def _on_ui_thread(self, action: Callable[[], None]) -> None:
+        """Hop onto the UI thread, forgiving an application already gone.
+
+        A `RuntimeError` here means the user quit while a sync was in
+        flight, which is ordinary and not worth reporting.
         """
-        try:
-            runner()
-        except Exception:  # noqa: BLE001 — a background sync must not kill the app
-            self.log.warning("background calendar sync failed")
-        finally:
-            with contextlib.suppress(RuntimeError):
-                self.call_from_thread(self._calendar_sync_done)
+        with contextlib.suppress(RuntimeError):
+            self.call_from_thread(action)
 
-    def _calendar_sync_done(self) -> None:
-        self._calendar_syncing = False
+    def _mail_screen_started(self) -> None:
+        screen = self._find_screen(MainScreen)
+        if screen is not None:
+            screen.on_sync_started()
+
+    def _mail_screen_finished(self, outcome: MailSyncOutcome) -> None:
+        screen = self._find_screen(MainScreen)
+        if screen is not None:
+            screen.on_sync_finished(outcome)
+        elif outcome.error is not None:
+            # Nobody is looking at the mail reader; the log is where a
+            # sync that has been failing all day can be found.
+            self.log.warning(f"background mail sync failed: {outcome.error}")
         self._refresh_companion_status()
+
+    def _calendar_screen_started(self) -> None:
+        screen = self._find_screen(CalendarScreen)
+        if screen is not None:
+            screen.on_sync_started()
+
+    def _calendar_screen_finished(self, outcome: CalendarSyncOutcome) -> None:
+        screen = self._find_screen(CalendarScreen)
+        if screen is not None:
+            screen.on_sync_finished(outcome)
+        elif outcome.error is not None:
+            self.log.warning(f"background calendar sync failed: {outcome.error}")
+        self._refresh_companion_status()
+
+    def _find_screen[ScreenT: Screen[None]](
+        self, kind: type[ScreenT]
+    ) -> ScreenT | None:
+        """The screen of `kind` on the stack, visible or suspended.
+
+        A sync that finishes while the user is in the other half still
+        has a screen to report to — it is simply not the one in front, so
+        the toast it raises is the application's to route.
+        """
+        for screen in self.screen_stack:
+            if isinstance(screen, kind):
+                return screen
+        return None
 
     def _companion_tick(self) -> None:
         """Fire due reminders and refresh what each half says about the other."""
@@ -459,6 +560,8 @@ class PonyApp(App[None]):
 
     async def on_unmount(self) -> None:
         from ..mcp_server import clear_mcp_state
+
+        self._stop_schedulers()
 
         if self._mcp_tcp_task is not None:
             self._mcp_tcp_task.cancel()

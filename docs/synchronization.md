@@ -288,11 +288,20 @@ background path auto-confirms every folder, including folders that trip the
 mass-deletion guard, and shows a spinner on the Folders panel title while it
 runs.
 
-That manual trigger also arms or restarts the periodic background-sync timer.
-Set `background_sync_enabled = true` to arm the same timer at TUI startup; the
-interval is controlled by `background_sync_interval_seconds` (default 600
-seconds). Pony refuses overlapping syncs, so a timer tick during an active sync
-is skipped with a notification rather than starting a second IMAP session.
+Periodic sync runs on a thread the application owns, not on a timer belonging
+to whichever screen is in front, so it keeps its cadence while you are looking
+at the calendar. Set `background_sync_enabled = true` to start it when the TUI
+starts; the interval is controlled by `background_sync_interval_seconds`
+(default 600 seconds), and the first automatic run falls one interval after
+startup rather than at it. ++ctrl+g++ asks for a run now and starts the cadence
+if it was not running, so the manual trigger still arms repeats even with
+`background_sync_enabled = false`.
+
+Pony refuses overlapping syncs: only one sync holds the slot at a time, and the
+foreground ++g++ flow keeps it for as long as its confirmation dialog is open,
+so the periodic thread cannot open a second IMAP session on the same account
+while you are deciding. A periodic turn that arrives then is **postponed, not
+dropped** — it tries again shortly, instead of waiting out a whole interval.
 
 ### Plan-execute time gap
 

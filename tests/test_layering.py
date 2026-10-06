@@ -18,8 +18,12 @@ import subprocess
 import sys
 import unittest
 
-# Modules that make up the headless backend surface.
+# Modules that make up the headless backend surface.  `chronos.scheduler`
+# is in here because the mail half runs the periodic sync off it: the
+# class has to stay free of Textual for `pony` to be able to import it
+# without dragging the calendar's widget tree along.
 _BACKEND_MODULES = (
+    "chronos.scheduler",
     "pony.sync",
     "pony.storage",
     "pony.index_store",

@@ -32,10 +32,19 @@ class SyncConfirmScreen(ModalScreen[None]):
         self,
         accounts: Sequence[AccountConfig],
         on_confirm: Callable[[], None],
+        *,
+        on_cancel: Callable[[], None] | None = None,
     ) -> None:
+        """`on_cancel` runs when the dialog is dismissed without syncing.
+
+        The caller claims the periodic sync's slot before putting this
+        dialog up, so it needs telling when the user changes their mind
+        and the slot has to go back.
+        """
         super().__init__()
         self._accounts = tuple(accounts)
         self._on_confirm = on_confirm
+        self._on_cancel = on_cancel
 
     def compose(self) -> ComposeResult:
         with Vertical(id="sync-confirm-box", classes="dialog-box"):
@@ -64,6 +73,8 @@ class SyncConfirmScreen(ModalScreen[None]):
 
     def action_cancel(self) -> None:
         self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
+        if self._on_cancel is not None:
+            self._on_cancel()
 
 
 __all__ = ["SyncConfirmScreen"]
