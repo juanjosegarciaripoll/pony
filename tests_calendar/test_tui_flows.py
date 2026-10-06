@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from rich.style import Style
 from rich.text import Text
@@ -2896,12 +2897,15 @@ class TimelineGridHelpersTest(unittest.TestCase):
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         event = _empty_event(ref)
+        # Local, not UTC: the range is computed from local hours, so a
+        # UTC-anchored 10:00 is 00:00 somewhere and would widen the range
+        # for a reason this test is not about.
         rows = (
             OccurrenceRow(
                 occurrence=Occurrence(
                     ref=ref,
-                    start=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
-                    end=datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
+                    start=datetime(2026, 5, 1, 10, 0).astimezone(),
+                    end=datetime(2026, 5, 1, 11, 0).astimezone(),
                     recurrence_id=None,
                     is_override=False,
                 ),
@@ -2910,6 +2914,29 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
         start, end = _compute_hour_range([(date(2026, 5, 1), rows)])
         self.assertEqual((start, end), (6, 22))
+
+    def test_compute_hour_range_widens_for_an_event_ending_at_midnight(self) -> None:
+        """An event running to midnight occupies the rest of its own day.
+
+        Reading the hour off the end would see 0 — the wrapped hour on the
+        *next* day — and leave a 23:00 meeting with no row to appear in.
+        """
+        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
+        rows = (
+            OccurrenceRow(
+                occurrence=Occurrence(
+                    ref=ref,
+                    start=datetime(2026, 5, 1, 23, 0).astimezone(),
+                    end=datetime(2026, 5, 2, 0, 0).astimezone(),
+                    recurrence_id=None,
+                    is_override=False,
+                ),
+                component=_empty_event(ref),
+            ),
+        )
+        self.assertEqual(_compute_hour_range([(date(2026, 5, 1), rows)]), (6, 24))
 
     def test_compute_hour_range_widens_for_late_events(self) -> None:
         from chronos.tui.widgets.timeline_grid import _compute_hour_range
@@ -3273,12 +3300,16 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(_is_full_day(short.occurrence))
 
         # A 24h-long event that is NOT anchored at midnight is timed, not
-        # all-day — guards the midnight-anchor requirement.
+        # all-day — guards the midnight-anchor requirement. The zone is
+        # pinned rather than ambient: `_is_full_day` also accepts a UTC
+        # midnight anchor, and 09:00 local *is* UTC midnight at UTC+9, so
+        # an ambient-zone shift would make this read as all-day in Tokyo.
+        offset_zone = ZoneInfo("Europe/Madrid")
         day_long_offset = self._all_day_row(
             "offset",
             "On-call shift",
-            datetime(2026, 5, 1, 9, 0).astimezone(),
-            datetime(2026, 5, 2, 9, 0).astimezone(),
+            datetime(2026, 5, 1, 9, 0, tzinfo=offset_zone),
+            datetime(2026, 5, 2, 9, 0, tzinfo=offset_zone),
         )
         self.assertFalse(_is_full_day(day_long_offset.occurrence))
 
@@ -3613,6 +3644,12 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 if timeline.cell_ref(row, col) is not None
                 and timeline.slot_start(row, col) is not None
             )
+            # Bring the cell on screen first. Which hour holds the event
+            # depends on the local zone, so east of UTC it can sit below
+            # the fold — and Pilot refuses to click an offset outside the
+            # visible region.
+            timeline.cursor_coordinate = Coordinate(row, col)
+            await pilot.pause()
             region = timeline._get_cell_region(Coordinate(row, col))
             offset = (
                 region.x - timeline.scroll_offset.x + 1,

@@ -602,9 +602,17 @@ def _compute_hour_range(
             occ_start = row.occurrence.start.astimezone()
             occ_end = (row.occurrence.end or row.occurrence.start).astimezone()
             start_hour = min(start_hour, occ_start.hour)
-            # End-hour ceiling: if event ends at 22:30, we want a 22:30
-            # row, so end_hour must be 23.
-            tail_hour = occ_end.hour + (1 if occ_end.minute > 0 else 0)
+            if occ_end.date() > occ_start.date():
+                # The event runs past local midnight, so it occupies the
+                # rest of its own day. Taking the hour off the end would
+                # read the wrapped hour on the *next* day — 0 for an event
+                # ending at midnight — and leave a 23:00 meeting with no
+                # row to appear in.
+                tail_hour = 24
+            else:
+                # End-hour ceiling: if event ends at 22:30, we want a 22:30
+                # row, so end_hour must be 23.
+                tail_hour = occ_end.hour + (1 if occ_end.minute > 0 else 0)
             end_hour = max(end_hour, tail_hour)
     return start_hour, min(end_hour, 24)
 
