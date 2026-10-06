@@ -3231,6 +3231,83 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_end)
 
     @staticmethod
+    def _multi_day_timed_row() -> OccurrenceRow:
+        """A trip leaving the 17th and back the 25th, local and timed.
+
+        The minutes are deliberately off the quarter-hour: every real zone
+        offset is a multiple of 15 minutes, so :20 can be neither UTC
+        midnight nor local midnight anywhere, and `_is_full_day` therefore
+        reads this as timed in every zone the suite might run in. At a flat
+        09:00 it is UTC midnight at UTC+9 and the same fixture turns into
+        an all-day banner in Tokyo (see
+        `test_is_full_day_rejects_timed_events`).
+        """
+        return TimelineGridHelpersTest._all_day_row(
+            "trip",
+            "Conference trip",
+            datetime(2026, 5, 17, 9, 20).astimezone(),
+            datetime(2026, 5, 25, 17, 20).astimezone(),
+        )
+
+    def test_bucket_by_day_spans_a_multi_day_timed_event(self) -> None:
+        """A timed span covers every column it runs through.
+
+        A multi-day trip is not an all-day event, so it used to be filed
+        under its start date alone and disappeared from the week
+        beginning on the 20th.
+        """
+        from chronos.tui.widgets.timeline_grid import bucket_by_day
+
+        trip = self._multi_day_timed_row()
+        buckets = bucket_by_day([trip], date(2026, 5, 20), 7)
+        self.assertEqual(
+            [day for day, rows in buckets if trip in rows],
+            [date(2026, 5, 20) + timedelta(days=offset) for offset in range(6)],
+        )
+
+    def test_bucket_by_day_stops_at_a_midnight_end(self) -> None:
+        from chronos.tui.widgets.timeline_grid import bucket_by_day
+
+        evening = self._all_day_row(
+            "evening",
+            "Until midnight",
+            datetime(2026, 5, 20, 22, 0).astimezone(),
+            datetime(2026, 5, 21, 0, 0).astimezone(),
+        )
+        buckets = bucket_by_day([evening], date(2026, 5, 20), 7)
+        self.assertEqual(
+            [day for day, rows in buckets if evening in rows],
+            [date(2026, 5, 20)],
+        )
+
+    def test_cell_for_slot_fills_a_continuation_day(self) -> None:
+        """Middle days of a timed span are covered end to end."""
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        rows = (self._multi_day_timed_row(),)
+        ref = rows[0].component.ref
+        # A day entirely inside the span: covered, and never capped as an
+        # end since the span runs on past midnight.
+        _, hit, _, is_end = _cell_for_slot(date(2026, 5, 22), 13 * 60, rows)
+        self.assertEqual(hit, ref)
+        self.assertFalse(is_end)
+        # The final day is covered up to 17:20 and no further: the 17:00
+        # slot takes the end cap, the next one is empty.
+        _, mid_hit, _, mid_is_end = _cell_for_slot(
+            date(2026, 5, 25), 16 * 60 + 30, rows
+        )
+        self.assertEqual(mid_hit, ref)
+        self.assertFalse(mid_is_end)
+        _, last_hit, _, last_is_end = _cell_for_slot(date(2026, 5, 25), 17 * 60, rows)
+        self.assertEqual(last_hit, ref)
+        self.assertTrue(last_is_end)
+        _, after_hit, _, _ = _cell_for_slot(date(2026, 5, 25), 17 * 60 + 30, rows)
+        self.assertIsNone(after_hit)
+        # The day before it starts is untouched.
+        _, before_hit, _, _ = _cell_for_slot(date(2026, 5, 16), 13 * 60, rows)
+        self.assertIsNone(before_hit)
+
+    @staticmethod
     def _all_day_row(
         uid: str,
         summary: str,

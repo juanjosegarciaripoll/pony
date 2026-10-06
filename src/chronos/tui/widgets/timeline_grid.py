@@ -635,6 +635,36 @@ def _compute_hour_range(
     return start_hour, min(end_hour, 24)
 
 
+def _timed_day_minutes(occ: Occurrence, day: date) -> tuple[int, int] | None:
+    """Minutes-from-local-midnight a timed occurrence covers on `day`.
+
+    `None` when it never reaches that day. A span that began earlier
+    starts at 0 and one that ends later runs to 24*60, so every day of a
+    multi-day meeting is covered rather than only the day it started on
+    — a 17th-to-25th event has to paint the week opening on the 20th,
+    where it neither starts nor ends.
+
+    An end exactly at local midnight belongs to the day before, so an
+    event running 09:00 to midnight claims no slot on the following day.
+    A zero-length occurrence keeps `end == start`, which overlaps no
+    slot; that is pre-existing behaviour, left alone here.
+    """
+    start_local = occ.start.astimezone()
+    end_local = (occ.end or occ.start).astimezone()
+    start_day = start_local.date()
+    end_day = end_local.date()
+    if day < start_day or day > end_day:
+        return None
+    start_min = 0 if day > start_day else start_local.hour * 60 + start_local.minute
+    if day < end_day:
+        end_min = 24 * 60
+    else:
+        end_min = end_local.hour * 60 + end_local.minute
+        if end_min == 0 and day > start_day:
+            return None
+    return start_min, max(end_min, start_min)
+
+
 def _cell_for_slot(
     day: date,
     slot_minutes_in_day: int,
@@ -661,41 +691,29 @@ def _cell_for_slot(
     """
     slot_start = slot_minutes_in_day
     slot_end = slot_minutes_in_day + _SLOT_MINUTES
-    starting: list[OccurrenceRow] = []
-    continuing: list[OccurrenceRow] = []
+    # Each entry carries the row with the minutes it occupies on `day`,
+    # so the primary event's extent is already known below.
+    starting: list[tuple[OccurrenceRow, int, int]] = []
+    continuing: list[tuple[OccurrenceRow, int, int]] = []
     for row in events:
         if _occurrence_is_full_day(row.occurrence):
             continue
-        occ_start = row.occurrence.start.astimezone()
-        if occ_start.date() != day:
+        span = _timed_day_minutes(row.occurrence, day)
+        if span is None:
             continue
-        occ_end_dt = (row.occurrence.end or row.occurrence.start).astimezone()
-        start_min = occ_start.hour * 60 + occ_start.minute
-        end_min = (
-            24 * 60
-            if occ_end_dt.date() > day
-            else occ_end_dt.hour * 60 + occ_end_dt.minute
-        )
+        start_min, end_min = span
         if start_min < slot_end and end_min > slot_start:
             if start_min >= slot_start:
-                starting.append(row)
+                starting.append((row, start_min, end_min))
             else:
-                continuing.append(row)
+                continuing.append((row, start_min, end_min))
     active = starting + continuing
     if not active:
         return "", None, False, False
-    first = active[0]
+    first, first_start_min, first_end_min = active[0]
     summary = first.component.summary or "(no summary)"
     if len(active) > 1:
         summary = f"{summary} +{len(active) - 1}"
-    first_start = first.occurrence.start.astimezone()
-    first_end_dt = (first.occurrence.end or first.occurrence.start).astimezone()
-    first_start_min = first_start.hour * 60 + first_start.minute
-    first_end_min = (
-        24 * 60
-        if first_end_dt.date() > day
-        else first_end_dt.hour * 60 + first_end_dt.minute
-    )
     is_start = first_start_min >= slot_start
     is_end = (not is_start) and first_end_min <= slot_end
     return summary, first.component.ref, is_start, is_end
@@ -746,10 +764,10 @@ def bucket_by_day(
 ) -> list[tuple[date, list[OccurrenceRow]]]:
     """Group rows into the per-day `(date, rows)` pairs `show_days` takes.
 
-    Timed events go under their local start date (the timeline's cell
-    logic uses local dates too). Full-day events go under every shown
-    day they cover, so a multi-day span — including one that began
-    before `first_day` — appears in each of its columns.
+    Every row goes under each shown day it covers, so a multi-day span —
+    including one that began before `first_day` — appears in all of its
+    columns. Full-day spans use their anchoring frame's dates; timed
+    ones use local dates, matching the timeline's cell logic.
     """
     buckets: list[tuple[date, list[OccurrenceRow]]] = [
         (first_day + timedelta(days=offset), []) for offset in range(count)
@@ -763,12 +781,15 @@ def bucket_by_day(
                     count, max((end_d - first_day).days, (start_d - first_day).days + 1)
                 ),
             )
-        else:
-            day_index = (row.occurrence.start.astimezone().date() - first_day).days
-            indices = (
-                range(day_index, day_index + 1) if 0 <= day_index < count else range(0)
-            )
-        for i in indices:
+            for i in indices:
+                buckets[i][1].append(row)
+            continue
+        start_index = (row.occurrence.start.astimezone().date() - first_day).days
+        for i in range(max(0, start_index), count):
+            # The helper decides where the span really ends, including
+            # the midnight-end case, so the loop only needs a floor.
+            if _timed_day_minutes(row.occurrence, buckets[i][0]) is None:
+                break
             buckets[i][1].append(row)
     return buckets
 

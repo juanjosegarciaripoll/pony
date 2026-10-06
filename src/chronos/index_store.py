@@ -325,6 +325,21 @@ class SqliteIndexRepository:
         window_start: datetime,
         window_end: datetime,
     ) -> tuple[Occurrence, ...]:
+        """Every occurrence that *overlaps* [window_start, window_end).
+
+        Overlap, not containment of the start: a trip from the 17th to
+        the 25th has one occurrence row, anchored on the 17th, and it
+        must still come back when the view is the week beginning on the
+        20th. Filtering on `occurrence_start` alone made such an event
+        invisible in every view whose window opened after it began.
+
+        An occurrence with no stored end (and the degenerate rows where
+        the end is not after the start) is treated as an instant, so it
+        matches only when its start falls inside the window. Comparisons
+        are lexical on the stored UTC ISO strings, which sort
+        chronologically because `_datetime_to_sql` normalises both the
+        zone and the width.
+        """
         start_sql = _datetime_to_sql(window_start)
         end_sql = _datetime_to_sql(window_end)
         with self.connection() as conn:
@@ -334,13 +349,19 @@ class SqliteIndexRepository:
                 "FROM occurrences o "
                 "JOIN components c ON c.id = o.component_id "
                 "WHERE c.account_name = ? AND c.calendar_name = ? "
-                "AND o.occurrence_start >= ? AND o.occurrence_start < ? "
+                "AND o.occurrence_start < ? "
+                "AND CASE "
+                "WHEN o.occurrence_end IS NULL "
+                "OR o.occurrence_end <= o.occurrence_start "
+                "THEN o.occurrence_start >= ? "
+                "ELSE o.occurrence_end > ? END "
                 "ORDER BY o.occurrence_start",
                 (
                     calendar.account_name,
                     calendar.calendar_name,
-                    start_sql,
                     end_sql,
+                    start_sql,
+                    start_sql,
                 ),
             )
             rows = cursor.fetchall()
