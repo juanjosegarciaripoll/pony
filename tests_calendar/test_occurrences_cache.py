@@ -5,7 +5,13 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from chronos.domain import CalendarRef, ComponentRef, LocalStatus, VEvent
+from chronos.domain import (
+    CalendarRef,
+    ComponentRef,
+    LocalStatus,
+    Occurrence,
+    VEvent,
+)
 from chronos.index_store import SqliteIndexRepository
 from chronos.recurrence import populate_occurrences
 from chronos.storage import VdirMirrorRepository
@@ -138,6 +144,112 @@ class SetAndQueryOccurrencesTest(unittest.TestCase):
         )
         self.assertGreater(len(june), 0)
         self.assertNotEqual(first, june)
+
+
+class OverlappingWindowQueryTest(unittest.TestCase):
+    """A query window must catch spans that merely overlap it.
+
+    An eight-day trip has a single occurrence row anchored on its first
+    day; every view whose window opens after that day was dropping it,
+    so a trip from the 17th to the 25th vanished from the week starting
+    on the 20th.
+    """
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.index = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.index.close)
+
+    def _store(self, uid: str, start: datetime, end: datetime | None) -> ComponentRef:
+        ref = _ref(uid)
+        self.index.upsert_component(_event(uid, b"", dtstart=start, dtend=end or start))
+        self.index.set_occurrences(
+            ref,
+            [
+                Occurrence(
+                    ref=ref,
+                    start=start,
+                    end=end,
+                    recurrence_id=None,
+                    is_override=False,
+                )
+            ],
+        )
+        return ref
+
+    def _uids_in(self, start: datetime, end: datetime) -> list[str]:
+        return [occ.ref.uid for occ in self.index.query_occurrences(CAL, start, end)]
+
+    def test_span_started_before_the_window_is_returned(self) -> None:
+        self._store(
+            "trip",
+            datetime(2026, 5, 17, 9, 0, tzinfo=UTC),
+            datetime(2026, 5, 25, 17, 0, tzinfo=UTC),
+        )
+        week_of_20th = self._uids_in(
+            datetime(2026, 5, 20, tzinfo=UTC), datetime(2026, 5, 27, tzinfo=UTC)
+        )
+        self.assertEqual(week_of_20th, ["trip"])
+        # And in the week after it ends, it is gone again.
+        self.assertEqual(
+            self._uids_in(
+                datetime(2026, 5, 27, tzinfo=UTC), datetime(2026, 6, 3, tzinfo=UTC)
+            ),
+            [],
+        )
+
+    def test_window_bounds_stay_half_open(self) -> None:
+        # Ends exactly when the window opens: no overlap.
+        self._store(
+            "ends-at-open",
+            datetime(2026, 5, 19, 9, 0, tzinfo=UTC),
+            datetime(2026, 5, 20, tzinfo=UTC),
+        )
+        # Starts exactly when the window closes: no overlap either.
+        self._store(
+            "starts-at-close",
+            datetime(2026, 5, 27, tzinfo=UTC),
+            datetime(2026, 5, 27, 10, 0, tzinfo=UTC),
+        )
+        self.assertEqual(
+            self._uids_in(
+                datetime(2026, 5, 20, tzinfo=UTC), datetime(2026, 5, 27, tzinfo=UTC)
+            ),
+            [],
+        )
+
+    def test_occurrence_without_an_end_is_treated_as_an_instant(self) -> None:
+        self._store("no-end", datetime(2026, 5, 22, 9, 0, tzinfo=UTC), None)
+        self.assertEqual(
+            self._uids_in(
+                datetime(2026, 5, 20, tzinfo=UTC), datetime(2026, 5, 27, tzinfo=UTC)
+            ),
+            ["no-end"],
+        )
+        self.assertEqual(
+            self._uids_in(
+                datetime(2026, 5, 27, tzinfo=UTC), datetime(2026, 6, 3, tzinfo=UTC)
+            ),
+            [],
+        )
+
+    def test_rows_still_come_back_sorted_by_start(self) -> None:
+        self._store(
+            "late",
+            datetime(2026, 5, 22, 9, 0, tzinfo=UTC),
+            datetime(2026, 5, 22, 10, 0, tzinfo=UTC),
+        )
+        self._store(
+            "early-long",
+            datetime(2026, 5, 17, 9, 0, tzinfo=UTC),
+            datetime(2026, 5, 25, 17, 0, tzinfo=UTC),
+        )
+        self.assertEqual(
+            self._uids_in(
+                datetime(2026, 5, 20, tzinfo=UTC), datetime(2026, 5, 27, tzinfo=UTC)
+            ),
+            ["early-long", "late"],
+        )
 
 
 class InvalidationOnWriteTest(unittest.TestCase):
