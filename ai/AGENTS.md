@@ -33,7 +33,25 @@ so `tests_calendar/` still exercises the calendar standalone.
 5. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
 6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
 7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
-8. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
+8. **CI runs in UTC; your machine probably does not.** The calendar's
+   screens render times in the local zone, so a test that leaves a form
+   field at a clock-derived default passes or fails depending on where it
+   runs. Two of them were green in CEST and red on every runner for exactly
+   that reason. Before pushing anything that touches dates or times, run
+   `TZ=UTC uv run python -m pytest` — a green suite in one zone proves
+   nothing about another. Pin both ends of a time range explicitly in tests
+   rather than relying on a default.
+
+   Known, pre-existing, and **not** CI-blocking: three timeline-grid tests
+   in `tests_calendar/` fail east of about UTC+9
+   (`test_is_full_day_rejects_timed_events`,
+   `test_compute_hour_range_default_when_all_events_inside`,
+   `test_mouse_click_on_timed_event_opens_detail_modal`, plus
+   `test_enter_on_event_cell_pushes_detail_modal` at UTC+14). They fail in
+   the calendar's own repository too; the day-boundary arithmetic in the
+   grid is what needs fixing, not the tests.
+
+9. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
 
 ## Coverage requirements
 

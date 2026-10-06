@@ -1250,6 +1250,16 @@ class NewEventFlowTest(TuiFlowTestCase):
             edit.query_one("#edit-summary").value = "Brand new event"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
             edit.query_one("#edit-start-time", Select).value = "10:00"
+            # Pin both ends. Left alone they keep the defaults the form
+            # derived from `NOW` and rendered in the *local* zone, which
+            # makes the save depend on where the suite runs: under UTC the
+            # default end time lands exactly on 10:00, and east of about
+            # UTC+13 the default end *date* rolls to the next day and stays
+            # behind the start date set here. Either way the form refuses
+            # with "end must be after start" and the save silently does
+            # nothing.
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-time", Select).value = "11:00"
             edit.action_save()
             await pilot.pause()
 
@@ -1350,6 +1360,9 @@ class NewEventFlowTest(TuiFlowTestCase):
             edit.query_one("#edit-summary").value = "Planning"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
             edit.query_one("#edit-start-time", Select).value = "10:00"
+            # Pinned, for the reason given in the test above.
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-time", Select).value = "11:00"
             edit.query_one("#edit-attendees").value = (  # type: ignore[attr-defined]
                 "Alice <alice@example.com>, bob@example.com"
             )
