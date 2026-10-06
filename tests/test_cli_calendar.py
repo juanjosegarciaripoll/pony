@@ -91,13 +91,18 @@ class RunCalendarTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = TMP_ROOT / "cli-calendar" / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(parents=True, exist_ok=True)
-        # The calendar resolves its mirror, index and tokens from the
-        # platform data dir; keep them inside the test's own tree.
-        patcher = mock.patch.dict(
-            "os.environ", {"XDG_DATA_HOME": str(self.root / "data")}
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # Keep the calendar's mirror, index and tokens inside the
+        # test's own tree. `pony.calendar` binds these resolvers at
+        # import time, and patching them covers every platform —
+        # XDG_DATA_HOME is read only on the POSIX branch.
+        data = self.root / "data" / "chronos"
+        for target, value in (
+            ("pony.calendar.user_data_dir", lambda: data),
+            ("pony.calendar.default_index_path", lambda: data / "index.sqlite3"),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _config(self, text: str = _CONFIG) -> Path:
         path = self.root / "config.toml"
