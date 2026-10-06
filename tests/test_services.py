@@ -254,15 +254,14 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = _tmp_paths(f"cal-{self.id().rsplit('.', 1)[-1]}")
         self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
-        # The calendar resolves its own data directory from the
-        # environment; keep it inside this test's tree.
-        patcher = mock.patch.dict(
-            "os.environ",
-            {"XDG_DATA_HOME": str(self.paths.data_dir / "cal-home")},
-        )
+        # Keep the calendar's data directory inside this test's tree.
+        # Patch the resolver rather than the environment: only the POSIX
+        # branch reads XDG_DATA_HOME, so an env patch leaves Windows
+        # looking at the real %APPDATA% and the fixture invisible.
+        self.calendar_home = self.paths.data_dir / "cal-home" / "chronos"
+        patcher = mock.patch("chronos.paths.user_data_dir", lambda: self.calendar_home)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.calendar_home = self.paths.data_dir / "cal-home" / "chronos"
 
     def _write_config(self, text: str) -> None:
         self.paths.config_file.write_text(text, encoding="utf-8")

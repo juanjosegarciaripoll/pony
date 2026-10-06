@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from pony.calendar import (
     load_calendar_config,
@@ -168,21 +169,19 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        # chronos.paths reads the environment at call time, so pointing
-        # XDG_DATA_HOME at the temp dir keeps the opened index and
-        # mirror out of the developer's real calendar data.
-        import os
-
-        previous = os.environ.get("XDG_DATA_HOME")
-        os.environ["XDG_DATA_HOME"] = str(self.root / "data")
-
-        def _restore() -> None:
-            if previous is None:
-                del os.environ["XDG_DATA_HOME"]
-            else:
-                os.environ["XDG_DATA_HOME"] = previous
-
-        self.addCleanup(_restore)
+        # Keep the opened index and mirror out of the real calendar
+        # data. `pony.calendar` binds these at import time, so they are
+        # the names to replace — and patching them rather than
+        # XDG_DATA_HOME works on Windows too, where only %APPDATA% is
+        # consulted.
+        data = self.root / "data" / "chronos"
+        for target, value in (
+            ("pony.calendar.user_data_dir", lambda: data),
+            ("pony.calendar.default_index_path", lambda: data / "index.sqlite3"),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _write(self, text: str) -> Path:
         path = self.root / "config.toml"
