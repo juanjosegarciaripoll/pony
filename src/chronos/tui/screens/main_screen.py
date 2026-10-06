@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from dateutil.relativedelta import relativedelta
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Label
 
@@ -141,7 +141,14 @@ class MainScreen(Screen[None]):
                 yield EventList(id="centre-list")
                 yield TimelineGrid(id="centre-timeline")
                 yield MonthGrid(id="centre-month")
-                yield EventView(id="detail-pane")
+                # The notes of an invitation can run to pages, so the
+                # inline pane is a scroller around the renderer rather
+                # than the renderer itself: a bare `Static` has no
+                # children and Textual will never scroll one, which is
+                # how a multipage description came to be shown six lines
+                # at a time with no way to reach the rest.
+                with VerticalScroll(id="detail-pane"):
+                    yield EventView()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -446,7 +453,7 @@ class MainScreen(Screen[None]):
         event_list: EventList = self.query_one(EventList)
         timeline: TimelineGrid = self.query_one(TimelineGrid)
         month: MonthGrid = self.query_one(MonthGrid)
-        detail: EventView = self.query_one(EventView)
+        detail = self.query_one("#detail-pane", VerticalScroll)
         # Friendly date labels (Today / Tomorrow / weekday) are anchored
         # on the user's actual today, not on the viewed date — looking
         # at a 2014 day still shows the absolute date, not "Today".
@@ -525,6 +532,9 @@ class MainScreen(Screen[None]):
         view: EventView = self.query_one(EventView)
         today = self._services().now().date()
         view.show(component, today=today)
+        # Moving to another event starts its notes at the top rather
+        # than wherever the last one had been scrolled to.
+        self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # Refresh the detail pane when the cursor moves in the event

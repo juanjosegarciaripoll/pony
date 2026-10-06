@@ -1238,6 +1238,111 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
                 render_event_detail(second_component, NOW.date()),
             )
 
+    def _seed_long_event(self, services: TuiServices) -> StoredComponent:
+        """Add an invitation with pages of notes, and return it."""
+        ref = CalendarRef(ACCOUNT_NAME, WORK_CAL)
+        services.mirror.write(
+            ResourceRef(ACCOUNT_NAME, WORK_CAL, "long-description-1@example.com"),
+            corpus.event_with_long_description(),
+        )
+        index_calendar(mirror=services.mirror, index=services.index, calendar=ref)
+        populate_occurrences(
+            index=services.index,
+            calendar=ref,
+            window_start=datetime(2026, 1, 1, tzinfo=UTC),
+            window_end=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+        for component in services.index.list_calendar_components(ref):
+            if component.ref.uid == "long-description-1@example.com":
+                return component
+        raise AssertionError("the long event was not indexed")
+
+    async def test_long_notes_can_be_scrolled_in_the_detail_modal(self) -> None:
+        """Pages of notes must be reachable, not clipped at the dialog.
+
+        The modal body was a plain `Vertical`, which gave a multipage
+        description no scrollbar, no scroll keys and no wheel: everything
+        past the dialog's height simply could not be read.
+        """
+        from textual.containers import VerticalScroll
+
+        services = self.services()
+        component = self._seed_long_event(services)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(
+                EventDetailScreen(
+                    component, today=NOW.date(), on_edit=lambda _component: None
+                )
+            )
+            await pilot.pause()
+            modal = pilot.app.screen
+            self.assertIsInstance(modal, EventDetailScreen)
+            box = modal.query_one("#event-detail", VerticalScroll)
+
+            # There is more text than fits, and the user can get to it.
+            self.assertGreater(box.max_scroll_y, 0)
+            self.assertTrue(box.show_vertical_scrollbar)
+            self.assertIs(pilot.app.focused, box)
+
+            await pilot.press("end")
+            await pilot.pause()
+            self.assertEqual(box.scroll_y, box.max_scroll_y)
+            await pilot.press("home")
+            await pilot.pause()
+            self.assertEqual(box.scroll_y, 0)
+
+            # The screen's own keys still reach the screen past the
+            # scroller's bindings.
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, MainScreen)
+
+    async def test_long_notes_can_be_scrolled_in_the_inline_pane(self) -> None:
+        """The agenda's notes pane scrolls too, and resets per event."""
+        from textual.containers import VerticalScroll
+
+        services = self.services()
+        self._seed_long_event(services)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("m")
+            await pilot.pause()
+            screen._viewed_date = date(2026, 5, 1)
+            screen.refresh_view()
+            await pilot.pause()
+
+            # Walk to the long invitation.
+            for _ in range(20):
+                component = screen._currently_selected_component()
+                if (
+                    component is not None
+                    and component.ref.uid == "long-description-1@example.com"
+                ):
+                    break
+                await pilot.press("down")
+                await pilot.pause()
+            else:
+                raise AssertionError("the long event never came up in the agenda")
+
+            pane = screen.query_one("#detail-pane", VerticalScroll)
+            self.assertGreater(pane.max_scroll_y, 0)
+            pane.scroll_end(animate=False)
+            await pilot.pause()
+            self.assertGreater(pane.scroll_y, 0)
+
+            # Moving to another event starts at the top of its notes
+            # rather than where the last one was left.
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertEqual(pane.scroll_y, 0)
+
 
 class NewEventFlowTest(TuiFlowTestCase):
     async def test_new_event_creates_in_mirror_and_index(self) -> None:
@@ -3570,7 +3675,9 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             await pilot.pause()
             timeline = screen.query_one(TimelineGrid)
             event_list = screen.query_one(EventList)
-            detail = screen.query_one(EventView)
+            # The notes pane is the scroller around the renderer, so it
+            # is the scroller whose visibility the view switch toggles.
+            detail = screen.query_one("#detail-pane")
             self.assertTrue(timeline.display)
             self.assertFalse(event_list.display)
             self.assertFalse(detail.display)
