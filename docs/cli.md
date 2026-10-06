@@ -529,6 +529,43 @@ pony archived-thread.eml
 Both forms are identical. Global flags still go before the filename
 (`pony --theme nord view message.eml`).
 
+### Converting to PDF
+
+`--pdf` converts instead of opening anything, so it works over a whole
+directory and from a script:
+
+```
+pony view --pdf archived-thread.eml
+pony view --pdf *.eml
+pony view --pdf --out-dir ~/pdfs *.eml
+```
+
+| Flag | Meaning |
+|---|---|
+| `--pdf` | Convert rather than open the viewer. Several files are allowed. |
+| `--out-dir DIR` | Where to write. Created if missing. Default: beside each input. |
+
+`report.eml` becomes `report.pdf`. An existing file is never replaced —
+the name gains `-1`, `-2`… the same way saving an attachment twice does.
+
+The rendering is the one ++ctrl+p++ produces in the viewer: the message
+becomes the self-contained HTML of the browser view, and an external
+converter turns that into a PDF. Pony bundles no PDF engine and uses the
+first of these it finds on `PATH`:
+
+| Converter | Notes |
+|---|---|
+| `chromium` / `google-chrome` | Best fidelity for HTML mail |
+| `wkhtmltopdf` | |
+| `weasyprint` | |
+| `libreoffice` / `soffice` | Most likely to be installed already |
+
+With none of them installed the command stops and names them, rather
+than working through the list of files to no effect. A file that is
+unreadable or that the converter rejects is reported on its own and the
+rest still run; the exit status is 1 if any failed, which is what makes
+`pony view --pdf *.eml` safe to put in a script.
+
 ---
 
 ## `pony mcp`

@@ -386,9 +386,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     view_parser = subparsers.add_parser(
         "view",
-        help="Open a single .eml file in the full-screen message viewer.",
+        help="Open an .eml file in the viewer, or convert .eml files to PDF.",
     )
-    view_parser.add_argument("file", type=Path, help="Path to an RFC 5322 .eml file.")
+    view_parser.add_argument(
+        "file",
+        type=Path,
+        nargs="+",
+        help="Path to an RFC 5322 .eml file. Several are allowed with --pdf.",
+    )
+    view_parser.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Convert to PDF instead of opening the viewer.",
+    )
+    view_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Where --pdf writes. Default: beside each input file.",
+    )
 
     subparsers.add_parser(
         "docs",
@@ -693,8 +710,14 @@ def _dispatch(
                 message_id=args.message_id,
             )
 
+    if args.command == "view" and args.pdf:
+        return run_eml_to_pdf(files=args.file, out_dir=args.out_dir)
     if args.command == "view":
-        return run_eml_viewer(path=args.file, theme=args.theme, config_path=args.config)
+        if len(args.file) > 1:
+            parser.error("the viewer opens one file at a time; use --pdf for many")
+        return run_eml_viewer(
+            path=args.file[0], theme=args.theme, config_path=args.config
+        )
 
     if args.command == "docs":
         return run_docs()
@@ -3080,6 +3103,70 @@ def run_account_set_password(
     index.store_credential(account_name=account_name, encrypted=encrypted)
     print(f"Password stored for account {account_name!r}.")
     return 0
+
+
+def run_eml_to_pdf(*, files: Sequence[Path], out_dir: Path | None) -> int:
+    """Convert each ``.eml`` in *files* to a PDF, with no UI.
+
+    The same rendering the viewer's ++ctrl+p++ uses — the message becomes
+    the self-contained HTML of the browser view, which an external
+    converter turns into a PDF.  Pony bundles no PDF engine; see
+    :mod:`pony.pdf_export` for the ones it will use.
+
+    Output lands beside each input (``report.eml`` → ``report.pdf``) or in
+    *out_dir*.  An existing file is never overwritten: the name gains
+    ``-1``, ``-2``… exactly as saving an attachment twice does.
+
+    A missing converter stops the run, since no later file could succeed
+    either.  Anything wrong with one file — unreadable, or rejected by the
+    converter — is reported and the rest still run, which is what makes a
+    whole directory worth attempting in one go.  The exit status is 1 if
+    any file failed.
+    """
+    from .message_renderer import build_browser_html, unique_destination
+    from .pdf_export import NoPdfConverterError, html_to_pdf
+
+    if out_dir is not None:
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"error: could not create {out_dir}: {exc}", file=sys.stderr)
+            return 1
+
+    failures = 0
+    for path in files:
+        if not path.is_file():
+            print(f"error: not a readable file: {path}", file=sys.stderr)
+            failures += 1
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            print(f"error: could not read {path}: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        destination = unique_destination(
+            out_dir if out_dir is not None else path.parent,
+            f"{path.stem}.pdf",
+            fallback="message",
+        )
+        try:
+            html_to_pdf(build_browser_html(raw), destination)
+        except NoPdfConverterError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            suffix = f": {detail}" if detail else ""
+            print(f"error: converting {path} failed{suffix}", file=sys.stderr)
+            failures += 1
+            continue
+        except Exception as exc:  # noqa: BLE001 — one bad file, not the run
+            print(f"error: converting {path} failed: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"{path} -> {destination}")
+    return 1 if failures else 0
 
 
 def run_eml_viewer(
