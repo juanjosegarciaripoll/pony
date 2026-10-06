@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import Empty, SimpleQueue
 
+from chronos.scheduler import PeriodicSync, SyncOutcome
+
 from .accounts import find_imap_account, select_imap_accounts
 from .domain import (
     AccountConfig,
@@ -2541,3 +2543,38 @@ class ImapSyncService:
                         account.name,
                     )
                 self._compact_mirror(account)
+
+
+type MailSyncScheduler = PeriodicSync[SyncResult]
+"""The mail reader's periodic sync, spelled once for everyone holding one.
+
+The scheduler class itself is subsystem-agnostic — it lives in `chronos`
+only because that is the half of the program the other may import — so
+what makes this one the mail reader's is just what its runner returns.
+"""
+
+type MailSyncOutcome = SyncOutcome[SyncResult]
+
+
+def build_sync_service(
+    *,
+    config: AppConfig,
+    index: IndexRepository,
+    mirrors: collections.abc.Mapping[str, MirrorRepository],
+    credentials: CredentialsProvider,
+) -> ImapSyncService:
+    """Assemble the IMAP sync engine over already-opened repositories.
+
+    Both things that sync mail from the TUI need one: the screen's
+    foreground plan-and-confirm flow, and the application's periodic
+    scheduler, which runs on a thread of its own and so cannot reach into
+    a screen for it.  The mirrors are passed in rather than built here
+    because the application has already opened them and two mirror
+    objects over one directory is one too many.
+    """
+    return ImapSyncService(
+        config=config,
+        mirror_factory=lambda account: mirrors[account.name],
+        index=index,
+        credentials=credentials,
+    )

@@ -516,23 +516,25 @@ async def test_the_terminal_title_falls_back_without_an_open_folder() -> None:
         await pilot.pause()
 
 
-async def test_rearming_the_background_timer_resets_it_instead_of_stacking() -> None:
-    """A manual sync pushes the next automatic run one interval out."""
+async def test_the_periodic_sync_is_the_apps_not_the_screens() -> None:
+    """One scheduler, reached through the app, however often it is asked for.
+
+    The screen used to own a Textual timer, so a second arming could stack
+    a second interval and the test had to prove it did not. There is
+    nothing left on the screen to stack: it only looks the scheduler up.
+    """
     app, *_ = build_pony_app(label="main-bg-timer")
 
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _main(app)
 
-        screen._arm_background_sync_timer()
-        first = screen._background_sync_timer
+        first = screen._scheduler()
         assert first is not None
-
-        screen._arm_background_sync_timer()
-        await pilot.pause()
-
-        # Same timer object, reset — not a second interval.
-        assert screen._background_sync_timer is first
+        assert screen._scheduler() is first
+        assert first is app.mail_sync
+        # Nothing on the screen schedules anything any more.
+        assert not hasattr(screen, "_background_sync_timer")
 
 
 async def test_creating_a_folder_refreshes_the_tree() -> None:

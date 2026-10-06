@@ -123,9 +123,11 @@ config_version = 2
 use_utf8 = true
 
 # Background synchronization (optional).
-# When background_sync_enabled is true, Pony arms this timer at TUI startup.
+# When background_sync_enabled is true, Pony starts a sync thread at TUI
+# startup; it keeps its cadence whichever half of the program you are looking
+# at, and the first automatic run falls one interval after startup, not at it.
 # The manual trigger (ctrl+g) always starts a non-blocking sync immediately
-# and arms/restarts the same periodic timer from that point, even when startup
+# and starts/restarts the same cadence from that point, even when startup
 # background sync is disabled.  Background sync auto-confirms every folder
 # (including the mass-deletion guard), and a spinner appears on the Folders
 # panel title while it runs.
@@ -270,9 +272,11 @@ trash_retention_days = 30
 # repeated here.  There is one `config_version`, also at the top.
 
 # [calendar]
-# While the agenda is open it syncs every calendar account in the
-# background.  The first automatic run fires one interval after startup;
-# `g` syncs immediately and restarts the countdown.
+# Every calendar account is synced in the background on a thread of its own,
+# whether or not the agenda is the half you are looking at.  The first
+# automatic run fires one interval after startup; `g` syncs immediately and
+# restarts the countdown.  With background_sync_enabled = false nothing is
+# synced on a schedule and `g` syncs once, without starting a cadence.
 # background_sync_enabled = true
 # background_sync_interval_seconds = 3600
 

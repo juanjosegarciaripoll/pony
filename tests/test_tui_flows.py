@@ -12,6 +12,8 @@ via ``tui_helpers.build_pony_app`` / ``build_compose_app`` — the shared
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from email.message import EmailMessage, Message
 from pathlib import Path
 from time import monotonic
@@ -22,6 +24,7 @@ from uuid import uuid4
 import pytest
 from corpus import html_only, multipart_mixed_attachment, plain_text
 from textual.app import App
+from textual.pilot import Pilot
 from tui_helpers import (
     DeterministicDirectoryTree,
     DeterministicDirOnlyTree,
@@ -38,6 +41,7 @@ from tui_helpers import (
 
 import pony.tui.screens.add_attachment_screen as add_attachment_module
 import pony.tui.screens.save_folder_picker_screen as save_folder_module
+from chronos.scheduler import SyncOutcome
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,
@@ -49,6 +53,7 @@ from pony.sync import (
     AccountSyncResult,
     FolderSyncResult,
     ImapSyncService,
+    MailSyncOutcome,
     SyncPlan,
     SyncResult,
 )
@@ -910,22 +915,13 @@ async def test_background_sync_rejects_overlap(
         release.set()
 
 
-async def test_background_sync_timer_installed_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """on_mount installs a periodic timer when background_sync_enabled is set."""
+async def test_background_sync_runs_on_a_thread_when_enabled() -> None:
+    """The cadence is a thread the application owns, started on mount.
+
+    Nothing on the screen schedules it, which is what lets it keep running
+    while the user is looking at the agenda instead.
+    """
     import dataclasses
-
-    intervals: list[float] = []
-    original_set_interval = MainScreen.set_interval
-
-    def _spy_set_interval(
-        self: MainScreen, interval: float, *args: object, **kwargs: object
-    ) -> object:
-        intervals.append(interval)
-        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
 
     app, cfg, *_ = build_pony_app(label="bg-timer")
     app._config = dataclasses.replace(  # type: ignore[attr-defined]
@@ -934,78 +930,64 @@ async def test_background_sync_timer_installed_when_enabled(
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        scheduler = app.mail_sync
+        assert scheduler is not None
+        assert scheduler.started
+        deadline = scheduler.next_run_at
+        assert deadline is not None
+        # No sync at startup: the first run is a full interval away.
+        assert monotonic() + 590 < deadline <= monotonic() + 600
 
-    assert 600 in intervals
+    # Stopped with the application, so no thread outlives the session.
+    assert not scheduler.started
 
 
 async def test_background_sync_manual_trigger_arms_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ctrl+g starts a sync and arms the periodic background-sync timer."""
+    """ctrl+g syncs now and starts the cadence, even with the gate off."""
+    synced = threading.Event()
     sync_calls = 0
 
     def _spy_sync(_self: ImapSyncService, **_kw: object) -> SyncResult:
         nonlocal sync_calls
         sync_calls += 1
+        synced.set()
         return _canned_sync_result()
 
     monkeypatch.setattr(ImapSyncService, "sync", _spy_sync)
 
-    intervals: list[float] = []
-    callbacks: list[object] = []
-    original_set_interval = MainScreen.set_interval
-
-    def _spy_set_interval(
-        self: MainScreen, interval: float, *args: object, **kwargs: object
-    ) -> object:
-        if kwargs.get("name") == "background-sync":
-            intervals.append(interval)
-            callbacks.append(args[0] if args else None)
-        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
-
     app, *_ = build_pony_app(label="bg-manual-arms-repeat")
     async with app.run_test() as pilot:
         await pilot.pause()
+        scheduler = app.mail_sync
+        assert scheduler is not None
+        # The default config leaves background sync off.
+        assert not scheduler.started
+
         await pilot.press("ctrl+g")
+        await _until(pilot, synced.is_set, "ctrl+g never ran a sync")
         for _ in range(5):
             await pilot.pause()
 
-        assert intervals == [600]
-        assert len(callbacks) == 1
-        callback = callbacks[0]
-        assert callable(callback)
-        callback()
-
-        for _ in range(5):
-            await pilot.pause()
-
-    assert sync_calls == 2
+        assert sync_calls == 1
+        # And from now on it repeats: the manual trigger armed the cadence
+        # and the next run is a full interval out.
+        assert scheduler.started
+        deadline = scheduler.next_run_at
+        assert deadline is not None
+        assert deadline > monotonic() + 500
 
 
-async def test_background_sync_timer_absent_when_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No background-sync interval is installed under the default config."""
-    intervals: list[float] = []
-    original_set_interval = MainScreen.set_interval
-
-    def _spy_set_interval(
-        self: MainScreen, interval: float, *args: object, **kwargs: object
-    ) -> object:
-        intervals.append(interval)
-        return original_set_interval(self, interval, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(MainScreen, "set_interval", _spy_set_interval)
-
+async def test_background_sync_absent_when_disabled() -> None:
+    """Under the default config the cadence is built but never started."""
     app, *_ = build_pony_app(label="bg-no-timer")
     async with app.run_test() as pilot:
         await pilot.pause()
-
-    # Default config (background_sync_enabled=False) installs no 600s
-    # background-sync timer (other short internal timers may still exist).
-    assert 600 not in intervals
+        scheduler = app.mail_sync
+        assert scheduler is not None
+        assert not scheduler.started
+        assert scheduler.next_run_at is None
 
 
 async def test_folder_panel_set_syncing_toggle() -> None:
@@ -1102,15 +1084,10 @@ async def test_enabled_background_sync_shows_the_countdown_at_startup() -> None:
         assert monotonic() + 890 < deadline <= monotonic() + 900
 
 
-async def test_background_sync_tick_restarts_the_countdown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Each periodic firing pushes the clock back out to a full interval."""
+async def test_a_finished_sync_restarts_the_countdown() -> None:
+    """Reporting a run repaints the clock from the scheduler's own deadline."""
     import dataclasses
 
-    monkeypatch.setattr(
-        ImapSyncService, "sync", lambda _self, **_kw: _canned_sync_result()
-    )
     app, cfg, *_ = build_pony_app(label="bg-countdown-tick")
     app._config = dataclasses.replace(  # type: ignore[attr-defined]
         cfg, background_sync_enabled=True, background_sync_interval_seconds=900
@@ -1124,7 +1101,10 @@ async def test_background_sync_tick_restarts_the_countdown(
         panel.set_next_sync(monotonic() - 5)
         assert str(panel.border_title) == f"Folders {SCHEDULED_SYNC_MARK} 0:00"
 
-        screen._background_sync_tick()  # type: ignore[attr-defined]
+        outcome: MailSyncOutcome = SyncOutcome(
+            result=_canned_sync_result(), error=None, manual=False
+        )
+        screen.on_sync_finished(outcome)
         for _ in range(5):
             await pilot.pause()
         deadline = panel._next_sync_deadline  # type: ignore[attr-defined]
@@ -1132,6 +1112,19 @@ async def test_background_sync_tick_restarts_the_countdown(
         assert monotonic() + 890 < deadline <= monotonic() + 900
         assert "syncing" not in str(panel.border_title)
         assert SCHEDULED_SYNC_MARK in str(panel.border_title)
+
+
+async def _until(pilot: Pilot[None], check: Callable[[], bool], message: str) -> None:
+    """Pump the app until `check` holds, rather than sleeping blind.
+
+    The periodic syncs run on threads now, so a test that wants to see one
+    land waits for the evidence instead of a fixed number of pauses.
+    """
+    for _ in range(200):
+        if check():
+            return
+        await pilot.pause(0.01)
+    raise AssertionError(message)
 
 
 def _main_screen(app: PonyApp) -> MainScreen:

@@ -56,7 +56,13 @@ def _notifications(app: object) -> list[str]:
     return messages
 
 
-async def test_sync_actions_require_credentials() -> None:
+async def test_the_foreground_sync_requires_credentials() -> None:
+    """`g` builds the engine itself, so it is the one that has to check.
+
+    ``ctrl+g`` no longer does: the periodic sync belongs to the
+    application, which is constructed with a credentials provider and so
+    cannot be without one.
+    """
     app, *_ = build_pony_app(label="main-sync-no-credentials")
     messages = _notifications(app)
 
@@ -65,10 +71,9 @@ async def test_sync_actions_require_credentials() -> None:
         screen = _main(app)
         screen._credentials = None
         screen.action_sync()
-        screen.action_background_sync()
         await pilot.pause()
 
-    assert messages == ["No credentials provider.", "No credentials provider."]
+    assert messages == ["No credentials provider."]
 
 
 async def test_sync_result_summary_aggregates_changed_accounts() -> None:
@@ -232,6 +237,9 @@ async def test_worker_completion_routes_by_worker_name() -> None:
         screen._on_plan_complete = Mock()  # type: ignore[method-assign]
         screen._on_exec_complete = Mock()  # type: ignore[method-assign]
 
+        # "sync-bg" is gone — the background sync is a thread the
+        # application owns, not a worker this screen runs — so it must now
+        # fall through like any other name.
         for name in ("sync-plan", "sync-exec", "sync-bg", "something-else"):
             event = SimpleNamespace(worker=_worker(name=name, state=_State.SUCCESS))
             screen.on_worker_state_changed(event)  # type: ignore[arg-type]

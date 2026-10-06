@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 import contextlib
-import threading
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 
 from dateutil.relativedelta import relativedelta
-from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Header, Label
 
 from chronos.domain import (
@@ -37,6 +33,7 @@ from chronos.mutations import (
     trashed_copy,
 )
 from chronos.paths import default_tui_state_path
+from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.recurrence import rebuild_caches
 from chronos.tui.bindings import main_bindings
 from chronos.tui.screens.agenda_screen import (
@@ -91,7 +88,7 @@ from chronos.tui.widgets.sync_status import SyncStatus
 from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
 
 if TYPE_CHECKING:
-    from chronos.tui.app import CalendarHost, SyncRunner, TuiServices
+    from chronos.tui.app import CalendarHost, TuiServices
 
 # How often the "now" highlighting is re-checked. Repaints happen only
 # when the current slot or the set of running events actually changes.
@@ -122,10 +119,9 @@ class MainScreen(Screen[None]):
         self._grid_days: int = DEFAULT_GRID_DAYS
         self._selection = CalendarSelection(refs=frozenset())
         self._last_rows: tuple[OccurrenceRow, ...] = ()
-        self._background_sync_timer: Timer | None = None
-        # Set on unmount so a background sync still running when the
-        # app quits stops at its next calendar boundary.
-        self._background_sync_cancel = threading.Event()
+        # True while a dialog-driven sync holds the scheduler's slot, so
+        # the periodic thread defers instead of running a second one.
+        self._holds_sync_slot = False
         # What `_clock_signature` returned at the last render; the clock
         # tick repaints only when it changes.
         self._clock_state: object = None
@@ -170,12 +166,11 @@ class MainScreen(Screen[None]):
         if saved != ViewKind.AGENDA:
             self._set_view(saved)
         self._maybe_offer_startup_ics_import()
-        if services.config.background_sync_enabled and services.sync_runner:
-            self._arm_background_sync_timer()
+        # The sync itself belongs to the application and is already
+        # running; all this screen does is show when the next one is due,
+        # which is why the countdown survives being popped and reopened.
+        self._show_next_sync()
         self.set_interval(_CLOCK_TICK_SECONDS, self._clock_tick, name="clock")
-
-    def on_unmount(self) -> None:
-        self._background_sync_cancel.set()
 
     def action_toggle_calendars(self) -> None:
         panel = self.query_one(CalendarPanel)
@@ -403,18 +398,35 @@ class MainScreen(Screen[None]):
     def action_sync(self) -> None:
         """Sync every account now, in the background (`g`).
 
-        Also restarts the periodic countdown, so the next automatic
-        sync falls one full interval after this one.
+        Hands the request to the application's scheduler, which restarts
+        the countdown so the next automatic sync falls one full interval
+        after this one.
         """
-        self._start_background_sync(manual=True)
+        scheduler = self._scheduler()
+        if scheduler is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Sync from inside the TUI is not wired in this build."
+            )
+            return
+        if self._sync_in_progress() or not scheduler.request_now():
+            self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
+            return
+        self._show_next_sync()
 
     def action_sync_dialog(self) -> None:
-        """Confirm, then sync in the foreground progress dialog (`G`)."""
-        if self._sync_in_progress():
+        """Confirm, then sync in the foreground progress dialog (`G`).
+
+        The slot is claimed before the confirmation goes up and returned
+        when the progress dialog finishes, so the periodic thread cannot
+        start its own sync while the user is deciding.
+        """
+        if self._sync_in_progress() or not self._claim_sync_slot():
             self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
             return
         services = self._services()
-        screen = SyncConfirmScreen(services.config.accounts, self._run_sync)
+        screen = SyncConfirmScreen(
+            services.config.accounts, self._run_sync, on_cancel=self._release_sync_slot
+        )
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
     def action_search(self) -> None:
@@ -829,6 +841,29 @@ class MainScreen(Screen[None]):
         screen = SyncProgressScreen(runner, on_finished=self._sync_finished)
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
+    def _claim_sync_slot(self) -> bool:
+        """Take the scheduler's slot for a dialog-driven sync.
+
+        The progress dialog runs the sync on its own worker, so the
+        periodic thread must not start a second one against the same
+        accounts meanwhile. It gets the slot back when the dialog
+        finishes, and its own deferred turn follows one interval later.
+        """
+        scheduler = self._scheduler()
+        if scheduler is None:
+            return True
+        if not scheduler.try_claim():
+            return False
+        self._holds_sync_slot = True
+        return True
+
+    def _release_sync_slot(self) -> None:
+        scheduler = self._scheduler()
+        if self._holds_sync_slot and scheduler is not None:
+            scheduler.release()
+        self._holds_sync_slot = False
+        self._show_next_sync()
+
     def _maybe_offer_startup_ics_import(self) -> None:
         startup_ics = self._services().startup_ics_path
         if startup_ics is None:
@@ -884,9 +919,8 @@ class MainScreen(Screen[None]):
         error: BaseException | None,
     ) -> None:
         del results, error  # the dialog already showed the summary
+        self._release_sync_slot()
         self.refresh_view()
-        if self._background_sync_timer is not None:
-            self._arm_background_sync_timer()
 
     # Current time ----------------------------------------------------------------
 
@@ -931,24 +965,27 @@ class MainScreen(Screen[None]):
 
     # Background sync ----------------------------------------------------------
 
-    def _arm_background_sync_timer(self) -> None:
-        """Start the periodic background-sync timer, or restart its interval."""
-        interval = self._services().config.background_sync_interval_seconds
-        if self._background_sync_timer is None:
-            self._background_sync_timer = self.set_interval(
-                interval, self._background_sync_tick, name="background-sync"
-            )
-        else:
-            self._background_sync_timer.reset()
-        self.query_one(SyncStatus).set_next_sync(monotonic() + interval)
+    def _scheduler(self) -> CalendarSyncScheduler | None:
+        """The periodic sync, which the host application owns.
 
-    def _background_sync_tick(self) -> None:
-        interval = self._services().config.background_sync_interval_seconds
-        self.query_one(SyncStatus).set_next_sync(monotonic() + interval)
-        self._start_background_sync(manual=False)
+        It runs on its own thread and outlives this screen, so the screen
+        never starts or stops it — it reads the countdown off it and asks
+        it for a run when the user presses the key.
+        """
+        return self._services().sync_scheduler
+
+    def _show_next_sync(self) -> None:
+        """Paint the countdown from whatever the scheduler has scheduled."""
+        scheduler = self._scheduler()
+        deadline = None if scheduler is None else scheduler.next_run_at
+        if deadline is not None:
+            self.query_one(SyncStatus).set_next_sync(deadline)
 
     def _sync_in_progress(self) -> bool:
-        """True while a background sync runs or the sync dialog is open."""
+        """True while any sync runs or the sync dialog is open."""
+        scheduler = self._scheduler()
+        if scheduler is not None and scheduler.running:
+            return True
         if self.query_one(SyncStatus).syncing:
             return True
         return any(
@@ -956,52 +993,22 @@ class MainScreen(Screen[None]):
             for screen in self.app.screen_stack  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         )
 
-    def _start_background_sync(self, *, manual: bool) -> None:
-        """Run one sync without any dialog.
-
-        `manual` marks a user-requested run (`g`): it restarts the
-        periodic countdown and always reports its outcome, whereas a
-        timer-driven run stays quiet unless something changed or failed.
-        """
-        services = self._services()
-        runner = services.sync_runner
-        if runner is None:
-            if manual:
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    "Sync from inside the TUI is not wired in this build."
-                )
-            return
-        if self._sync_in_progress():
-            if manual:
-                self.app.notify("Sync already running.")  # pyright: ignore[reportUnknownMemberType]
-            return
-        if manual and services.config.background_sync_enabled:
-            self._arm_background_sync_timer()
+    def on_sync_started(self) -> None:
+        """The scheduler began a run; called on the UI thread by the host."""
         self.query_one(SyncStatus).set_syncing(True)
-        self._run_background_sync(runner, manual)
 
-    @work(thread=True, group="chronos-background-sync", exit_on_error=False)
-    def _run_background_sync(self, runner: SyncRunner, manual: bool) -> None:
-        results: Sequence[SyncResult] = ()
-        error: BaseException | None = None
-        try:
-            results = runner(cancel_event=self._background_sync_cancel)
-        except BaseException as exc:  # noqa: BLE001 — surface every failure
-            error = exc
-        # The app may already be gone if the user quit mid-sync.
-        with contextlib.suppress(RuntimeError):
-            self.app.call_from_thread(  # pyright: ignore[reportUnknownMemberType]
-                self._background_sync_done, results, error, manual
-            )
+    def on_sync_finished(self, outcome: CalendarSyncOutcome) -> None:
+        """The scheduler finished a run; called on the UI thread by the host.
 
-    def _background_sync_done(
-        self,
-        results: Sequence[SyncResult],
-        error: BaseException | None,
-        manual: bool,
-    ) -> None:
+        A run the user asked for always reports; a periodic one stays
+        quiet unless something changed or failed.
+        """
         self.query_one(SyncStatus).set_syncing(False)
+        self._show_next_sync()
         self._refresh_keeping_cursor()
+        results = outcome.result or ()
+        error = outcome.error
+        manual = outcome.manual
         if error is not None:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Background sync failed: {error}", severity="error"
@@ -1041,7 +1048,6 @@ def _round_up_to_half_hour(value: datetime) -> datetime:
 
 
 def _save_last_view(view: ViewKind) -> None:
-    import contextlib
 
     with contextlib.suppress(OSError):
         default_tui_state_path().write_text(view.value, encoding="utf-8")

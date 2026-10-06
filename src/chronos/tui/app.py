@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -12,10 +13,13 @@ from textual.app import App
 
 from chronos.domain import AlarmRecord, AppConfig, SyncResult
 from chronos.protocols import (
+    CalendarSyncOutcome,
+    CalendarSyncScheduler,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
+from chronos.scheduler import PeriodicSync
 from chronos.tui.bindings import BindingType
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.terminal import (
@@ -114,6 +118,13 @@ class TuiServices:
     # program. Empty when the calendar runs on its own and there is
     # nothing to switch to.
     host_bindings: Sequence[BindingType] = ()
+    # The periodic sync, owned by whichever application is hosting —
+    # `ChronosApp` standalone, `PonyApp` inside the mail client. It runs
+    # on its own thread, so it outlives the agenda screen being popped;
+    # `MainScreen` only observes its countdown and asks it for a run.
+    # None when sync is not wired in (most TUI tests), exactly like
+    # `sync_runner`.
+    sync_scheduler: CalendarSyncScheduler | None = None
 
 
 @runtime_checkable
@@ -277,9 +288,63 @@ class ChronosApp(App[None]):
         if not self.is_headless:
             self._start_mcp_server()
         self.set_interval(_ALARM_POLL_SECS, self._fire_pending_alarms, name="alarms")
+        self._start_sync_scheduler()
 
     def on_unmount(self) -> None:
+        if self.services.sync_scheduler is not None:
+            self.services.sync_scheduler.stop()
         pop_terminal_title()
+
+    # Background sync ----------------------------------------------------------
+
+    def _start_sync_scheduler(self) -> None:
+        """Give the calendar its periodic sync, on a thread of its own.
+
+        The app owns it, not `MainScreen`: a screen's timer dies when the
+        screen is popped, and the agenda is popped whenever the user looks
+        at something else. The screen finds it on `TuiServices` and only
+        observes it.
+
+        Config-gated exactly as before — `background_sync_enabled = false`
+        leaves the thread unstarted, and the sync key starts it.
+        """
+        runner = self.services.sync_runner
+        if runner is None:
+            return
+        scheduler: CalendarSyncScheduler = PeriodicSync(
+            name="calendar-sync",
+            interval=self.services.config.background_sync_interval_seconds,
+            runner=runner,
+            on_started=self._on_sync_started,
+            on_finished=self._on_sync_finished,
+        )
+        self.services.sync_scheduler = scheduler
+        if self.services.config.background_sync_enabled:
+            scheduler.start()
+
+    def _on_sync_started(self) -> None:
+        """Scheduler thread: tell the agenda, if anyone is looking at it."""
+        self._on_ui_thread(lambda screen: screen.on_sync_started())
+
+    def _on_sync_finished(self, outcome: CalendarSyncOutcome) -> None:
+        """Scheduler thread: hand the outcome to the agenda."""
+        self._on_ui_thread(lambda screen: screen.on_sync_finished(outcome))
+
+    def _on_ui_thread(self, action: Callable[[MainScreen], None]) -> None:
+        """Run `action` against the agenda screen on the UI thread.
+
+        Called from the scheduler thread, so everything hops through
+        `call_from_thread`; a `RuntimeError` means the application is
+        already gone, which at shutdown is ordinary.
+        """
+        with contextlib.suppress(RuntimeError):
+            self.call_from_thread(self._apply_to_main_screen, action)
+
+    def _apply_to_main_screen(self, action: Callable[[MainScreen], None]) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                action(screen)
+                return
 
     @work(exclusive=False, name="mcp-server", exit_on_error=False)
     async def _start_mcp_server(self) -> None:
