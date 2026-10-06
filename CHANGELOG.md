@@ -64,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   which is the point of the two halves sharing a process: an invitation goes
   to the people already in your mail.
 
+- **`.eml` files convert to PDF from the command line**: `pony view --pdf
+  report.eml` writes `report.pdf` beside it, and `pony view --pdf *.eml`
+  does a directory in one go, with `--out-dir` to send the results
+  somewhere else. The rendering is the one ++ctrl+p++ already produced in
+  the viewer — the message becomes the self-contained HTML of the browser
+  view, which an external converter turns into a PDF — but it no longer
+  needs a terminal UI to reach it, so it can go in a script. An existing
+  file is never replaced; the name gains `-1`, `-2`… as saving an
+  attachment twice does. A missing converter stops the run and names the
+  ones Pony can use, while a single unreadable or rejected file is
+  reported on its own and the rest still run. The converter itself moved
+  out of the TUI package, since nothing about it was ever terminal-specific.
+
 - **`pony calendar ...` runs any calendar command**: everything after
   `calendar` belongs to the calendar's own parser, so its subcommands, flags
   and `--help` are reached verbatim, against the same configuration file.

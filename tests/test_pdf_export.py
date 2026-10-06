@@ -1,4 +1,9 @@
-"""Tests for the external HTML-to-PDF converter shim (``pony.tui.pdf_export``)."""
+"""Tests for the external HTML-to-PDF converter.
+
+The conversion itself lives in ``pony.pdf_export`` and runs headless, for
+`pony view --pdf` as much as for the TUI; ``pony.tui.pdf_export`` adds only
+the worker wrapper that reports through a running app.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+from pony.pdf_export import NoPdfConverterError, find_converter, html_to_pdf
 from pony.tui import pdf_export
-from pony.tui.pdf_export import NoPdfConverterError, find_converter, html_to_pdf
 
 
 def _which_for(available: set[str]) -> Callable[[str], str | None]:
@@ -22,8 +27,8 @@ def _which_for(available: set[str]) -> Callable[[str], str | None]:
     return _which
 
 
-_WHICH = "pony.tui.pdf_export.shutil.which"
-_RUN = "pony.tui.pdf_export.subprocess.run"
+_WHICH = "pony.pdf_export.shutil.which"
+_RUN = "pony.pdf_export.subprocess.run"
 
 
 class FindConverterTest(unittest.TestCase):

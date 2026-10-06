@@ -59,6 +59,7 @@ src/pony/
   calendar.py          # the [calendar] config section + opening its stores
   invitation.py        # iTIP: reading invitations, writing replies/requests
   notifications.py     # the notification space mail and calendar share
+  pdf_export.py        # message HTML -> PDF via an external converter
   services.py          # doctor diagnostics, mirror integrity
   fixture_flow.py      # deterministic fixture ingest flow
   mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
@@ -66,7 +67,7 @@ src/pony/
     app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
     bindings.py        # shared mark/motion Binding tuples
     calendar_host.py   # where the mail app meets the calendar's screens
-    pdf_export.py      # HTML -> PDF via a detected external converter
+    pdf_export.py      # thread-worker wrapper around pony.pdf_export
     terminal.py        # OSC sequences for window-title push/pop/set
     ui_state.py        # persisted pane sizes (ui_state.json)
     screens/
@@ -288,10 +289,16 @@ opens its own connections and serves stdio directly.
 
 `render_message()` produces plain text, stripping `<style>` and `<script>`
 first. `build_browser_html()` produces self-contained HTML with CID-resolved
-inline images for the `w` key. `pdf_export.py` feeds that same HTML to whichever
-external converter is present (Chromium/Chrome, `wkhtmltopdf`, WeasyPrint or
-LibreOffice) for `ctrl+p`, running the blocking conversion in a Textual thread
-worker.
+inline images for the `w` key. `pony.pdf_export` feeds that same HTML to
+whichever external converter is present (Chromium/Chrome, `wkhtmltopdf`,
+WeasyPrint or LibreOffice).
+
+Nothing about that conversion is terminal-specific, so it lives outside
+`tui/`: `pony view --pdf` converts `.eml` files from the command line with
+no UI at all, which is what makes converting a directory scriptable.
+`tui/pdf_export.py` adds only what a running app needs — the blocking call
+on a thread worker, with every outcome reported through the app instead of
+raised at the caller — for `ctrl+p`.
 
 One predicate decides what counts as an attachment, so the reader pane, the
 browser view, the PDF export and the CLI extractor cannot disagree about a

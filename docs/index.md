@@ -43,6 +43,7 @@ with attendees mails them the invitation.
 | **Contacts** | Person-centric address book with multiple emails per contact, aliases, interactive browser/editor with mark/merge/delete, BBDB import/export for Emacs interop |
 | **Credentials** | Four backends: plaintext, environment variable, external command, OS-encrypted blob |
 | **Diagnostics** | `pony doctor` checks config, index, mirror integrity, and dependencies; reports orphan files and stale index entries |
+| **`.eml` files** | `pony file.eml` opens any message file in the viewer, with no account involved; `pony view --pdf *.eml` converts a directory of them to PDF from the command line |
 | **Calendar** | CalDAV sync with CTag / `sync-collection` / full reconciliation paths, a local `.ics` mirror, recurrence and alarm caches, and agenda / day / multi-day / month views — reached with ++f2++ or `pony calendar ...` |
 | **Invitations** | A `text/calendar` part is shown as an invitation and filed with one key, replying to the organizer; saving an event with attendees mails them the invitation, with addresses completed from your contacts |
 

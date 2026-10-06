@@ -26,6 +26,7 @@ _BACKEND_MODULES = (
     "pony.storage_indexing",
     "pony.message_projection",
     "pony.message_renderer",
+    "pony.pdf_export",
     "pony.compose_utils",
     "pony.composer",
     "pony.accounts",
