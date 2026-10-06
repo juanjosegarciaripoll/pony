@@ -388,6 +388,33 @@ END:VEVENT
     )
 
 
+LONG_DESCRIPTION_LINES = 60
+
+
+def event_with_long_description(lines: int = LONG_DESCRIPTION_LINES) -> bytes:
+    """An invitation whose notes run to several screens.
+
+    Real ones look like this: minutes pasted into the body, or pages of
+    conferencing boilerplate. Folded onto one DESCRIPTION property with
+    escaped newlines, which is how a server sends it.
+    """
+    body = "\\n".join(
+        f"Line {i:02d}: what the organiser had to say, at length." for i in range(lines)
+    )
+    return _vcalendar(
+        f"""
+BEGIN:VEVENT
+UID:long-description-1@example.com
+DTSTAMP:20260422T120000Z
+DTSTART:20260501T160000Z
+DTEND:20260501T170000Z
+SUMMARY:Project review
+DESCRIPTION:{body}
+END:VEVENT
+"""
+    )
+
+
 ALL_SINGLE_FIXTURES: tuple[tuple[str, bytes], ...] = (
     ("simple_event", simple_event()),
     ("event_with_attendees", event_with_attendees()),

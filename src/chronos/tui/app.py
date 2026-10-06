@@ -160,10 +160,14 @@ CALENDAR_CSS = """
        with EventList / EventView based on the active view. */
     TimelineGrid { height: 1fr; background: $background; }
     MonthGrid { height: 1fr; background: $background; }
+    /* The inline notes pane scrolls: an invitation's description can be
+       pages long, and the pane is a few lines tall. `scrollbar-size-
+       vertical` keeps the bar narrow so it costs almost no text width. */
     #detail-pane {
         height: 1fr;
         border-top: solid $accent;
         padding: 1;
+        scrollbar-size-vertical: 1;
     }
     #event-edit, #search-dialog {
         padding: 1;
