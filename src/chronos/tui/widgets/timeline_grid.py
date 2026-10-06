@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 from rich.text import Text
 from textual.color import Color
 from textual.coordinate import Coordinate
-from textual.events import MouseDown, MouseEvent, MouseMove, MouseUp
+from textual.events import Click, MouseDown, MouseEvent, MouseMove, MouseUp
 from textual.message import Message
 from textual.widgets import DataTable
 
@@ -246,6 +246,27 @@ class TimelineGrid(DataTable[str | Text]):
         """Return the date of an "all day" banner cell, if it is one."""
         return self._all_day_dates.get((row, col))
 
+    def on_click(self, event: Click) -> None:
+        """Keep DataTable's click handling out of this widget's gestures.
+
+        The grid interprets mouse input itself in `on_mouse_down` /
+        `on_mouse_up`, which is what distinguishes a click on an event
+        from a drag that moves or creates one. Left to run, DataTable's
+        own click handling posts a second `CellSelected` for the same
+        gesture, so a click on an existing event opened two detail
+        screens and the user had to press escape twice to get out.
+
+        `suppress_click()` cannot do this: the app decides whether to
+        synthesise the Click while processing the MouseUp, before either
+        mouse handler on this widget has run, so there is no moment at
+        which calling it would be early enough. Declining the Click here
+        is timing-independent. The keyboard path is untouched — Enter
+        reaches `on_data_table_cell_selected` through
+        `action_select_cursor`, which posts no Click.
+        """
+        event.prevent_default()
+        event.stop()
+
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         coord = event.coordinate
         ref = self._cells.get((coord.row, coord.column))
@@ -293,9 +314,6 @@ class TimelineGrid(DataTable[str | Text]):
         self._drag_origin = None
         self._drag_current = None
         self.release_mouse()
-        # The gesture is complete. Prevent Textual from synthesising a second
-        # Click which would also run DataTable's selection machinery.
-        self.suppress_click()
         event.stop()
 
         origin_key = (origin.row, origin.column)

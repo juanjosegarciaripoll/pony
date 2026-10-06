@@ -3622,6 +3622,59 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             # Modal `EventDetailScreen` is now on top of MainScreen.
             self.assertIsInstance(pilot.app.screen, EventDetailScreen)
 
+    async def test_clicking_an_event_opens_exactly_one_detail_screen(self) -> None:
+        """One click, one screen — so one escape gets back out.
+
+        This widget interprets its own mouse gestures, and DataTable's
+        click handling used to run as well and post a second
+        `CellSelected`, stacking two identical detail screens. The test
+        above cannot see that: `mouse_down`/`mouse_up` never produce the
+        synthesised `Click` the duplicate came from, so it has to be
+        `pilot.click`.
+        """
+        from textual.coordinate import Coordinate
+
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._viewed_date = date(2026, 5, 1)
+            screen.action_select_span(1)
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            row, col = next(
+                (row, col)
+                for row in range(timeline.row_count)
+                for col in range(1, len(timeline.columns))
+                if timeline.cell_ref(row, col) is not None
+                and timeline.slot_start(row, col) is not None
+            )
+            timeline.cursor_coordinate = Coordinate(row, col)
+            await pilot.pause()
+            region = timeline._get_cell_region(Coordinate(row, col))
+            await pilot.click(
+                timeline,
+                offset=(
+                    region.x - timeline.scroll_offset.x + 1,
+                    region.y - timeline.scroll_offset.y,
+                ),
+            )
+            await pilot.pause()
+            await pilot.pause()
+            opened = [
+                s for s in pilot.app.screen_stack if isinstance(s, EventDetailScreen)
+            ]
+            self.assertEqual(len(opened), 1)
+
+            # And one escape is enough to leave.
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, MainScreen)
+
     async def test_mouse_click_on_timed_event_opens_detail_modal(self) -> None:
         from textual.coordinate import Coordinate
 
