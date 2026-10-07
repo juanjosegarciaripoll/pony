@@ -474,6 +474,133 @@ class PushUpdatesTest(SyncTestCase):
         self.assertNotEqual(refreshed.etag, original_etag)  # adopted new etag
         self.assertEqual(self.index.list_pending_updates(self.calendar_ref), ())
 
+    def test_a_failed_update_push_is_reported(self) -> None:
+        """A local edit that cannot be uploaded has to be said out loud.
+
+        The row keeps its dirty flag and is retried for ever, so a PUT
+        that always fails means an edit the user believes is on the
+        server never gets there — and every sync in between called
+        itself a success.
+        """
+        href = f"{CALENDAR_URL}up3.ics"
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=href,
+            ics=_ics_with_uid("upd3@example.com"),
+            etag="etag-1",
+        )
+        self._run()
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "upd3@example.com")
+        row = self.index.get_component(ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(
+                row,
+                summary="Revisar participación",
+                raw_ics=_ics_with_uid("upd3@example.com").replace(
+                    b"SUMMARY:Event", b"SUMMARY:Revisar"
+                ),
+                local_flags=row.local_flags | {LOCAL_FLAG_DIRTY},
+            )
+        )
+
+        def _refuse(_href: str, _ics: bytes, **_kwargs: object) -> str:
+            raise RuntimeError("403 Forbidden")
+
+        with (
+            mock.patch.object(self.session, "put", _refuse),
+            self.assertLogs("chronos.sync", level="WARNING"),
+        ):
+            result = self._run()
+
+        joined = " ".join(result.errors)
+        self.assertIn("403 Forbidden", joined)
+        self.assertIn("Revisar participación", joined)
+        # Still queued, so the next sync tries again.
+        self.assertEqual(len(self.index.list_pending_updates(self.calendar_ref)), 1)
+
+    def test_a_failed_create_push_is_reported(self) -> None:
+        """Same for a component that exists only locally."""
+        from chronos.domain import VEvent
+
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "local-only@example.com")
+        self.index.upsert_component(
+            VEvent(
+                ref=ref,
+                href=None,
+                etag=None,
+                raw_ics=_ics_with_uid("local-only@example.com"),
+                summary="Nueva reunión",
+                description=None,
+                location=None,
+                dtstart=datetime(2026, 4, 22, 9, 0, tzinfo=UTC),
+                dtend=datetime(2026, 4, 22, 10, 0, tzinfo=UTC),
+                status=None,
+                local_flags=frozenset(),
+                server_flags=frozenset(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            )
+        )
+
+        def _refuse(_href: str, _ics: bytes, **_kwargs: object) -> str:
+            raise RuntimeError("500 Internal Server Error")
+
+        with (
+            mock.patch.object(self.session, "put", _refuse),
+            self.assertLogs("chronos.sync", level="WARNING"),
+        ):
+            result = self._run()
+
+        joined = " ".join(result.errors)
+        self.assertIn("500 Internal Server Error", joined)
+        self.assertIn("Nueva reunión", joined)
+        self.assertEqual(len(self.index.list_pending_pushes(self.calendar_ref)), 1)
+
+    def test_an_etag_mismatch_is_reported_too(self) -> None:
+        """Deferring for ever is still a failure the user should see.
+
+        Raises the real `CalDAVConflictError` rather than leaning on the
+        fake's own error type, so the 412 arm is the one under test.
+        """
+        from chronos.caldav.errors import CalDAVConflictError
+
+        href = f"{CALENDAR_URL}up4.ics"
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=href,
+            ics=_ics_with_uid("upd4@example.com"),
+            etag="etag-1",
+        )
+        self._run()
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "upd4@example.com")
+        row = self.index.get_component(ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(
+                row,
+                raw_ics=_ics_with_uid("upd4@example.com").replace(
+                    b"SUMMARY:Event", b"SUMMARY:Updated"
+                ),
+                local_flags=row.local_flags | {LOCAL_FLAG_DIRTY},
+            )
+        )
+
+        def _conflict(_href: str, _ics: bytes, **_kwargs: object) -> str:
+            raise CalDAVConflictError("412 Precondition Failed")
+
+        with (
+            mock.patch.object(self.session, "put", _conflict),
+            self.assertLogs("chronos.sync", level="WARNING"),
+        ):
+            result = self._run()
+        self.assertTrue(
+            any("changed on the server too" in e for e in result.errors),
+            f"expected the conflict to be reported, got {result.errors}",
+        )
+        self.assertEqual(len(self.index.list_pending_updates(self.calendar_ref)), 1)
+
     def test_etag_mismatch_defers_update(self) -> None:
         href = f"{CALENDAR_URL}up2.ics"
         self.session.put_resource(
