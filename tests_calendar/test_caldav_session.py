@@ -561,7 +561,9 @@ class PutTest(unittest.TestCase):
             etag="etag-v1",
         )
         headers = client.request.call_args[1]["headers"]
-        self.assertEqual(headers["If-Match"], "etag-v1")
+        # Quoted: `If-Match` takes an entity-tag, and the stored form has
+        # had its quotes stripped.
+        self.assertEqual(headers["If-Match"], '"etag-v1"')
         self.assertNotIn("If-None-Match", headers)
 
     def test_412_becomes_conflict_error(self) -> None:
@@ -596,7 +598,7 @@ class DeleteTest(unittest.TestCase):
         call = client.request.call_args
         self.assertEqual(call[0][0], "DELETE")
         headers = call[1].get("headers", {})
-        self.assertEqual(headers.get("If-Match"), "etag-v1")
+        self.assertEqual(headers.get("If-Match"), '"etag-v1"')
 
     def test_412_raises_conflict_error(self) -> None:
         client = MagicMock()
