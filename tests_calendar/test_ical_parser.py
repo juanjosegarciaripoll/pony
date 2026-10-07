@@ -47,6 +47,44 @@ class ParseTimedWithTzTest(unittest.TestCase):
         )
 
 
+class ParseDurationTest(unittest.TestCase):
+    """DTEND and DURATION are alternatives; both have to be read.
+
+    Reading only DTEND left a DURATION event with no end: the agenda
+    showed a start and an empty duration, and the timeline drew no bar at
+    all, because a span ending where it begins covers no slot.
+    """
+
+    def test_duration_gives_the_event_an_end(self) -> None:
+        comp = parse_vcalendar(corpus.event_with_duration())[0]
+        self.assertEqual(comp.dtstart, datetime(2026, 10, 16, 9, 0, tzinfo=UTC))
+        self.assertEqual(comp.dtend, datetime(2026, 10, 16, 10, 0, tzinfo=UTC))
+
+    def test_duration_gives_a_todo_its_due(self) -> None:
+        comp = parse_vcalendar(corpus.todo_with_duration())[0]
+        self.assertEqual(comp.kind, ComponentKind.VTODO)
+        self.assertEqual(comp.due, datetime(2026, 10, 16, 11, 30, tzinfo=UTC))
+
+    def test_dtend_wins_when_both_are_present(self) -> None:
+        raw = corpus.event_with_duration().replace(
+            b"DURATION:PT1H", b"DTEND:20261016T113000Z\r\nDURATION:PT1H"
+        )
+        comp = parse_vcalendar(raw)[0]
+        self.assertEqual(comp.dtend, datetime(2026, 10, 16, 11, 30, tzinfo=UTC))
+
+    def test_duration_without_a_start_is_ignored(self) -> None:
+        raw = corpus.event_with_duration().replace(b"DTSTART:20261016T090000Z\r\n", b"")
+        comp = parse_vcalendar(raw)[0]
+        self.assertIsNone(comp.dtstart)
+        self.assertIsNone(comp.dtend)
+
+    def test_a_duration_that_is_not_one_is_ignored(self) -> None:
+        raw = corpus.event_with_duration().replace(b"DURATION:PT1H", b"DURATION:banana")
+        comp = parse_vcalendar(raw)[0]
+        self.assertEqual(comp.dtstart, datetime(2026, 10, 16, 9, 0, tzinfo=UTC))
+        self.assertIsNone(comp.dtend)
+
+
 class ParseRecurringWithExceptionsTest(unittest.TestCase):
     def test_master_and_override_both_returned(self) -> None:
         components = parse_vcalendar(corpus.recurring_with_exceptions())

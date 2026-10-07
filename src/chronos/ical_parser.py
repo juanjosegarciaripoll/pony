@@ -66,8 +66,8 @@ def _project(component: object, kind: ComponentKind) -> ParsedComponent:
         description=_get_str(component, "DESCRIPTION"),
         location=_get_str(component, "LOCATION"),
         dtstart=_get_datetime(component, "DTSTART"),
-        dtend=_get_datetime(component, "DTEND"),
-        due=_get_datetime(component, "DUE"),
+        dtend=_end_of(component, "DTEND"),
+        due=_end_of(component, "DUE"),
         status=_get_str(component, "STATUS"),
         sequence=_get_int(component, "SEQUENCE"),
     )
@@ -99,6 +99,31 @@ def _get_datetime(component: object, key: str) -> datetime | None:
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=UTC)
     return None
+
+
+def _end_of(component: object, key: str) -> datetime | None:
+    """When the component ends: `key` if present, else DTSTART + DURATION.
+
+    RFC 5545 makes DTEND and DURATION alternatives — "either" for a
+    VEVENT, and DUE or DTSTART+DURATION for a VTODO — and plenty of
+    senders use the second form. Reading only DTEND left those events
+    with no end at all: the agenda showed a start and a blank duration,
+    and the timeline drew nothing, because a span that ends when it
+    begins covers no slot.
+
+    A DURATION without a DTSTART to anchor it, or one that is not a
+    duration at all, is ignored rather than guessed at.
+    """
+    explicit = _get_datetime(component, key)
+    if explicit is not None:
+        return explicit
+    duration = _decoded(component, "DURATION")
+    if not isinstance(duration, timedelta):
+        return None
+    anchor = _get_datetime(component, "DTSTART")
+    if anchor is None:
+        return None
+    return anchor + duration
 
 
 def _get_recurrence_id(component: object) -> str | None:

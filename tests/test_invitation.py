@@ -174,6 +174,22 @@ class ParseInvitationTest(unittest.TestCase):
         self.assertIn("Organizer: bob@example.com", joined)
         self.assertIn("ana@example.com", joined)
 
+    def test_describe_shows_the_end_of_a_duration_invitation(self) -> None:
+        """An invitation can state its length as DURATION, not DTEND.
+
+        The reader's "When:" line showed only the start for those, and
+        the event reached the calendar with no end at all.
+        """
+        by_duration = _REQUEST_ICS.replace(
+            b"DTEND:20260305T150000Z\r\n", b"DURATION:PT1H\r\n"
+        )
+        invitation = parse_invitation(by_duration)
+        assert invitation is not None
+        self.assertEqual(invitation.starts_at, datetime(2026, 3, 5, 14, 0, tzinfo=UTC))
+        self.assertEqual(invitation.ends_at, datetime(2026, 3, 5, 15, 0, tzinfo=UTC))
+        when = next(line for line in invitation.describe() if line.startswith("When:"))
+        self.assertIn("\u2013", when)  # an end is shown at all
+
     def test_describe_omits_what_is_missing(self) -> None:
         bare = b"""BEGIN:VCALENDAR\r
 VERSION:2.0\r
