@@ -388,6 +388,40 @@ END:VEVENT
     )
 
 
+def event_with_duration() -> bytes:
+    """An event whose length is a DURATION, not a DTEND.
+
+    RFC 5545 makes the two alternatives and plenty of senders pick this
+    one, so an event arriving this way has to end where it says it does.
+    """
+    return _vcalendar(
+        """
+BEGIN:VEVENT
+UID:duration-1@example.com
+DTSTAMP:20261001T120000Z
+DTSTART:20261016T090000Z
+DURATION:PT1H
+SUMMARY:Meeting by duration
+END:VEVENT
+"""
+    )
+
+
+def todo_with_duration() -> bytes:
+    """A VTODO given DTSTART + DURATION in place of DUE."""
+    return _vcalendar(
+        """
+BEGIN:VTODO
+UID:duration-todo-1@example.com
+DTSTAMP:20261001T120000Z
+DTSTART:20261016T090000Z
+DURATION:PT2H30M
+SUMMARY:Write it up
+END:VTODO
+"""
+    )
+
+
 LONG_DESCRIPTION_LINES = 60
 
 
@@ -425,6 +459,8 @@ ALL_SINGLE_FIXTURES: tuple[tuple[str, bytes], ...] = (
     ("recurring_count", recurring_count()),
     ("recurring_until", recurring_until()),
     ("zero_duration_event", zero_duration_event()),
+    ("event_with_duration", event_with_duration()),
+    ("todo_with_duration", todo_with_duration()),
     ("simple_todo", simple_todo()),
     ("completed_todo", completed_todo()),
     ("malformed_missing_uid", malformed_missing_uid()),

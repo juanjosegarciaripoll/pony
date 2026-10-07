@@ -161,6 +161,38 @@ class IngestBytesTest(unittest.TestCase):
         starts = [o.start for o in occ if o.ref.uid == "occ-1@example.com"]
         self.assertEqual(starts, [datetime(2026, 5, 1, 9, 0, tzinfo=UTC)])
 
+    def test_a_duration_event_gets_an_end_and_a_slot(self) -> None:
+        """An 11:00-12:00 invitation sent as DTSTART + DURATION.
+
+        Without the end the occurrence is an instant: the agenda shows a
+        start and a blank duration, and `_cell_for_slot` paints nothing
+        at all, because a span that ends where it begins overlaps no
+        half-hour slot. So the event the user was invited to simply was
+        not on the timeline.
+        """
+        from chronos.tui.views import OccurrenceRow
+        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+
+        self._ingest(corpus.event_with_duration())
+        occ = self.index.query_occurrences(
+            _TARGET,
+            datetime(2026, 10, 16, tzinfo=UTC),
+            datetime(2026, 10, 17, tzinfo=UTC),
+        )
+        self.assertEqual(len(occ), 1)
+        self.assertEqual(occ[0].start, datetime(2026, 10, 16, 9, 0, tzinfo=UTC))
+        self.assertEqual(occ[0].end, datetime(2026, 10, 16, 10, 0, tzinfo=UTC))
+
+        component = self.index.list_calendar_components(_TARGET)[0]
+        row = OccurrenceRow(occurrence=occ[0], component=component)
+        local_start = occ[0].start.astimezone()
+        slot = local_start.hour * 60 + local_start.minute
+        _summary, ref, is_start, _is_end = _cell_for_slot(
+            local_start.date(), slot, (row,)
+        )
+        self.assertIsNotNone(ref, "the event should occupy its own starting slot")
+        self.assertTrue(is_start)
+
     def test_update_refreshes_occurrence_cache(self) -> None:
         # A newer-SEQUENCE update moves the start; the cache must reflect
         # the new time, not the stale one upsert_component invalidated.
