@@ -310,6 +310,29 @@ def sync_collection(
     return changed, deleted, new_token
 
 
+def _entity_tag(etag: str) -> str:
+    """Format a stored etag as a conditional header takes it.
+
+    Etags arrive quoted and are stored with the quotes stripped, which is
+    the convenient form for comparing them. `If-Match`, though, takes an
+    entity-tag, and an entity-tag is quoted (RFC 9110 §8.8.3). Sending
+    the bare token is not a malformed-looking request so much as a
+    different one, and a strict server answers 412 to every conditional
+    PUT and DELETE made that way — which, since a 412 is treated as "the
+    resource changed underneath us, retry later", meant local edits were
+    retried for ever and never uploaded.
+
+    A value that already carries its quotes, weak ones included, is left
+    alone.
+    """
+    value = etag.strip()
+    if value.startswith('W/"') and value.endswith('"'):
+        return value
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        return value
+    return f'"{value}"'
+
+
 def put_resource(
     client: Client,
     resource_url: str,
@@ -323,8 +346,8 @@ def put_resource(
     headers: dict[str, str] = {"Content-Type": "text/calendar; charset=utf-8"}
     if if_none_match:
         headers["If-None-Match"] = "*"
-    elif if_match is not None:
-        headers["If-Match"] = if_match
+    elif if_match:
+        headers["If-Match"] = _entity_tag(if_match)
 
     try:
         resp = client.request("PUT", path, body=body, headers=headers)
@@ -348,8 +371,8 @@ def delete_resource(
     """DELETE a resource, optionally conditional on the current etag."""
     path = urlsplit(resource_url).path or resource_url
     headers: dict[str, str] = {}
-    if if_match is not None:
-        headers["If-Match"] = if_match
+    if if_match:
+        headers["If-Match"] = _entity_tag(if_match)
     try:
         client.request("DELETE", path, headers=headers)
     except HttpStatusError as exc:

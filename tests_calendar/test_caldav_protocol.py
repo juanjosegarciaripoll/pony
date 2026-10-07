@@ -821,13 +821,43 @@ class PutResourceTest(unittest.TestCase):
         self.assertEqual(headers["If-None-Match"], "*")
         self.assertNotIn("If-Match", headers)
 
-    def test_if_match_sets_header(self) -> None:
+    def test_if_match_sends_a_quoted_entity_tag(self) -> None:
+        """Etags are stored bare, but `If-Match` takes an entity-tag.
+
+        Sending the bare token made strict servers (SOGo among them)
+        answer 412 to every conditional PUT, which sync reads as "the
+        resource changed underneath us" — so a local edit was retried for
+        ever and never uploaded.
+        """
         client = _client()
         client.request.return_value = _resp(204, b"")
         put_resource(client, self._URL, self._ICS, if_match="etag-v1")
         headers = client.request.call_args[1]["headers"]
-        self.assertEqual(headers["If-Match"], "etag-v1")
+        self.assertEqual(headers["If-Match"], '"etag-v1"')
         self.assertNotIn("If-None-Match", headers)
+
+    def test_an_already_quoted_etag_is_not_quoted_twice(self) -> None:
+        client = _client()
+        client.request.return_value = _resp(204, b"")
+        put_resource(client, self._URL, self._ICS, if_match='"etag-v1"')
+        self.assertEqual(
+            client.request.call_args[1]["headers"]["If-Match"], '"etag-v1"'
+        )
+
+    def test_a_weak_etag_keeps_its_prefix(self) -> None:
+        client = _client()
+        client.request.return_value = _resp(204, b"")
+        put_resource(client, self._URL, self._ICS, if_match='W/"chronos-abc"')
+        self.assertEqual(
+            client.request.call_args[1]["headers"]["If-Match"], 'W/"chronos-abc"'
+        )
+
+    def test_an_empty_etag_sends_no_condition(self) -> None:
+        """A server that returns no getetag leaves us nothing to match on."""
+        client = _client()
+        client.request.return_value = _resp(204, b"")
+        put_resource(client, self._URL, self._ICS, if_match="")
+        self.assertNotIn("If-Match", client.request.call_args[1]["headers"])
 
     def test_no_conditional_header_by_default(self) -> None:
         client = _client()
@@ -892,12 +922,19 @@ class DeleteResourceTest(unittest.TestCase):
         result = delete_resource(client, self._URL)
         self.assertIsNone(result)
 
-    def test_if_match_sets_header(self) -> None:
+    def test_if_match_sends_a_quoted_entity_tag(self) -> None:
+        """Same for DELETE: a bare token meant a trashed event stayed."""
         client = _client()
         client.request.return_value = _resp(204, b"")
         delete_resource(client, self._URL, if_match="etag-v1")
         headers = client.request.call_args[1].get("headers", {})
-        self.assertEqual(headers.get("If-Match"), "etag-v1")
+        self.assertEqual(headers.get("If-Match"), '"etag-v1"')
+
+    def test_an_empty_etag_sends_no_condition(self) -> None:
+        client = _client()
+        client.request.return_value = _resp(204, b"")
+        delete_resource(client, self._URL, if_match="")
+        self.assertNotIn("If-Match", client.request.call_args[1].get("headers", {}))
 
     def test_412_raises_conflict_error(self) -> None:
         client = _client()
