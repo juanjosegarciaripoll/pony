@@ -409,14 +409,14 @@ def _fast_path_reconcile(
         mirror=mirror,
         index=index,
     )
-    pushed = _push_pending(
+    pushed, push_errors = _push_pending(
         account=account,
         calendar=calendar,
         session=session,
         index=index,
         now=now,
     )
-    pushed += _push_updates(
+    updated, update_errors = _push_updates(
         account=account,
         calendar=calendar,
         session=session,
@@ -426,8 +426,9 @@ def _fast_path_reconcile(
     return CalendarSyncStats(
         calendar=calendar_ref,
         path="fast",
-        pushed=pushed,
+        pushed=pushed + updated,
         deleted_remote=deleted,
+        errors=tuple(push_errors + update_errors),
     )
 
 
@@ -542,20 +543,23 @@ def _slow_path_reconcile(
             index=index,
             local_components=local_components,
         )
-        pushed = _push_pending(
+        pushed, push_errors = _push_pending(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        pushed += _push_updates(
+        updated_remote, update_errors = _push_updates(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
+        pushed += updated_remote
+        errors.extend(push_errors)
+        errors.extend(update_errors)
 
     return (
         CalendarSyncStats(
@@ -676,20 +680,23 @@ def _medium_path_reconcile(
             index=index,
             local_components=local_components,
         )
-        pushed = _push_pending(
+        pushed, push_errors = _push_pending(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        pushed += _push_updates(
+        updated_remote, update_errors = _push_updates(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
+        pushed += updated_remote
+        errors.extend(push_errors)
+        errors.extend(update_errors)
 
     return (
         CalendarSyncStats(
@@ -1184,11 +1191,18 @@ def _push_pending(
     session: CalDAVSession,
     index: IndexRepository,
     now: datetime,
-) -> int:
+) -> tuple[int, list[str]]:
+    """Upload components that exist only locally.  Returns (pushed, errors).
+
+    A PUT that fails is retried on the next sync, but it is reported:
+    a push that silently never happens leaves the user looking at a
+    local edit they believe is on the server.
+    """
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     pending = index.list_pending_pushes(calendar_ref)
     if not pending:
-        return 0
+        return 0, []
+    errors: list[str] = []
 
     by_uid: dict[str, list[StoredComponent]] = {}
     for component in pending:
@@ -1227,6 +1241,10 @@ def _push_pending(
                     calendar.calendar_name,
                     uid,
                 )
+                errors.append(
+                    f"{calendar.calendar_name}: {_describe(master)} exists on the "
+                    "server with different content; not uploaded"
+                )
                 continue
             target_href, new_etag = adopted
             logger.info(
@@ -1235,7 +1253,17 @@ def _push_pending(
                 calendar.calendar_name,
                 uid,
             )
-        except Exception:  # noqa: BLE001 — treat any PUT failure as retry next sync
+        except Exception as exc:  # noqa: BLE001 — one failure must not stop the rest
+            logger.warning(
+                "push failed: %s/%s uid=%s: %s",
+                account.name,
+                calendar.calendar_name,
+                uid,
+                exc,
+            )
+            errors.append(
+                f"{calendar.calendar_name}: could not upload {_describe(master)}: {exc}"
+            )
             continue
         with index.connection():
             for row in rows:
@@ -1244,7 +1272,7 @@ def _push_pending(
                 )
                 index.upsert_component(updated)
         pushed += 1
-    return pushed
+    return pushed, errors
 
 
 def _push_updates(
@@ -1254,20 +1282,27 @@ def _push_updates(
     session: CalDAVSession,
     index: IndexRepository,
     now: datetime,
-) -> int:
+) -> tuple[int, list[str]]:
     """PUT locally-modified components that are already on the server.
 
-    These carry ``LOCAL_FLAG_DIRTY`` (set by `import` of an iTIP update)
-    and have an href/etag, so the body is sent with ``If-Match`` to
-    overwrite the server copy only if it hasn't changed underneath us.
-    An etag mismatch (412) is deferred: the next slow-path sync pulls the
-    remote version and surfaces the divergence rather than clobbering it.
-    On success the dirty flag is cleared and the new etag recorded.
+    These carry ``LOCAL_FLAG_DIRTY`` (set by a local edit, or by `import`
+    of an iTIP update) and have an href/etag, so the body is sent with
+    ``If-Match`` to overwrite the server copy only if it hasn't changed
+    underneath us. An etag mismatch (412) is deferred: the next slow-path
+    sync pulls the remote version and surfaces the divergence rather than
+    clobbering it. On success the dirty flag is cleared and the new etag
+    recorded.
+
+    Returns (pushed, errors). Every failure is both logged and reported,
+    because the row keeps its dirty flag and is retried for ever: an edit
+    that cannot be uploaded would otherwise sit there indefinitely while
+    the user, and every sync summary, called the sync a success.
     """
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     pending = index.list_pending_updates(calendar_ref)
     if not pending:
-        return 0
+        return 0, []
+    errors: list[str] = []
 
     by_uid: dict[str, list[StoredComponent]] = {}
     for component in pending:
@@ -1277,16 +1312,34 @@ def _push_updates(
     for uid, rows in by_uid.items():
         master = next((r for r in rows if r.ref.recurrence_id is None), rows[0])
         if master.href is None or master.etag is None or master.raw_ics == b"":
+            errors.append(
+                f"{calendar.calendar_name}: cannot upload {_describe(master)} — "
+                "no href, no etag, or an empty body"
+            )
             continue
         try:
             new_etag = session.put(master.href, master.raw_ics, etag=master.etag)
-        except CalDAVConflictError:
-            logger.info(
-                "update deferred: etag mismatch for %s (will retry on slow sync)",
-                master.href,
+        except CalDAVConflictError as exc:
+            logger.warning(
+                "update deferred: etag mismatch for %s: %s", master.href, exc
+            )
+            errors.append(
+                f"{calendar.calendar_name}: {_describe(master)} changed on the "
+                "server too; local edit not uploaded"
             )
             continue
-        except Exception:  # noqa: BLE001 — treat any PUT failure as retry next sync
+        except Exception as exc:  # noqa: BLE001 — one failure must not stop the rest
+            logger.warning(
+                "update failed: %s/%s uid=%s: %s",
+                account.name,
+                calendar.calendar_name,
+                uid,
+                exc,
+            )
+            errors.append(
+                f"{calendar.calendar_name}: could not upload the edit to "
+                f"{_describe(master)}: {exc}"
+            )
             continue
         with index.connection():
             for row in rows:
@@ -1302,7 +1355,13 @@ def _push_updates(
         logger.info(
             "push update: %s/%s uid=%s", account.name, calendar.calendar_name, uid
         )
-    return pushed
+    return pushed, errors
+
+
+def _describe(component: StoredComponent) -> str:
+    """Name a component for a message the user will read."""
+    summary = (component.summary or "").strip()
+    return f"{summary!r}" if summary else f"uid={component.ref.uid}"
 
 
 def _adopt_existing_remote(
