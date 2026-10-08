@@ -630,6 +630,184 @@ class PushUpdatesTest(SyncTestCase):
         self.assertEqual(len(pending), 1)
 
 
+class BothSidesChangedTest(SyncTestCase):
+    """C-3: a local edit must never be discarded without a word.
+
+    The fetch runs before the push, and ingesting the server's copy used
+    to rebuild the row with no local flags — so an event edited here and
+    on the server lost the local edit, silently, every time.
+    """
+
+    def _synced_row(self, uid: str, *, sequence: int = 1) -> ComponentRef:
+        href = f"{CALENDAR_URL}{uid}.ics"
+        body = _ics_with_uid(uid).replace(
+            b"SUMMARY:Event", b"SEQUENCE:%d\r\nSUMMARY:Event" % sequence
+        )
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL, href=href, ics=body, etag="etag-1"
+        )
+        self._run()
+        return ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+
+    def _edit_locally(self, ref: ComponentRef, *, sequence: int) -> None:
+        row = self.index.get_component(ref)
+        assert row is not None
+        body = _ics_with_uid(ref.uid).replace(
+            b"SUMMARY:Event", b"SEQUENCE:%d\r\nSUMMARY:Mine" % sequence
+        )
+        self.index.upsert_component(
+            replace(
+                row,
+                summary="Mine",
+                raw_ics=body,
+                local_flags=row.local_flags | {LOCAL_FLAG_DIRTY},
+            )
+        )
+
+    def _change_on_server(self, uid: str, *, sequence: int) -> None:
+        body = _ics_with_uid(uid).replace(
+            b"SUMMARY:Event", b"SEQUENCE:%d\r\nSUMMARY:Theirs" % sequence
+        )
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=f"{CALENDAR_URL}{uid}.ics",
+            ics=body,
+            etag="etag-2",
+        )
+
+    def test_a_higher_local_sequence_keeps_the_local_edit(self) -> None:
+        ref = self._synced_row("c3-local@example.com", sequence=1)
+        self._edit_locally(ref, sequence=5)
+        self._change_on_server("c3-local@example.com", sequence=2)
+
+        result = self._run()
+
+        row = self.index.get_component(ref)
+        assert row is not None
+        assert row.summary is not None
+        self.assertTrue(
+            row.summary.startswith("Mine"),
+            f"the local edit was discarded: {row.summary}",
+        )
+        # Adopting the server's etag is what lets the queued If-Match PUT
+        # match instead of looping on 412 for ever — so the edit is not
+        # merely kept, it reaches the server in this very sync, and the
+        # dirty flag is cleared because it was uploaded.
+        self.assertNotIn(LOCAL_FLAG_DIRTY, row.local_flags)
+        self.assertEqual(
+            self.index.list_pending_updates(self.calendar_ref), (), "still queued"
+        )
+        fetched = self.session.calendar_multiget(
+            CALENDAR_URL, [f"{CALENDAR_URL}c3-local@example.com.ics"]
+        )
+        self.assertIn(
+            b"SUMMARY:Mine", fetched[0][2], "the kept edit never reached the server"
+        )
+        self.assertTrue(
+            any("your version was kept" in n for n in result.notes),
+            f"the collision was not reported: {result.notes}",
+        )
+        self.assertEqual(result.errors, (), "a resolved collision is not an error")
+
+    def test_a_higher_server_sequence_wins_but_is_reported(self) -> None:
+        ref = self._synced_row("c3-server@example.com", sequence=1)
+        self._edit_locally(ref, sequence=2)
+        self._change_on_server("c3-server@example.com", sequence=9)
+
+        result = self._run()
+
+        row = self.index.get_component(ref)
+        assert row is not None
+        assert row.summary is not None
+        self.assertTrue(row.summary.startswith("Theirs"))
+        self.assertNotIn(LOCAL_FLAG_DIRTY, row.local_flags)
+        self.assertTrue(
+            any("the server's version was kept" in n for n in result.notes),
+            f"the overwrite was not reported: {result.notes}",
+        )
+
+    def test_last_modified_breaks_a_sequence_tie(self) -> None:
+        uid = "c3-tie@example.com"
+        ref = self._synced_row(uid, sequence=3)
+        row = self.index.get_component(ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(
+                row,
+                summary="Mine",
+                raw_ics=_ics_with_uid(uid).replace(
+                    b"SUMMARY:Event",
+                    b"SEQUENCE:3\r\nLAST-MODIFIED:20261008T120000Z\r\nSUMMARY:Mine",
+                ),
+                local_flags=row.local_flags | {LOCAL_FLAG_DIRTY},
+            )
+        )
+        # Same SEQUENCE, but the server wrote earlier, so we win.
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=f"{CALENDAR_URL}{uid}.ics",
+            ics=_ics_with_uid(uid).replace(
+                b"SUMMARY:Event",
+                b"SEQUENCE:3\r\nLAST-MODIFIED:20261008T090000Z\r\nSUMMARY:Theirs",
+            ),
+            etag="etag-2",
+        )
+
+        self._run()
+
+        kept = self.index.get_component(ref)
+        assert kept is not None
+        assert kept.summary is not None
+        self.assertTrue(kept.summary.startswith("Mine"))
+
+    def test_only_one_side_dating_its_change_lets_that_side_speak(self) -> None:
+        """Equal SEQUENCE, and only one version says when it was written."""
+        uid = "c3-onesided@example.com"
+        ref = self._synced_row(uid, sequence=4)
+        row = self.index.get_component(ref)
+        assert row is not None
+        # Ours is dated; theirs is not.
+        self.index.upsert_component(
+            replace(
+                row,
+                summary="Mine",
+                raw_ics=_ics_with_uid(uid).replace(
+                    b"SUMMARY:Event",
+                    b"SEQUENCE:4\r\nLAST-MODIFIED:20261008T120000Z\r\nSUMMARY:Mine",
+                ),
+                local_flags=row.local_flags | {LOCAL_FLAG_DIRTY},
+            )
+        )
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=f"{CALENDAR_URL}{uid}.ics",
+            ics=_ics_with_uid(uid).replace(
+                b"SUMMARY:Event", b"SEQUENCE:4\r\nSUMMARY:Theirs"
+            ),
+            etag="etag-2",
+        )
+
+        self._run()
+
+        kept = self.index.get_component(ref)
+        assert kept is not None and kept.summary is not None
+        self.assertTrue(kept.summary.startswith("Mine"))
+
+    def test_an_unedited_row_is_still_overwritten(self) -> None:
+        """No local edit, no conflict: the server's copy lands as always."""
+        uid = "c3-clean@example.com"
+        ref = self._synced_row(uid, sequence=1)
+        self._change_on_server(uid, sequence=2)
+
+        result = self._run()
+
+        row = self.index.get_component(ref)
+        assert row is not None
+        assert row.summary is not None
+        self.assertTrue(row.summary.startswith("Theirs"))
+        self.assertEqual(result.notes, ())
+
+
 class PushTrashedTest(SyncTestCase):
     def test_trashed_row_is_deleted_on_server(self) -> None:
         href = f"{CALENDAR_URL}gone.ics"

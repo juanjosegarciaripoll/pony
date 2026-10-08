@@ -288,3 +288,7 @@ class SyncResult:
     components_updated: int
     components_removed: int
     errors: tuple[str, ...]
+    # Things that went neither wrong nor unremarked: a collision between
+    # a local edit and a server change, resolved one way or the other.
+    # Reported to the user, but they do not make the sync a failure.
+    notes: tuple[str, ...] = ()

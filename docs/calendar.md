@@ -417,11 +417,27 @@ than forced through, and the sync says so:
 work: Design review changed on the server too; local edit not uploaded
 ```
 
-What follows is that the server's version wins: the next run that fetches
-that resource replaces the local copy with it. So treat that message as a
-prompt to look at the event before syncing again. The mirror is plain
-`.ics` files, so a version you want to keep can be copied out of it with
-`cp`.
+The next sync that fetches the event then has to decide between two
+versions, and it decides the way the organiser's own numbering says to:
+the higher `SEQUENCE` wins, a tie goes to the later `LAST-MODIFIED`, and
+if neither separates them the server's copy wins, because something has
+to break the tie and that is the copy everyone else can see.
+
+Either way you are told which way it went, and the message names the
+event:
+
+```
+work: 'Design review' changed here and on the server; your version was
+kept and will be uploaded
+work: 'Design review' changed here and on the server; the server's
+version was kept
+```
+
+When your version wins it is uploaded on that same sync. When the
+server's wins, your edit is gone from the local copy — so treat the
+notice as a prompt to check the event. The mirror is plain `.ics` files,
+so a version you want back can usually be recovered from a backup of it
+with `cp`.
 
 Two more guards worth knowing:
 
