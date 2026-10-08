@@ -64,8 +64,38 @@ live under `[calendar]` (see
 [Configuration](configuration.md#calendar)). Without that table the command
 reports that no calendar is configured.
 
-`pony calendar tui` opens the calendar on its own, without the mail reader;
-++f2++ inside `pony tui` is the usual way in.
+| Subcommand | What it does |
+|---|---|
+| `sync [--account NAME] [--force]` | Synchronise every configured account, or one. `--force` drops each calendar's stored CTag so the run re-fetches everything — the way out of a stale cache. |
+| `list [--account N] [--calendar N] [--limit 50] [--since DT] [--until DT]` | One line per component: start, kind, UID, summary. Trashed entries are left out. |
+| `show UID` | Full detail for one component. |
+| `add --account N --calendar N --summary S --start DT [--end DT] [--uid U] [--attendee EMAIL]…` | Create an event locally; the next sync uploads it. |
+| `edit UID [--summary S] [--start DT] [--end DT] [--attendee EMAIL]…` | Change an existing event. `--attendee` replaces the attendee list rather than adding to it. |
+| `rm UID` | Mark a component trashed. The next sync deletes it on the server and purges it locally. |
+| `import PATH… [--account N] [--calendar N] [--on-conflict skip\|replace\|rename] [--no-sync] [-y]` | Ingest `.ics` files or directories of them. See [Calendar → Importing an `.ics` file](calendar.md#importing-an-ics-file). |
+| `doctor [--remote] [--debug]` | Check the local state. `--remote` adds redacted CalDAV probes — counts only, never tokens, hrefs or event bodies. |
+| `reset [-y] [--force]` | Delete the local index and mirror so the next sync rebuilds them. Configuration and OAuth tokens are kept. |
+| `tui [--theme NAME] [--list-themes]` | Open the calendar on its own, without the mail reader. |
+| `mcp` | Run the calendar's MCP server over stdio, bridging to a running instance when it finds one. |
+
+`--account`, `--calendar` and `--uid` take the names as `pony calendar list`
+prints them. Date-times are ISO 8601 (`2026-03-05T14:00`), and **a value
+with no timezone is read as UTC**, not as local time; write
+`2026-03-05T14:00+01:00` to be explicit.
+
+`pony calendar tui` opens the calendar on its own; ++f2++ inside `pony tui`
+is the usual way in. `pony calendar some-event.ics` opens it with an import
+dialog for that file.
+
+!!! warning "Configure calendar accounts by editing the file"
+    `pony calendar` also carries `init`, `account add|list|rm`,
+    `config edit` and `oauth authorize` from the days when the calendar was
+    a separate program. They read a configuration file of their own and
+    cannot parse Pony's unified one, so against it they fail with a
+    message about a mail account. Add, change and remove calendar accounts
+    by editing the `[calendar]` table — `pony config edit` — and let
+    `pony calendar sync` run the OAuth flow the first time an account
+    needs it.
 
 ---
 

@@ -4,7 +4,10 @@ title: Terminal UI
 
 # Terminal UI
 
-Launch the TUI with `pony tui`. Press ++q++ to quit at any time.
+Launch the TUI with `pony tui`. Press ++shift+q++ to quit at any time;
+++q++ closes whatever is in front of you — a preview, a dialog, a search —
+without leaving the program. ++f2++ switches between the mail reader and
+the [calendar](calendar.md).
 
 ![Pony Express main screen](assets/main-screen.png)
 
@@ -106,6 +109,10 @@ one place reminders and new mail are announced.
 
 ![The agenda](assets/calendar.png)
 
+[Calendar](calendar.md) is the manual for that half: accounts, the four
+views, creating and editing events, reminders, invitations and its own
+keyboard reference. What follows here is only how the two halves meet.
+
 Without a `[calendar]` table in `config.toml`, ++f2++ says so and nothing
 else changes. See [Configuration](configuration.md#calendar) for the
 settings and `pony calendar --help` for the command-line side.
@@ -139,10 +146,12 @@ Mail that a sync has just fetched is announced the same way, but only while
 the agenda is in front of you: the mail reader already reports its own sync
 results, and a second toast saying the same thing would be noise.
 
-The calendar keeps syncing in the background while you read mail, on the
-interval from `background_sync_interval_seconds`, so a reminder for
-something added on another device still arrives. It says nothing unless it
-fails, and then only to the log.
+The calendar keeps syncing in the background while you read mail, on its
+own thread and its own interval (`[calendar]`'s
+`background_sync_interval_seconds`, hourly by default), so a reminder for
+something added on another device still arrives. A periodic run says
+nothing unless something changed or failed. See
+[Calendar → Keeping in sync](calendar.md#keeping-in-sync).
 
 ### Invitations
 

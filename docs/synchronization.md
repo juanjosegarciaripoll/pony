@@ -1,19 +1,29 @@
 ---
-title: Synchronization
+title: Mail Synchronization
 ---
 
-# Synchronization
+# Mail Synchronization
 
-This page explains how Pony Express synchronises your **mail** with an IMAP
-server, how conflicts are resolved, and what you need to know to avoid
-surprises.
+This is the **reference** for Pony Express's IMAP engine: what it does in
+which order, how it resolves conflicts, and which edges are sharp. It is
+written for the reader who wants to know exactly what happens to their
+mailbox, and is more detail than using the program requires.
 
-The calendar has a separate engine against CalDAV, with its own fast,
-medium and full reconciliation paths. It follows the same principle — the
-local files are authoritative and nothing is destroyed to resolve a
-conflict — and is described in `ai/calendar/SYNCHRONIZATION.md`. Its
-equivalent of the `uid IS NULL` marker below is `href IS NULL` on a
-component row.
+!!! info "Scope: mail only"
+    Everything below is about **mail** over IMAP. The calendar has a
+    separate engine against CalDAV, with its own fast, medium and full
+    reconciliation paths. It follows the same principle — the local files
+    are authoritative, and nothing is destroyed to resolve a conflict —
+    and the part of it you need in order to use the calendar is in
+    [Calendar → Keeping in sync](calendar.md#keeping-in-sync). Its
+    equivalent of the `uid IS NULL` marker below is `href IS NULL` on a
+    component row.
+
+!!! tip "If you just want to sync your mail"
+    [Terminal UI → Sync from the TUI](tui.md#sync-from-the-tui) covers
+    the keys and the dialogs, and [CLI Reference](cli.md#pony-sync)
+    covers `pony sync`. Come back here when something has gone wrong, or
+    when you want to know why it did what it did.
 
 ## How sync works
 
@@ -290,10 +300,13 @@ runs.
 
 Periodic sync runs on a thread the application owns, not on a timer belonging
 to whichever screen is in front, so it keeps its cadence while you are looking
-at the calendar. Set `background_sync_enabled = true` to start it when the TUI
-starts; the interval is controlled by `background_sync_interval_seconds`
-(default 600 seconds), and the first automatic run falls one interval after
-startup rather than at it. ++ctrl+g++ asks for a run now and starts the cadence
+at the calendar. Set `background_sync_enabled = true` at the top level of the
+config to start it when the TUI starts; the interval is controlled by
+`background_sync_interval_seconds` (default 600 seconds), and the first
+automatic run falls one interval after startup rather than at it. The calendar
+has a thread, a key and a pair of settings of its own, under `[calendar]` and
+with different defaults — see
+[Calendar → When it runs](calendar.md#when-it-runs). ++ctrl+g++ asks for a run now and starts the cadence
 if it was not running, so the manual trigger still arms repeats even with
 `background_sync_enabled = false`.
 

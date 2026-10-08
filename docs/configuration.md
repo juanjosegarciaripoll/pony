@@ -204,7 +204,8 @@ credential = { backend = "env", variable = "PONY_PERSONAL_CALDAV_PASSWORD" }
 ```
 
 Without a `[calendar]` table the calendar is simply not configured: ++f2++
-says so and the mail client runs on its own.
+says so and the mail client runs on its own. [Calendar](calendar.md) is the
+manual for what the settings below control.
 
 `use_utf8`, `editor` and `theme` are read from the top of the file unless
 `[calendar]` names its own — they describe the terminal and the user, not
@@ -215,8 +216,14 @@ top. A second one inside `[calendar]` is rejected.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `background_sync_enabled` | bool | `true` | Sync calendars periodically while the agenda is open. |
+| `background_sync_enabled` | bool | `true` | Sync calendars periodically, on a thread of the application's own. |
 | `background_sync_interval_seconds` | int | `3600` | Seconds between those syncs. Must be positive. |
+
+These are the calendar's own settings, not the mail keys of the same name
+at the top level — the two halves sync on separate threads, with separate
+cadences, and the calendar's is **on** by default where mail's is off. The
+first automatic run of either falls one interval after startup, never at
+it. See [Calendar → When it runs](calendar.md#when-it-runs).
 
 ### Calendar account fields
 
@@ -225,10 +232,30 @@ top. A second one inside `[calendar]` is rejected.
 | `name` | string | — | **Required.** Account name. |
 | `url` | string | — | **Required**, except for the `google` credential backend, which defaults it. |
 | `username` | string | — | **Required**, except for the `google` backend. |
-| `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `encrypted`, `oauth` or `google`. |
-| `mirror_path` | string | *(calendar data dir)* | Where the `.ics` mirror for this account lives. |
-| `trash_retention_days` | int | `30` | How long trashed events are kept. |
-| `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. |
+| `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `oauth` or `google`. `encrypted` parses but is refused at sync time: it needs the `keyring` package, which is not a dependency. |
+| `mirror_path` | string | *(calendar data dir)* | Accepted and round-tripped, but not honoured at runtime yet: the mirror is always `<calendar data dir>/mirror/<account>/<calendar>/`. |
+| `trash_retention_days` | int | `30` | Accepted and stored, but nothing reads it yet: a trashed event is purged at the next sync, not after a delay. |
+| `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. `read_only` means server-to-local only: nothing is uploaded from such a calendar, and a local change there is undone when the server's copy is next fetched. |
+
+### Calendar credential backends
+
+The calendar's `credential` is an inline table naming its backend
+explicitly, which is **not** the same shape as the mail accounts'
+`credentials_source` keys documented below.
+
+| `credential = { … }` | Where the secret comes from |
+|---|---|
+| `{ backend = "plaintext", password = "s3cret" }` | The file itself. Convenient for testing; readable on disk. |
+| `{ backend = "env", variable = "PONY_CAL_PASSWORD" }` | That environment variable, read at runtime. The name is yours to choose. |
+| `{ backend = "command", command = ["pass", "show", "caldav/personal"] }` | The command's stdout, trailing newlines stripped. Run directly, with no shell, and given 30 seconds. |
+| `{ backend = "oauth", client_id = "…", client_secret = "…" }` | An OAuth 2.0 flow. Optional `scope` (defaults to Google Calendar read+write) and `token_path`. |
+| `{ backend = "google", client_id = "…", client_secret = "…" }` | The same flow with Google's URL, username and scope filled in. |
+| `{ backend = "encrypted", service = "…", username = "…" }` | Parses, but is refused at sync time — it needs the `keyring` package, which is not a dependency. |
+
+For `oauth` and `google` the browser flow runs the first time the account
+is synced, and the tokens are stored under the calendar's data directory,
+never in `config.toml` — see
+[Calendar → Google, and anything else that wants OAuth](calendar.md#google-and-anything-else-that-wants-oauth).
 
 The calendar's mirror, index and OAuth tokens stay where the calendar
 already kept them, so an existing install keeps its synced data. Only the
