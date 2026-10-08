@@ -120,6 +120,9 @@ def build_calendar_services(
         attendee_completer=(
             contact_completer(contacts) if contacts is not None else None
         ),
+        contacts_browser=(
+            contact_browser_opener(host, contacts) if contacts is not None else None
+        ),
         host_bindings=tuple(host_bindings),
     )
 
@@ -300,6 +303,25 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Invitations out of the calendar
 # ---------------------------------------------------------------------------
+
+
+def contact_browser_opener(
+    host: App[None], contacts: ContactRepository
+) -> Callable[[], None]:
+    """Open Pony's contact browser from the calendar's `B` key.
+
+    The browser is a mail-side screen, and the calendar may not import
+    one, so the calendar is handed this closure instead and only binds
+    the key. Pressing it in either half therefore reaches the same list
+    of people, which is the point of the two halves sharing a process.
+    """
+
+    def open_browser() -> None:
+        from .screens.contact_browser_screen import ContactBrowserScreen
+
+        host.push_screen(ContactBrowserScreen(contacts))  # pyright: ignore[reportUnknownMemberType]
+
+    return open_browser
 
 
 def contact_completer(contacts: ContactRepository) -> AttendeeCompleter:

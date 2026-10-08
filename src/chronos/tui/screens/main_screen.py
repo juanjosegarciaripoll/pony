@@ -436,6 +436,21 @@ class MainScreen(Screen[None]):
         )
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
+    def action_browse_contacts(self) -> None:
+        """Open the host's contact browser (`B`), as the mail reader does.
+
+        The calendar keeps no contacts of its own; a host that has them
+        supplies the opener. Running on its own there is nothing to show,
+        and saying so is better than a key that appears to do nothing.
+        """
+        browser = self._services().contacts_browser
+        if browser is None:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "No contacts store available.", severity="warning"
+            )
+            return
+        browser()
+
     def action_search(self) -> None:
         services = self._services()
         components: list[StoredComponent] = []

@@ -1870,7 +1870,7 @@ class SyncFlowTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("G")
+            await pilot.press("g")
             await pilot.pause()
             assert isinstance(pilot.app.screen, SyncConfirmScreen)
             await pilot.press("y")
@@ -1899,7 +1899,7 @@ class SyncFlowTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("G")
+            await pilot.press("g")
             await pilot.pause()
             assert isinstance(pilot.app.screen, SyncConfirmScreen)
             await pilot.press("y")
@@ -1912,7 +1912,7 @@ class SyncFlowTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("G")
+            await pilot.press("g")
             await pilot.pause()
             assert isinstance(pilot.app.screen, SyncConfirmScreen)
             await pilot.press("y")
@@ -1942,7 +1942,7 @@ class SyncFlowTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("G")
+            await pilot.press("g")
             await pilot.pause()
             assert isinstance(pilot.app.screen, SyncConfirmScreen)
             await pilot.press("y")
@@ -2001,7 +2001,7 @@ class SyncFlowTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("G")
+            await pilot.press("g")
             await pilot.pause()
             assert isinstance(pilot.app.screen, SyncConfirmScreen)
             await pilot.press("y")
@@ -2025,6 +2025,46 @@ class SyncFlowTest(TuiFlowTestCase):
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
             self.assertEqual(progress._state, "done")
+
+
+class ContactsKeyTest(TuiFlowTestCase):
+    """`B` browses contacts, the key the mail reader has always used."""
+
+    async def test_b_opens_the_browser_the_host_supplied(self) -> None:
+        opened: list[int] = []
+        services = self.services()
+        services.contacts_browser = lambda: opened.append(1)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("B")
+            await pilot.pause()
+            self.assertEqual(opened, [1])
+
+    async def test_shift_b_reaches_it_too(self) -> None:
+        opened: list[int] = []
+        services = self.services()
+        services.contacts_browser = lambda: opened.append(1)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("shift+b")
+            await pilot.pause()
+            self.assertEqual(opened, [1])
+
+    async def test_without_a_host_store_it_says_so(self) -> None:
+        """Standalone there are no contacts, and silence would puzzle."""
+        services = self.services()
+        self.assertIsNone(services.contacts_browser)
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("B")
+            await pilot.pause()
+            notes = list(pilot.app._notifications)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("No contacts store available.", notes[0].message)
+            self.assertEqual(notes[0].severity, "warning")
 
 
 class BackgroundSyncTest(TuiFlowTestCase):
@@ -2095,7 +2135,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
             self.assertFalse(scheduler.started)
             self.assertIsNone(scheduler.next_run_at)
 
-    async def test_g_syncs_once_without_starting_a_cadence_when_disabled(self) -> None:
+    async def test_ctrl_g_syncs_once_without_starting_a_cadence(self) -> None:
         """Turning background sync off is not undone by one manual sync."""
         calls: list[int] = []
 
@@ -2110,13 +2150,13 @@ class BackgroundSyncTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("g")
+            await pilot.press("ctrl+g")
             scheduler = services.sync_scheduler
             assert scheduler is not None
             await self._until(pilot, lambda: bool(calls), "the sync never ran")
             self.assertFalse(scheduler.started)
 
-    async def test_g_syncs_immediately_without_dialog(self) -> None:
+    async def test_ctrl_g_syncs_immediately_without_a_dialog(self) -> None:
         calls: list[object] = []
 
         def runner(**kwargs: object) -> Sequence[SyncResult]:
@@ -2127,7 +2167,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("g")
+            await pilot.press("ctrl+g")
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, MainScreen)
@@ -2136,6 +2176,41 @@ class BackgroundSyncTest(TuiFlowTestCase):
             messages = [n.message for n in pilot.app._notifications]
             self.assertIn("Sync complete: +2 ~0 -0", messages)
             self.assertFalse(self._main(app)._sync_in_progress())
+
+    async def test_g_opens_the_dialog_as_it_does_in_the_mail_reader(self) -> None:
+        """One key, one meaning, in both halves of the program.
+
+        `g` used to sync the calendar immediately while in the mail reader
+        it opened the confirm-and-progress flow. It now opens the dialog
+        on both sides, and ++ctrl+g++ is the silent sync on both.
+        """
+        services = self.services(sync_runner=lambda **_: ())
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, SyncConfirmScreen)
+
+    async def test_the_capital_goes_to_a_date_instead_of_syncing(self) -> None:
+        """`G` is "go to" in both halves, so it must not sync here.
+
+        It used to be a second way into the sync dialog, which left the
+        mail reader's `G` (go to folder) meaning something else entirely.
+        """
+        from chronos.tui.screens.goto_screen import GotoScreen
+
+        for key in ("G", "shift+g", "colon"):
+            services = self.services(sync_runner=lambda **_: ())
+            app = ChronosApp(services)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press(key)
+                await pilot.pause()
+                self.assertIsInstance(
+                    pilot.app.screen, GotoScreen, f"{key} did not open 'go to'"
+                )
+                self.assertNotIsInstance(pilot.app.screen, SyncConfirmScreen)
 
     async def test_a_periodic_run_says_nothing_when_nothing_changed(self) -> None:
         """A sync nobody asked for is silent unless it has news."""
@@ -2195,7 +2270,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
             await pilot.pause(0.01)
         raise AssertionError(message)
 
-    async def test_g_while_sync_running_does_not_start_another(self) -> None:
+    async def test_ctrl_g_while_a_sync_runs_does_not_start_another(self) -> None:
         import threading
 
         gate = threading.Event()
@@ -2210,9 +2285,9 @@ class BackgroundSyncTest(TuiFlowTestCase):
         app = ChronosApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("g")
+            await pilot.press("ctrl+g")
             await pilot.pause()
-            await pilot.press("g")
+            await pilot.press("ctrl+g")
             await pilot.pause()
             gate.set()
             await pilot.app.workers.wait_for_complete()
