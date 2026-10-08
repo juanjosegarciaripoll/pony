@@ -233,8 +233,8 @@ it. See [Calendar → When it runs](calendar.md#when-it-runs).
 | `url` | string | — | **Required**, except for the `google` credential backend, which defaults it. |
 | `username` | string | — | **Required**, except for the `google` backend. |
 | `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `oauth` or `google`. `encrypted` parses but is refused at sync time: it needs the `keyring` package, which is not a dependency. |
-| `mirror_path` | string | *(calendar data dir)* | Accepted and round-tripped, but not honoured at runtime yet: the mirror is always `<calendar data dir>/mirror/<account>/<calendar>/`. |
-| `trash_retention_days` | int | `30` | Accepted and stored, but nothing reads it yet: a trashed event is purged at the next sync, not after a delay. |
+| `mirror_path` | string | `<calendar data dir>/mirror/<account>` | Directory holding this account's `.ics` files, one subdirectory per calendar. The default is where the layout would put them anyway, so setting nothing moves nothing. |
+| `trash_retention_days` | int | `30` | How long a trashed event may linger locally when the server will not accept its deletion. The normal path is immediate: a trashed event is deleted on the server at the next sync and purged here straight away. This is the backstop for when that delete keeps failing — after the retention the row and its mirror file are dropped with no further network attempt. |
 | `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. `read_only` means server-to-local only: nothing is uploaded from such a calendar, and a local change there is undone when the server's copy is next fetched. |
 
 ### Calendar credential backends

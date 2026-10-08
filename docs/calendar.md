@@ -300,6 +300,11 @@ unreachable server means the delete waits rather than diverging.
 In a `read_only` calendar nothing is pushed, so the event only disappears
 locally: it comes back the next time the server's copy of it is fetched.
 
+A delete the server keeps refusing would otherwise leave the row in the
+index for ever, invisible but present. `trash_retention_days` (30 by
+default) is the backstop: once a trashed event has waited that long, it
+and its mirror file are dropped locally with no further attempt.
+
 ---
 
 ## Invitations

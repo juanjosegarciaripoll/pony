@@ -5,6 +5,7 @@ import hashlib
 import os
 import tempfile
 import urllib.parse
+from collections.abc import Mapping
 from pathlib import Path
 
 from chronos.domain import ResourceRef
@@ -25,20 +26,33 @@ class VdirMirrorRepository:
 
     Layout: `<root>/<account>/<calendar>/<encoded-uid>.ics`.
 
+    An account may sit somewhere else entirely: `account_roots` maps an
+    account name to the directory that holds *its* calendars, which is
+    what the per-account `mirror_path` in `config.toml` asks for. The
+    default for that setting is `<root>/<account>`, the same place this
+    layout would have put it, so an account that does not set one keeps
+    the files exactly where they already are.
+
     Writes are crash-safe: bytes go into a temp file in the target
     directory and are promoted via `os.replace` (atomic on a single
     filesystem).
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, *, account_roots: Mapping[str, Path] | None = None
+    ) -> None:
         self._root = root
+        self._account_roots = dict(account_roots or {})
 
     @property
     def root(self) -> Path:
         return self._root
 
+    def _account_dir(self, account_name: str) -> Path:
+        return self._account_roots.get(account_name, self._root / account_name)
+
     def list_calendars(self, account_name: str) -> tuple[str, ...]:
-        account_dir = self._root / account_name
+        account_dir = self._account_dir(account_name)
         if not account_dir.is_dir():
             return ()
         return tuple(sorted(p.name for p in account_dir.iterdir() if p.is_dir()))
@@ -46,7 +60,7 @@ class VdirMirrorRepository:
     def list_resources(
         self, account_name: str, calendar_name: str
     ) -> tuple[ResourceRef, ...]:
-        calendar_dir = self._root / account_name / calendar_name
+        calendar_dir = self._account_dir(account_name) / calendar_name
         if not calendar_dir.is_dir():
             return ()
         refs: list[ResourceRef] = []
@@ -109,8 +123,7 @@ class VdirMirrorRepository:
 
     def _path_for(self, ref: ResourceRef) -> Path:
         return (
-            self._root
-            / ref.account_name
+            self._account_dir(ref.account_name)
             / ref.calendar_name
             / _uid_to_filename(ref.uid)
         )

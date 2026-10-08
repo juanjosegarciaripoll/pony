@@ -222,7 +222,12 @@ def _handle_missing_config(
 def _default_context_factory(config_path: Path | None) -> CliContext:
     path = config_path or default_config_path()
     config = load_config(path)
-    mirror = VdirMirrorRepository(user_data_dir() / "mirror")
+    mirror = VdirMirrorRepository(
+        user_data_dir() / "mirror",
+        # Each account's configured `mirror_path`, whose default is the
+        # `<root>/<account>` this layout would have used anyway.
+        account_roots={a.name: a.mirror_path for a in config.accounts},
+    )
     index = SqliteIndexRepository(default_index_path())
     return CliContext(
         config=config,
