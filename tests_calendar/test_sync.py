@@ -6,7 +6,7 @@ import threading
 import unittest
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -806,6 +806,74 @@ class BothSidesChangedTest(SyncTestCase):
         assert row.summary is not None
         self.assertTrue(row.summary.startswith("Theirs"))
         self.assertEqual(result.notes, ())
+
+
+class TrashRetentionTest(SyncTestCase):
+    """`trash_retention_days` is a backstop, and it has to actually fire."""
+
+    def _undeletable_trashed_row(self, *, trashed_at: datetime) -> ComponentRef:
+        uid = "retain@example.com"
+        href = f"{CALENDAR_URL}{uid}.ics"
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=href,
+            ics=_ics_with_uid(uid),
+            etag="etag-1",
+        )
+        self._run()
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+        row = self.index.get_component(ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(row, local_status=LocalStatus.TRASHED, trashed_at=trashed_at)
+        )
+        return ref
+
+    def test_trash_older_than_the_retention_is_purged_without_the_network(self) -> None:
+        ref = self._undeletable_trashed_row(
+            trashed_at=datetime.now(UTC) - timedelta(days=31)
+        )
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("the server will not delete this")
+
+        with mock.patch.object(self.session, "delete", _refuse):
+            self._run()
+
+        self.assertIsNone(
+            self.index.get_component(ref),
+            "a row the server refuses to delete must not linger for ever",
+        )
+
+    def test_a_retention_of_zero_keeps_the_backstop_shut(self) -> None:
+        """Zero means "never purge behind my back", not "purge at once"."""
+        ref = self._undeletable_trashed_row(
+            trashed_at=datetime.now(UTC) - timedelta(days=400)
+        )
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("the server will not delete this")
+
+        account = replace(_account(), trash_retention_days=0)
+        with mock.patch.object(self.session, "delete", _refuse):
+            self._run(account=account)
+
+        self.assertIsNotNone(self.index.get_component(ref))
+
+    def test_recent_trash_is_left_alone(self) -> None:
+        ref = self._undeletable_trashed_row(
+            trashed_at=datetime.now(UTC) - timedelta(days=2)
+        )
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("the server will not delete this")
+
+        with mock.patch.object(self.session, "delete", _refuse):
+            self._run()
+
+        row = self.index.get_component(ref)
+        assert row is not None, "it is only two days old; the retry must continue"
+        self.assertEqual(row.local_status, LocalStatus.TRASHED)
 
 
 class PushTrashedTest(SyncTestCase):

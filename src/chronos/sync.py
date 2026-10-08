@@ -8,7 +8,7 @@ import threading
 import urllib.parse
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
 from chronos.caldav.errors import (
@@ -1298,7 +1298,66 @@ def _push_trashed(
                     mirror.delete(component.ref.resource)
                 resources_cleared.add(component.ref.resource)
 
+    _purge_expired_trash(
+        account=account,
+        calendar=calendar,
+        mirror=mirror,
+        index=index,
+        trashed=trashed,
+        hrefs_done=hrefs_done,
+    )
     return deleted_remote
+
+
+def _purge_expired_trash(
+    *,
+    account: AccountConfig,
+    calendar: CalendarConfig,
+    mirror: MirrorRepository,
+    index: IndexRepository,
+    trashed: Sequence[StoredComponent],
+    hrefs_done: set[str],
+) -> int:
+    """Drop trashed rows the server will evidently never take back.
+
+    A trashed component is deleted on the server and then purged here.
+    When that DELETE keeps failing — the resource is gone already, the
+    etag will not match, the server refuses — the row would sit in the
+    index for ever, invisible in every view and still occupying its
+    mirror file. `trash_retention_days` is the backstop the
+    specification asks for: after it, the row goes without any further
+    network attempt.
+    """
+    retention = timedelta(days=account.trash_retention_days)
+    if retention <= timedelta(0):
+        return 0
+    cutoff = datetime.now(UTC) - retention
+    expired = [
+        component
+        for component in trashed
+        if component.href not in hrefs_done
+        and component.trashed_at is not None
+        and component.trashed_at < cutoff
+    ]
+    if not expired:
+        return 0
+    resources_cleared: set[ResourceRef] = set()
+    with index.connection():
+        for component in expired:
+            index.delete_component(component.ref)
+            if component.ref.resource in resources_cleared:
+                continue
+            with contextlib.suppress(FileNotFoundError):
+                mirror.delete(component.ref.resource)
+            resources_cleared.add(component.ref.resource)
+    logger.info(
+        "purged %d trashed component(s) older than %d day(s) in %s/%s",
+        len(expired),
+        account.trash_retention_days,
+        account.name,
+        calendar.calendar_name,
+    )
+    return len(expired)
 
 
 def _push_pending(

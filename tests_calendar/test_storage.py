@@ -107,6 +107,50 @@ class MirrorConformanceTest(unittest.TestCase):
                 self.assertEqual(self.mirror.read(ref), data)
 
 
+class AccountMirrorPathTest(unittest.TestCase):
+    """An account's configured `mirror_path` has to be where its files go.
+
+    The setting was parsed, stored and written back to `config.toml` while
+    the mirror ignored it entirely and always used `<root>/<account>`.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root = self.tmp / "root"
+        self.elsewhere = self.tmp / "elsewhere" / "calendars"
+        self.mirror = VdirMirrorRepository(
+            self.root, account_roots={ACCOUNT: self.elsewhere}
+        )
+
+    def test_writes_land_under_the_configured_path(self) -> None:
+        ref = ResourceRef(ACCOUNT, CALENDAR, "a@example.com")
+        self.mirror.write(ref, b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+        written = list(self.elsewhere.rglob("*.ics"))
+        self.assertEqual(len(written), 1, f"expected one file, found {written}")
+        self.assertEqual(written[0].parent.name, CALENDAR)
+        self.assertEqual(list(self.root.rglob("*.ics")), [])
+
+    def test_reads_listings_and_deletes_follow_it(self) -> None:
+        ref = ResourceRef(ACCOUNT, CALENDAR, "a@example.com")
+        self.mirror.write(ref, b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+        self.assertEqual(self.mirror.list_calendars(ACCOUNT), (CALENDAR,))
+        self.assertEqual(
+            [r.uid for r in self.mirror.list_resources(ACCOUNT, CALENDAR)],
+            ["a@example.com"],
+        )
+        self.assertTrue(self.mirror.exists(ref))
+        self.mirror.delete(ref)
+        self.assertFalse(self.mirror.exists(ref))
+
+    def test_an_account_without_one_keeps_the_default_layout(self) -> None:
+        """The default is `<root>/<account>`, so nothing moves on upgrade."""
+        other = "unconfigured"
+        ref = ResourceRef(other, CALENDAR, "b@example.com")
+        self.mirror.write(ref, b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+        self.assertTrue((self.root / other / CALENDAR).is_dir())
+        self.assertEqual(list(self.elsewhere.rglob("b*.ics")), [])
+
+
 class MirrorCrashSafetyTest(unittest.TestCase):
     """The mirror must survive a crash (KeyboardInterrupt, kill -9) at
     any point during a write: the previous file must be intact, and

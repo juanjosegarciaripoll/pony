@@ -141,7 +141,13 @@ def open_calendar_runtime(
         return None
     return CalendarRuntime(
         config=config,
-        mirror=VdirMirrorRepository(user_data_dir() / "mirror"),
+        mirror=VdirMirrorRepository(
+            user_data_dir() / "mirror",
+            # Honour each account's `mirror_path`. Its default is the
+            # same `<root>/<account>` the layout would choose, so an
+            # account that sets nothing keeps its files where they are.
+            account_roots={a.name: a.mirror_path for a in config.accounts},
+        ),
         index=CalendarIndexRepository(default_index_path()),
         credentials=DefaultCredentialsProvider(
             interactive_authorizer=interactive_authorizer
