@@ -417,6 +417,60 @@ async def _until(pilot: Pilot[None], check: Callable[[], bool], message: str) ->
     raise AssertionError(message)
 
 
+async def test_b_reaches_the_same_contact_browser_from_either_half() -> None:
+    """The point of one process: one `B`, one list of people.
+
+    The browser is a mail-side screen and the calendar may not import one,
+    so the host hands the calendar an opener. Both keys must land on the
+    very same screen class.
+    """
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    runtime = make_calendar_runtime(make_tmp_paths("contacts-both"))
+    app, *_ = build_pony_app(
+        label="contacts-both", calendar=runtime, with_contacts=True
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, MainScreen)
+        await pilot.press("B")
+        await pilot.pause()
+        self_from_mail = type(pilot.app.screen)
+        self_from_mail_is_browser = isinstance(pilot.app.screen, ContactBrowserScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("f2")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, CalendarScreen)
+        await pilot.press("B")
+        await pilot.pause()
+        assert self_from_mail_is_browser, (
+            "B did not open the browser in the mail reader"
+        )
+        assert isinstance(pilot.app.screen, ContactBrowserScreen), (
+            "B did not open the browser in the agenda"
+        )
+        assert type(pilot.app.screen) is self_from_mail
+
+
+async def test_the_calendar_says_so_when_there_are_no_contacts() -> None:
+    """A calendar hosted without a contact store still answers the key."""
+    runtime = make_calendar_runtime(make_tmp_paths("contacts-none"))
+    app, *_ = build_pony_app(label="contacts-none", calendar=runtime)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.press("B")
+        await pilot.pause()
+        assert any("No contacts store available." in m for m in _toast_messages(app)), (
+            _toast_messages(app)
+        )
+
+
 async def test_both_syncs_run_on_threads_the_app_owns() -> None:
     """Neither cadence belongs to a screen, so neither depends on one.
 

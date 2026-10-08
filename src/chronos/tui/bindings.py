@@ -33,8 +33,11 @@ KEY_AGENDA_WEEK = "w"
 KEY_AGENDA_MONTH = "m"
 
 KEY_TODAY = "t"
-# Opens the "go to date" dialog (vim's command-line key).
-KEY_GOTO = "colon"
+# Opens the "go to date" dialog. `G` is what the mail reader uses to jump
+# to a folder, so one capital means "go somewhere" in both halves; the
+# vim-style `:` that used to be the only way still works.
+KEY_GOTO = "G"
+KEY_GOTO_ALTS = ("shift+g", "colon")
 
 # Date-axis navigation. `n`/`p` step the viewed date by the view's
 # natural unit (a day in Day / Grid; the window size in Agenda);
@@ -55,12 +58,21 @@ KEY_NEW = "c"
 KEY_EDIT = "e"
 KEY_DELETE = "D"
 KEY_DELETE_ALT = "shift+d"
-# `g` syncs immediately in the background and restarts the periodic
-# background-sync countdown; `G` runs the confirm + progress dialog.
-KEY_SYNC = "g"
-KEY_SYNC_DIALOG = "G"
-KEY_SYNC_DIALOG_ALT = "shift+g"
+# Spelled the way the mail reader spells it, so one key means one thing
+# in both halves of the program: ++ctrl+g++ syncs in the background
+# without asking and restarts the periodic countdown, while `g` opens the
+# confirmation dialog and shows progress — mail's "Get mail". The capital
+# is not a third way to sync: it goes to a date, as it goes to a folder
+# in the mail reader.
+KEY_SYNC = "ctrl+g"
+KEY_SYNC_DIALOG = "g"
 KEY_SEARCH = "/"
+# The host application's contact store, browsed with the same key the
+# mail reader uses. Bound whether or not a host supplied one: pressing it
+# without one says so, rather than leaving the user wondering whether
+# they mistyped.
+KEY_CONTACTS = "B"
+KEY_CONTACTS_ALT = "shift+b"
 KEY_QUIT = "Q"
 KEY_QUIT_ALT = "shift+q"
 KEY_OPEN = "enter"
@@ -102,6 +114,7 @@ def main_bindings() -> list[BindingType]:
         Binding(KEY_AGENDA_MONTH, "agenda_window_month", "Month", show=False),
         Binding(KEY_TODAY, "today", "Today"),
         Binding(KEY_GOTO, "goto_date", "Go to"),
+        *(Binding(key, "goto_date", "Go to", show=False) for key in KEY_GOTO_ALTS),
         Binding(KEY_NEXT_DAY, "next_day", "Next day", show=False),
         Binding(KEY_PREV_DAY, "prev_day", "Prev day", show=False),
         Binding(KEY_NEXT_WEEK, "next_week", "Next week", show=False),
@@ -115,9 +128,10 @@ def main_bindings() -> list[BindingType]:
         Binding(KEY_DELETE_ALT, "delete_event", "Delete", show=False),
         Binding(KEY_TOGGLE_CALENDARS, "toggle_calendars", "Calendars"),
         Binding(KEY_TOGGLE_CALENDARS_ALT, "toggle_calendars", "Calendars", show=False),
-        Binding(KEY_SYNC, "sync", "Sync"),
-        Binding(KEY_SYNC_DIALOG, "sync_dialog", "Sync (dialog)", show=False),
-        Binding(KEY_SYNC_DIALOG_ALT, "sync_dialog", "Sync (dialog)", show=False),
+        Binding(KEY_SYNC_DIALOG, "sync_dialog", "Sync"),
+        Binding(KEY_SYNC, "sync", "Bg sync", show=False),
+        Binding(KEY_CONTACTS, "browse_contacts", "Contacts"),
+        Binding(KEY_CONTACTS_ALT, "browse_contacts", "Contacts", show=False),
         Binding(KEY_SEARCH, "search", "Search"),
         Binding(KEY_HELP, "show_help", "Help"),
         Binding(KEY_QUIT, "quit", "Quit"),
@@ -161,6 +175,7 @@ __all__ = [
     "KEY_DELETE_ALT",
     "KEY_EDIT",
     "KEY_GOTO",
+    "KEY_GOTO_ALTS",
     "KEY_HELP",
     "KEY_NEW",
     "KEY_NEXT_WEEK",
@@ -174,9 +189,10 @@ __all__ = [
     "KEY_QUIT_ALT",
     "KEY_SEARCH",
     "KEY_SPANS",
+    "KEY_CONTACTS",
+    "KEY_CONTACTS_ALT",
     "KEY_SYNC",
     "KEY_SYNC_DIALOG",
-    "KEY_SYNC_DIALOG_ALT",
     "KEY_TODAY",
     "KEY_TOGGLE_CALENDARS",
     "KEY_TOGGLE_CALENDARS_ALT",

@@ -60,6 +60,8 @@ _SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
         frozenset(
             {
                 "sync",
+                "sync_dialog",
+                "browse_contacts",
                 "search",
                 "show_help",
                 "quit",

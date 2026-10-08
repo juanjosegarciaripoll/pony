@@ -89,6 +89,15 @@ ignore it are valid implementations of the Protocol.
 """
 
 
+type ContactsBrowser = Callable[[], None]
+"""Puts the host application's contact browser in front of the user.
+
+The browser itself belongs to the host — Pony Express pushes its own
+`ContactBrowserScreen` — because the calendar has no contact store of its
+own and may not import the mail half. The calendar only binds the key.
+"""
+
+
 @dataclass
 class TuiServices:
     """Dependencies the TUI needs.
@@ -118,6 +127,11 @@ class TuiServices:
     # program. Empty when the calendar runs on its own and there is
     # nothing to switch to.
     host_bindings: Sequence[BindingType] = ()
+    # Opens the host's contact browser, bound to the same key the mail
+    # reader uses. Set by a host with a contact store; None when the
+    # calendar runs on its own, and then the key says as much instead of
+    # doing nothing.
+    contacts_browser: ContactsBrowser | None = None
     # The periodic sync, owned by whichever application is hosting —
     # `ChronosApp` standalone, `PonyApp` inside the mail client. It runs
     # on its own thread, so it outlives the agenda screen being popped;
