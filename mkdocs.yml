@@ -38,9 +38,10 @@ nav:
   - Configuration: configuration.md
   - CLI Reference: cli.md
   - Terminal UI: tui.md
+  - Calendar: calendar.md
   - Composer: composer.md
   - Contacts: contacts.md
-  - Synchronization: synchronization.md
+  - Mail Synchronization: synchronization.md
   - Architecture: architecture.md
   - MCP Server: mcp-server.md
   - Development: development.md

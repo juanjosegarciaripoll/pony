@@ -6,22 +6,29 @@ title: Home
 
 # Pony Express
 
-Pony Express is a terminal-first mail user agent written in Python. It
-synchronises mail over IMAP, stores it locally in Maildir or mbox format,
-indexes it in SQLite for fast search, and presents it through a keyboard-driven
-terminal interface. Outgoing mail is sent over SMTP with optional Markdown
-rendering to `multipart/alternative`.
+Pony Express is a terminal-first **mail client and calendar**, written in
+Python and driven from the keyboard. It is one program: one process, one
+configuration file, one place where things are announced. ++f2++ puts the
+agenda in front of the mail reader, and ++f2++ again brings the mail back
+with the folder, cursor and scroll position exactly as they were.
 
-It is also a calendar. CalDAV sync, a local `.ics` mirror and an agenda live
-in the same program: ++f2++ switches between the mail reader and the
-calendar, both read one configuration file, and reminders and newly arrived
-mail are announced in whichever half you are looking at. An invitation in
-your mail files itself in the calendar and answers the organizer; an event
-with attendees mails them the invitation.
+**Mail** synchronises over IMAP, is stored locally in Maildir or mbox
+format and indexed in SQLite for fast search. Outgoing mail goes over SMTP,
+with optional Markdown rendering to `multipart/alternative`.
+
+**The calendar** synchronises over CalDAV, mirrors every event as an
+ordinary `.ics` file and indexes it with its own recurrence and alarm
+caches. Agenda, single-day, multi-day and month views read from it, and
+reminders are announced wherever you are looking.
+
+Because they share a process, the two halves help each other: an invitation
+in your mail files itself in the calendar and answers the organizer, an
+event with attendees mails them the invitation with addresses completed
+from your contacts, and each half shows one line about the other.
 
 ![Pony Express main screen](assets/main-screen.png)
 
-++f2++ switches to the agenda and back:
+++f2++ switches to the agenda and back — see [Calendar](calendar.md):
 
 ![The agenda](assets/calendar.png)
 
@@ -45,6 +52,7 @@ with attendees mails them the invitation.
 | **Diagnostics** | `pony doctor` checks config, index, mirror integrity, and dependencies; reports orphan files and stale index entries |
 | **`.eml` files** | `pony file.eml` opens any message file in the viewer, with no account involved; `pony view --pdf *.eml` converts a directory of them to PDF from the command line |
 | **Calendar** | CalDAV sync with CTag / `sync-collection` / full reconciliation paths, a local `.ics` mirror, recurrence and alarm caches, and agenda / day / multi-day / month views — reached with ++f2++ or `pony calendar ...` |
+| **Events** | Create, edit and drag events on the time grid; all-day events, reminders announced wherever you are looking, per-calendar filtering, search, `.ics` import |
 | **Invitations** | A `text/calendar` part is shown as an invitation and filed with one key, replying to the organizer; saving an event with attendees mails them the invitation, with addresses completed from your contacts |
 
 ## Requirements
@@ -115,6 +123,11 @@ The installer adds `pony` to your PATH automatically.
     pony tui
     ```
 
+5. **Add a calendar** — optional, and separate from the mail accounts above.
+   Put a `[calendar]` table with one `[[calendar.accounts]]` entry in the
+   same config file, then press ++f2++ in the TUI. See
+   [Calendar](calendar.md#adding-a-calendar-account).
+
 See the [Configuration](configuration.md) page for a full reference on account
 setup and credential backends.
 
@@ -159,8 +172,9 @@ precedence over everything else.
 | [Configuration](configuration.md) | Full config reference, all fields, credential backends |
 | [CLI Reference](cli.md) | Every command, flag, and example |
 | [Terminal UI](tui.md) | Three-pane reader, keybindings, search, sync |
+| [Calendar](calendar.md) | CalDAV accounts, the views, events, reminders, invitations, keyboard reference |
 | [Composer](composer.md) | Compose, reply, forward, Markdown mode, attachments |
 | [Contacts](contacts.md) | Person-centric address book, browser/editor, BBDB import/export |
-| [Synchronization](synchronization.md) | How sync works, conflict handling, safety features, caveats |
+| [Mail Synchronization](synchronization.md) | Reference for the IMAP engine: conflict handling, safety features, caveats |
 | [Architecture](architecture.md) | Technical design, subsystem boundaries, data flow |
 | [Development](development.md) | Building, testing, contributing |
