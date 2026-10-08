@@ -274,9 +274,11 @@ trash_retention_days = 30
 # [calendar]
 # Every calendar account is synced in the background on a thread of its own,
 # whether or not the agenda is the half you are looking at.  The first
-# automatic run fires one interval after startup; `g` syncs immediately and
-# restarts the countdown.  With background_sync_enabled = false nothing is
-# synced on a schedule and `g` syncs once, without starting a cadence.
+# automatic run fires one interval after startup; ctrl+g syncs immediately
+# and restarts the countdown, exactly as it does in the mail reader, while
+# `g` opens the confirmation dialog.  With background_sync_enabled = false
+# nothing is synced on a schedule and ctrl+g syncs once, without starting
+# a cadence.
 # background_sync_enabled = true
 # background_sync_interval_seconds = 3600
 
@@ -286,8 +288,16 @@ trash_retention_days = 30
 # url = "https://caldav.example.com/dav/principals/user@example.com/"
 # username = "user@example.com"
 # credential = { backend = "env", variable = "PONY_PERSONAL_CALDAV_PASSWORD" }
-# # mirror_path is optional; defaults to <calendar-data-dir>/mirror/<name>.
-# # trash_retention_days defaults to 30.
+# # mirror_path holds this account's .ics files, one directory per
+# # calendar.  Optional: the default is <calendar-data-dir>/mirror/<name>,
+# # which is where they go anyway, so leaving it out moves nothing.
+# # mirror_path = "~/calendars/personal"
+# # trash_retention_days (default 30) is a backstop, not the normal path:
+# # a trashed event is deleted on the server at the next sync and purged
+# # locally straight away.  This only governs one the server refuses to
+# # delete — after this many days the local row and its file are dropped
+# # without trying again.  0 keeps them until the delete succeeds.
+# # trash_retention_days = 30
 # # include / exclude / read_only are Python regexes matched with
 # # re.fullmatch against the calendar name; default include = [".*"].
 
