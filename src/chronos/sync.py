@@ -32,7 +32,13 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.ical_parser import IcalParseError, ParsedComponent, parse_vcalendar
+from chronos.ical_parser import (
+    IcalParseError,
+    ParsedComponent,
+    extract_last_modified,
+    extract_sequence,
+    parse_vcalendar,
+)
 from chronos.protocols import CalDAVSession, IndexRepository, MirrorRepository
 from chronos.recurrence import rebuild_caches
 from chronos.storage_indexing import synthetic_uid
@@ -73,6 +79,9 @@ class CalendarSyncStats:
     pushed: int = 0
     deleted_remote: int = 0
     errors: tuple[str, ...] = ()
+    # Outcomes worth auditing that are not failures — a both-sides
+    # collision resolved one way or the other.
+    notes: tuple[str, ...] = ()
 
 
 def sync_account(
@@ -102,6 +111,7 @@ def sync_account(
 
     per_calendar_stats: list[CalendarSyncStats] = []
     errors: list[str] = []
+    notes: list[str] = []
     if remote_calendars and not scoped:
         # Distinguishes the silent "your include / exclude regex matched
         # nothing" case from "the server has no calendars at all". Without
@@ -167,6 +177,7 @@ def sync_account(
         )
         per_calendar_stats.append(stats)
         errors.extend(stats.errors)
+        notes.extend(stats.notes)
 
     return SyncResult(
         account_name=account.name,
@@ -175,6 +186,7 @@ def sync_account(
         components_updated=sum(s.updated for s in per_calendar_stats),
         components_removed=sum(s.removed for s in per_calendar_stats),
         errors=tuple(errors),
+        notes=tuple(notes),
     )
 
 
@@ -480,6 +492,7 @@ def _slow_path_reconcile(
     )
 
     errors: list[str] = []
+    notes: list[str] = []
     removed = _apply_server_deletions(
         removed_hrefs=removed_hrefs,
         local_by_href=local_by_href,
@@ -498,6 +511,7 @@ def _slow_path_reconcile(
         hrefs=new_hrefs,
         now=now,
         errors=errors,
+        notes=notes,
         cancel_event=cancel_event,
     )
 
@@ -515,6 +529,7 @@ def _slow_path_reconcile(
         hrefs=changed_hrefs,
         now=now,
         errors=errors,
+        notes=notes,
         cancel_event=cancel_event,
     )
 
@@ -571,6 +586,7 @@ def _slow_path_reconcile(
             pushed=pushed,
             deleted_remote=deleted_remote,
             errors=tuple(errors),
+            notes=tuple(notes),
         ),
         affected_uids,
     )
@@ -625,6 +641,7 @@ def _medium_path_reconcile(
     )
 
     errors: list[str] = []
+    notes: list[str] = []
     removed = _apply_server_deletions(
         removed_hrefs=locally_deleted,
         local_by_href=local_by_href,
@@ -642,6 +659,7 @@ def _medium_path_reconcile(
         hrefs=new_hrefs,
         now=now,
         errors=errors,
+        notes=notes,
         cancel_event=cancel_event,
     )
     updated = _fetch_and_ingest(
@@ -653,6 +671,7 @@ def _medium_path_reconcile(
         hrefs=updated_hrefs,
         now=now,
         errors=errors,
+        notes=notes,
         cancel_event=cancel_event,
     )
 
@@ -708,6 +727,7 @@ def _medium_path_reconcile(
             pushed=pushed,
             deleted_remote=deleted_remote,
             errors=tuple(errors),
+            notes=tuple(notes),
         ),
         new_token,
         affected_uids,
@@ -855,6 +875,7 @@ def _fetch_and_ingest(
     hrefs: Sequence[str],
     now: datetime,
     errors: list[str],
+    notes: list[str],
     cancel_event: threading.Event | None = None,
 ) -> int:
     """Stream chunks of `calendar-multiget` results into the local index.
@@ -961,6 +982,7 @@ def _fetch_and_ingest(
                         mirror=mirror,
                         index=index,
                         now=now,
+                        notes=notes,
                     )
                 except IcalParseError as exc:
                     errors.append(f"{href}: {exc}")
@@ -1035,6 +1057,7 @@ def _ingest_resource(
     mirror: MirrorRepository,
     index: IndexRepository,
     now: datetime,
+    notes: list[str],
 ) -> int:
     parsed = parse_vcalendar(ics)
     if not parsed:
@@ -1045,6 +1068,17 @@ def _ingest_resource(
         calendar_name=calendar.calendar_name,
         uid=resource_uid,
     )
+    if _keep_local_edit(
+        account=account,
+        calendar=calendar,
+        resource_uid=resource_uid,
+        incoming_ics=ics,
+        href=href,
+        etag=etag,
+        index=index,
+        notes=notes,
+    ):
+        return 0
     mirror.write(resource_ref, ics)
     count = 0
     with index.connection():
@@ -1060,6 +1094,89 @@ def _ingest_resource(
             )
             count += 1
     return count
+
+
+def _keep_local_edit(
+    *,
+    account: AccountConfig,
+    calendar: CalendarConfig,
+    resource_uid: str,
+    incoming_ics: bytes,
+    href: str,
+    etag: str,
+    index: IndexRepository,
+    notes: list[str],
+) -> bool:
+    """Decide a both-sides-changed collision (C-3) before overwriting.
+
+    An edit made here is queued by flagging the row dirty, and the fetch
+    runs before the push, so ingesting the server's copy unconditionally
+    threw the local edit away — body, flag and all — and the user was
+    never told. Whichever side loses, this says so.
+
+    The rule is the one the specification lays down: the higher SEQUENCE
+    wins, a tie goes to the later LAST-MODIFIED, and a tie there goes to
+    the server, because something has to break it and the server's copy
+    is the one everybody else can already see.
+
+    Returns True when the local edit is kept, in which case the caller
+    must leave the mirror and the index alone. The server's href and etag
+    are adopted on the way out: the queued `If-Match` PUT is matched
+    against the copy we have just seen, so the edit can actually land
+    instead of looping on 412 for ever.
+    """
+    master_ref = ComponentRef(
+        account_name=account.name,
+        calendar_name=calendar.calendar_name,
+        uid=resource_uid,
+        recurrence_id=None,
+    )
+    local = index.get_component(master_ref)
+    if local is None or LOCAL_FLAG_DIRTY not in local.local_flags:
+        return False
+    if local.raw_ics == incoming_ics:
+        # The server is echoing back what we sent; not a conflict.
+        return False
+
+    name = local.summary or resource_uid
+    if _server_version_wins(incoming_ics, local, resource_uid):
+        notes.append(
+            f"{calendar.calendar_name}: {name!r} changed here and on the "
+            "server; the server's version was kept"
+        )
+        return False
+
+    rows = [
+        row
+        for row in index.list_components_by_uid(resource_uid)
+        if row.ref.account_name == account.name
+        and row.ref.calendar_name == calendar.calendar_name
+    ]
+    with index.connection():
+        for row in rows:
+            index.upsert_component(replace(row, href=href, etag=etag))
+    notes.append(
+        f"{calendar.calendar_name}: {name!r} changed here and on the server; "
+        "your version was kept and will be uploaded"
+    )
+    return True
+
+
+def _server_version_wins(incoming_ics: bytes, local: StoredComponent, uid: str) -> bool:
+    incoming_seq = extract_sequence(incoming_ics, uid)
+    local_seq = extract_sequence(local.raw_ics, uid)
+    if incoming_seq != local_seq:
+        return incoming_seq > local_seq
+    incoming_modified = extract_last_modified(incoming_ics, uid)
+    local_modified = extract_last_modified(local.raw_ics, uid)
+    if incoming_modified is not None and local_modified is not None:
+        if incoming_modified != local_modified:
+            return incoming_modified > local_modified
+    elif incoming_modified is not None or local_modified is not None:
+        # Only one side dated its change; the one that did is the one we
+        # know something about, so let it speak.
+        return incoming_modified is not None
+    return True
 
 
 def _primary_uid(

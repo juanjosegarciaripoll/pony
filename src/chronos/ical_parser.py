@@ -198,6 +198,32 @@ def extract_alarm_triggers(raw_ics: bytes, uid: str) -> list[ParsedAlarm]:
     return out
 
 
+def extract_last_modified(raw_ics: bytes, uid: str) -> datetime | None:
+    """`LAST-MODIFIED` of the master component with ``uid``, in UTC.
+
+    The tie-break when two versions of an event carry the same
+    SEQUENCE: whoever wrote last wins. Absent from plenty of real
+    calendars, so a caller has to cope with None.
+    """
+    component = _find_master_component(raw_ics, uid)
+    if component is None:
+        return None
+    return _get_datetime(component, "LAST-MODIFIED")
+
+
+def extract_sequence(raw_ics: bytes, uid: str) -> int:
+    """`SEQUENCE` of the master component with ``uid``; 0 when absent.
+
+    RFC 5545 §3.8.7.4 starts a component at 0 and has the organiser
+    raise it on every substantive change, which is what makes it the
+    first thing to compare when two sides both changed.
+    """
+    component = _find_master_component(raw_ics, uid)
+    if component is None:
+        return 0
+    return _get_int(component, "SEQUENCE") or 0
+
+
 def extract_attendees(raw_ics: bytes, uid: str) -> tuple[str, ...]:
     """Return attendee email addresses from the master component with ``uid``."""
     component = _find_master_component(raw_ics, uid)

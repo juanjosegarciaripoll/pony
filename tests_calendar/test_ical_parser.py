@@ -8,7 +8,9 @@ from chronos.ical_parser import (
     IcalParseError,
     extract_alarm_triggers,
     extract_attendees,
+    extract_last_modified,
     extract_organizer,
+    extract_sequence,
     parse_vcalendar,
 )
 from tests_calendar import corpus
@@ -45,6 +47,35 @@ class ParseTimedWithTzTest(unittest.TestCase):
             comp.dtstart.astimezone(UTC),
             datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
         )
+
+
+class ExtractSequenceAndLastModifiedTest(unittest.TestCase):
+    """What the both-sides-changed tie-break reads off each version."""
+
+    _RAW = (
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+        b"UID:tie@example.com\r\nSUMMARY:S\r\nDTSTART:20261016T090000Z\r\n"
+        b"SEQUENCE:7\r\nLAST-MODIFIED:20261007T101500Z\r\n"
+        b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+
+    def test_both_are_read_from_the_master(self) -> None:
+        self.assertEqual(extract_sequence(self._RAW, "tie@example.com"), 7)
+        self.assertEqual(
+            extract_last_modified(self._RAW, "tie@example.com"),
+            datetime(2026, 10, 7, 10, 15, tzinfo=UTC),
+        )
+
+    def test_absent_properties_are_not_invented(self) -> None:
+        bare = self._RAW.replace(b"SEQUENCE:7\r\n", b"").replace(
+            b"LAST-MODIFIED:20261007T101500Z\r\n", b""
+        )
+        self.assertEqual(extract_sequence(bare, "tie@example.com"), 0)
+        self.assertIsNone(extract_last_modified(bare, "tie@example.com"))
+
+    def test_an_unknown_uid_yields_nothing(self) -> None:
+        self.assertEqual(extract_sequence(self._RAW, "other@example.com"), 0)
+        self.assertIsNone(extract_last_modified(self._RAW, "other@example.com"))
 
 
 class ParseDurationTest(unittest.TestCase):

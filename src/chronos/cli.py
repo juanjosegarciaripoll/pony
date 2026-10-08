@@ -968,6 +968,11 @@ def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> i
             f"~{result.components_updated} "
             f"-{result.components_removed})\n"
         )
+        for note in result.notes:
+            # A resolved collision is not a failure, so it goes to stdout
+            # and does not change the exit status — but it is never
+            # silent: one side's version of an event was discarded.
+            ctx.stdout.write(f"[{account.name}] {note}\n")
         for err in result.errors:
             ctx.stderr.write(f"[{account.name}] {err}\n")
     return 1 if fails else 0

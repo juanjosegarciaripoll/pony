@@ -90,6 +90,10 @@ from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
 if TYPE_CHECKING:
     from chronos.tui.app import CalendarHost, TuiServices
 
+# A conflict notice names an event whose other version was discarded, so
+# it stays up long enough to be read and acted on.
+_CONFLICT_TOAST_SECS = 30.0
+
 # How often the "now" highlighting is re-checked. Repaints happen only
 # when the current slot or the set of running events actually changes.
 _CLOCK_TICK_SECONDS = 30
@@ -1039,6 +1043,11 @@ class MainScreen(Screen[None]):
                 f"Background sync failed: {error}", severity="error"
             )
             return
+        # Collisions the sync resolved are reported whatever else it did:
+        # one side's version of an event lost, and the user is the only
+        # one who can tell whether that was the right outcome.
+        for note in (f"{r.account_name}: {n}" for r in results for n in r.notes):
+            self.app.notify(note, severity="warning", timeout=_CONFLICT_TOAST_SECS)  # pyright: ignore[reportUnknownMemberType]
         errors = [f"{r.account_name}: {e}" for r in results for e in r.errors]
         if errors:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
