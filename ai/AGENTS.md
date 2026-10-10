@@ -28,6 +28,22 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 1. **Read first.** Use `docs/architecture.md` to locate the right module.
 2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright src`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
+
+   The run is parallel: `addopts` carries `-n auto --dist loadfile`
+   (pytest-xdist). Most of the suite drives a Textual app through `Pilot`
+   and pays for starting one, and there is no hot spot to cut — the
+   slowest single test is 11 s and the rest is a flat tail of 1–2 s
+   startups — so running them at once is the only lever there is. It
+   halves the wall clock (7 m 33 s → 3 m 51 s on two cores) and coverage
+   aggregates across the workers unchanged. `loadfile` keeps a whole file
+   on one worker; do not switch to plain `--dist load`, which would split
+   a file's classes across workers.
+
+   **While iterating, run the files you touched, not the suite.** The
+   full run belongs at a commit boundary. A model layer under `src/pony`
+   or `src/chronos` has unit tests that finish in seconds
+   (`tests/test_mailbox_actions.py`, `tests_calendar/test_event_actions.py`);
+   reach for those before the Pilot-driven ones.
 3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
 4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval.
 5. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
@@ -110,9 +126,11 @@ step less sharp, but the rule stands.
 
 `tests_calendar/` still has three `IsolatedAsyncioTestCase` classes
 (`test_tui_flows.py`, `test_mcp_server.py`, `test_mcp_transport.py`), carried
-over with the calendar. They are harmless only because `testpaths` runs
-`tests/` first; do not add a fourth, and do not rely on that ordering in a
-new test.
+over with the calendar. They used to be harmless because `testpaths` ran
+`tests/` first; under `-n auto` there is no such order at all — each worker
+takes whole files as they come free, so what runs after a closed event loop
+is now down to the scheduler. Do not add a fourth, and do not write a test
+that depends on anything another file did.
 
 Rank by **absolute uncovered statements+branches**, not percentage. Regenerate
 the ranking rather than trusting this list — it is a snapshot:

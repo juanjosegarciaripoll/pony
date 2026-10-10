@@ -86,6 +86,16 @@ addopts = [
     "--cov-fail-under=85",
     # Opt-in: talks to a real CalDAV server, like tests/test_imap_live.py.
     "--ignore=tests_calendar/test_caldav_integration.py",
+    # Most of the suite drives a Textual app through `Pilot`, and each of
+    # those pays for starting one.  There is no hot spot to fix — the
+    # slowest single test is 11 s and the rest is a flat tail of 1–2 s
+    # app startups — so the only real lever is running them at once.
+    # `loadfile` keeps a whole file on one worker, which matters because
+    # several test classes share expensive module-level fixtures.
+    "-n",
+    "auto",
+    "--dist",
+    "loadfile",
 ]
 
 [tool.coverage.run]
@@ -114,6 +124,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=7.0",
     "pytest-instafail>=0.5.0",
+    "pytest-xdist>=3.6",
     "ruff>=0.15.10",
     "types-python-dateutil>=2.9",
 ]
