@@ -111,9 +111,11 @@ pony calendar list
 ```
 
 The browser interface is an optional extra (`pip install 'pony[web]'`). It
-shares the terminal UI's keymap — the same keys do the same things, and `F1`
-lists them — reflows for a phone, and makes its changes locally for the next
-`pony sync` to push. It does not sync or send yet.
+does what the terminal does — triage, search, compose and send, the
+calendar's agenda, day, week and month views, the contacts browser, syncing —
+and it shares the terminal's keymap, so the same keys do the same things and
+`F1` lists them. The window is divided into panes as the terminal is, each
+scrolling on its own, and it reflows to one pane at a time on a phone.
 
 ## Development
 

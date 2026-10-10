@@ -11,13 +11,11 @@ from textual.suggester import Suggester
 from textual.widgets import Checkbox, Footer, Input, Label, Select
 
 from chronos.domain import (
-    AlarmAction,
     CalendarRef,
-    ParsedAlarm,
     StoredComponent,
     VEvent,
 )
-from chronos.event_actions import EditDraft
+from chronos.event_actions import EditDraft, parse_reminders, reminders_text
 from chronos.ical_parser import extract_alarm_triggers, extract_attendees
 from chronos.mutations import (
     all_day_bounds,
@@ -110,7 +108,7 @@ class EventEditScreen(Screen[None]):
         attendees = ", ".join(
             extract_attendees(ex.raw_ics, ex.ref.uid) if ex is not None else ()
         )
-        reminders = _alarms_to_input(
+        reminders = reminders_text(
             extract_alarm_triggers(ex.raw_ics, ex.ref.uid) if ex is not None else []
         )
         with Vertical(id="event-edit"):
@@ -321,7 +319,7 @@ class EventEditScreen(Screen[None]):
         attendees_input: Input = self.query_one("#edit-attendees", Input)
         reminders_input: Input = self.query_one("#edit-reminders", Input)
         attendees = _parse_attendees_input(attendees_input.value)
-        alarms = _parse_reminder_input(reminders_input.value)
+        alarms = parse_reminders(reminders_input.value)
         return EditDraft(
             target=target,
             summary=summary,
@@ -346,55 +344,6 @@ class EventEditScreen(Screen[None]):
     @staticmethod
     def _calendar_label(ref: CalendarRef) -> str:
         return f"{ref.account_name} / {ref.calendar_name}"
-
-
-def _alarms_to_input(alarms: list[ParsedAlarm]) -> str:
-    """Convert a list of ParsedAlarms to a comma-separated minutes string.
-
-    Only START-relative DISPLAY/AUDIO alarms with a negative timedelta offset
-    are representable in the simple input field; others are omitted.
-    """
-    parts: list[str] = []
-    for alarm in alarms:
-        if not isinstance(alarm.trigger_offset, timedelta):
-            continue
-        if alarm.trigger_related != "START":
-            continue
-        secs = alarm.trigger_offset.total_seconds()
-        if secs >= 0:
-            continue
-        mins = abs(int(secs)) // 60
-        if mins > 0:
-            parts.append(str(mins))
-    return ", ".join(parts)
-
-
-def _parse_reminder_input(raw: str) -> tuple[ParsedAlarm, ...]:
-    """Parse a comma-separated list of minute values into ParsedAlarms.
-
-    Each token must be a positive integer (minutes before start).
-    Non-numeric tokens and values ≤ 0 are silently ignored.
-    """
-    alarms: list[ParsedAlarm] = []
-    for token in raw.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        try:
-            mins = int(token)
-        except ValueError:
-            continue
-        if mins <= 0:
-            continue
-        alarms.append(
-            ParsedAlarm(
-                action=AlarmAction.DISPLAY,
-                trigger_offset=timedelta(minutes=-mins),
-                trigger_related="START",
-                description=None,
-            )
-        )
-    return tuple(alarms)
 
 
 def _parse_attendees_input(raw: str) -> tuple[str, ...]:

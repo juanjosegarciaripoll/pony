@@ -1,20 +1,23 @@
 """The browser front end, over real stores and a real ASGI client.
 
 Every route here is a thin shell over code that already has its own
-tests: the actions in :mod:`pony.mailbox_actions`, the row projections in
-:mod:`pony.views`, the keymap in :mod:`pony.keymap`.  So these check what
-is genuinely new — the routing, the escaping, the token gate, the
-sandboxing of a message body, and that an action reached over HTTP is
-the same call the terminal makes.
+tests: the actions in :mod:`pony.mailbox_actions`, the row projections
+in :mod:`pony.views`, the keymap in :mod:`pony.keymap`.  So these check
+what is genuinely new — the routing, the escaping, the token gate, how a
+hostile body is served, and that an action reached over HTTP is the same
+call the terminal makes.
 """
 
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
+from urllib.parse import urlencode
 
 import pytest
-from corpus import html_only, plain_text
+from corpus import html_only, multipart_mixed_attachment, plain_text
 from starlette.testclient import TestClient
 from tui_helpers import (
     make_index,
@@ -27,12 +30,13 @@ from tui_helpers import (
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
 from pony.web import WebServices, build_web_app
-from pony.web.app import TOKEN_COOKIE
+from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS, TOKEN_COOKIE
 
 if TYPE_CHECKING:
     from pony.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
+JS = Path(__file__).resolve().parents[1] / "src/pony/web/static/pony.js"
 
 
 def _services(
@@ -47,13 +51,13 @@ def _services(
     config = make_test_config(accounts=(account,))
     index = make_index(paths)
     mirrors = make_mirrors(config)
-    for raw in seed:
+    for position, raw in enumerate(seed):
         seed_message(
             index=index,
             mirror=mirrors["acct"],
             folder=INBOX,
             raw=raw,
-            message_id=f"<seed-{len(raw)}-{seed.index(raw)}@example.com>",
+            message_id=f"<seed-{position}@example.com>",
         )
     services = WebServices(
         config=config,
@@ -74,6 +78,15 @@ def _only_message(index: SqliteIndexRepository) -> int:
     return summary.message_ref.id
 
 
+def _mail(**params: str | int) -> str:
+    return "/mail?" + urlencode({"account": "acct", "folder": "INBOX", **params})
+
+
+def _message(message_id: int, *, path: str = "/message", **extra: str | int) -> str:
+    fields = {"account": "acct", "folder": "INBOX", "id": message_id, **extra}
+    return f"{path}?{urlencode(fields)}"
+
+
 # ----------------------------------------------------------------------
 # Routing
 # ----------------------------------------------------------------------
@@ -86,7 +99,7 @@ def test_the_root_opens_the_first_folder() -> None:
         response = client.get("/", follow_redirects=False)
 
     assert response.status_code in (302, 307)
-    assert response.headers["location"] == "/f/acct/INBOX"
+    assert response.headers["location"] == "/mail?account=acct&folder=INBOX"
 
 
 def test_the_root_says_so_when_there_is_no_mail_yet() -> None:
@@ -99,47 +112,107 @@ def test_the_root_says_so_when_there_is_no_mail_yet() -> None:
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "Run 'pony sync'" in response.text
+    assert "Press g to fetch some mail." in response.text
 
 
-def test_a_folder_page_lists_its_messages_and_the_folder_tree() -> None:
+def test_a_folder_whose_name_has_a_slash_in_it_is_addressable() -> None:
+    """A path segment could not hold one, which is why these are queries."""
+    services, index = _services("web-nested-folder")
+    nested = FolderRef(account_name="acct", folder_name="INBOX/2024")
+    services.mirrors["acct"].create_folder(
+        account_name="acct",
+        folder_name="INBOX/2024",
+    )
+    seed_message(
+        index=index,
+        mirror=services.mirrors["acct"],
+        folder=nested,
+        raw=plain_text(),
+        message_id="<nested@example.com>",
+    )
+
+    with _client(services) as client:
+        response = client.get("/mail?account=acct&folder=INBOX%2F2024")
+
+    assert response.status_code == 200
+    assert 'data-folder="INBOX/2024"' in response.text
+    assert "Tuesday meeting confirmed" in response.text
+
+
+def test_a_folder_page_lists_its_messages_under_column_headings() -> None:
     services, _index = _services("web-folder")
 
     with _client(services) as client:
-        response = client.get("/f/acct/INBOX")
+        response = client.get(_mail())
 
     assert response.status_code == 200
     body = response.text
     # The row projection's fields, and the tree the TUI renders too.
     assert "Tuesday meeting confirmed" in body
     assert 'data-folder="INBOX"' in body
-    assert "INBOX" in body
+    # Headings over the columns they name, as the terminal has.
+    assert '<span class="date">Date</span>' in body
+    assert '<span class="who">From</span>' in body
+    assert '<span class="subject">Subject</span>' in body
     # Unread mail is marked as such rather than every read row being muted.
     assert 'class="row unread"' in body
 
 
-def test_opening_a_message_marks_it_read_and_frames_the_body() -> None:
+def test_a_page_is_a_full_screen_application_not_a_document() -> None:
+    """Panes that scroll on their own, and a footer of keys."""
+    services, _index = _services("web-layout")
+
+    with _client(services) as client:
+        body = client.get(_mail()).text
+
+    assert 'id="panes"' in body
+    assert 'id="folders"' in body
+    assert 'class="pane-body"' in body
+    assert 'id="keys"' in body
+    assert "<kbd>A</kbd>" in body
+
+
+def test_opening_a_message_marks_it_read_and_shows_the_text() -> None:
+    """No frame: the reader shows what `render_message` produced."""
     services, index = _services("web-message")
     message_id = _only_message(index)
 
     with _client(services) as client:
-        response = client.get(f"/m/acct/INBOX/{message_id}")
+        response = client.get(_message(message_id))
 
     assert response.status_code == 200
-    # The body is in a frame of its own, with everything switched off.
-    assert f'src="/m/acct/INBOX/{message_id}/body"' in response.text
-    assert 'sandbox=""' in response.text
+    body = response.text
+    assert "<iframe" not in body
+    assert '<pre class="text">' in body
+    assert "Just a quick note to confirm" in body
+    # The HTML version is one link away, in a tab of its own.
+    assert "/message/body?" in body.replace("&amp;", "&")
+    assert 'target="_blank"' in body
     (summary,) = index.list_folder_message_summaries(folder=INBOX)
     assert MessageFlag.SEEN in summary.local_flags
 
 
+def test_a_link_in_a_message_body_is_clickable_but_still_text() -> None:
+    hostile = plain_text().replace(
+        b"The room is booked from 14:00 to 15:30.",
+        b"Notes at https://example.test/a?b=1 or mail ada@example.test",
+    )
+    services, index = _services("web-links", seed=(hostile,))
+
+    with _client(services) as client:
+        body = client.get(_message(_only_message(index))).text
+
+    assert 'href="https://example.test/a?b=1"' in body
+    assert 'href="mailto:ada@example.test"' in body
+
+
 def test_a_message_body_is_served_with_everything_switched_off() -> None:
-    """Mail is hostile input; the frame may not run or fetch anything."""
+    """Mail is hostile input; the HTML version may run or fetch nothing."""
     services, index = _services("web-body", seed=(html_only(),))
     message_id = _only_message(index)
 
     with _client(services) as client:
-        response = client.get(f"/m/acct/INBOX/{message_id}/body")
+        response = client.get(_message(message_id, path="/message/body"))
 
     assert response.status_code == 200
     policy = response.headers["content-security-policy"]
@@ -149,23 +222,67 @@ def test_a_message_body_is_served_with_everything_switched_off() -> None:
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
+def test_a_message_can_be_downloaded_as_it_arrived() -> None:
+    services, index = _services("web-raw")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.get(_message(message_id, path="/message/raw"))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("message/rfc822")
+    assert b"Subject: Tuesday meeting confirmed" in response.content
+
+
+def test_an_attachment_is_served_as_a_download_that_cannot_be_sniffed() -> None:
+    services, index = _services(
+        "web-attachment",
+        seed=(multipart_mixed_attachment(),),
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(_message(message_id)).text
+        response = client.get(_message(message_id, path="/message/attachment", n=1))
+
+    assert "q1-report.pdf" in page
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 fake pdf content"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert 'filename="q1-report.pdf"' in response.headers["content-disposition"]
+
+
+def test_asking_for_an_attachment_that_is_not_there() -> None:
+    services, index = _services("web-attachment-missing")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        assert (
+            client.get(
+                _message(message_id, path="/message/attachment", n=9),
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                _message(message_id, path="/message/attachment", n="x"),
+            ).status_code
+            == 400
+        )
+
+
 def test_a_missing_message_is_a_404_not_a_crash() -> None:
     services, _index = _services("web-missing")
 
     with _client(services) as client:
-        assert _client(services).get("/m/acct/INBOX/999").status_code == 404
-        assert client.get("/m/acct/INBOX/999/body").status_code == 404
+        assert client.get(_message(999)).status_code == 404
+        assert client.get(_message(999, path="/message/body")).status_code == 404
 
 
 def test_a_message_whose_file_vanished_reports_that_it_is_gone() -> None:
     services, index = _services("web-gone")
-    message_id = _only_message(index)
-    message = index.get_message(
-        message_ref=dataclasses.replace(
-            index.list_folder_message_summaries(folder=INBOX)[0].message_ref,
-            id=message_id,
-        ),
-    )
+    (summary,) = index.list_folder_message_summaries(folder=INBOX)
+    message = index.get_message(message_ref=summary.message_ref)
     assert message is not None
     services.mirrors["acct"].delete_message(
         folder=INBOX,
@@ -173,9 +290,13 @@ def test_a_message_whose_file_vanished_reports_that_it_is_gone() -> None:
     )
 
     with _client(services) as client:
-        response = client.get(f"/m/acct/INBOX/{message_id}/body")
+        gone = client.get(_message(summary.message_ref.id, path="/message/body"))
+        page = client.get(_message(summary.message_ref.id))
 
-    assert response.status_code == 410
+    assert gone.status_code == 410
+    # The page itself still renders, and says what happened.
+    assert page.status_code == 200
+    assert "The message file is missing" in page.text
 
 
 def test_the_folder_fragment_and_row_fragment_are_servable_on_their_own() -> None:
@@ -183,13 +304,39 @@ def test_the_folder_fragment_and_row_fragment_are_servable_on_their_own() -> Non
     services, _index = _services("web-fragments")
 
     with _client(services) as client:
-        rows = client.get("/f/acct/INBOX/rows")
-        folders = client.get("/folders")
+        rows = client.get("/mail/rows?account=acct&folder=INBOX")
+        folders = client.get("/folders?account=acct&folder=INBOX")
 
     assert rows.status_code == 200
     assert rows.text.startswith("<ol")
     assert folders.status_code == 200
-    assert "<section>" in folders.text
+    assert 'class="pane' in folders.text
+
+
+def test_an_empty_folder_says_so() -> None:
+    services, index = _services("web-empty-folder")
+    (summary,) = index.list_folder_message_summaries(folder=INBOX)
+    index.delete_message(message_ref=summary.message_ref)
+
+    with _client(services) as client:
+        assert "Nothing here." in client.get(_mail()).text
+
+
+# ----------------------------------------------------------------------
+# Search
+# ----------------------------------------------------------------------
+
+
+def test_searching_narrows_the_list_the_way_the_reader_does() -> None:
+    services, _index = _services("web-search", seed=(plain_text(), html_only()))
+
+    with _client(services) as client:
+        found = client.get(_mail(q="Tuesday"))
+        missed = client.get(_mail(q="nonsense"))
+
+    assert "Tuesday meeting confirmed" in found.text
+    assert "Search: Tuesday" in found.text
+    assert "Nothing found." in missed.text
 
 
 # ----------------------------------------------------------------------
@@ -206,10 +353,21 @@ def test_a_subject_full_of_markup_is_escaped() -> None:
     services, _index = _services("web-escaping", seed=(hostile,))
 
     with _client(services) as client:
-        response = client.get("/f/acct/INBOX")
+        response = client.get(_mail())
 
     assert "<script>alert(1)</script>" not in response.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+
+
+def test_a_notice_carried_through_a_redirect_is_escaped_too() -> None:
+    services, _index = _services("web-notice-escaping")
+
+    with _client(services) as client:
+        response = client.get(_mail(notice="<b>hi</b>", severity="warning"))
+
+    assert "<b>hi</b>" not in response.text
+    assert "&lt;b&gt;hi&lt;/b&gt;" in response.text
+    assert 'class="notice warning"' in response.text
 
 
 # ----------------------------------------------------------------------
@@ -217,23 +375,68 @@ def test_a_subject_full_of_markup_is_escaped() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_the_keymap_is_served_with_what_the_browser_can_actually_do() -> None:
+def test_the_keymap_is_served_per_surface() -> None:
     services, _index = _services("web-keymap")
 
     with _client(services) as client:
-        bindings = client.get("/keymap.json").json()
+        keymaps = client.get("/keymap.json").json()
 
-    by_action = {entry["action"]: entry for entry in bindings}
+    assert set(keymaps) >= {"reader", "compose", "contacts", "calendar", "event"}
+    reader = {entry["action"]: entry for entry in keymaps["reader"]}
     # The same table the terminal binds, so every reader key is here.
-    assert by_action["archive"]["key"] == "A"
-    assert by_action["archive"]["available"] is True
-    assert by_action["cursor_down"]["available"] is True
-    # Composing is not wired up yet, and the help says so rather than
-    # the page ignoring the press.
-    assert by_action["compose_new"]["available"] is False
+    assert reader["archive"]["key"] == "A"
+    assert reader["archive"]["available"] is True
+    assert reader["cursor_down"]["available"] is True
+    # Composing and syncing are wired up.
+    assert reader["compose_new"]["available"] is True
+    assert reader["sync"]["available"] is True
     # Named keys come through in the browser's own spelling.
-    assert by_action["show_help"]["key"] == "F1"
-    assert by_action["mark_up"]["key"] == "shift+ArrowUp"
+    assert reader["show_help"]["key"] == "F1"
+    assert reader["mark_up"]["key"] == "shift+ArrowUp"
+    # Opening the body in $EDITOR is not something a browser can do, and
+    # the help says so rather than the page ignoring the press.
+    compose = {entry["action"]: entry for entry in keymaps["compose"]}
+    assert compose["edit_external"]["available"] is False
+    # The calendar's own table, in the same shape. Several keys share
+    # an action there — a bare capital and its modifier spelling — so
+    # the lookup is by action to a list of keys.
+    calendar: dict[str, list[str]] = {}
+    for entry in keymaps["calendar"]:
+        calendar.setdefault(entry["action"], []).append(entry["key"])
+    assert calendar["view_month"] == ["M", "shift+m"]
+    assert "t" in calendar["today"]
+    by_action = {entry["action"]: entry for entry in keymaps["calendar"]}
+    assert by_action["today"]["available"] is True
+    assert by_action["select_span(3)"]["available"] is True
+
+
+def test_every_key_the_help_calls_available_is_really_dispatched() -> None:
+    """The help cannot promise what the dispatcher does not implement."""
+    source = JS.read_text(encoding="utf-8")
+    missing = [
+        action
+        for action in sorted(CLIENT_ACTIONS)
+        if f"{action}:" not in source and f"clientActions.{action} =" not in source
+    ]
+
+    assert missing == []
+
+
+def test_only_the_prompting_actions_live_on_both_sides() -> None:
+    """A name means one thing, with one documented exception.
+
+    Five actions need a word before they can run — a folder to move to,
+    a name for a new folder, an answer to an invitation — so the browser
+    asks for it and then posts to the action of the same name.
+    Everything else is either local or a request, never both.
+    """
+    assert CLIENT_ACTIONS & set(SERVER_ACTIONS) == {
+        "move",
+        "copy",
+        "new_folder",
+        "respond_invitation",
+        "delete_event",
+    }
 
 
 # ----------------------------------------------------------------------
@@ -299,7 +502,7 @@ def test_the_local_mutations_are_offered_over_http(action: str, check: str) -> N
     message_id = _only_message(index)
     with _client(services) as client:
         # Open it first so "mark unread" has something to undo.
-        client.get(f"/m/acct/INBOX/{message_id}")
+        client.get(_message(message_id))
         response = client.post(
             f"/action/{action}",
             data={"account": "acct", "folder": "INBOX", "id": str(message_id)},
@@ -332,12 +535,101 @@ def test_marking_a_whole_folder_read_needs_no_selection() -> None:
     assert MessageFlag.SEEN in row.local_flags
 
 
+def test_moving_and_copying_take_the_target_the_prompt_asked_for() -> None:
+    services, index = _services("web-move")
+    message_id = _only_message(index)
+    services.mirrors["acct"].create_folder(account_name="acct", folder_name="Later")
+
+    with _client(services) as client:
+        copied = client.post(
+            "/action/copy",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(message_id),
+                "target": "acct/Later",
+            },
+        )
+        moved = client.post(
+            "/action/move",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(message_id),
+                "target": "acct/Later",
+            },
+        )
+
+    assert copied.json()["changed"] == 1
+    assert moved.json()["changed"] == 1
+    later = index.list_folder_messages(
+        folder=FolderRef(account_name="acct", folder_name="Later"),
+    )
+    assert len(later) == 2
+    assert list(index.list_folder_message_summaries(folder=INBOX)) == []
+
+
+def test_a_move_with_no_target_says_how_to_name_one() -> None:
+    services, index = _services("web-move-no-target")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/move",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(_only_message(index)),
+            },
+        )
+
+    assert response.json()["notices"][0]["text"] == (
+        "Name the folder to move to as account/folder."
+    )
+
+
+def test_a_folder_can_be_created_from_the_browser() -> None:
+    services, _index = _services("web-new-folder")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/new_folder",
+            data={"account": "acct", "folder": "INBOX", "name": "Projects"},
+        )
+        refused = client.post(
+            "/action/new_folder",
+            data={"account": "acct", "folder": "INBOX", "name": "  "},
+        )
+
+    assert "created locally" in response.json()["notices"][0]["text"]
+    assert refused.json()["notices"][0]["text"] == "Name the folder to create."
+    names = [
+        ref.folder_name
+        for ref in services.mirrors["acct"].list_folders(account_name="acct")
+    ]
+    assert "Projects" in names
+
+
+def test_harvesting_a_folder_adds_its_addresses_to_the_contacts() -> None:
+    services, index = _services("web-harvest")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/harvest_contacts",
+            data={"account": "acct", "folder": "INBOX"},
+        )
+
+    assert "Harvested contacts from 1 message(s) in INBOX." in [
+        notice["text"] for notice in response.json()["notices"]
+    ]
+    assert index.list_all_contacts()
+
+
 def test_an_unknown_action_says_so_instead_of_pretending() -> None:
     services, _index = _services("web-unknown-action")
 
     with _client(services) as client:
         response = client.post(
-            "/action/compose_new",
+            "/action/launch_rocket",
             data={"account": "acct", "folder": "INBOX"},
         )
 
@@ -360,6 +652,102 @@ def test_an_action_ignores_ids_that_are_not_numbers() -> None:
 
 
 # ----------------------------------------------------------------------
+# Syncing
+# ----------------------------------------------------------------------
+
+
+def test_syncing_from_the_browser_runs_the_same_engine() -> None:
+    """`g` fetches mail here, as it does in the terminal."""
+    from pony.sync import AccountSyncResult, FolderSyncResult, SyncResult
+
+    services, _index = _services("web-sync")
+    result = SyncResult(
+        accounts=(
+            AccountSyncResult(
+                account_name="acct",
+                folders=(FolderSyncResult(folder_name="INBOX", fetched=3),),
+            ),
+        ),
+    )
+
+    with patch.object(services.sync, "service") as service:
+        service.sync.return_value = result
+        with _client(services) as client:
+            response = client.post(
+                "/action/sync",
+                data={"account": "acct", "folder": "INBOX"},
+            )
+
+    assert service.sync.called
+    assert response.json() == {
+        "changed": 3,
+        "notices": [
+            {
+                "text": "Sync complete.  acct: +3 msgs, 0 merged, 0 pushed",
+                "severity": "information",
+            },
+        ],
+    }
+
+
+def test_both_sync_keys_fetch_mail_here() -> None:
+    """There is nothing for a quieter second sync key to mean."""
+    assert SERVER_ACTIONS["sync"] is SERVER_ACTIONS["background_sync"]
+
+
+def test_a_sync_without_credentials_says_what_is_missing() -> None:
+    services, _index = _services("web-sync-no-credentials")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/sync",
+            data={"account": "acct", "folder": "INBOX"},
+        )
+
+    assert response.json()["notices"][0]["text"] == (
+        "No credentials provider, so there is nothing to sync with."
+    )
+
+
+def test_a_failing_sync_is_reported_not_raised() -> None:
+    services, _index = _services("web-sync-fails")
+
+    with patch.object(services.sync, "service") as service:
+        service.sync.side_effect = RuntimeError("the server hung up")
+        with _client(services) as client:
+            response = client.post("/action/sync", data={})
+
+    outcome = response.json()
+    assert outcome["changed"] == 0
+    assert outcome["notices"][0]["text"] == "Sync failed: the server hung up"
+    assert outcome["notices"][0]["severity"] == "error"
+
+
+def test_only_one_sync_runs_at_a_time_in_this_server() -> None:
+    """Two tabs must not open two IMAP sessions on one account."""
+    import threading
+
+    services, _index = _services("web-sync-busy")
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    with patch.object(services.sync, "service") as service:
+        service.sync.side_effect = _slow
+        first = threading.Thread(target=services.sync.mail)
+        first.start()
+        assert started.wait(timeout=5)
+        second = services.sync.mail()
+        release.set()
+        first.join(timeout=5)
+
+    assert second.notices[0].text == "Sync already running."
+
+
+# ----------------------------------------------------------------------
 # The token
 # ----------------------------------------------------------------------
 
@@ -368,8 +756,9 @@ def test_without_the_token_nothing_is_served() -> None:
     services, _index = _services("web-token-refused", token="s3cret")
 
     with _client(services) as client:
-        assert client.get("/f/acct/INBOX").status_code == 403
+        assert client.get(_mail()).status_code == 403
         assert client.get("/keymap.json").status_code == 403
+        assert client.get("/contacts").status_code == 403
         assert (
             client.post(
                 "/action/trash",
@@ -384,104 +773,90 @@ def test_the_token_arrives_in_the_url_once_and_is_remembered() -> None:
     services, _index = _services("web-token-cookie", token="s3cret")
 
     with _client(services) as client:
-        first = client.get("/f/acct/INBOX?token=s3cret")
+        first = client.get(_mail(token="s3cret"))
         assert first.status_code == 200
         assert client.cookies[TOKEN_COOKIE] == "s3cret"
         # The cookie alone is enough from here on.
-        assert client.get("/f/acct/INBOX").status_code == 200
+        assert client.get(_mail()).status_code == 200
 
 
 def test_a_wrong_token_is_refused() -> None:
     services, _index = _services("web-token-wrong", token="s3cret")
 
     with _client(services) as client:
-        assert client.get("/f/acct/INBOX?token=guess").status_code == 403
+        assert client.get(_mail(token="guess")).status_code == 403
         assert TOKEN_COOKIE not in client.cookies
 
 
+def test_the_sync_keys_mean_the_calendar_on_the_calendar_page() -> None:
+    """One spelling, two tables: the surface tells them apart."""
+    source = JS.read_text(encoding="utf-8")
+
+    assert 'state.surface === "calendar"' in source
+    assert 'name = "sync_calendar";' in source
+    assert "sync_calendar" in SERVER_ACTIONS
+
+
 # ----------------------------------------------------------------------
-# The agenda
+# Addressing
 # ----------------------------------------------------------------------
 
 
-def test_the_agenda_says_when_there_is_no_calendar() -> None:
-    services, _index = _services("web-agenda-none")
+def test_a_link_leaves_out_what_has_no_value() -> None:
+    from pony.web import urls
 
-    with _client(services) as client:
-        response = client.get("/agenda")
-
-    assert response.status_code == 200
-    assert "No calendar configured." in response.text
+    assert urls.query(account="acct", folder=None, q="") == "?account=acct"
+    assert urls.query() == ""
+    assert urls.mail_url(None) == "/mail"
 
 
-def test_the_agenda_renders_the_calendar_it_is_given() -> None:
-    """The same projections the TUI agenda uses, in HTML."""
-    from datetime import UTC, datetime, timedelta
+def test_only_the_first_slash_separates_an_account_from_its_folder() -> None:
+    """`work/INBOX/2024` is a nested folder, not a nested account."""
+    from pony.web.actions import parse_target
 
-    from tui_helpers import make_calendar_runtime
+    target = parse_target("work/INBOX/2024")
 
-    start = datetime.now(UTC).astimezone().replace(
-        hour=10,
-        minute=0,
-        second=0,
-        microsecond=0,
-    ) + timedelta(days=1)
-    end = start + timedelta(minutes=45)
-    ics = (
-        "\r\n".join(
-            (
-                "BEGIN:VCALENDAR",
-                "VERSION:2.0",
-                "PRODID:-//tests//EN",
-                "BEGIN:VEVENT",
-                "UID:web-agenda@example.com",
-                f"DTSTAMP:{start.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}",
-                f"DTSTART:{start.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}",
-                f"DTEND:{end.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}",
-                "SUMMARY:Planning review",
-                "LOCATION:Room 4",
-                "END:VEVENT",
-                "END:VCALENDAR",
-            ),
-        )
-        + "\r\n"
-    ).encode()
-    services, _index = _services("web-agenda")
-    with_calendar = dataclasses.replace(
-        services,
-        calendar=make_calendar_runtime(
-            make_tmp_paths("web-agenda-cal"),
-            events=(("web-agenda@example.com", ics),),
-        ),
-    )
-
-    with _client(with_calendar) as client:
-        response = client.get("/agenda")
-
-    assert response.status_code == 200
-    assert "Planning review" in response.text
-    assert "Room 4" in response.text
-    # Tomorrow is named, not dated, exactly as the agenda screen names it.
-    assert "Tomorrow" in response.text
+    assert target is not None
+    assert (target.account_name, target.folder_name) == ("work", "INBOX/2024")
+    assert parse_target("nothing-but-an-account") is None
+    assert parse_target("/leading") is None
 
 
-def test_an_empty_folder_says_so() -> None:
-    services, index = _services("web-empty-folder")
-    (summary,) = index.list_folder_message_summaries(folder=INBOX)
-    index.delete_message(message_ref=summary.message_ref)
-
-    with _client(services) as client:
-        response = client.get("/f/acct/INBOX")
-
-    assert "Nothing here." in response.text
+# ----------------------------------------------------------------------
+# A screen with no keyboard
+# ----------------------------------------------------------------------
 
 
-def test_a_body_on_an_account_with_no_mirror_is_gone_not_broken() -> None:
-    services, index = _services("web-no-mirror")
+def test_the_reader_offers_buttons_for_the_keys_it_binds() -> None:
+    """A phone has no `A`, so Archive has to be tappable."""
+    services, index = _services("web-touch")
     message_id = _only_message(index)
-    bare = dataclasses.replace(services, mirrors={})
 
-    with _client(bare) as client:
-        response = client.get(f"/m/acct/INBOX/{message_id}/body")
+    with _client(services) as client:
+        body = client.get(_message(message_id)).text
 
-    assert response.status_code == 410
+    for action in ("archive", "trash", "toggle_flagged", "mark_unread"):
+        assert f'data-action="{action}"' in body
+    # And the search the `/` key runs has a field of its own.
+    assert 'type="search"' in body
+    assert 'name="q"' in body
+
+
+def test_every_button_that_names_an_action_names_a_real_one() -> None:
+    """A `data-action` the server does not know would do nothing."""
+    import re
+
+    services, index = _services("web-touch-actions")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        pages = [
+            client.get(_message(message_id)).text,
+            client.get("/contacts").text,
+        ]
+
+    named = {
+        name for page in pages for name in re.findall(r'data-action="([^"]+)"', page)
+    }
+    assert named
+    assert named <= set(SERVER_ACTIONS)

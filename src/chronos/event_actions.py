@@ -23,9 +23,11 @@ caller does the posting.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from chronos.domain import (
+    AlarmAction,
     AppConfig,
     CalendarRef,
     ComponentRef,
@@ -47,7 +49,8 @@ from chronos.outcome import Notice, Outcome, failure, info
 from chronos.recurrence import rebuild_caches
 
 if TYPE_CHECKING:
-    from datetime import datetime, timedelta
+    from collections.abc import Sequence
+    from datetime import datetime
     from pathlib import Path
 
     from chronos.protocols import IndexRepository, MirrorRepository
@@ -101,6 +104,67 @@ class SavedEvent:
     organizer: str | None
     created: bool
     outcome: Outcome
+
+
+def reminders_text(alarms: Sequence[ParsedAlarm]) -> str:
+    """*alarms* as the comma-separated minutes a form shows.
+
+    Only START-relative alarms with a negative offset are representable
+    that way; anything else — an absolute trigger, one relative to the
+    end — is left out of the field and carried through untouched by
+    whoever is editing.
+    """
+    parts: list[str] = []
+    for alarm in alarms:
+        if not isinstance(alarm.trigger_offset, timedelta):
+            continue
+        if alarm.trigger_related != "START":
+            continue
+        seconds = alarm.trigger_offset.total_seconds()
+        if seconds >= 0:
+            continue
+        minutes = abs(int(seconds)) // 60
+        if minutes > 0:
+            parts.append(str(minutes))
+    return ", ".join(parts)
+
+
+def parse_reminders(raw: str) -> tuple[ParsedAlarm, ...]:
+    """A comma-separated list of minutes-before-start, as alarms.
+
+    Each token must be a positive integer; anything else is ignored
+    rather than refused, because a reminder field is not where a user
+    should be stopped.
+    """
+    alarms: list[ParsedAlarm] = []
+    for token in raw.split(","):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        try:
+            minutes = int(stripped)
+        except ValueError:
+            continue
+        if minutes <= 0:
+            continue
+        alarms.append(
+            ParsedAlarm(
+                action=AlarmAction.DISPLAY,
+                trigger_offset=timedelta(minutes=-minutes),
+                trigger_related="START",
+                description=None,
+            ),
+        )
+    return tuple(alarms)
+
+
+def existing_alarms(component: StoredComponent | None) -> tuple[ParsedAlarm, ...]:
+    """The alarms *component* already carries, or none."""
+    if component is None:
+        return ()
+    from chronos.ical_parser import extract_alarm_triggers
+
+    return tuple(extract_alarm_triggers(component.raw_ics, component.ref.uid))
 
 
 def save_event(
@@ -324,8 +388,11 @@ __all__ = [
     "Calendars",
     "EditDraft",
     "SavedEvent",
+    "existing_alarms",
     "import_ics_file",
     "organizer_for",
+    "parse_reminders",
+    "reminders_text",
     "reschedule_event",
     "save_event",
     "trash_event",

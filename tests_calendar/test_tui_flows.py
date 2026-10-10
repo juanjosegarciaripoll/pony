@@ -2931,44 +2931,44 @@ class AlarmHelperTest(unittest.TestCase):
         )
         self.assertEqual(_format_alarm(alarm), "at start")
 
-    def test_parse_reminder_input_single(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+    def test_parse_reminders_single(self) -> None:
+        from chronos.event_actions import parse_reminders
 
-        alarms = _parse_reminder_input("15")
+        alarms = parse_reminders("15")
         self.assertEqual(len(alarms), 1)
         self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
 
-    def test_parse_reminder_input_multiple(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+    def test_parse_reminders_multiple(self) -> None:
+        from chronos.event_actions import parse_reminders
 
-        alarms = _parse_reminder_input("15, 60")
+        alarms = parse_reminders("15, 60")
         self.assertEqual(len(alarms), 2)
         offsets = {a.trigger_offset for a in alarms}
         self.assertIn(timedelta(minutes=-15), offsets)
         self.assertIn(timedelta(minutes=-60), offsets)
 
-    def test_parse_reminder_input_empty(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+    def test_parse_reminders_empty(self) -> None:
+        from chronos.event_actions import parse_reminders
 
-        self.assertEqual(_parse_reminder_input(""), ())
-        self.assertEqual(_parse_reminder_input("  "), ())
+        self.assertEqual(parse_reminders(""), ())
+        self.assertEqual(parse_reminders("  "), ())
 
-    def test_parse_reminder_input_ignores_non_numeric(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+    def test_parse_reminders_ignores_non_numeric(self) -> None:
+        from chronos.event_actions import parse_reminders
 
-        alarms = _parse_reminder_input("15, abc, 30")
+        alarms = parse_reminders("15, abc, 30")
         self.assertEqual(len(alarms), 2)
 
-    def test_parse_reminder_input_ignores_zero_and_negative(self) -> None:
-        from chronos.tui.screens.event_edit_screen import _parse_reminder_input
+    def test_parse_reminders_ignores_zero_and_negative(self) -> None:
+        from chronos.event_actions import parse_reminders
 
-        alarms = _parse_reminder_input("0, -5, 15")
+        alarms = parse_reminders("0, -5, 15")
         self.assertEqual(len(alarms), 1)
         self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
 
-    def test_alarms_to_input_start_relative(self) -> None:
+    def test_reminders_text_start_relative(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.screens.event_edit_screen import _alarms_to_input
+        from chronos.event_actions import reminders_text
 
         alarms = [
             ParsedAlarm(
@@ -2978,11 +2978,11 @@ class AlarmHelperTest(unittest.TestCase):
                 description=None,
             )
         ]
-        self.assertEqual(_alarms_to_input(alarms), "15")
+        self.assertEqual(reminders_text(alarms), "15")
 
-    def test_alarms_to_input_skips_end_relative(self) -> None:
+    def test_reminders_text_skips_end_relative(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.screens.event_edit_screen import _alarms_to_input
+        from chronos.event_actions import reminders_text
 
         alarms = [
             ParsedAlarm(
@@ -2992,7 +2992,7 @@ class AlarmHelperTest(unittest.TestCase):
                 description=None,
             )
         ]
-        self.assertEqual(_alarms_to_input(alarms), "")
+        self.assertEqual(reminders_text(alarms), "")
 
     def test_render_event_detail_shows_reminders(self) -> None:
         from chronos.views import render_event_detail

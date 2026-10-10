@@ -6,6 +6,36 @@ Remote attacker controls email content (headers, MIME structure, attachment
 filenames, HTML body) delivered to a Pony Express user via a third-party mail
 server.  Goal: compromise the local machine.
 
+With `pony web` serving, that content is also rendered into HTML by a
+server the user's own browser trusts, so the same attacker gains a
+second surface.  What stands between them:
+
+- **Everything is escaped on the way out.** `pony.web.html` escapes
+  every text child and quotes every attribute; `Raw` is the only way
+  past it, and it is used for markup this program built, never for
+  anything a message said.  `tests/test_web_html.py` pins that, and
+  `tests/test_web_app.py` checks a hostile subject through a real
+  request.
+- **A message body is shown as text.** The reader renders
+  `render_message(...).body` — HTML stripped, URLs as text — and
+  linkifies only `https?://`, `ftp://` and bare addresses, so a
+  `javascript:` URL in a message is text.  The HTML version is a
+  separate top-level page under `default-src 'none'; img-src data:`
+  with `Referrer-Policy: no-referrer`, never a frame inside the
+  application, so nothing in a message can reach the page around it.
+- **Attachments are downloads.** Served with
+  `X-Content-Type-Options: nosniff` and a quoted filename stripped of
+  quotes, backslashes and carriage returns.
+- **Nothing the page sends is used as a path.** An uploaded attachment
+  is addressed by a 16-hex-digit token that indexes a directory the
+  server made; a forward's original is read from the index by message
+  reference.  `pony.web.compose.staged_path` refuses anything that is
+  not a token.
+- **Reachability.** Loopback by default, plus a token compared with
+  `secrets.compare_digest` and kept in an `HttpOnly`, `SameSite=strict`
+  cookie.  A tailnet address or `tailscale serve` is the intended way to
+  publish it.
+
 ---
 
 ## Confirmed vulnerabilities (patched)

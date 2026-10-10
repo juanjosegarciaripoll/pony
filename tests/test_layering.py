@@ -113,5 +113,17 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
 
     def test_the_web_package_renders_without_textual(self) -> None:
         """Not just the import: the pages themselves must come out."""
-        self.assertFalse(_imports_textual("pony.web.app"))
-        self.assertFalse(_imports_textual("pony.web.html"))
+        for module in (
+            "pony.web.app",
+            "pony.web.html",
+            "pony.web.layout",
+            "pony.web.mail",
+            "pony.web.compose",
+            "pony.web.contacts",
+            "pony.web.calendar",
+            "pony.web.syncing",
+            "pony.web.urls",
+            "pony.web.actions",
+        ):
+            with self.subTest(module=module):
+                self.assertFalse(_imports_textual(module))

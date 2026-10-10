@@ -3,7 +3,10 @@
 Python 3.13 MUA **and calendar**, one program, two front ends:
 
 - Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI (`pony tui`) or browser UI (`pony web`); SMTP out, optional Markdown compose.
-- Calendar (`src/chronos`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++).
+- Calendar (`src/chronos`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++), and its own pages in the browser UI.
+
+Both front ends offer the same operations, because the operations are
+not in either of them: see **Where an operation lives** below.
 
 One config file, one notification space, one entry point (`pony`).
 The dependency arrow is **one way**: `pony` imports `chronos`, never the
@@ -75,7 +78,7 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.17 %** across both packages, measured on the full suite after the model/view split — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.2 %** across both packages, measured on the full suite after the browser front end landed — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -104,8 +107,14 @@ Key test infrastructure:
 | Notification space | `tests/test_notifications.py` |
 | Mail + calendar in one app | `tests/test_calendar_in_app.py` — `build_pony_app(calendar=make_calendar_runtime(...))` |
 | Browser front end | `tests/test_web_app.py` — Starlette `TestClient` over real stores |
+| Browser compose and send | `tests/test_web_compose.py` — patched `pony.delivery.smtp_send` |
+| Browser contacts | `tests/test_web_contacts.py` |
+| Browser calendar views | `tests/test_web_calendar.py` |
+| Browser invitations | `tests/test_web_invitations.py` |
 | The HTML builder's escaping | `tests/test_web_html.py` |
-| The shared keymap | `tests/test_keymap.py` — including that the screens bind exactly it |
+| The shared keymap | `tests/test_keymap.py` — both tables, and that the screens bind exactly them |
+| Answering an invitation | `tests/test_invitation_actions.py` — no screen, no socket |
+| Calendar grid geometry | `tests_calendar/test_grid_projections.py` |
 | Invitations (parsing, replies) | `tests/test_invitation.py` |
 | Invitations in the reader | `tests/test_invitation_flows.py` |
 | Invitations out of the calendar | `tests/test_invitation_sending.py` |
@@ -156,15 +165,15 @@ both packages:
 | Missing | File | % |
 |---:|---|---:|
 | 292 | `chronos/cli.py` | 77.59 |
-| 96 | `chronos/tui/screens/main_screen.py` | 84.52 |
+| 117 | `pony/cli.py` | 94.85 |
+| 94 | `chronos/tui/screens/main_screen.py` | 84.84 |
 | 94 | `chronos/sync.py` | 87.02 |
-| 72 | `pony/cli.py` | 96.76 |
 | 70 | `chronos/recurrence.py` | 83.41 |
-| 67 | `pony/tui/screens/main_screen.py` | 94.48 |
 | 63 | `chronos/ingest.py` | 82.20 |
 | 61 | `chronos/locking.py` | 46.02 |
-| 55 | `pony/tui/app.py` | 86.22 |
+| 59 | `pony/tui/app.py` | 85.29 |
 | 50 | `pony/storage.py` | 92.78 |
+| 49 | `pony/tui/screens/main_screen.py` | 95.71 |
 
 The calendar's files dominate this list because its suite was written to
 its own 85 % floor, not Pony's habits — that is where the headroom is.
@@ -174,7 +183,15 @@ Windows branch and cannot run on Linux CI.
 `pony/credentials.py` is platform-gated and cannot rise on Linux CI
 (below). Pony's `cli.py`, `sync.py` and `main_screen.py` are mostly the
 verified-unreachable arms below — read that section before spending effort
-on them.
+on them. `pony/cli.py` rose in missing lines when `pony web` gained its
+credentials and scheduler wiring: launching a real server is not
+something the suite does, so those lines sit with `run_tui`'s.
+
+The browser front end does not appear in that list: every module in
+`pony/web` is at 92 % or better, and what is left uncovered is the
+rendering arms a request does not take — a message with no attachments
+*and* no invitation, a folder with no mirror. Every route, action and
+refusal has a test (`tests/test_web_*.py`).
 
 **Extraction lowers the donor file's percentage.** Collapsing N duplicated
 copies into one helper removes N-1 *covered* lines from the file they left.
@@ -221,31 +238,51 @@ defensive, so re-deriving it is wasted effort:
 ## Where an operation lives
 
 **An operation goes in an action module, not in a screen.** Archive,
-move, copy, trash, flags, folder creation, filing a sent message, the
-contact operations and the calendar's event operations each live over
-the stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
-`pony/contact_actions.py`, `chronos/event_actions.py`) and return a
+move, copy, trash, flags, folder creation, sending a message, the
+contact operations, answering an invitation and the calendar's event
+operations each live over the stores (`pony/mailbox_actions.py`,
+`pony/delivery.py`, `pony/contact_actions.py`,
+`pony/invitation_actions.py`, `chronos/event_actions.py`) and return a
 `chronos.outcome.Outcome` — a count of what changed, and the notices to
-show. No `app.notify`, no `query_one`, no Textual import.
+show. No `app.notify`, no `query_one`, no Textual import. An operation
+that blocks (SMTP, a sync) is a plain blocking call: the terminal hands
+it to a worker thread, the browser to the thread pool.
 
 **A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.keymap`
-is the one table; `pony.tui.bindings.to_textual` converts it for Textual
-and `/keymap.json` serves it to the browser. A key written straight into
-a screen's `BINDINGS` exists in the terminal and nowhere else, and
-`tests/test_keymap.py` fails when the reader or the app stops matching
-the table.
+is the mail reader's table and `chronos.keymap` is the calendar's, which
+also holds the vocabulary both share (`KeyBinding`, `for_surface`,
+`web_key`) because the dependency arrow points that way. Each front end
+converts: `to_textual` for the terminal, `/keymap.json` for the browser,
+one entry per page surface. A key written straight into a screen's
+`BINDINGS` exists in the terminal and nowhere else, and
+`tests/test_keymap.py` fails when a screen stops matching its table.
+The browser marks a key it cannot do as unavailable rather than
+swallowing the press, and `tests/test_web_app.py` fails if the server
+calls an action available that `static/pony.js` does not implement.
 
 **A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
-and `chronos/views.py` decide what a row is *of*; padding it to a column
-width or wrapping it in a Rich `Text` is the widget's half. Emphasis
+and `chronos/views.py` decide what a row is *of* — and, for the
+calendar, which cell or column a span occupies and how tall the hour
+axis is; padding it to a column width or wrapping it in a Rich `Text` is
+the widget's half. Emphasis
 travels as data (`MessageRow.unread`, `chronos.views.RowEmphasis`) so a
 second front end can render it as a CSS class.
 
+**A page goes in its own `pony/web` module, not in `app.py`.** `app.py`
+is routes, the token gate and the action table; the markup for mail,
+compose, contacts and the calendar lives in a module each, the chrome in
+`layout.py`, and every link in `urls.py`. Account, folder and message
+travel as **query parameters** — a folder may be called `INBOX/2024`,
+which no path segment can hold — so build links with `urls.*` rather
+than by hand.
+
 A screen gathers what the cursor and the marks point at, calls one
 action, reports its notices and repaints — see
-`MainScreen._act_on_targets`. New operations get unit tests against the
-stores rather than a `Pilot`; see the table above.
-See `docs/architecture.md → Actions and projections`.
+`MainScreen._act_on_targets`; a route does the same and returns the
+`Outcome` as JSON. New operations get unit tests against the stores
+rather than a `Pilot`; see the table above.
+See `docs/architecture.md → Actions and projections` and
+`→ The browser front end`.
 
 ## Local mutations
 

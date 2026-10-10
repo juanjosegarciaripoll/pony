@@ -7,9 +7,11 @@ storage, strong offline behavior. Version: `src/pony/version.py` /
 ## Capabilities
 
 1. Mail synchronization (IMAP)
-2. Mail reading (TUI)
+2. Mail reading (TUI and browser)
 3. Mail composing (SMTP + attachments + Markdown)
 4. Mail search (FTS5)
+5. Calendar (CalDAV) in both front ends
+6. Contacts (BBDB-compatible) in both front ends
 
 ## Delivered
 
@@ -32,6 +34,8 @@ All v1 capabilities implemented and tested:
 - RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
 - Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
 - Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.
+- Model/view split across both halves: operations return `chronos.outcome.Outcome` from action modules (`mailbox_actions`, `delivery`, `contact_actions`, `invitation_actions`, `chronos.event_actions`), projections live in `pony.views` / `chronos.views` (grid geometry included), and the keymaps are data (`pony.keymap`, `chronos.keymap`) that each front end converts.
+- Browser front end (`pony web`, extra `pony[web]`): the terminal's feature set over HTTP — folder tree, list and reader with the message as text, archive/trash/flag/mark-read, move, copy, new folder, goto, search, harvest, compose and send (reply, reply-all, forward, resumed draft, attachments uploaded as bytes), answering invitations, syncing (with the server's own one-at-a-time slot and the periodic thread), the contacts browser with delete and merge, and the calendar's agenda, day, multi-day and month views with its event form. Full-screen pane layout, one pane at a time on a phone, loopback plus token by default.
 
 ## Queue
 
@@ -80,8 +84,13 @@ All v1 capabilities implemented and tested:
 - POP support
 - Multi-user serving (one config file, one credential store — several
   people means an instance each)
-- Composing and sending from the browser front end
-- Syncing from the browser front end (needs a cross-process mail lock
-  first; `chronos.locking` covers the calendar only)
+- A cross-process mail sync lock. The calendar has one
+  (`chronos.locking`); the mail half never has, and `pony sync`, the TUI
+  and `pony web` can each start a sync. The web server holds one slot of
+  its own, so two tabs cannot overlap, but two processes still can — as
+  they always could. Deliberate: it is the user's machine and their call.
+- Editing a message body in `$EDITOR` from the browser (the only key in
+  the keymap the browser reports as terminal-only)
+- Attachment *previews* in the browser; they download instead
 - Multi-machine conflict handling (beyond current state-based reconciliation)
 - Aggressive auto remote mutations

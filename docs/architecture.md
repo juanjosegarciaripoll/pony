@@ -51,8 +51,9 @@ src/pony/
   mailbox_ops.py       # index-row rewrites for local moves, copies and flags
   mailbox_actions.py   # archive / move / copy / trash / flags, over the stores
   delivery.py          # filing a message that has been written or sent
-  contact_actions.py   # harvest, delete, merge
-  keymap.py            # which key does what, for both front ends
+  contact_actions.py   # harvest, list, the form's fields, delete, merge
+  invitation_actions.py# file an invitation, answer its organizer
+  keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
   compose_utils.py     # quoting, address lists, MIME assembly
@@ -111,6 +112,14 @@ src/pony/
       edge_drag.py           # mouse-draggable pane borders
   web/                   # the browser front end (extra: pony[web])
     app.py               # Starlette routes over the same actions
+    layout.py            # the chrome: tabs, pane frames, footer, overlays
+    mail.py              # folder tree, list, reader, the mail actions
+    compose.py           # the compose form, sending, staged attachments
+    contacts.py          # the contacts list, its form, its bulk actions
+    calendar.py          # agenda, timeline and month views, the event form
+    syncing.py           # the server's one sync slot
+    actions.py           # what a POSTed action is handed
+    urls.py              # every link in the front end
     html.py              # escaping element builder, in place of templates
     static/              # one stylesheet, one keymap dispatcher
 ```
@@ -250,15 +259,18 @@ Textual, calls `app.notify`, or touches a widget.
 | Module | Operations |
 |---|---|
 | `pony.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message |
-| `pony.delivery` | filing a draft or a sent copy, the credential a send needs |
-| `pony.contact_actions` | harvesting an address, deleting, planning and applying a merge |
+| `pony.delivery` | filing a draft or a sent copy, and sending: the password, the pre-send draft, SMTP, the Sent copy |
+| `pony.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge |
+| `pony.invitation_actions` | filing an invitation, answering its organizer |
 | `chronos.event_actions` | saving, rescheduling, trashing and importing an event |
 
 The *projections* are what a view is of: `pony.views` turns an indexed
-message into the four fields and the one state a list row shows, and
-`chronos.views` holds the calendar's window arithmetic, the index query
-each view needs, and the strings its rows are made of. Neither knows how
-a row will be drawn. Where a row needs emphasis — unread mail, an event
+message into the four fields and the one state a list row shows, or a
+contact into its five columns, and `chronos.views` holds the calendar's
+window arithmetic, the index query each view needs, the strings its rows
+are made of, and the grid geometry — which month cell a span covers,
+which day columns a trip occupies, how wide the hour axis has to be.
+Neither knows how a row will be drawn. Where a row needs emphasis — unread mail, an event
 in progress, one already over — it says so as data (`MessageRow.unread`,
 `RowEmphasis`) and leaves bold, dim or a CSS class to the renderer.
 
@@ -350,18 +362,61 @@ message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 
 `pony web` serves the same stores over HTTP (`pony.web`, Starlette and
 Uvicorn, installed by the `web` extra). It is a second front end, not a
-second program: every operation is a call into `pony.mailbox_actions`,
-every row comes from `pony.views` or `chronos.views`, and every key comes
-from `pony.keymap`. What is new in the package is HTTP, HTML and the
-keyboard dispatch.
+second program: every operation is a call into the action modules, every
+row comes from `pony.views` or `chronos.views`, and every key comes from
+`pony.keymap` or `chronos.keymap`. What is new in the package is HTTP,
+HTML and the keyboard dispatch.
 
-**One keymap, two front ends.** `pony.keymap` holds `KeyBinding(key,
-action, description, surface)` as data. `pony.tui.bindings.to_textual`
-turns it into Textual `Binding`s — which is where `MainScreen.BINDINGS`
-and `PonyApp.BINDINGS` now come from — and `/keymap.json` serves it to a
-browser that matches `keydown` against it. Each entry carries
-`available`, so a key the terminal has and the browser has not is listed
-in the help and marked, rather than appearing to work.
+What it offers is what the terminal offers: the folder tree, the message
+list, the reader, archive/trash/flag/mark-read, move, copy, new folder,
+goto folder, search, harvest contacts, compose and send (new, reply,
+reply-all, forward, resumed draft, attachments), answering an
+invitation, syncing, the contacts browser with its four operations, and
+the calendar's four views with its event form. Each page is one pane
+layout filling the window, and each pane scrolls on its own: the window
+is the application, not a document to scroll.
+
+| Module | What it holds |
+|---|---|
+| `pony.web.app` | the routes, the token gate, the action table |
+| `pony.web.layout` | the chrome: tabs, pane frames, footer, overlays |
+| `pony.web.mail` | folder tree, list, reader, the mail actions |
+| `pony.web.compose` | the compose form, sending, the attachment staging area |
+| `pony.web.contacts` | the contacts list, its form and its bulk actions |
+| `pony.web.calendar` | agenda, timeline and month views, the event form |
+| `pony.web.syncing` | the server's one sync slot |
+| `pony.web.html` | the escaping element builder |
+| `pony.web.urls` | every link in the front end, built in one place |
+
+**One keymap, two front ends.** `chronos.keymap` holds the vocabulary —
+`KeyBinding(key, action, description, surface)`, `for_surface`,
+`web_key` — and the calendar's table; `pony.keymap` holds the mail
+reader's. `pony.tui.bindings.to_textual` and
+`chronos.tui.bindings.to_textual` turn a slice into Textual `Binding`s —
+which is where `MainScreen.BINDINGS`, `PonyApp.BINDINGS`,
+`ComposeScreen.BINDINGS`, `ContactBrowserScreen.BINDINGS` and the
+calendar's screens come from — and `/keymap.json` serves the tables to a
+browser that matches `keydown` against them, one per page surface. Each
+entry carries `available`, so a key the terminal has and the browser has
+not (editing the body in `$EDITOR`) is listed in the help and marked,
+rather than appearing to work. `tests/test_web_app.py` fails if the
+server calls an action available that the dispatcher does not implement.
+
+**A phone has no keyboard.** Every key that changes something has a
+button or a link too — Archive, Trash, Flag, Unread and Write beside the
+list and the reader, Delete marked and Merge marked on the contacts
+list, Sync in the title bar, New event and the view switcher in the
+calendar's pane, and a search field in each list head. A tap on a row's
+mark column is what ++m++ is. The buttons carry `data-action`, so they
+go through the same dispatcher and the same `POST /action/<name>` as the
+keys; `tests/test_web_app.py` fails if one names an action the server
+does not have.
+
+**Addressing.** Account, folder and message travel as query parameters,
+not path segments: a folder may be called `INBOX/2024`, which no path
+segment can hold, and percent-encoding does not help because the ASGI
+scope carries a decoded path. `pony.web.urls` builds every link, so a
+route and the links to it cannot drift apart.
 
 **No template engine and no CDN.** `pony.web.html` builds markup from
 Python with escaping that a template author cannot forget; `Raw` is the
@@ -369,22 +424,33 @@ only way past it, which makes injection auditable by grep. The client
 side is one stylesheet and one script with no framework, because a
 tailnet has no reason to reach the public internet.
 
-**Three deliberate restrictions.**
+**A message body is text, and the HTML version is a page of its own.**
+The reader shows what `render_message` produced — the same text the CLI
+prints and the MCP tools return, with URLs and addresses linkified and
+nothing to execute. `w` opens `/message/body`, which returns
+`build_browser_html` output — `cid:` images already inlined as data
+URIs — under `Content-Security-Policy: default-src 'none'; img-src
+data:` and `Referrer-Policy: no-referrer`, as a top-level page rather
+than a frame inside the application. Attachments are downloaded with
+`X-Content-Type-Options: nosniff`.
 
-- *It does not sync.* The mail half has no cross-process sync lock —
-  `chronos.locking` covers the calendar only — so a server syncing while
-  a terminal is open would be two syncs against one account. Instead the
-  browser makes *local* mutations: archive, trash and flag changes
-  rewrite the index row, and the next `pony sync` from anywhere pushes
-  them. That is the `uid IS NULL` design (see
-  [Local mutations](#local-mutations)) doing what it was built for.
-- *It does not send.* `pony.delivery` has the filing and the credential
-  lookup; the form and the SMTP call are not wired up yet.
-- *A message body is served into a sandboxed frame.* Mail is hostile
-  input. `/m/.../body` returns `build_browser_html` output — which has
-  already inlined `cid:` images as data URIs — under
-  `Content-Security-Policy: default-src 'none'; img-src data:` in an
-  `<iframe sandbox="">`, so nothing in a message can run or phone home.
+**Attachments go up as bytes.** A multipart form would mean a third
+runtime dependency for the sake of one request, so the script posts the
+file's bytes to `/compose/attachment` and the server keeps them in a
+staging directory it made itself. The form then carries a 16-hex-digit
+token, never a path, so nothing the page sends is ever opened as a file.
+A forward is the same mechanism: the form carries the message reference
+and the server materialises the `.eml` at send time.
+
+**Syncing.** The browser syncs: `g` runs the engine `pony sync` runs and
+reports the sentence `describe_sync_result` builds. The server holds one
+sync slot of its own (`pony.web.syncing.SyncGate`), so two tabs — or a
+tab and the periodic thread, whose slot the gate claims — cannot overlap
+on one account. Across processes it is the user's call: the calendar
+takes its own lock (`chronos.locking`), the mail half has never had one,
+and a terminal left open elsewhere is not a reason for the phone to
+refuse. With `background_sync_enabled` set, `pony web` runs the periodic
+thread too, so a phone sees new mail without anyone pressing a key.
 
 **Access.** Bound to `127.0.0.1` by default, with an access token that
 arrives once in the URL and is then kept in an `HttpOnly` cookie, so a
@@ -435,7 +501,8 @@ src/chronos/
   storage.py index_store.py storage_indexing.py locking.py scheduler.py
   ical_parser.py recurrence.py mutations.py ingest.py
   event_actions.py     # save / reschedule / trash / import, over the stores
-  views.py             # what each view is of, before anything draws it
+  keymap.py            # the keyboard vocabulary, and the calendar's keys
+  views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   cli.py mcp_server.py
   tui/
@@ -550,9 +617,10 @@ what the organizer is told, because those are one decision for the user even
 though they are two operations underneath: `chronos.ingest.ingest_ics_bytes`
 files it — handling `METHOD:CANCEL` and a newer `SEQUENCE` as the calendar
 already does — and then a `METHOD:REPLY` goes back to the organizer over
-SMTP. Filing is reported on its own: an accepted invitation that reached the
-calendar but whose reply bounced is a very different situation from one that
-never landed.
+SMTP. Both halves are `pony.invitation_actions`, so the browser offers the
+same three answers as a block in its reader. Filing is reported on its own:
+an accepted invitation that reached the calendar but whose reply bounced is a
+very different situation from one that never landed.
 
 **Calendar → mail.** Saving an event that has attendees posts it to them as a
 `METHOD:REQUEST` through the same SMTP path the composer uses. The event is
@@ -606,8 +674,9 @@ config.toml
             IMAP server                    SQLite index
                                                |
                                                v
-                                        TUI queries
-                                        (lists, search)
+                                    front-end queries
+                                   (lists, search) — the
+                                   TUI or the browser UI
                                                |
                                                v
                                      MirrorRepository
@@ -622,8 +691,10 @@ config.toml
 1. The app layer loads configuration and resolves account/mirror state paths.
 2. Sync populates or updates mirror storage.
 3. Indexing projects searchable metadata into SQLite.
-4. The TUI queries the index for lists/search results and uses storage for raw
-   message content and attachments.
+4. A front end — the TUI or the browser UI — queries the index for
+   lists/search results and uses storage for raw message content and
+   attachments. Neither queries differently: both go through the
+   projections in `pony.views` / `chronos.views`.
 5. Compose/send workflows write drafts and pending actions through shared
    service interfaces.
 

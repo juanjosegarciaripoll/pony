@@ -42,6 +42,46 @@ See the [TUI](tui.md) page for full keyboard reference. Inside the TUI,
 
 ---
 
+## `pony web`
+
+Serve the browser interface, which offers what the terminal offers:
+folders, the message list, the reader, triage, search, compose and send,
+the contacts browser, and the calendar's agenda, day, week and month
+views. It needs the `web` extra (`pip install 'pony[web]'`).
+
+```
+pony web [--host ADDRESS] [--port PORT] [--no-token]
+```
+
+| Flag | Description |
+|---|---|
+| `--host` | Address to bind (default `127.0.0.1`) |
+| `--port` | Port to bind (default `8730`) |
+| `--no-token` | Serve without the access token |
+
+```
+pony web                        # http://127.0.0.1:8730/?token=…
+pony web --port 9000
+pony web --host 100.101.102.103 # a tailnet address
+```
+
+The printed URL carries a one-time access token, which the browser then
+keeps in a cookie for a year — so a phone needs the long link only the
+first time. Bound to loopback, the only way in is from the machine
+itself; published through a tailnet, either by binding the tailnet
+address or by pointing `tailscale serve` at the loopback port, the
+device is already authenticated and `--no-token` is reasonable.
+
+It shares the terminal's keymap, so the same keys do the same things and
+++f1++ lists them; every key that changes something has a button too.
+It syncs — ++g++, or the Sync button — holding one sync slot of its own,
+and runs the periodic sync when `background_sync_enabled` is set.
+
+There is deliberately no login form: one configuration file holds one
+user's credentials, so serving several people means an instance each.
+
+---
+
 ## `pony calendar`
 
 Run a calendar command. Everything after `calendar` belongs to the

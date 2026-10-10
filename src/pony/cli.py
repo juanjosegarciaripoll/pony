@@ -49,12 +49,18 @@ from .index_store import (
 )
 from .mailbox_ops import landed_in_folder
 from .paths import AppPaths
-from .protocols import ImapClientSession, MirrorRepository
+from .protocols import (
+    CredentialsProvider,
+    ImapClientSession,
+    IndexRepository,
+    MirrorRepository,
+)
 from .search_parser import parse_query
 from .services import CheckStatus, ServiceStatus, build_service_status
 from .storage_indexing import RescanResult, ScanState, rescan_local_account
 from .sync import (
     ImapSyncService,
+    MailSyncScheduler,
     MergeFlagsOp,
     ProgressInfo,
     PushDeleteOp,
@@ -62,6 +68,7 @@ from .sync import (
     RestoreOp,
     ServerDeleteOp,
     SyncPlan,
+    build_sync_service,
     format_plan_detail,
     format_plan_summary,
 )
@@ -2627,12 +2634,15 @@ def run_web(
 ) -> int:
     """Serve the browser interface.
 
-    The same stores the TUI opens, behind HTTP instead of a terminal.
-    It does not sync: the mail half has no cross-process sync lock, so a
-    server syncing while a terminal is open would be two syncs against
-    one account.  Local mutations are safe — archive, trash and flag
-    changes rewrite the index row and the next ``pony sync`` pushes
-    them — which is what the browser offers.
+    The same stores the TUI opens, behind HTTP instead of a terminal,
+    and the same operations: triage, compose and send, the calendar, the
+    contacts, and syncing.  The server keeps one sync slot of its own so
+    two tabs cannot sync at once; whether a terminal is open elsewhere
+    is the user's business, as it is for `pony sync`.
+
+    With background sync enabled in the configuration, the periodic
+    thread runs here too, so a phone sees new mail without anyone
+    pressing a key.
 
     Bound to loopback by default.  Published through a tailnet (either
     by binding the tailnet address or by pointing ``tailscale serve`` at
@@ -2656,8 +2666,15 @@ def run_web(
     config = require_config(config_path)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
+    credentials = build_credentials_provider(config, index)
     mirrors = build_mirrors(config)
     calendar = _open_calendar_or_warn(config_path)
+    scheduler = _web_mail_scheduler(
+        config=config,
+        index=index,
+        mirrors=mirrors,
+        credentials=credentials,
+    )
 
     token = secrets.token_urlsafe(24) if use_token else None
     services = WebServices(
@@ -2666,6 +2683,8 @@ def run_web(
         mirrors=mirrors,
         contacts=index,
         calendar=calendar,
+        credentials=credentials,
+        scheduler=scheduler,
         token=token,
     )
     shown_host = f"[{host}]" if ":" in host else host
@@ -2678,9 +2697,45 @@ def run_web(
     try:
         uvicorn.run(build_web_app(services), host=host, port=port, log_level="warning")
     finally:
+        if scheduler is not None:
+            scheduler.stop()
         if calendar is not None:
             calendar.close()
     return 0
+
+
+def _web_mail_scheduler(
+    *,
+    config: AppConfig,
+    index: IndexRepository,
+    mirrors: dict[str, MirrorRepository],
+    credentials: CredentialsProvider,
+) -> MailSyncScheduler | None:
+    """The periodic mail sync for the web server, if it is enabled.
+
+    Config-gated exactly as the terminal's is: with background sync off
+    there is no thread, and the key still works.  The gate the manual
+    sync claims is the scheduler's own, so the two cannot overlap.
+    """
+    if not config.background_sync_enabled:
+        return None
+    from chronos.scheduler import PeriodicSync
+
+    service = build_sync_service(
+        config=config,
+        index=index,
+        mirrors=mirrors,
+        credentials=credentials,
+    )
+    scheduler: MailSyncScheduler = PeriodicSync(
+        name="mail-sync",
+        # A mail sync has no cancellation point, so the keyword is
+        # swallowed here rather than threaded into the engine.
+        runner=lambda **_kwargs: service.sync(),
+        interval=config.background_sync_interval_seconds,
+    )
+    scheduler.start()
+    return scheduler
 
 
 def _open_calendar_or_warn(config_path: Path | None) -> CalendarRuntime | None:

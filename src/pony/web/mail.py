@@ -1,0 +1,835 @@
+"""The mail reader in a browser: the same three panes, in HTML.
+
+Folders, a message list and a reader, divided the way the terminal
+divides them, each pane scrolling on its own.  Every row comes from
+:mod:`pony.views` and every operation is a call into
+:mod:`pony.mailbox_actions`, :mod:`pony.delivery` or
+:mod:`pony.invitation_actions`, so this module is markup, links and the
+plumbing between a form field and an argument.
+
+A message body is shown as text.  That is not a limitation of the
+front end but a choice the terminal makes too: the text is what a mail
+client reads to you, it carries no tracking and nothing to execute, and
+``render_message`` already strips the HTML into it.  The HTML version is
+one key away (``w``) and opens as a page of its own — not inside the
+application — under a policy that allows it no scripts, no network and
+no reach into anything else.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from chronos.outcome import Notice, Outcome, failure, info, warn
+
+from .. import mailbox_actions
+from ..domain import FolderRef, MessageFlag
+from ..folder_utils import holds_drafts, holds_sent_mail
+from ..message_renderer import fmt_size, render_message
+from ..views import build_folder_tree, message_row, summary_of
+from . import urls
+from .actions import Action, ActionContext, parse_target
+from .html import Raw, element, fragment, join
+from .layout import PageSurface, Tab, columns, page, pane
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from chronos.outcome import Notice
+
+    from ..domain import FolderMessageSummary, IndexedMessage, MessageRef
+    from ..invitation import Invitation
+    from ..message_renderer import RenderedMessage
+    from ..views import FolderTreeNode
+    from .app import WebServices
+
+
+# ----------------------------------------------------------------------
+# Pages
+# ----------------------------------------------------------------------
+
+
+def mail_page(
+    services: WebServices,
+    *,
+    folder: FolderRef,
+    message: IndexedMessage | None = None,
+    query: str = "",
+    notices: Sequence[Notice] = (),
+) -> str:
+    """The reader: folders beside the list, with a message open or not."""
+    title = (
+        folder.folder_name if message is None else (message.subject or "(no subject)")
+    )
+    right = [
+        list_pane(
+            services,
+            folder,
+            open_id=None if message is None else message.message_ref.id,
+            query=query,
+        ),
+    ]
+    if message is not None:
+        right.append(reader_pane(services, message))
+    return page(
+        title=f"{title} — Pony Express",
+        surface=PageSurface.READER,
+        tab=Tab.MAIL,
+        status=_status(services, folder, query=query),
+        panes=fragment(
+            folder_pane(services, folder),
+            element(
+                "div",
+                join(right),
+                id="right",
+                class_="reader-open" if message is not None else "",
+            ),
+        ),
+        data={
+            "account": folder.account_name,
+            "folder": folder.folder_name,
+            "query": query,
+            "message": "" if message is None else str(message.message_ref.id),
+        },
+        notices=notices,
+        folders=folder_options(services),
+    )
+
+
+def _status(services: WebServices, folder: FolderRef, *, query: str) -> str:
+    """The line beside the tabs: what is open, and how much is unread."""
+    if query:
+        return f"Search: {query}"
+    if not folder.folder_name:
+        return ""
+    unread = services.index.unread_counts_by_folder(
+        account_name=folder.account_name,
+    ).get(folder.folder_name, 0)
+    label = f"{folder.account_name}/{folder.folder_name}"
+    return f"{label} — {unread} unread" if unread else label
+
+
+def folder_options(services: WebServices) -> list[str]:
+    """``account/folder`` for every folder, for the move and go-to prompts."""
+    found: list[str] = []
+    for account in services.config.accounts:
+        mirror = services.mirrors.get(account.name)
+        if mirror is None:
+            continue
+        found.extend(
+            f"{account.name}/{ref.folder_name}"
+            for ref in mirror.list_folders(account_name=account.name)
+        )
+    return found
+
+
+# ----------------------------------------------------------------------
+# The folder pane
+# ----------------------------------------------------------------------
+
+
+def folder_pane(services: WebServices, selected: FolderRef | None) -> Raw:
+    sections: list[Raw] = []
+    for account in services.config.accounts:
+        mirror = services.mirrors.get(account.name)
+        if mirror is None:
+            continue
+        names = [
+            ref.folder_name for ref in mirror.list_folders(account_name=account.name)
+        ]
+        counts = services.index.unread_counts_by_folder(account_name=account.name)
+        tree = build_folder_tree(
+            folder_names=names,
+            unread_counts=counts,
+            account_name=account.name,
+        )
+        total = sum(counts.values())
+        sections.append(
+            element(
+                "section",
+                element(
+                    "h2",
+                    element("span", account.name, class_="account-name"),
+                    element("span", str(total), class_="unread") if total else None,
+                ),
+                element("ul", join(_folder_nodes(tree, selected)), class_="tree"),
+            ),
+        )
+    return pane(
+        name="folders",
+        heading=columns(("folder-name", "Folder"), ("unread", "Unread")),
+        body=join(sections) or element("p", "No folders yet.", class_="empty"),
+    )
+
+
+def _folder_nodes(
+    nodes: tuple[FolderTreeNode, ...],
+    selected: FolderRef | None,
+) -> list[Raw]:
+    items: list[Raw] = []
+    for node in nodes:
+        unread = node.descendant_unread()
+        label = element("span", node.label, class_="folder-name")
+        count = element("span", str(unread), class_="unread") if unread else None
+        # A synthetic level — one that exists only because a folder name
+        # was hierarchical — has nothing to open.
+        body = (
+            element(
+                "a",
+                label,
+                count,
+                href=urls.mail_url(node.folder_ref),
+                class_="folder" + (" current" if node.folder_ref == selected else ""),
+                data_folder=node.folder_ref.folder_name,
+                data_account=node.folder_ref.account_name,
+            )
+            if node.folder_ref is not None
+            else element("span", label, count, class_="folder synthetic")
+        )
+        children = (
+            element("ul", join(_folder_nodes(node.children, selected)), class_="tree")
+            if node.children
+            else None
+        )
+        items.append(element("li", body, children))
+    return items
+
+
+# ----------------------------------------------------------------------
+# The message list
+# ----------------------------------------------------------------------
+
+
+def list_pane(
+    services: WebServices,
+    folder: FolderRef,
+    *,
+    open_id: int | None = None,
+    query: str = "",
+) -> Raw:
+    """The list, with the column headings the terminal shows above it."""
+    show_recipients = holds_sent_mail(services.config, folder) or holds_drafts(
+        services.config,
+        folder,
+    )
+    return pane(
+        name="list",
+        heading=fragment(
+            columns(
+                ("mark", ""),
+                ("date", "Date"),
+                ("who", "To" if show_recipients else "From"),
+                ("subject", "Subject"),
+            ),
+            element(
+                "span",
+                element(
+                    "a",
+                    "Write",
+                    href=urls.compose_url(
+                        mode="new",
+                        account=folder.account_name,
+                        folder=folder.folder_name,
+                    ),
+                    class_="action",
+                ),
+                _search_form(folder, query),
+                class_="actions",
+            ),
+        ),
+        body=rows(
+            services,
+            folder,
+            open_id=open_id,
+            query=query,
+            show_recipients=show_recipients,
+        ),
+    )
+
+
+def _search_form(folder: FolderRef, query: str) -> Raw:
+    """The same search the `/` key runs, for a screen with no keyboard.
+
+    Submitting it empty is how a search is left, which is what Escape
+    does in the terminal.
+    """
+    return element(
+        "form",
+        element(
+            "input",
+            type="search",
+            name="q",
+            value=query,
+            placeholder="Search this folder",
+            aria_label="Search this folder",
+        ),
+        element("input", type="hidden", name="account", value=folder.account_name),
+        element("input", type="hidden", name="folder", value=folder.folder_name),
+        method="get",
+        action=urls.MAIL,
+        class_="search-form inline",
+    )
+
+
+def rows(
+    services: WebServices,
+    folder: FolderRef,
+    *,
+    open_id: int | None = None,
+    query: str = "",
+    show_recipients: bool | None = None,
+) -> Raw:
+    """The rows themselves, which is all an action needs to refresh."""
+    if show_recipients is None:
+        show_recipients = holds_sent_mail(
+            services.config,
+            folder,
+        ) or holds_drafts(services.config, folder)
+    summaries = (
+        _search(services, folder, query) if query else _folder_rows(services, folder)
+    )
+    now = datetime.now(UTC)
+    rendered = [
+        _row(
+            summary,
+            now=now,
+            is_open=summary.message_ref.id == open_id,
+            show_recipients=show_recipients,
+            query=query,
+        )
+        for summary in summaries
+    ]
+    if not rendered:
+        return element(
+            "p",
+            "Nothing found." if query else "Nothing here.",
+            class_="empty",
+            id="rows",
+        )
+    return element(
+        "ol",
+        join(rendered),
+        id="rows",
+        class_="rows",
+        data_account=folder.account_name,
+        data_folder=folder.folder_name,
+    )
+
+
+def _folder_rows(
+    services: WebServices,
+    folder: FolderRef,
+) -> Sequence[FolderMessageSummary]:
+    return services.index.list_folder_message_summaries(folder=folder)
+
+
+def _search(
+    services: WebServices,
+    folder: FolderRef,
+    raw_query: str,
+) -> list[FolderMessageSummary]:
+    """Search the open folder's account, as the reader's ``/`` does.
+
+    The same parser the terminal uses, so ``from:ada unread`` means the
+    same thing in both, and the same scoping rule: the account the open
+    folder belongs to, narrowed to that folder.
+    """
+    from ..search_parser import parse_query
+
+    found = services.index.search(
+        query=parse_query(raw_query),
+        account_name=folder.account_name,
+    )
+    return [
+        summary_of(message)
+        for message in found
+        if message.message_ref.folder_name == folder.folder_name
+    ]
+
+
+def _row(
+    summary: FolderMessageSummary,
+    *,
+    now: datetime,
+    is_open: bool,
+    show_recipients: bool,
+    query: str,
+) -> Raw:
+    row = message_row(summary, show_recipients=show_recipients, now=now)
+    classes = ["row"]
+    if row.unread:
+        classes.append("unread")
+    if is_open:
+        classes.append("open")
+    return element(
+        "li",
+        element(
+            "a",
+            element("span", row.icon, class_="mark"),
+            element("span", row.date, class_="date"),
+            element("span", row.correspondent, class_="who"),
+            element("span", row.subject, class_="subject"),
+            href=urls.message_url(summary.message_ref, q=query),
+        ),
+        class_=" ".join(classes),
+        data_id=str(summary.message_ref.id),
+        aria_selected="true" if is_open else "false",
+    )
+
+
+# ----------------------------------------------------------------------
+# The reader
+# ----------------------------------------------------------------------
+
+
+def reader_pane(services: WebServices, message: IndexedMessage) -> Raw:
+    """Headers, the invitation if there is one, the text, the attachments."""
+    ref = message.message_ref
+    raw = raw_bytes(services, message)
+    if raw is None:
+        return pane(
+            name="reader",
+            heading=element("span", message.subject or "(no subject)", class_="title"),
+            body=element(
+                "p",
+                "The message file is missing — run a sync to fetch it again.",
+                class_="empty",
+            ),
+        )
+    rendered = render_message(raw)
+    invitation = _invitation_of(raw)
+    return pane(
+        name="reader",
+        heading=fragment(
+            element("span", rendered.subject or "(no subject)", class_="title"),
+            element(
+                "span",
+                _row_action("archive", "Archive"),
+                _row_action("trash", "Trash"),
+                _row_action("toggle_flagged", "Flag"),
+                _row_action("mark_unread", "Unread"),
+                element(
+                    "a",
+                    "HTML version",
+                    href=urls.body_url(ref),
+                    target="_blank",
+                    rel="noopener noreferrer",
+                    class_="action",
+                    id="html-version",
+                ),
+                element(
+                    "a",
+                    "Download",
+                    href=urls.raw_url(ref),
+                    class_="action",
+                    download=True,
+                ),
+                element(
+                    "a",
+                    "Reply",
+                    href=urls.compose_url(
+                        mode="reply",
+                        account=ref.account_name,
+                        folder=ref.folder_name,
+                        message_id=ref.id,
+                    ),
+                    class_="action",
+                ),
+                class_="actions",
+            ),
+        ),
+        body=fragment(
+            _headers(rendered),
+            _invitation_block(services, invitation),
+            _attachments(ref, rendered),
+            element("pre", _linkified(rendered.body), class_="text"),
+        ),
+    )
+
+
+def _row_action(name: str, label: str) -> Raw:
+    """A button for an action the keyboard also has.
+
+    The dispatcher posts it over whatever the page says is selected,
+    which on a message's own page is that message.
+    """
+    return element(
+        "button",
+        label,
+        type="button",
+        class_="action",
+        data_action=name,
+    )
+
+
+def _headers(rendered: RenderedMessage) -> Raw:
+    fields = (
+        ("From", rendered.from_),
+        ("To", rendered.to),
+        ("Cc", rendered.cc),
+        ("Date", rendered.date),
+    )
+    return element(
+        "dl",
+        join(
+            fragment(
+                element("dt", label),
+                element("dd", value),
+            )
+            for label, value in fields
+            if value
+        ),
+        class_="headers",
+    )
+
+
+# Enough to make a link tappable without turning the body into a
+# document: a bare URL, or an address.  Everything else stays text.
+_LINK = re.compile(
+    r"(?P<url>(?:https?|ftp)://[^\s<>\"']+)"
+    r"|(?P<mail>[\w.+-]+@[\w-]+(?:\.[\w-]+)+)",
+)
+
+
+def _linkified(text: str) -> Raw:
+    """*text*, escaped, with its URLs and addresses made clickable.
+
+    The escaping is done by the element builder on each piece, so a
+    subject or a body that contains markup cannot become markup — the
+    only thing added here is an anchor around a match.
+    """
+    pieces: list[str | Raw] = []
+    position = 0
+    for match in _LINK.finditer(text):
+        pieces.append(text[position : match.start()])
+        found = match.group("url")
+        href = found if found else f"mailto:{match.group('mail')}"
+        pieces.append(
+            element(
+                "a",
+                match.group(0),
+                href=href,
+                rel="noopener noreferrer nofollow",
+                target="_blank" if found else None,
+            ),
+        )
+        position = match.end()
+    pieces.append(text[position:])
+    return fragment(*pieces)
+
+
+def _attachments(ref: MessageRef, rendered: RenderedMessage) -> Raw | None:
+    if not rendered.attachments:
+        return None
+    return element(
+        "ul",
+        join(
+            element(
+                "li",
+                element(
+                    "a",
+                    attachment.filename,
+                    href=urls.attachment_url(ref, attachment.index),
+                    download=True,
+                ),
+                element(
+                    "span",
+                    f"{attachment.content_type}, {fmt_size(attachment.size_bytes)}",
+                    class_="about",
+                ),
+            )
+            for attachment in rendered.attachments
+        ),
+        class_="attachments",
+    )
+
+
+def _invitation_of(raw: bytes) -> Invitation | None:
+    from ..invitation import extract_invitation
+
+    return extract_invitation(raw)
+
+
+def _invitation_block(
+    services: WebServices,
+    invitation: Invitation | None,
+) -> Raw | None:
+    """The invitation, and the three answers, when there is a calendar."""
+    if invitation is None:
+        return None
+    lines = join(element("p", line) for line in invitation.describe())
+    calendar = services.calendar
+    if calendar is None:
+        return element(
+            "section",
+            lines,
+            element(
+                "p",
+                "No calendar configured, so this cannot be filed.",
+                class_="empty",
+            ),
+            class_="invitation",
+        )
+    from chronos.views import all_calendar_refs
+
+    targets = all_calendar_refs(calendar.config, calendar.mirror)
+    if not targets:
+        return element(
+            "section",
+            lines,
+            element("p", "No calendars yet — sync the calendar first.", class_="empty"),
+            class_="invitation",
+        )
+    choices = (
+        (("accept", "Accept"), ("decline", "Decline"), ("tentative", "Tentative"))
+        if invitation.is_request and invitation.organizer
+        else ()
+    )
+    return element(
+        "section",
+        lines,
+        element(
+            "div",
+            element(
+                "select",
+                join(
+                    element(
+                        "option",
+                        f"{ref.account_name}/{ref.calendar_name}",
+                        value=f"{ref.account_name}/{ref.calendar_name}",
+                    )
+                    for ref in targets
+                ),
+                name="calendar",
+                id="invitation-calendar",
+                aria_label="Calendar to file this in",
+            ),
+            join(
+                element(
+                    "button",
+                    label,
+                    type="button",
+                    class_="invitation-answer",
+                    data_answer=answer,
+                )
+                for answer, label in choices
+            ),
+            element(
+                "button",
+                "File only",
+                type="button",
+                class_="invitation-answer",
+                data_answer="file",
+            ),
+            class_="invitation-answers",
+        ),
+        class_="invitation",
+    )
+
+
+def raw_bytes(services: WebServices, message: IndexedMessage) -> bytes | None:
+    """The stored bytes of *message*, or None when the file is gone."""
+    mirror = services.mirrors.get(message.message_ref.account_name)
+    if mirror is None:
+        return None
+    folder = FolderRef(
+        account_name=message.message_ref.account_name,
+        folder_name=message.message_ref.folder_name,
+    )
+    try:
+        return mirror.get_message_bytes(
+            folder=folder,
+            storage_key=message.storage_key,
+        )
+    except Exception:  # noqa: BLE001 — a missing file is a 410, not a crash
+        return None
+
+
+# ----------------------------------------------------------------------
+# Actions
+# ----------------------------------------------------------------------
+
+
+def _archive(context: ActionContext) -> Outcome:
+    return mailbox_actions.archive_messages(
+        context.services.mailboxes,
+        context.messages,
+        context.folder,
+    )
+
+
+def _trash(context: ActionContext) -> Outcome:
+    return mailbox_actions.trash_messages(
+        context.services.mailboxes,
+        context.messages,
+        now=context.now,
+    )
+
+
+def _toggle_flagged(context: ActionContext) -> Outcome:
+    return mailbox_actions.toggle_flag(
+        context.services.mailboxes,
+        context.messages,
+        MessageFlag.FLAGGED,
+    )
+
+
+def _mark_unread(context: ActionContext) -> Outcome:
+    return mailbox_actions.set_flag(
+        context.services.mailboxes,
+        context.messages,
+        MessageFlag.SEEN,
+        present=False,
+    )
+
+
+def _mark_read(context: ActionContext) -> Outcome:
+    return mailbox_actions.set_flag(
+        context.services.mailboxes,
+        context.messages,
+        MessageFlag.SEEN,
+        present=True,
+    )
+
+
+def _mark_all_read(context: ActionContext) -> Outcome:
+    return mailbox_actions.mark_folder_read(
+        context.services.mailboxes,
+        context.folder,
+    )
+
+
+def _move(context: ActionContext) -> Outcome:
+    target = parse_target(context.first("target"))
+    if target is None:
+        return Outcome.refused(warn("Name the folder to move to as account/folder."))
+    return mailbox_actions.move_messages(
+        context.services.mailboxes,
+        context.messages,
+        context.folder,
+        target,
+    )
+
+
+def _copy(context: ActionContext) -> Outcome:
+    target = parse_target(context.first("target"))
+    if target is None:
+        return Outcome.refused(warn("Name the folder to copy to as account/folder."))
+    return mailbox_actions.copy_messages(
+        context.services.mailboxes,
+        context.messages,
+        context.folder,
+        target,
+    )
+
+
+def _new_folder(context: ActionContext) -> Outcome:
+    name = context.first("name").strip()
+    if not name:
+        return Outcome.refused(warn("Name the folder to create."))
+    return mailbox_actions.create_folder(
+        context.services.mailboxes,
+        context.folder.account_name,
+        name,
+    )
+
+
+def _harvest_contacts(context: ActionContext) -> Outcome:
+    from ..contact_actions import harvest_folder
+
+    contacts = context.services.contacts
+    if contacts is None:
+        return Outcome.refused(warn("No contact store is open."))
+    folder = context.folder
+    return harvest_folder(
+        contacts,
+        context.services.index.list_folder_messages(folder=folder),
+        folder.folder_name,
+    )
+
+
+_PARTSTATS = {
+    "accept": "ACCEPTED",
+    "decline": "DECLINED",
+    "tentative": "TENTATIVE",
+    "file": None,
+}
+
+
+def _invitation(context: ActionContext) -> Outcome:
+    """File the open message's invitation and answer the organizer."""
+    from chronos.domain import CalendarRef
+
+    from ..invitation import extract_invitation
+    from ..invitation_actions import (
+        InvitationChoice,
+        replying_account,
+        respond_to_invitation,
+    )
+
+    services = context.services
+    calendar = services.calendar
+    if calendar is None:
+        return Outcome.refused(
+            warn("No calendar configured — add a [calendar] table to config.toml."),
+        )
+    messages = context.messages
+    if not messages:
+        return Outcome.refused(warn("Open the message first."))
+    raw = raw_bytes(services, messages[0])
+    invitation = None if raw is None else extract_invitation(raw)
+    if invitation is None:
+        return Outcome.refused(info("This message carries no invitation."))
+    answer = context.first("answer", "file")
+    if answer not in _PARTSTATS:
+        return Outcome.refused(failure(f"{answer!r} is not an answer."))
+    account, _, name = context.first("calendar").partition("/")
+    if not account or not name:
+        return Outcome.refused(warn("Choose a calendar to file this in."))
+    found = replying_account(
+        services.config,
+        arrived_on=messages[0].message_ref.account_name,
+    )
+    return respond_to_invitation(
+        invitation,
+        InvitationChoice(
+            calendar=CalendarRef(account, name),
+            partstat=_PARTSTATS[answer],
+        ),
+        calendar=calendar,
+        # A reply with nothing to send from is reported by the action,
+        # which has the whole story to tell about it.
+        account=None if isinstance(found, Notice) else found,
+        config=services.config,
+        credentials=services.credentials,
+        now=context.now,
+    )
+
+
+MAIL_ACTIONS: dict[str, Action] = {
+    "archive": _archive,
+    "trash": _trash,
+    "toggle_flagged": _toggle_flagged,
+    "mark_unread": _mark_unread,
+    "mark_read": _mark_read,
+    "mark_all_read": _mark_all_read,
+    "move": _move,
+    "copy": _copy,
+    "new_folder": _new_folder,
+    "harvest_contacts": _harvest_contacts,
+    "respond_invitation": _invitation,
+}
+
+
+__all__ = [
+    "MAIL_ACTIONS",
+    "folder_options",
+    "folder_pane",
+    "list_pane",
+    "mail_page",
+    "raw_bytes",
+    "reader_pane",
+    "rows",
+]
