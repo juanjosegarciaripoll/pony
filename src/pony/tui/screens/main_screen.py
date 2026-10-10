@@ -7,7 +7,6 @@ import collections.abc
 import dataclasses
 import tempfile
 from datetime import UTC, datetime
-from email.message import EmailMessage
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -18,10 +17,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
-from chronos.outcome import Outcome
+from chronos.outcome import Notice, Outcome
 
 from ... import mailbox_actions
-from ...accounts import resolve_smtp_password
 from ...composer import (
     DraftSpec,
     forward_attachment_name,
@@ -41,6 +39,12 @@ from ...domain import (
 )
 from ...folder_utils import holds_drafts, holds_sent_mail
 from ...invitation import Invitation
+from ...invitation_actions import (
+    InvitationChoice,
+    file_invitation,
+    reply_to_invitation,
+    replying_account,
+)
 from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
 from ...message_renderer import (
@@ -64,6 +68,7 @@ from ...sync import (
     SyncPlan,
     SyncResult,
     build_sync_service,
+    describe_sync_result,
 )
 from ...views import has_inbox_mail
 from ..bindings import to_textual
@@ -83,7 +88,6 @@ from ..widgets.message_view import MessageViewPanel
 if TYPE_CHECKING:
     from ...calendar import CalendarRuntime
     from ..app import MailSyncHost
-    from .invitation_screen import InvitationChoice
 
 
 class MainScreen(Screen[None]):
@@ -609,7 +613,7 @@ class MainScreen(Screen[None]):
             msg = str(err) if err else "unknown error"
             self.app.notify(f"Sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
         else:
-            self.app.notify(self._sync_result_summary(worker.result))  # pyright: ignore[reportUnknownMemberType]
+            self.app.notify(describe_sync_result(worker.result))  # pyright: ignore[reportUnknownMemberType]
             self._announce_new_mail(worker.result)
         if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
             dismiss_result = True if worker.state == worker.state.SUCCESS else None
@@ -651,27 +655,6 @@ class MainScreen(Screen[None]):
         notification = mail_arrival_notification(fetched, now=datetime.now(UTC))
         if notification is not None:
             self._notifications.publish(notification)
-
-    def _sync_result_summary(self, result: SyncResult | None) -> str:
-        """Build the human-readable "Sync complete. …" notification text."""
-        parts: list[str] = []
-        if result is not None:
-            for ar in result.accounts:
-                fetched = sum(f.fetched for f in ar.folders)
-                merged = sum(f.flag_conflicts_merged for f in ar.folders)
-                pushed = sum(
-                    f.appended_to_server
-                    + f.reuploaded_to_server
-                    + f.moved_to_server
-                    + f.expunged_on_server
-                    for f in ar.folders
-                )
-                if fetched or merged or pushed:
-                    parts.append(
-                        f"{ar.account_name}: +{fetched} msgs, "
-                        f"{merged} merged, {pushed} pushed"
-                    )
-        return f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
 
     def _sync_progress(self, info: ProgressInfo) -> None:
         """Update the sync screen's status (called from worker thread)."""
@@ -759,7 +742,7 @@ class MainScreen(Screen[None]):
             return
         if outcome.result is None:
             return
-        self.app.notify(self._sync_result_summary(outcome.result))  # pyright: ignore[reportUnknownMemberType]
+        self.app.notify(describe_sync_result(outcome.result))  # pyright: ignore[reportUnknownMemberType]
         self._announce_new_mail(outcome.result)
         self.call_after_refresh(self._refresh_after_sync)
 
@@ -816,131 +799,49 @@ class MainScreen(Screen[None]):
         Filing comes first and is reported on its own: an accepted
         invitation that reached the calendar but whose reply bounced is a
         very different situation from one that never landed, and saying
-        "accepted" for both would hide it.
+        "accepted" for both would hide it.  Both halves are
+        :mod:`pony.invitation_actions`; what is left here is the toast.
         """
-        from chronos.ingest import IngestError, ingest_ics_bytes
-
         assert self._calendar is not None
-        try:
-            report = ingest_ics_bytes(
-                invitation.raw_ics,
-                target=choice.calendar,
-                mirror=self._calendar.mirror,
-                index=self._calendar.index,
-                # A re-sent invitation for an event already filed is a
-                # correction, not a duplicate to skip.
-                on_conflict="replace",
-            )
-        except IngestError as exc:
-            self.app.notify(f"Could not file the invitation: {exc}", severity="error")
+        outcome = file_invitation(
+            invitation,
+            calendar=self._calendar,
+            target=choice.calendar,
+        )
+        self._report(outcome)
+        if outcome.failed or invitation.is_cancellation or choice.partstat is None:
             return
-        if invitation.is_cancellation:
-            self.app.notify(
-                f"Cancelled in {choice.calendar.calendar_name}."
-                if report.cancelled
-                else "Nothing to cancel — the event is not in the calendar."
-            )
-            return
-        self.app.notify(f"Filed in {choice.calendar.calendar_name}.")
-        if choice.partstat is not None:
-            self._send_invitation_reply(invitation, choice.partstat)
+        self._send_invitation_reply(invitation, choice.partstat)
 
     def _send_invitation_reply(self, invitation: Invitation, partstat: str) -> None:
-        """Mail the organizer a METHOD:REPLY carrying the chosen status."""
-        from ...invitation import (
-            build_itip_message,
-            reply_body,
-            reply_ics,
-            reply_subject,
-        )
-
-        account = self._sending_account_for_invitation()
-        if account is None:
-            return
-        assert account.smtp is not None
-        assert account.username is not None
-        organizer = invitation.organizer
-        if not organizer:
-            self.app.notify("No organizer to reply to.", severity="warning")
-            return
-        try:
-            password = resolve_smtp_password(account, self._credentials)
-        except Exception as exc:  # noqa: BLE001 — any backend may fail
-            self.app.notify(f"Could not get password: {exc}", severity="error")
-            return
-        if password is None:
-            self.app.notify(
-                f"No password available for account {account.name!r}.",
-                severity="error",
-            )
-            return
-        sender = account.email_address or account.username
-        message = build_itip_message(
-            from_address=sender,
-            to_addresses=[organizer],
-            subject=reply_subject(invitation, partstat),
-            body_text=reply_body(invitation, attendee=sender, partstat=partstat),
-            ics=reply_ics(
-                invitation,
-                attendee=sender,
-                partstat=partstat,
-                now=datetime.now(UTC),
-            ),
-            method="REPLY",
-            filename="reply.ics",
-        )
-        self._deliver_invitation_reply(account, message, partstat, password)
-
-    def _sending_account_for_invitation(self) -> AnyAccount | None:
-        """The account to answer from: the one the invitation arrived on.
-
-        Replying from the address the organizer invited is what lets
-        their client match the answer to the attendee line it wrote.
-        """
+        """Answer the organizer from the account the invitation arrived on."""
         summary = self.get_current_message()
-        candidates = [a for a in self._config.accounts if a.can_send]
-        if not candidates:
-            self.app.notify("No account configured for sending.", severity="warning")
-            return None
-        if summary is not None:
-            name = summary.message_ref.account_name
-            for account in candidates:
-                if account.name == name:
-                    return account
-        return candidates[0]
+        found = replying_account(
+            self._config,
+            arrived_on=(None if summary is None else summary.message_ref.account_name),
+        )
+        if isinstance(found, Notice):
+            self.app.notify(found.text, severity=found.severity)  # pyright: ignore[reportUnknownMemberType]
+            return
+        self._deliver_invitation_reply(found, invitation, partstat)
 
     @work(exclusive=True, group="invitation-reply")
     async def _deliver_invitation_reply(
         self,
         account: AnyAccount,
-        message: EmailMessage,
+        invitation: Invitation,
         partstat: str,
-        password: str,
     ) -> None:
         """Run the reply's SMTP conversation off the event loop."""
-        from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
-        from ...smtp_sender import send_message as smtp_send
-
-        assert account.smtp is not None
-        assert account.username is not None
-        try:
-            await asyncio.to_thread(
-                smtp_send,
-                smtp=account.smtp,
-                username=account.username,
-                password=password,
-                msg=message,
-                connect_timeout=self._config.smtp_connect_timeout_seconds,
-                connect_attempts=DEFAULT_CONNECT_ATTEMPTS,
-            )
-        except (SMTPError, ValueError) as exc:
-            self.app.notify(
-                f"Filed, but the reply could not be sent: {exc}",
-                severity="error",
-                timeout=15,
-            )
-            return
-        self.app.notify(f"Replied {partstat.lower()}.")
+        outcome = await asyncio.to_thread(
+            reply_to_invitation,
+            invitation,
+            partstat=partstat,
+            account=account,
+            config=self._config,
+            credentials=self._credentials,
+        )
+        self._report(outcome)
 
     # ------------------------------------------------------------------
     # Search

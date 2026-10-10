@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Label, TextArea
 
+from ...contact_actions import ContactEdit, save_contact
 from ...domain import Contact
-from ...index_store import ContactEmailConflictError
 from ...protocols import ContactRepository
 
 
@@ -99,36 +97,19 @@ class ContactEditScreen(Screen[Contact | None]):
         self.query_one("#first-name", Input).focus()
 
     def action_save(self) -> None:
-        first = self.query_one("#first-name", Input).value.strip()
-        last = self.query_one("#last-name", Input).value.strip()
-        affix_raw = self.query_one("#affix", Input).value
-        affix = tuple(s.strip() for s in affix_raw.split(",") if s.strip())
-        org = self.query_one("#organization", Input).value.strip()
-        emails_raw = self.query_one("#emails", Input).value
-        emails = tuple(s.strip().lower() for s in emails_raw.split(",") if s.strip())
-        aliases_raw = self.query_one("#aliases", Input).value
-        aliases = tuple(s.strip() for s in aliases_raw.split(",") if s.strip())
-        notes = self.query_one("#notes-area", TextArea).text.strip()
-
-        updated = dataclasses.replace(
-            self._contact,
-            first_name=first,
-            last_name=last,
-            affix=affix,
-            organization=org,
-            emails=emails,
-            aliases=aliases,
-            notes=notes,
+        edit = ContactEdit(
+            first_name=self.query_one("#first-name", Input).value,
+            last_name=self.query_one("#last-name", Input).value,
+            affix=self.query_one("#affix", Input).value,
+            organization=self.query_one("#organization", Input).value,
+            emails=self.query_one("#emails", Input).value,
+            aliases=self.query_one("#aliases", Input).value,
+            notes=self.query_one("#notes-area", TextArea).text,
         )
-        try:
-            saved = self._contacts.upsert_contact(contact=updated)
-        except ContactEmailConflictError as exc:
-            # An address belongs to exactly one contact.  Saying so beats
-            # dropping the address and reporting success.
-            self.notify(
-                f"{exc}. Merge the two contacts instead.",
-                severity="error",
-            )
+        saved, outcome = save_contact(self._contacts, self._contact, edit)
+        if saved is None:
+            for notice in outcome.notices:
+                self.notify(notice.text, severity=notice.severity)
             return
         self.dismiss(saved)
 

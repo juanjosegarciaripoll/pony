@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from .domain import FolderMessageSummary, FolderRef, MessageFlag
+from .domain import Contact, FolderMessageSummary, FolderRef, MessageFlag
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -236,8 +236,48 @@ def summary_of(message: IndexedMessage) -> FolderMessageSummary:
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ContactRow:
+    """One line of the contacts list.
+
+    The addresses are summarised rather than listed in full — a contact
+    with a dozen of them would push the organisation off the end of any
+    column — and the count of what is hidden travels as part of the
+    text, as it does for the message list's marks.
+    """
+
+    mark: str
+    last_name: str
+    first_name: str
+    emails: str
+    organization: str
+    marked: bool = False
+
+
+def contact_row(
+    contact: Contact,
+    *,
+    marked: bool = False,
+    max_emails: int = 3,
+) -> ContactRow:
+    """Project *contact* into the fields both contact lists show."""
+    emails = ", ".join(contact.emails[:max_emails])
+    hidden = len(contact.emails) - max_emails
+    if hidden > 0:
+        emails += f" (+{hidden})"
+    return ContactRow(
+        mark=MARKED_MARK if marked else NO_MARK,
+        last_name=contact.last_name,
+        first_name=contact.first_name,
+        emails=emails,
+        organization=contact.organization,
+        marked=marked,
+    )
+
+
 __all__ = [
     "ANSWERED_MARK",
+    "ContactRow",
     "FolderTreeNode",
     "ATTACHMENT_MARK",
     "FLAGGED_MARK",
@@ -245,6 +285,7 @@ __all__ = [
     "NO_MARK",
     "MessageRow",
     "build_folder_tree",
+    "contact_row",
     "format_received",
     "has_inbox_mail",
     "message_row",

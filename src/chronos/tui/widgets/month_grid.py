@@ -8,7 +8,7 @@ over days; Enter (or a click) asks the screen to open that day.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from rich.text import Text
@@ -16,9 +16,8 @@ from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import DataTable
 
-from chronos.tui.screens.month_view_screen import grid_dates
-from chronos.tui.widgets.timeline_grid import _full_day_dates
-from chronos.views import OccurrenceRow, is_full_day, is_in_progress
+from chronos.views import OccurrenceRow, grid_dates, is_full_day, is_in_progress
+from chronos.views import month_buckets as _bucket_by_day
 
 _WEEKDAY_HEADERS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MIN_COL_WIDTH = 10
@@ -145,36 +144,6 @@ class MonthGrid(DataTable[Text]):
         if isinstance(value, str) and value and not value.startswith("auto"):
             return value
         return "yellow"
-
-
-def _bucket_by_day(
-    rows: Sequence[OccurrenceRow], start: date, weeks: int
-) -> dict[date, list[OccurrenceRow]]:
-    """Every shown day an occurrence covers, all-day items first."""
-    end = start + timedelta(days=7 * weeks)
-    out: dict[date, list[OccurrenceRow]] = {}
-    for row in rows:
-        first, last = _local_days(row)
-        day = max(first, start)
-        while day <= last and day < end:
-            out.setdefault(day, []).append(row)
-            day += timedelta(days=1)
-    for bucket in out.values():
-        bucket.sort(key=lambda r: (not is_full_day(r.occurrence), r.occurrence.start))
-    return out
-
-
-def _local_days(row: OccurrenceRow) -> tuple[date, date]:
-    """First and last local day an occurrence touches (end exclusive)."""
-    occ = row.occurrence
-    if is_full_day(occ):
-        first, end_exclusive = _full_day_dates(occ)
-        return first, max(first, end_exclusive - timedelta(days=1))
-    start = occ.start.astimezone()
-    end = (occ.end or occ.start).astimezone()
-    if end > start and end.time() == time.min:
-        end -= timedelta(microseconds=1)
-    return start.date(), max(start.date(), end.date())
 
 
 def _render_day(

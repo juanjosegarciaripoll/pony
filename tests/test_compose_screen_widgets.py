@@ -378,7 +378,7 @@ async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
     """The address that reaches SMTP must be the one the reply started with."""
     from unittest.mock import Mock
 
-    import pony.tui.screens.compose_screen as compose_module
+    import pony.delivery as delivery_module
 
     cc = '"Doe, John" <john@example.test>, plain@example.test'
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
@@ -393,7 +393,7 @@ async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _screen(app)
-        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
             side_effect=lambda **kwargs: sent.append(kwargs)
         )
         screen.action_send()
@@ -419,7 +419,7 @@ async def test_a_non_plaintext_account_can_actually_send() -> None:
 
     from tui_helpers import make_test_account, make_tmp_paths
 
-    import pony.tui.screens.compose_screen as compose_module
+    import pony.delivery as delivery_module
 
     paths = make_tmp_paths("env-send")
     account = dataclasses.replace(
@@ -442,7 +442,7 @@ async def test_a_non_plaintext_account_can_actually_send() -> None:
         screen._credentials = Mock(  # type: ignore[attr-defined]
             get_password=Mock(return_value="resolved-from-env")
         )
-        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
             side_effect=lambda **kwargs: sent.append(kwargs)
         )
         screen.action_send()
@@ -456,7 +456,7 @@ async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
     """A backend that cannot produce a password must not take the app down."""
     from unittest.mock import Mock
 
-    import pony.tui.screens.compose_screen as compose_module
+    import pony.delivery as delivery_module
     from pony.config import ConfigError
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
@@ -477,7 +477,7 @@ async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
         screen.notify = Mock(  # type: ignore[method-assign]
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
-        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
             side_effect=lambda **kwargs: sent.append(kwargs)
         )
         screen.action_send()
@@ -491,7 +491,7 @@ async def test_without_a_provider_the_configured_password_is_used() -> None:
     """A composer built without a provider still sends from config."""
     from unittest.mock import Mock
 
-    import pony.tui.screens.compose_screen as compose_module
+    import pony.delivery as delivery_module
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
         label="no-provider-send",
@@ -505,7 +505,7 @@ async def test_without_a_provider_the_configured_password_is_used() -> None:
         await pilot.pause()
         screen = _screen(app)
         assert screen._credentials is None
-        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
             side_effect=lambda **kwargs: sent.append(kwargs)
         )
         screen.action_send()
@@ -520,7 +520,7 @@ async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
 
     from tui_helpers import make_test_account, make_tmp_paths
 
-    import pony.tui.screens.compose_screen as compose_module
+    import pony.delivery as delivery_module
 
     paths = make_tmp_paths("no-password")
     account = dataclasses.replace(make_test_account(paths), password=None)
@@ -540,7 +540,7 @@ async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
         screen.notify = Mock(  # type: ignore[method-assign]
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
-        compose_module.smtp_send = Mock(  # type: ignore[attr-defined]
+        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
             side_effect=lambda **kwargs: sent.append(kwargs)
         )
         screen.action_send()

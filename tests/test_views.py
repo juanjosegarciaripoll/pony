@@ -25,6 +25,7 @@ from tui_helpers import (
 )
 
 from pony.domain import (
+    Contact,
     FolderMessageSummary,
     FolderRef,
     MessageFlag,
@@ -37,6 +38,7 @@ from pony.views import (
     FLAGGED_MARK,
     MARKED_MARK,
     NO_MARK,
+    contact_row,
     format_received,
     message_row,
     status_mark,
@@ -195,3 +197,37 @@ def test_summary_of_keeps_what_a_list_row_needs() -> None:
     # And it is the same row the index hands out for the whole folder.
     (from_index,) = index.list_folder_message_summaries(folder=folder)
     assert summary == from_index
+
+
+# ----------------------------------------------------------------------
+# Contacts
+# ----------------------------------------------------------------------
+
+
+def test_a_contact_row_summarises_its_addresses() -> None:
+    row = contact_row(
+        Contact(
+            id=1,
+            first_name="Ada",
+            last_name="Lovelace",
+            emails=("a@x.test", "b@x.test", "c@x.test", "d@x.test"),
+            organization="Analytical",
+        ),
+    )
+
+    assert row.emails == "a@x.test, b@x.test, c@x.test (+1)"
+    assert (row.last_name, row.first_name) == ("Lovelace", "Ada")
+    assert row.organization == "Analytical"
+    assert row.marked is False
+    assert row.mark == NO_MARK
+
+
+def test_a_marked_contact_says_so_as_data() -> None:
+    row = contact_row(
+        Contact(id=2, first_name="Grace", last_name="Hopper", emails=()),
+        marked=True,
+    )
+
+    assert row.marked is True
+    assert row.mark == MARKED_MARK
+    assert row.emails == ""

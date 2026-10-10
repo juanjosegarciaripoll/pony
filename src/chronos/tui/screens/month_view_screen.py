@@ -9,22 +9,8 @@ from chronos.views import (
     CalendarSelection,
     OccurrenceRow,
     gather_occurrences,
+    grid_dates,
 )
-
-
-def grid_dates(viewed: date) -> tuple[date, int]:
-    """First day shown for `viewed`'s month and the number of weeks.
-
-    Weeks run Monday to Sunday; the grid starts on the Monday on or
-    before the 1st and ends on the Sunday on or after the last day, so
-    it is 4 to 6 weeks tall.
-    """
-    first = viewed.replace(day=1)
-    start = first - timedelta(days=first.weekday())
-    next_month = (first + timedelta(days=32)).replace(day=1)
-    last = next_month - timedelta(days=1)
-    end = last + timedelta(days=6 - last.weekday())
-    return start, ((end - start).days + 1) // 7
 
 
 def title_for(viewed: date) -> str:

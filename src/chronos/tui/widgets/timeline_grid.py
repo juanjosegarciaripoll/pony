@@ -14,7 +14,7 @@ grid so they remain visible even in the timeline view.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, NamedTuple
 
 from rich.text import Text
@@ -24,7 +24,7 @@ from textual.events import Click, MouseDown, MouseEvent, MouseMove, MouseUp
 from textual.message import Message
 from textual.widgets import DataTable
 
-from chronos.domain import ComponentRef, Occurrence
+from chronos.domain import ComponentRef
 from chronos.mutations import all_day_bounds
 from chronos.views import (
     IN_PROGRESS_MARK,
@@ -32,10 +32,14 @@ from chronos.views import (
     in_progress_keys,
     is_full_day,
 )
+from chronos.views import (
+    SLOT_MINUTES as _SLOT_MINUTES,
+)
+from chronos.views import compute_hour_range as _compute_hour_range
+from chronos.views import day_columns as bucket_by_day
+from chronos.views import full_day_rows as _full_day_rows
+from chronos.views import timed_day_minutes as _timed_day_minutes
 
-_SLOT_MINUTES = 30
-_DEFAULT_START_HOUR = 6
-_DEFAULT_END_HOUR = 22
 _TIME_COL_WIDTH = 6
 _DAY_COL_WIDTH = 20
 _ALL_DAY_LABEL = "all day"
@@ -610,65 +614,6 @@ def _format_slot_time(minutes_from_midnight: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def _compute_hour_range(
-    days: Sequence[tuple[date, Sequence[OccurrenceRow]]],
-) -> tuple[int, int]:
-    """Default 06–22; widen if any non-full-day event in `days` falls
-    outside that range so an early or late event isn't invisible."""
-    start_hour = _DEFAULT_START_HOUR
-    end_hour = _DEFAULT_END_HOUR
-    for _, events in days:
-        for row in events:
-            if is_full_day(row.occurrence):
-                continue
-            occ_start = row.occurrence.start.astimezone()
-            occ_end = (row.occurrence.end or row.occurrence.start).astimezone()
-            start_hour = min(start_hour, occ_start.hour)
-            if occ_end.date() > occ_start.date():
-                # The event runs past local midnight, so it occupies the
-                # rest of its own day. Taking the hour off the end would
-                # read the wrapped hour on the *next* day — 0 for an event
-                # ending at midnight — and leave a 23:00 meeting with no
-                # row to appear in.
-                tail_hour = 24
-            else:
-                # End-hour ceiling: if event ends at 22:30, we want a 22:30
-                # row, so end_hour must be 23.
-                tail_hour = occ_end.hour + (1 if occ_end.minute > 0 else 0)
-            end_hour = max(end_hour, tail_hour)
-    return start_hour, min(end_hour, 24)
-
-
-def _timed_day_minutes(occ: Occurrence, day: date) -> tuple[int, int] | None:
-    """Minutes-from-local-midnight a timed occurrence covers on `day`.
-
-    `None` when it never reaches that day. A span that began earlier
-    starts at 0 and one that ends later runs to 24*60, so every day of a
-    multi-day meeting is covered rather than only the day it started on
-    — a 17th-to-25th event has to paint the week opening on the 20th,
-    where it neither starts nor ends.
-
-    An end exactly at local midnight belongs to the day before, so an
-    event running 09:00 to midnight claims no slot on the following day.
-    A zero-length occurrence keeps `end == start`, which overlaps no
-    slot; that is pre-existing behaviour, left alone here.
-    """
-    start_local = occ.start.astimezone()
-    end_local = (occ.end or occ.start).astimezone()
-    start_day = start_local.date()
-    end_day = end_local.date()
-    if day < start_day or day > end_day:
-        return None
-    start_min = 0 if day > start_day else start_local.hour * 60 + start_local.minute
-    if day < end_day:
-        end_min = 24 * 60
-    else:
-        end_min = end_local.hour * 60 + end_local.minute
-        if end_min == 0 and day > start_day:
-            return None
-    return start_min, max(end_min, start_min)
-
-
 def _cell_for_slot(
     day: date,
     slot_minutes_in_day: int,
@@ -761,78 +706,6 @@ def _all_day_lanes(
         for c in cols:
             lane[c] = (rows_by_key[key], c == cols[0], index % 2 == 1)
     return lanes
-
-
-def bucket_by_day(
-    rows: Sequence[OccurrenceRow], first_day: date, count: int
-) -> list[tuple[date, list[OccurrenceRow]]]:
-    """Group rows into the per-day `(date, rows)` pairs `show_days` takes.
-
-    Every row goes under each shown day it covers, so a multi-day span —
-    including one that began before `first_day` — appears in all of its
-    columns. Full-day spans use their anchoring frame's dates; timed
-    ones use local dates, matching the timeline's cell logic.
-    """
-    buckets: list[tuple[date, list[OccurrenceRow]]] = [
-        (first_day + timedelta(days=offset), []) for offset in range(count)
-    ]
-    for row in rows:
-        if is_full_day(row.occurrence):
-            start_d, end_d = _full_day_dates(row.occurrence)
-            indices = range(
-                max(0, (start_d - first_day).days),
-                min(
-                    count, max((end_d - first_day).days, (start_d - first_day).days + 1)
-                ),
-            )
-            for i in indices:
-                buckets[i][1].append(row)
-            continue
-        start_index = (row.occurrence.start.astimezone().date() - first_day).days
-        for i in range(max(0, start_index), count):
-            # The helper decides where the span really ends, including
-            # the midnight-end case, so the loop only needs a floor.
-            if _timed_day_minutes(row.occurrence, buckets[i][0]) is None:
-                break
-            buckets[i][1].append(row)
-    return buckets
-
-
-def _full_day_rows(
-    day: date,
-    events: Sequence[OccurrenceRow],
-) -> list[OccurrenceRow]:
-    """Full-day rows covering `day`, in the order `events` arrives in.
-
-    Each gets its own banner line, so the order is preserved rather than
-    collapsed into a `+N` count. A multi-day span is included on every
-    day from its start through the day before its end (`end` is
-    exclusive). The view sorts `events` by (start, account, calendar,
-    uid), so the banner order is stable.
-    """
-    out: list[OccurrenceRow] = []
-    for row in events:
-        if not is_full_day(row.occurrence):
-            continue
-        start_d, end_d = _full_day_dates(row.occurrence)
-        if start_d <= day < end_d:
-            out.append(row)
-    return out
-
-
-def _full_day_dates(occ: Occurrence) -> tuple[date, date]:
-    """Inclusive-start, exclusive-end calendar-date span for a full-day
-    occurrence, in the frame its start aligns to (UTC or local).
-
-    A VALUE=DATE all-day event is anchored at UTC midnight, so its day
-    columns come from the UTC dates; a local-midnight all-day event maps
-    to local dates. Picking the frame that matches the start's midnight
-    lands the banner on the right grid columns either way.
-    """
-    end = occ.end or occ.start
-    if occ.start.astimezone(UTC).time() == time.min:
-        return occ.start.astimezone(UTC).date(), end.astimezone(UTC).date()
-    return occ.start.astimezone().date(), end.astimezone().date()
 
 
 __all__ = ["TimelineGrid", "bucket_by_day"]

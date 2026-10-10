@@ -162,11 +162,7 @@ def plan_merge(
 
     def label(contact_id: int) -> str:
         contact = by_id.get(contact_id)
-        if contact is None:
-            return f"contact {contact_id}"
-        return contact.display_name or (
-            contact.emails[0] if contact.emails else "(no name)"
-        )
+        return f"contact {contact_id}" if contact is None else label_for(contact)
 
     return MergePlan(
         target=target,
@@ -182,6 +178,108 @@ def merge_contacts(contacts: ContactRepository, plan: MergePlan) -> Outcome:
     return Outcome(
         changed=plan.total,
         notices=(info(f"Merged {plan.total} contacts."),),
+    )
+
+
+def list_contacts(
+    contacts: ContactRepository,
+    *,
+    query: str = "",
+    limit: int = 500,
+) -> list[Contact]:
+    """Every contact, or the ones matching *query*, by surname.
+
+    Both front ends list contacts the same way and sort them the same
+    way, which is the only reason the order is decided here: a browser
+    that sorted by first name would disagree with the terminal about
+    what "the next contact" means.
+    """
+    found = (
+        contacts.search_contacts(prefix=query, limit=limit)
+        if query
+        else contacts.list_all_contacts()
+    )
+    found.sort(key=lambda c: (c.last_name.lower(), c.first_name.lower()))
+    return found
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ContactEdit:
+    """A contact's fields as text, the way a form holds them.
+
+    The comma-separated lists are what both forms show, so splitting
+    them is done once, here, rather than once per front end.
+    """
+
+    first_name: str = ""
+    last_name: str = ""
+    affix: str = ""
+    organization: str = ""
+    emails: str = ""
+    aliases: str = ""
+    notes: str = ""
+
+    @staticmethod
+    def of(contact: Contact) -> ContactEdit:
+        """*contact*'s fields, ready to put in a form."""
+        return ContactEdit(
+            first_name=contact.first_name,
+            last_name=contact.last_name,
+            affix=", ".join(contact.affix),
+            organization=contact.organization,
+            emails=", ".join(contact.emails),
+            aliases=", ".join(contact.aliases),
+            notes=contact.notes,
+        )
+
+    def applied_to(self, contact: Contact) -> Contact:
+        """*contact* with these fields in place of its own."""
+        return replace(
+            contact,
+            first_name=self.first_name.strip(),
+            last_name=self.last_name.strip(),
+            affix=_split_list(self.affix),
+            organization=self.organization.strip(),
+            emails=tuple(normalize_address(part) for part in _split_list(self.emails)),
+            aliases=_split_list(self.aliases),
+            notes=self.notes.strip(),
+        )
+
+
+def _split_list(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def save_contact(
+    contacts: ContactRepository,
+    contact: Contact,
+    edit: ContactEdit,
+) -> tuple[Contact | None, Outcome]:
+    """Write *edit* over *contact*, or say why it cannot be written.
+
+    An address belongs to exactly one contact, so a clash is reported
+    rather than silently dropping the address and claiming success.  The
+    saved record comes back because it carries the id a new contact has
+    just been given.
+    """
+    from .index_store import ContactEmailConflictError
+
+    updated = edit.applied_to(contact)
+    if not (updated.display_name or updated.emails):
+        return None, Outcome.refused(warn("A contact needs a name or an address."))
+    try:
+        saved = contacts.upsert_contact(contact=updated)
+    except ContactEmailConflictError as exc:
+        return None, Outcome.refused(
+            Notice(f"{exc}. Merge the two contacts instead.", "error"),
+        )
+    return saved, Outcome(changed=1, notices=(info(f"Saved {label_for(saved)}."),))
+
+
+def label_for(contact: Contact) -> str:
+    """What to call *contact* in a notice or a prompt."""
+    return contact.display_name or (
+        contact.emails[0] if contact.emails else "(no name)"
     )
 
 
@@ -202,13 +300,17 @@ def summarize(labels: Sequence[str], *, prefix: str = "  - ") -> str:
 
 __all__ = [
     "MAX_NAMED",
+    "ContactEdit",
     "MergePlan",
     "contact_for_address",
     "delete_contacts",
     "harvest_addresses",
     "harvest_folder",
+    "label_for",
+    "list_contacts",
     "merge_contacts",
     "normalize_address",
     "plan_merge",
+    "save_contact",
     "summarize",
 ]

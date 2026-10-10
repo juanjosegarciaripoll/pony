@@ -19,15 +19,18 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, Outcome, warn
+from chronos.outcome import Notice, Outcome, failure, info, warn
 
 from .domain import FolderRef, IndexedMessage, MessageRef
 from .folder_utils import find_folder
 from .mailbox_actions import Mailboxes, retire_message
 from .message_projection import project_rfc822_message
+from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
+from .smtp_sender import send_message as smtp_send
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from email.message import EmailMessage
 
     from .domain import AnyAccount
     from .protocols import ContactRepository, CredentialsProvider
@@ -161,6 +164,103 @@ def record_sent(
     )
 
 
+def deliver_message(
+    mailboxes: Mailboxes,
+    msg: EmailMessage,
+    account: AnyAccount,
+    *,
+    credentials: CredentialsProvider | None,
+    contacts: ContactRepository | None,
+    to: str,
+    cc: str = "",
+    connect_timeout: float,
+    connect_attempts: int = DEFAULT_CONNECT_ATTEMPTS,
+    on_attempt: Callable[[int, int], None] | None = None,
+    source_draft: IndexedMessage | None = None,
+) -> Outcome:
+    """Send *msg* and do the bookkeeping either outcome calls for.
+
+    The whole sequence, in the order that survives a failure: resolve
+    the password, put the bytes in Drafts, talk to the server, and only
+    then retire the draft, file the Sent copy and harvest the addresses.
+    *source_draft* is the draft the message was composed *from*, which a
+    successful send also retires — the pre-send copy this function files
+    is a different row.
+
+    This call blocks for as long as SMTP does, which is why both front
+    ends run it off their own loop: the terminal hands it to a worker
+    thread, the browser to the thread pool.  *on_attempt* is called with
+    ``(attempt, total)`` before each connection attempt so a UI can say
+    which try it is waiting on.
+    """
+    if account.smtp is None or account.username is None:
+        return Outcome.refused(
+            failure(f"Account {account.name!r} has no SMTP server configured."),
+        )
+    password = resolve_send_password(credentials, account)
+    if isinstance(password, Notice):
+        return Outcome.refused(password)
+
+    raw = msg.as_bytes()
+    host = account.smtp.host
+    # Saved before the conversation starts, so a connection failure
+    # leaves the message somewhere rather than nowhere.  Filing it is
+    # best-effort: a Drafts folder that cannot be found must not stop a
+    # send, so its notices are dropped and only its absence is reported
+    # (in the failure message below).
+    draft = file_message(
+        mailboxes,
+        raw,
+        account,
+        folder_hint="Drafts",
+        override=account.drafts_folder,
+    ).message
+
+    try:
+        smtp_send(
+            smtp=account.smtp,
+            username=account.username,
+            password=password,
+            msg=msg,
+            connect_timeout=connect_timeout,
+            connect_attempts=connect_attempts,
+            on_attempt=on_attempt,
+        )
+    except (SMTPError, ValueError) as exc:
+        _log.error("SMTP send to %s failed: %s", host, exc)
+        suffix = (
+            " The message is in Drafts."
+            if draft is not None
+            else " The message was not saved."
+        )
+        return Outcome.refused(failure(f"Send failed: {exc}{suffix}"))
+
+    filed = record_sent(
+        mailboxes,
+        raw,
+        account,
+        draft=draft,
+        contacts=contacts,
+        recipients=(to, cc),
+    )
+    if source_draft is not None:
+        retire_message(
+            mailboxes,
+            source_draft,
+            FolderRef(
+                account_name=source_draft.message_ref.account_name,
+                folder_name=source_draft.message_ref.folder_name,
+            ),
+            # A draft that was synced has a UID, and the server's copy
+            # has to go too, or the next sync brings it back.
+            expunge_on_server=source_draft.uid is not None,
+        )
+    return Outcome(
+        changed=filed.changed + 1,
+        notices=(*filed.notices, info(f"Message sent to {to} via {host}.")),
+    )
+
+
 def resolve_send_password(
     credentials: CredentialsProvider | None,
     account: AnyAccount,
@@ -193,6 +293,7 @@ def resolve_send_password(
 
 __all__ = [
     "FiledMessage",
+    "deliver_message",
     "file_message",
     "record_sent",
     "resolve_send_password",

@@ -105,3 +105,64 @@ def test_every_binding_has_a_web_spelling() -> None:
         spelled = web_key(binding.key)
         assert spelled
         assert not spelled.endswith("+")
+
+
+def test_the_contacts_browser_binds_the_contacts_surface() -> None:
+    """The browser's keys are in the table, not in the screen."""
+    from pony.tui.bindings import MARK_BINDINGS
+    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+    expected = [
+        *to_textual(for_surface(MAIL_KEYMAP, Surface.CONTACTS)),
+        *MARK_BINDINGS,
+    ]
+    assert list(ContactBrowserScreen.BINDINGS) == expected
+
+
+def test_the_composer_binds_the_compose_surface() -> None:
+    from pony.tui.screens.compose_screen import ComposeScreen
+
+    assert list(ComposeScreen.BINDINGS) == to_textual(
+        for_surface(MAIL_KEYMAP, Surface.COMPOSE),
+    )
+
+
+def test_every_compose_key_wins_over_the_focused_field() -> None:
+    """A bare Input would otherwise swallow them as text."""
+    from pony.keymap import COMPOSE_KEYS
+
+    assert all(binding.priority for binding in COMPOSE_KEYS)
+
+
+def test_the_calendar_keeps_its_own_table_in_the_same_vocabulary() -> None:
+    from chronos.keymap import CALENDAR_KEYMAP, CalendarSurface
+    from chronos.keymap import for_surface as for_calendar_surface
+    from chronos.tui.bindings import main_bindings
+    from chronos.tui.bindings import to_textual as calendar_to_textual
+
+    assert all(isinstance(binding, KeyBinding) for binding in CALENDAR_KEYMAP)
+    assert main_bindings() == calendar_to_textual(
+        for_calendar_surface(CALENDAR_KEYMAP, CalendarSurface.VIEW),
+    )
+
+
+def test_both_halves_spell_the_keys_they_share_the_same_way() -> None:
+    """`c` creates, `g` syncs and `Q` quits on both sides."""
+    from chronos.keymap import KEY_NEW, KEY_QUIT, KEY_SYNC, KEY_SYNC_DIALOG
+
+    mail = {binding.action: binding.key for binding in MAIL_KEYMAP}
+    assert mail["compose_new"] == KEY_NEW
+    assert mail["sync"] == KEY_SYNC_DIALOG
+    assert mail["background_sync"] == KEY_SYNC
+    assert mail["quit"] == KEY_QUIT
+
+
+def test_every_calendar_binding_has_a_web_spelling_too() -> None:
+    from chronos.keymap import CALENDAR_KEYMAP
+
+    for binding in CALENDAR_KEYMAP:
+        spelled = web_key(binding.key)
+        assert spelled
+        assert not spelled.endswith("+")
+    # The vim-style "go to date" key is one the DOM names differently.
+    assert web_key("colon") == ":"

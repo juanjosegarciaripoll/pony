@@ -18,6 +18,7 @@ from pony.sync import (
     ProgressInfo,
     SyncPlan,
     SyncResult,
+    describe_sync_result,
 )
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
@@ -76,8 +77,8 @@ async def test_the_foreground_sync_requires_credentials() -> None:
     assert messages == ["No credentials provider."]
 
 
-async def test_sync_result_summary_aggregates_changed_accounts() -> None:
-    app, *_ = build_pony_app(label="main-sync-summary")
+def test_the_sync_summary_names_only_the_accounts_that_changed() -> None:
+    """One sentence, built in the model so both front ends say it."""
     result = SyncResult(
         accounts=(
             AccountSyncResult(
@@ -100,13 +101,10 @@ async def test_sync_result_summary_aggregates_changed_accounts() -> None:
         )
     )
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = _main(app)
-        assert screen._sync_result_summary(None) == "Sync complete."
-        assert screen._sync_result_summary(result) == (
-            "Sync complete.  fictional: +2 msgs, 3 merged, 4 pushed"
-        )
+    assert describe_sync_result(None) == "Sync complete."
+    assert describe_sync_result(result) == (
+        "Sync complete.  fictional: +2 msgs, 3 merged, 4 pushed"
+    )
 
 
 async def test_plan_error_dismisses_modal_and_notifies() -> None:

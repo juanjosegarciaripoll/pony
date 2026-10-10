@@ -2556,6 +2556,35 @@ what makes this one the mail reader's is just what its runner returns.
 type MailSyncOutcome = SyncOutcome[SyncResult]
 
 
+def describe_sync_result(result: SyncResult | None) -> str:
+    """What a finished sync did, in one line.
+
+    Every front end says the same thing about a sync, so the sentence is
+    built here rather than in a screen: the terminal shows it as a
+    toast, the browser as a notice.  A run that fetched, merged and
+    pushed nothing says only that it finished — there is no point
+    listing three zeroes per account.
+    """
+    parts: list[str] = []
+    if result is not None:
+        for account in result.accounts:
+            fetched = sum(folder.fetched for folder in account.folders)
+            merged = sum(folder.flag_conflicts_merged for folder in account.folders)
+            pushed = sum(
+                folder.appended_to_server
+                + folder.reuploaded_to_server
+                + folder.moved_to_server
+                + folder.expunged_on_server
+                for folder in account.folders
+            )
+            if fetched or merged or pushed:
+                parts.append(
+                    f"{account.account_name}: +{fetched} msgs, "
+                    f"{merged} merged, {pushed} pushed"
+                )
+    return f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
+
+
 def build_sync_service(
     *,
     config: AppConfig,

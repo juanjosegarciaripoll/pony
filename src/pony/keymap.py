@@ -1,4 +1,4 @@
-"""Which key does what, with no user interface attached.
+"""Which key does what in the mail reader, with no interface attached.
 
 A keyboard-first client has exactly one keymap, and it cannot live in a
 widget library: the terminal needs Textual ``Binding`` objects, a browser
@@ -8,22 +8,25 @@ three chances for them to disagree.
 
 So the keymap is data here, grouped by *surface* — the part of the
 program a key is live on — and each front end converts it:
-``pony.tui.bindings.to_textual`` for the terminal,
-``pony.web`` serves it as JSON.  Both help screens render from it, so
-neither can advertise a key the other does not have.
+``pony.tui.bindings.to_textual`` for the terminal, and ``pony.web``
+serves it as JSON.  Both help screens render from it, so neither can
+advertise a key the other does not have.
+
+The vocabulary — :class:`chronos.keymap.KeyBinding`, :func:`for_surface`
+and :func:`web_key` — is shared with the calendar, which keeps its own
+table in :mod:`chronos.keymap`.  The two deliberately echo each other,
+so ``c`` creates and ``g`` syncs on both sides.
 
 The action names are the ones the front ends already dispatch on
 (Textual's ``action_<name>``, the web's ``POST /action/<name>``), which
-is what lets one table drive both.  The calendar keeps its own
-(:mod:`chronos.keymap`) because it is a subsystem with its own surfaces;
-the two deliberately echo each other, so ``c`` creates and ``g`` syncs on
-both sides.
+is what lets one table drive both.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
+
+from chronos.keymap import KeyBinding, for_surface, web_key
 
 
 class Surface(StrEnum):
@@ -42,28 +45,8 @@ class Surface(StrEnum):
     LIST = "list"
     # The compose form.
     COMPOSE = "compose"
-
-
-@dataclass(frozen=True, slots=True)
-class KeyBinding:
-    """One key, and the action it runs.
-
-    *key* is spelled the way Textual spells it (``"ctrl+g"``, ``"f1"``,
-    ``"!"``), because that is the more constrained of the two
-    vocabularies; :func:`web_key` translates to what a browser reports.
-
-    *show* is whether this belongs in a footer or a toolbar — the keys
-    worth advertising to someone who has not learned them yet.  Every
-    binding appears in the help, shown or not.
-    """
-
-    key: str
-    action: str
-    description: str
-    surface: Surface
-    show: bool = True
-    # True for keys that must win over whatever has focus, such as quit.
-    priority: bool = False
+    # The contacts browser.
+    CONTACTS = "contacts"
 
 
 APPLICATION_KEYS: tuple[KeyBinding, ...] = (
@@ -149,57 +132,58 @@ PANE_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("ctrl+down", "grow_list", "Bigger list", Surface.READER, show=False),
 )
 
+# The contacts browser: one list, with the same marking vocabulary as
+# the message list and the bulk operations that act on the marks.
+CONTACT_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding("/", "search", "Search", Surface.CONTACTS),
+    KeyBinding("s", "search", "Search", Surface.CONTACTS, show=False),
+    KeyBinding("c", "new_contact", "New", Surface.CONTACTS),
+    KeyBinding("e", "edit", "Edit", Surface.CONTACTS),
+    KeyBinding("D", "delete_marked", "Delete marked", Surface.CONTACTS),
+    KeyBinding("M", "merge_marked", "Merge marked", Surface.CONTACTS),
+    KeyBinding("escape", "close", "Close", Surface.CONTACTS, priority=True),
+    KeyBinding("q", "close", "Close", Surface.CONTACTS, show=False),
+)
+
+# The compose form.  Chords rather than bare letters, because a letter
+# belongs to whatever field has focus — which is also why every one of
+# these wins over the focused widget.
+COMPOSE_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding("ctrl+s", "send", "Send", Surface.COMPOSE, priority=True),
+    KeyBinding(
+        "alt+s",
+        "send",
+        "Send",
+        Surface.COMPOSE,
+        show=False,
+        priority=True,
+    ),
+    KeyBinding("escape", "cancel", "Cancel", Surface.COMPOSE, priority=True),
+    KeyBinding(
+        "alt+a",
+        "add_attachment",
+        "Attach",
+        Surface.COMPOSE,
+        priority=True,
+    ),
+    KeyBinding("alt+e", "edit_external", "Editor", Surface.COMPOSE, priority=True),
+    KeyBinding("alt+m", "toggle_markdown", "Markdown", Surface.COMPOSE, priority=True),
+)
+
 MAIL_KEYMAP: tuple[KeyBinding, ...] = (
     *APPLICATION_KEYS,
     *READER_KEYS,
     *LIST_KEYS,
     *PANE_KEYS,
+    *CONTACT_KEYS,
+    *COMPOSE_KEYS,
 )
-
-
-def for_surface(
-    keymap: tuple[KeyBinding, ...],
-    *surfaces: Surface,
-) -> tuple[KeyBinding, ...]:
-    """Every binding live on any of *surfaces*, in declaration order."""
-    wanted = frozenset(surfaces)
-    return tuple(binding for binding in keymap if binding.surface in wanted)
-
-
-def web_key(key: str) -> str:
-    """*key* as a browser reports it in a ``keydown`` event.
-
-    Textual spells a bare character as itself and a named key in lower
-    case (``"f1"``, ``"shift+up"``); the DOM reports ``event.key`` with
-    its own capitalisation (``"F1"``, ``"ArrowUp"``) and the modifiers
-    separately.  This produces the normalised form
-    ``[ctrl+][shift+]<event.key>`` that the browser dispatcher builds for
-    each press, so the two can be compared without either side guessing.
-    """
-    *modifiers, base = key.split("+")
-    return "+".join([*modifiers, _WEB_KEY_NAMES.get(base, base)])
-
-
-# Only the keys whose DOM name differs from Textual's. A bare character
-# is reported as itself, so "!" and "/" need no entry.
-_WEB_KEY_NAMES = {
-    "up": "ArrowUp",
-    "down": "ArrowDown",
-    "left": "ArrowLeft",
-    "right": "ArrowRight",
-    "enter": "Enter",
-    "escape": "Escape",
-    "space": " ",
-    "tab": "Tab",
-    "backspace": "Backspace",
-    "delete": "Delete",
-    "f1": "F1",
-    "f2": "F2",
-}
 
 
 __all__ = [
     "APPLICATION_KEYS",
+    "COMPOSE_KEYS",
+    "CONTACT_KEYS",
     "LIST_KEYS",
     "MAIL_KEYMAP",
     "MARK_KEYS",

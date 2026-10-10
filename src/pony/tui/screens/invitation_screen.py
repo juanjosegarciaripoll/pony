@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast
 
 from textual.app import ComposeResult
@@ -19,20 +18,8 @@ from ...invitation import (
     PARTSTAT_TENTATIVE,
     Invitation,
 )
+from ...invitation_actions import InvitationChoice
 from .dialog_screen import DialogScreen
-
-
-@dataclass(frozen=True, slots=True)
-class InvitationChoice:
-    """What the user decided about an invitation.
-
-    ``partstat`` is None for "file it but tell nobody", which is the
-    honest option when the message announces an event rather than asking
-    about one, or when the user does not want to answer yet.
-    """
-
-    calendar: CalendarRef
-    partstat: str | None
 
 
 class InvitationScreen(DialogScreen[InvitationChoice | None]):

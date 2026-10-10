@@ -150,7 +150,7 @@ async def test_compose_send_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         send_mock,
     )
 
@@ -181,7 +181,7 @@ async def test_compose_send_requires_to(monkeypatch: pytest.MonkeyPatch) -> None
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="send-noto")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         send_mock,
     )
 
@@ -250,7 +250,7 @@ async def test_forward_sends_original_message_as_removable_eml_attachment(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         send_mock,
     )
 
@@ -301,7 +301,7 @@ async def test_forward_eml_attachment_can_be_removed(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         send_mock,
     )
 
@@ -1303,7 +1303,7 @@ async def test_compose_new_opens_compose_screen(
         label="compose-new",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("c")
@@ -1353,7 +1353,7 @@ async def test_compose_send_smtp_error_notifies(
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="smtp-error")
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
     )
     async with app.run_test() as pilot:
@@ -1401,7 +1401,7 @@ async def test_compose_send_keeps_the_ui_responsive(
         release.wait(timeout=10)
 
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         _blocking_send,
     )
 
@@ -1444,7 +1444,7 @@ async def test_compose_send_refuses_a_second_send_while_one_is_in_flight(
         release.wait(timeout=10)
 
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         _blocking_send,
     )
     notifications = _capture_notifications(app)
@@ -1476,7 +1476,7 @@ async def test_compose_send_announces_a_connect_retry(
         on_attempt(2, 4)
 
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         _retrying_send,
     )
     notifications = _capture_notifications(app)
@@ -1500,7 +1500,7 @@ async def test_compose_send_passes_the_configured_timeout(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         send_mock,
     )
 
@@ -1522,7 +1522,7 @@ async def test_compose_send_discards_pre_send_draft_on_success(
     app, _cfg, _paths, index, mirrors = build_compose_app(label="send-draft-cleanup")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1544,7 +1544,7 @@ async def test_compose_send_failure_keeps_the_draft(
     app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-draft-kept")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     monkeypatch.setattr(
-        "pony.tui.screens.compose_screen.smtp_send",
+        "pony.delivery.smtp_send",
         lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
     )
     notifications = _capture_notifications(app)
@@ -1567,7 +1567,7 @@ async def test_compose_send_survives_a_failed_draft_cleanup(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
     monkeypatch.setattr(
         mirrors["acct"],
         "delete_message",
@@ -1588,7 +1588,7 @@ async def test_compose_send_reports_a_failed_sent_copy(
     """A mirror write error is surfaced instead of silently losing the copy."""
     app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-store-fails")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", Mock())
+    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
     monkeypatch.setattr(
         mirrors["acct"],
         "store_message",
@@ -1609,7 +1609,7 @@ async def test_compose_send_without_a_mirror_still_sends(
     """With no mirror for the account, the send proceeds and files nothing."""
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="send-no-mirror")
     send_mock = Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1984,7 +1984,7 @@ async def test_reply_shortcut_opens_compose_screen(
         label="reply-r",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2018,7 +2018,7 @@ async def test_reply_all_opens_compose_with_cc(
         label="reply-all",
         seed=[(folder, raw)],
     )
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2041,7 +2041,7 @@ async def test_compose_send_with_contacts_harvests_recipients(
     mirrors = make_mirrors(config)
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     import dataclasses as _dc
 
@@ -2268,7 +2268,7 @@ async def test_compose_reply_all_shortcut(monkeypatch: pytest.MonkeyPatch) -> No
         label="reply-all-2",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2458,7 +2458,7 @@ async def test_compose_send_fails_without_password(
     index = make_index(paths)
     mirrors = make_mirrors(config)
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     from pony.tui.app import ComposeApp
 
@@ -2488,7 +2488,7 @@ async def test_compose_send_with_no_sent_folder(
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="no-sent")
     # Don't create the Sent folder so _save_to_folder hits the "folder not found" path
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2897,7 +2897,7 @@ async def test_reply_and_send_marks_answered(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -2953,7 +2953,7 @@ async def test_compose_reply_sends_and_marks_answered(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.tui.screens.compose_screen.smtp_send", send_mock)
+    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)

@@ -557,29 +557,242 @@ def _format_alarm(alarm: ParsedAlarm) -> str:
     return f"{hours}h{rem}m {relation} {anchor}"
 
 
+# ----------------------------------------------------------------------
+# Grid geometry
+# ----------------------------------------------------------------------
+#
+# Where an occurrence belongs on a time axis or in a month of cells is
+# arithmetic over dates, not drawing: the terminal turns the answer into
+# `DataTable` rows and the browser into CSS grid lines.  So it lives
+# here with the rest of the projections, and both front ends ask the
+# same functions rather than each deciding for itself which column a
+# Thursday-to-Monday trip occupies.
+
+# One slot of the time axis.  Half an hour is fine enough to place a
+# meeting and coarse enough to stay readable in 24 rows of terminal.
+SLOT_MINUTES = 30
+# The hours a timeline shows when nothing forces it wider.
+DEFAULT_START_HOUR = 6
+DEFAULT_END_HOUR = 22
+
+
+def grid_dates(viewed: date) -> tuple[date, int]:
+    """First day shown for *viewed*'s month and the number of weeks.
+
+    Weeks run Monday to Sunday; the grid starts on the Monday on or
+    before the 1st and ends on the Sunday on or after the last day, so
+    it is 4 to 6 weeks tall.
+    """
+    first = viewed.replace(day=1)
+    start = first - timedelta(days=first.weekday())
+    next_month = (first + timedelta(days=32)).replace(day=1)
+    last = next_month - timedelta(days=1)
+    end = last + timedelta(days=6 - last.weekday())
+    return start, ((end - start).days + 1) // 7
+
+
+def full_day_dates(occurrence: Occurrence) -> tuple[date, date]:
+    """Inclusive-start, exclusive-end date span of a full-day occurrence.
+
+    Read in the frame its start aligns to: a ``VALUE=DATE`` all-day
+    event is anchored at UTC midnight, so its day columns come from the
+    UTC dates, while a local-midnight all-day event maps to local
+    dates.  Picking the frame that matches the start's midnight lands
+    the banner on the right columns either way.
+    """
+    end = occurrence.end or occurrence.start
+    if occurrence.start.astimezone(UTC).time() == time.min:
+        return occurrence.start.astimezone(UTC).date(), end.astimezone(UTC).date()
+    return occurrence.start.astimezone().date(), end.astimezone().date()
+
+
+def local_days(row: OccurrenceRow) -> tuple[date, date]:
+    """First and last local day an occurrence touches, both inclusive."""
+    occurrence = row.occurrence
+    if is_full_day(occurrence):
+        first, end_exclusive = full_day_dates(occurrence)
+        return first, max(first, end_exclusive - timedelta(days=1))
+    start = occurrence.start.astimezone()
+    end = (occurrence.end or occurrence.start).astimezone()
+    if end > start and end.time() == time.min:
+        end -= timedelta(microseconds=1)
+    return start.date(), max(start.date(), end.date())
+
+
+def timed_day_minutes(occurrence: Occurrence, day: date) -> tuple[int, int] | None:
+    """Minutes-from-local-midnight a timed occurrence covers on *day*.
+
+    ``None`` when it never reaches that day.  A span that began earlier
+    starts at 0 and one that ends later runs to ``24 * 60``, so every
+    day of a multi-day meeting is covered rather than only the day it
+    started on — a 17th-to-25th event has to paint the week opening on
+    the 20th, where it neither starts nor ends.
+
+    An end exactly at local midnight belongs to the day before, so an
+    event running 09:00 to midnight claims no slot on the following day.
+    A zero-length occurrence keeps ``end == start``, which overlaps no
+    slot.
+    """
+    start_local = occurrence.start.astimezone()
+    end_local = (occurrence.end or occurrence.start).astimezone()
+    start_day = start_local.date()
+    end_day = end_local.date()
+    if day < start_day or day > end_day:
+        return None
+    start_min = 0 if day > start_day else start_local.hour * 60 + start_local.minute
+    if day < end_day:
+        end_min = 24 * 60
+    else:
+        end_min = end_local.hour * 60 + end_local.minute
+        if end_min == 0 and day > start_day:
+            return None
+    return start_min, max(end_min, start_min)
+
+
+def compute_hour_range(
+    days: Sequence[tuple[date, Sequence[OccurrenceRow]]],
+) -> tuple[int, int]:
+    """The hours a timeline over *days* has to show.
+
+    Default 06–22; widened if any timed event falls outside it, so an
+    early or late event is never invisible.
+    """
+    start_hour = DEFAULT_START_HOUR
+    end_hour = DEFAULT_END_HOUR
+    for _, events in days:
+        for row in events:
+            if is_full_day(row.occurrence):
+                continue
+            occ_start = row.occurrence.start.astimezone()
+            occ_end = (row.occurrence.end or row.occurrence.start).astimezone()
+            start_hour = min(start_hour, occ_start.hour)
+            if occ_end.date() > occ_start.date():
+                # The event runs past local midnight, so it occupies the
+                # rest of its own day. Taking the hour off the end would
+                # read the wrapped hour on the *next* day — 0 for an event
+                # ending at midnight — and leave a 23:00 meeting with no
+                # row to appear in.
+                tail_hour = 24
+            else:
+                # End-hour ceiling: if event ends at 22:30, we want a 22:30
+                # row, so end_hour must be 23.
+                tail_hour = occ_end.hour + (1 if occ_end.minute > 0 else 0)
+            end_hour = max(end_hour, tail_hour)
+    return start_hour, min(end_hour, 24)
+
+
+def day_columns(
+    rows: Sequence[OccurrenceRow],
+    first_day: date,
+    count: int,
+) -> list[tuple[date, list[OccurrenceRow]]]:
+    """Group *rows* into one ``(date, rows)`` pair per shown day.
+
+    Every row goes under each shown day it covers, so a multi-day span —
+    including one that began before *first_day* — appears in all of its
+    columns.  Full-day spans use their anchoring frame's dates; timed
+    ones use local dates, matching :func:`timed_day_minutes`.
+    """
+    buckets: list[tuple[date, list[OccurrenceRow]]] = [
+        (first_day + timedelta(days=offset), []) for offset in range(count)
+    ]
+    for row in rows:
+        if is_full_day(row.occurrence):
+            start_d, end_d = full_day_dates(row.occurrence)
+            indices = range(
+                max(0, (start_d - first_day).days),
+                min(
+                    count,
+                    max((end_d - first_day).days, (start_d - first_day).days + 1),
+                ),
+            )
+            for index in indices:
+                buckets[index][1].append(row)
+            continue
+        start_index = (row.occurrence.start.astimezone().date() - first_day).days
+        for index in range(max(0, start_index), count):
+            # The helper decides where the span really ends, including
+            # the midnight-end case, so the loop only needs a floor.
+            if timed_day_minutes(row.occurrence, buckets[index][0]) is None:
+                break
+            buckets[index][1].append(row)
+    return buckets
+
+
+def full_day_rows(
+    day: date,
+    events: Sequence[OccurrenceRow],
+) -> list[OccurrenceRow]:
+    """Full-day rows covering *day*, in the order *events* arrives in.
+
+    Each gets its own banner line, so the order is preserved rather than
+    collapsed into a ``+N`` count.  A multi-day span is included on every
+    day from its start through the day before its end (``end`` is
+    exclusive).
+    """
+    out: list[OccurrenceRow] = []
+    for row in events:
+        if not is_full_day(row.occurrence):
+            continue
+        start_d, end_d = full_day_dates(row.occurrence)
+        if start_d <= day < end_d:
+            out.append(row)
+    return out
+
+
+def month_buckets(
+    rows: Sequence[OccurrenceRow],
+    start: date,
+    weeks: int,
+) -> dict[date, list[OccurrenceRow]]:
+    """Every shown day an occurrence covers, all-day items first."""
+    end = start + timedelta(days=7 * weeks)
+    out: dict[date, list[OccurrenceRow]] = {}
+    for row in rows:
+        first, last = local_days(row)
+        day = max(first, start)
+        while day <= last and day < end:
+            out.setdefault(day, []).append(row)
+            day += timedelta(days=1)
+    for bucket in out.values():
+        bucket.sort(key=lambda r: (not is_full_day(r.occurrence), r.occurrence.start))
+    return out
+
+
 __all__ = [
-    "DEFAULT_AGENDA_DAYS",
-    "IN_PROGRESS_MARK",
     "AgendaWindow",
     "CalendarSelection",
+    "DEFAULT_AGENDA_DAYS",
+    "DEFAULT_END_HOUR",
+    "DEFAULT_START_HOUR",
     "EventRow",
+    "IN_PROGRESS_MARK",
     "OccurrenceRow",
     "RowEmphasis",
+    "SLOT_MINUTES",
     "ViewKind",
     "agenda_window",
     "all_calendar_refs",
+    "compute_hour_range",
+    "day_columns",
     "day_window",
     "format_duration",
     "format_event_row",
     "format_friendly_start",
     "format_todo_row",
+    "full_day_dates",
+    "full_day_rows",
     "gather_occurrences",
     "gather_todos",
+    "grid_dates",
     "in_progress_keys",
     "is_full_day",
     "is_in_progress",
+    "local_days",
+    "month_buckets",
     "month_window",
     "render_event_detail",
     "search_components",
+    "timed_day_minutes",
     "week_window",
 ]

@@ -10,8 +10,9 @@ another way in the next.  It lives in :mod:`pony.contact_actions` and
 from __future__ import annotations
 
 import dataclasses
+from email.message import EmailMessage
 from typing import TYPE_CHECKING
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from corpus import plain_text
 from tui_helpers import (
@@ -24,6 +25,7 @@ from tui_helpers import (
 )
 
 from pony import contact_actions, delivery
+from pony.compose_utils import build_email_message
 from pony.contact_actions import MergePlan
 from pony.domain import AccountConfig, Contact, FolderRef
 from pony.mailbox_actions import Mailboxes
@@ -441,3 +443,271 @@ def test_resolve_send_password_reports_a_provider_that_raises() -> None:
     assert not isinstance(failed, str)
     assert failed.severity == "error"
     assert "keyring is locked" in failed.text
+
+
+# ----------------------------------------------------------------------
+# Sending: the whole sequence, with the socket replaced
+# ----------------------------------------------------------------------
+
+
+def _outgoing(subject: str = "Hello") -> EmailMessage:
+    return build_email_message(
+        from_address="me@example.test",
+        to="you@example.test",
+        cc="",
+        bcc="",
+        subject=subject,
+        body="Body text.",
+        attachment_paths=[],
+    )
+
+
+def _sendable(
+    label: str,
+    *,
+    password: str | None = "secret",
+) -> tuple[Mailboxes, AccountConfig]:
+    """An account whose Sent and Drafts both land in the one real folder.
+
+    A fresh maildir has only INBOX, so pointing both at it is what lets
+    a test see the draft appear and then be replaced by the sent copy.
+    """
+    paths = make_tmp_paths(label)
+    account = dataclasses.replace(
+        make_test_account(paths, password=password),
+        sent_folder="INBOX",
+        drafts_folder="INBOX",
+    )
+    config = make_test_config(accounts=(account,))
+    return (
+        Mailboxes(
+            config=config,
+            index=make_index(paths),
+            mirrors=make_mirrors(config),
+        ),
+        account,
+    )
+
+
+def test_deliver_message_drafts_then_sends_then_files_the_sent_copy() -> None:
+    mailboxes, account = _sendable("deliver-happy")
+    sent: list[object] = []
+
+    with patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=mailboxes.index,
+            to="you@example.test",
+            connect_timeout=1.0,
+        )
+
+    assert sent, "the message never reached SMTP"
+    assert not outcome.failed
+    assert outcome.notices[-1].text == (
+        "Message sent to you@example.test via smtp.example.com."
+    )
+    # The pre-send draft was retired and the Sent copy filed in its
+    # place, so exactly one row is left, waiting for a UID.
+    rows = list(mailboxes.index.list_folder_messages(folder=INBOX))
+    assert [row.uid for row in rows] == [None]
+    # The address it went to is a contact now.
+    assert mailboxes.index.find_contact_by_email(email_address="you@example.test")
+
+
+def test_deliver_message_leaves_a_failed_send_in_drafts() -> None:
+    from pony.smtp_sender import SMTPError
+
+    mailboxes, account = _sendable("deliver-smtp-fails")
+
+    def _refuse(**_kwargs: object) -> None:
+        raise SMTPError("smtp.example.com said no")
+
+    with patch.object(delivery, "smtp_send", _refuse):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="you@example.test",
+            connect_timeout=1.0,
+        )
+
+    assert outcome.failed
+    assert outcome.changed == 0
+    (notice,) = outcome.notices
+    assert "smtp.example.com said no" in notice.text
+    assert "The message is in Drafts." in notice.text
+    # And it really is there.
+    assert len(list(mailboxes.index.list_folder_messages(folder=INBOX))) == 1
+
+
+def test_deliver_message_refuses_without_a_password() -> None:
+    mailboxes, account = _sendable("deliver-no-password", password=None)
+
+    outcome = delivery.deliver_message(
+        mailboxes,
+        _outgoing(),
+        account,
+        credentials=None,
+        contacts=None,
+        to="you@example.test",
+        connect_timeout=1.0,
+    )
+
+    assert outcome.failed
+    assert "No password available" in outcome.notices[0].text
+    # Nothing was filed: there was never a send to protect.
+    assert list(mailboxes.index.list_folder_messages(folder=INBOX)) == []
+
+
+def test_deliver_message_retires_the_draft_it_was_composed_from() -> None:
+    """Finishing a saved draft must not leave the saved copy behind."""
+    mailboxes, account = _sendable("deliver-source-draft")
+    source = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="Drafts",
+        override="INBOX",
+    ).message
+    assert source is not None
+
+    with patch.object(delivery, "smtp_send", lambda **_kwargs: None):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="you@example.test",
+            connect_timeout=1.0,
+            source_draft=source,
+        )
+
+    assert not outcome.failed
+    remaining = list(mailboxes.index.list_folder_messages(folder=INBOX))
+    assert [row.message_ref.id for row in remaining] != [source.message_ref.id]
+    assert len(remaining) == 1
+
+
+def test_deliver_message_refuses_an_account_that_cannot_send() -> None:
+    mailboxes, account = _sendable("deliver-no-smtp")
+    local = dataclasses.replace(account, smtp=None)
+
+    outcome = delivery.deliver_message(
+        mailboxes,
+        _outgoing(),
+        local,
+        credentials=None,
+        contacts=None,
+        to="you@example.test",
+        connect_timeout=1.0,
+    )
+
+    assert outcome.failed
+    assert "no SMTP server configured" in outcome.notices[0].text
+
+
+# ----------------------------------------------------------------------
+# The contact form
+# ----------------------------------------------------------------------
+
+
+def test_a_contact_edit_round_trips_through_its_text_fields() -> None:
+    contact = Contact(
+        id=None,
+        first_name="Ada",
+        last_name="Lovelace",
+        emails=("ada@example.com", "al@example.com"),
+        affix=("Dr.",),
+        aliases=("Ada",),
+        organization="Analytical",
+        notes="Notes.",
+    )
+
+    edit = contact_actions.ContactEdit.of(contact)
+
+    assert edit.emails == "ada@example.com, al@example.com"
+    assert edit.affix == "Dr."
+    assert edit.applied_to(contact) == contact
+
+
+def test_saving_a_contact_normalises_its_addresses() -> None:
+    store = _contacts("contact-save")
+
+    saved, outcome = contact_actions.save_contact(
+        store,
+        Contact(id=None, first_name="", last_name="", emails=()),
+        contact_actions.ContactEdit(
+            first_name="Grace",
+            last_name="Hopper",
+            emails=" Grace@Example.COM , second@example.com ",
+        ),
+    )
+
+    assert saved is not None
+    assert saved.emails == ("grace@example.com", "second@example.com")
+    assert outcome.notices[0].text == "Saved Grace Hopper."
+    assert store.find_contact_by_email(email_address="grace@example.com") is not None
+
+
+def test_saving_a_contact_with_no_name_and_no_address_is_refused() -> None:
+    store = _contacts("contact-save-empty")
+
+    saved, outcome = contact_actions.save_contact(
+        store,
+        Contact(id=None, first_name="", last_name="", emails=()),
+        contact_actions.ContactEdit(notes="just a note"),
+    )
+
+    assert saved is None
+    assert outcome.notices[0].text == "A contact needs a name or an address."
+
+
+def test_saving_an_address_that_belongs_to_someone_else_says_so() -> None:
+    """An address belongs to exactly one contact, so this is a merge."""
+    store = _contacts("contact-save-conflict")
+    _add(store, "Owner", "shared@example.com")
+    other = store.upsert_contact(
+        contact=Contact(id=None, first_name="Other", last_name="", emails=()),
+    )
+
+    saved, outcome = contact_actions.save_contact(
+        store,
+        other,
+        contact_actions.ContactEdit(first_name="Other", emails="shared@example.com"),
+    )
+
+    assert saved is None
+    assert outcome.failed
+    assert "Merge the two contacts instead." in outcome.notices[0].text
+
+
+def test_listing_contacts_sorts_by_surname_and_filters_by_query() -> None:
+    store = _contacts("contact-list")
+    store.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Ada",
+            last_name="Zeta",
+            emails=("ada@example.com",),
+        ),
+    )
+    store.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Bob",
+            last_name="Alpha",
+            emails=("bob@example.com",),
+        ),
+    )
+
+    everyone = contact_actions.list_contacts(store)
+    filtered = contact_actions.list_contacts(store, query="ada")
+
+    assert [c.last_name for c in everyone] == ["Alpha", "Zeta"]
+    assert [c.first_name for c in filtered] == ["Ada"]

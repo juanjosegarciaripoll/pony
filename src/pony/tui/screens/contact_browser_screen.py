@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input
 
@@ -12,13 +11,16 @@ from chronos.outcome import Notice, Outcome
 from ...contact_actions import (
     MergePlan,
     delete_contacts,
+    list_contacts,
     merge_contacts,
     plan_merge,
     summarize,
 )
 from ...domain import Contact
+from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...protocols import ContactRepository
-from ..bindings import MARK_BINDINGS
+from ...views import contact_row
+from ..bindings import MARK_BINDINGS, to_textual
 
 _BLANK_CONTACT = Contact(id=None, first_name="", last_name="", emails=())
 
@@ -27,15 +29,10 @@ class ContactBrowserScreen(Screen[None]):
     """Single-pane scrollable contact list with search and bulk operations."""
 
     BINDINGS = [
-        Binding("escape", "close", "Close", priority=True),
-        Binding("q", "close", "Close", show=False),
-        Binding("slash", "search", "Search"),
-        Binding("s", "search", "Search", show=False),
+        *to_textual(for_surface(MAIL_KEYMAP, Surface.CONTACTS)),
+        # The marking vocabulary is the message list's; the cursor keys
+        # are the table's own.
         *MARK_BINDINGS,
-        Binding("c", "new_contact", "New"),
-        Binding("e", "edit", "Edit"),
-        Binding("D", "delete_marked", "Delete marked"),
-        Binding("M", "merge_marked", "Merge marked"),
     ]
 
     CSS = """
@@ -78,16 +75,7 @@ class ContactBrowserScreen(Screen[None]):
         table.focus()
 
     def _refresh_list(self) -> None:
-        if self._filter:
-            self._displayed = self._contacts.search_contacts(
-                prefix=self._filter,
-                limit=500,
-            )
-        else:
-            self._displayed = self._contacts.list_all_contacts()
-        self._displayed.sort(
-            key=lambda c: (c.last_name.lower(), c.first_name.lower()),
-        )
+        self._displayed = list_contacts(self._contacts, query=self._filter)
         self._rebuild_table()
 
     def _rebuild_table(self) -> None:
@@ -96,16 +84,13 @@ class ContactBrowserScreen(Screen[None]):
         prev_scroll_y = table.scroll_y
         table.clear()
         for contact in self._displayed:
-            mark = "●" if contact.id in self._marked else " "
-            emails = ", ".join(contact.emails[:3])
-            if len(contact.emails) > 3:
-                emails += f" (+{len(contact.emails) - 3})"
+            row = contact_row(contact, marked=contact.id in self._marked)
             table.add_row(
-                mark,
-                contact.last_name,
-                contact.first_name,
-                emails,
-                contact.organization,
+                "●" if row.marked else " ",
+                row.last_name,
+                row.first_name,
+                row.emails,
+                row.organization,
                 key=str(contact.id),
             )
         if prev_row >= 0 and self._displayed:

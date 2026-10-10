@@ -12,7 +12,6 @@ from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Paste
 from textual.message import Message
@@ -27,7 +26,7 @@ from textual.widgets import (
     TextArea,
 )
 
-from chronos.outcome import Notice, Outcome
+from chronos.outcome import Outcome
 
 from ...compose_utils import (
     build_email_message,
@@ -36,12 +35,13 @@ from ...compose_utils import (
 )
 from ...composer import DraftSpec
 from ...contact_actions import contact_for_address
-from ...delivery import file_message, record_sent, resolve_send_password
+from ...delivery import deliver_message, file_message
 from ...domain import (
     AnyAccount,
     AppConfig,
     IndexedMessage,
 )
+from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
 from ...protocols import (
     ContactRepository,
@@ -50,8 +50,7 @@ from ...protocols import (
     MirrorRepository,
 )
 from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
-from ...smtp_sender import SMTPError
-from ...smtp_sender import send_message as smtp_send
+from ..bindings import to_textual
 from ..widgets.address_input import AddressInput
 
 _log = logging.getLogger(__name__)
@@ -362,14 +361,7 @@ class ComposeScreen(Screen[bool]):
     # Composer-specific actions use Alt+letter so that standard text-editing
     # shortcuts (Ctrl+X cut, Ctrl+C copy, Ctrl+V paste, Ctrl+Z undo, …) keep
     # working inside the body TextArea and address Input fields.
-    BINDINGS = [
-        Binding("ctrl+s", "send", "Send", priority=True),
-        Binding("alt+s", "send", "Send", show=False, priority=True),
-        Binding("escape", "cancel", "Cancel", priority=True),
-        Binding("alt+a", "add_attachment", "Attach", priority=True),
-        Binding("alt+e", "edit_external", "Editor", priority=True),
-        Binding("alt+m", "toggle_markdown", "Markdown", priority=True),
-    ]
+    BINDINGS = to_textual(for_surface(MAIL_KEYMAP, Surface.COMPOSE))
 
     def __init__(
         self,
@@ -548,14 +540,6 @@ class ComposeScreen(Screen[bool]):
         for notice in outcome.notices:
             self.notify(notice.text, severity=notice.severity)
 
-    def _resolve_password(self, account: AnyAccount) -> str | None:
-        """Resolve *account*'s SMTP password, or say why there is none."""
-        found = resolve_send_password(self._credentials, account)
-        if isinstance(found, Notice):
-            self.notify(found.text, severity=found.severity)
-            return None
-        return found
-
     def _build_message(self, account: AnyAccount) -> EmailMessage:
         """Assemble the current form state into an ``EmailMessage``.
 
@@ -603,104 +587,64 @@ class ComposeScreen(Screen[bool]):
         cc = self._collect_field(CC_CONTAINER)
         msg = self._build_message(account)
 
-        # The dropdown only shows ``can_send`` accounts (see
-        # MainScreen._sendable_accounts), so ``smtp`` and ``username`` are
-        # always set here.  Assert for the type checker.
-        assert account.smtp is not None
-        assert account.username is not None
-        password = self._resolve_password(account)
-        if password is None:
-            return
-
-        raw = msg.as_bytes()
-
-        # Save to Drafts before attempting SMTP so the message survives a
-        # connection failure.  On success we remove this draft entry and store
-        # the message in Sent instead.
-        # Filing this is best-effort: a Drafts folder that cannot be
-        # found must not stop a send, so its notices are dropped.
-        draft_entry = file_message(
-            self._mailboxes,
-            raw,
-            account,
-            folder_hint="Drafts",
-            override=account.drafts_folder,
-        ).message
-
         self._sending = True
-        self._deliver(account, msg, raw, to, cc, draft_entry, password)
+        self._deliver(account, msg, to, cc)
 
     @work(exclusive=True, group="compose-send")
     async def _deliver(
         self,
         account: AnyAccount,
         msg: EmailMessage,
-        raw: bytes,
         to: str,
         cc: str,
-        draft_entry: IndexedMessage | None,
-        password: str,
     ) -> None:
-        """Run the SMTP conversation off the event loop, then file the copy.
+        """Hand the send to :func:`pony.delivery.deliver_message`.
+
+        What is left here is the part that is a user interface: saying
+        which server is being dialled, saying that it did not answer the
+        first time, and leaving the form up when the send failed so the
+        text is not lost.  Everything else — the pre-send draft, the
+        SMTP conversation, the Sent copy, the harvested addresses — is
+        one call, the same one the browser makes.
 
         The worker body runs on the event loop, so widget access here is
-        safe; only the blocking ``smtp_send`` call is handed to a thread.
+        safe; only the blocking call is handed to a thread.
         """
         assert account.smtp is not None
-        assert account.username is not None
         host = account.smtp.host
-        try:
-            self.notify(f"Connecting to {host}…", timeout=6)
+        self.notify(f"Connecting to {host}…", timeout=6)
 
-            def _progress(attempt: int, total: int) -> None:
-                # Called from the worker thread, so it must hop back.
-                if attempt == 1:
-                    return
-                self.app.call_from_thread(  # pyright: ignore[reportUnknownMemberType]
-                    self.notify,
-                    f"{host} did not answer — retrying ({attempt} of {total})",
-                    severity="warning",
-                    timeout=6,
-                )
-
-            try:
-                await asyncio.to_thread(
-                    smtp_send,
-                    smtp=account.smtp,
-                    username=account.username,
-                    password=password,
-                    msg=msg,
-                    connect_timeout=self._config.smtp_connect_timeout_seconds,
-                    connect_attempts=SMTP_CONNECT_ATTEMPTS,
-                    on_attempt=_progress,
-                )
-            except (SMTPError, ValueError) as exc:
-                suffix = (
-                    " The message is in Drafts."
-                    if draft_entry is not None
-                    else " The message was not saved."
-                )
-                self.notify(f"Send failed: {exc}{suffix}", severity="error", timeout=15)
-                _log.error("SMTP send to %s failed: %s", host, exc)
+        def _progress(attempt: int, total: int) -> None:
+            # Called from the worker thread, so it must hop back.
+            if attempt == 1:
                 return
+            self.app.call_from_thread(  # pyright: ignore[reportUnknownMemberType]
+                self.notify,
+                f"{host} did not answer — retrying ({attempt} of {total})",
+                severity="warning",
+                timeout=6,
+            )
+
+        try:
+            outcome = await asyncio.to_thread(
+                deliver_message,
+                self._mailboxes,
+                msg,
+                account,
+                credentials=self._credentials,
+                contacts=self._contacts,
+                to=to,
+                cc=cc,
+                connect_timeout=self._config.smtp_connect_timeout_seconds,
+                connect_attempts=SMTP_CONNECT_ATTEMPTS,
+                on_attempt=_progress,
+            )
         finally:
             self._sending = False
 
-        # SMTP succeeded — retire the pre-send draft, file the sent copy
-        # and remember who it went to.  The *source* draft, when the
-        # composer was opened on one, is cleaned up by the caller's
-        # dismiss callback.
-        self._report(
-            record_sent(
-                self._mailboxes,
-                raw,
-                account,
-                draft=draft_entry,
-                contacts=self._contacts,
-                recipients=(to, cc),
-            ),
-        )
-        self.notify(f"Message sent to {to} via {host}.", timeout=6)
+        self._report(outcome)
+        if outcome.failed:
+            return
         self.dismiss(True)
 
     def action_cancel(self) -> None:
