@@ -66,6 +66,11 @@ class Outcome:
     def acted(self) -> bool:
         return self.changed > 0
 
+    @property
+    def failed(self) -> bool:
+        """True when something went wrong, whatever else got done."""
+        return any(notice.severity == "error" for notice in self.notices)
+
 
 @dataclass
 class NoticeLog:

@@ -34,6 +34,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
+from chronos.event_actions import EditDraft
 from chronos.index_store import SqliteIndexRepository
 from chronos.protocols import CalendarSyncOutcome
 from chronos.recurrence import populate_occurrences
@@ -50,7 +51,7 @@ from chronos.tui.screens.agenda_screen import (
 from chronos.tui.screens.confirm_screen import ConfirmScreen
 from chronos.tui.screens.day_view_screen import title_for as day_title
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
-from chronos.tui.screens.event_edit_screen import EditDraft, EventEditScreen
+from chronos.tui.screens.event_edit_screen import EventEditScreen
 from chronos.tui.screens.grid_view_screen import title_for as grid_title
 from chronos.tui.screens.grid_view_screen import window_for as grid_window_for
 from chronos.tui.screens.import_ics_screen import ImportIcsScreen

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -14,27 +13,22 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Label
 
 from chronos.domain import (
-    AppConfig,
     CalendarRef,
-    ComponentRef,
-    LocalStatus,
-    ResourceRef,
     StoredComponent,
     SyncResult,
-    VEvent,
 )
-from chronos.ical_parser import extract_organizer
-from chronos.mutations import (
-    all_day_bounds,
-    build_event_ics,
-    edited_flags,
-    generate_uid,
-    reschedule_event_ics,
-    trashed_copy,
+from chronos.event_actions import (
+    Calendars,
+    EditDraft,
+    import_ics_file,
+    reschedule_event,
+    save_event,
+    trash_event,
 )
+from chronos.mutations import all_day_bounds
+from chronos.outcome import Outcome
 from chronos.paths import default_tui_state_path
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
-from chronos.recurrence import rebuild_caches
 from chronos.tui.bindings import main_bindings
 from chronos.tui.screens.agenda_screen import (
     rows_for as agenda_rows,
@@ -50,7 +44,7 @@ from chronos.tui.screens.day_view_screen import (
     title_for as day_title,
 )
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
-from chronos.tui.screens.event_edit_screen import EditDraft, EventEditScreen
+from chronos.tui.screens.event_edit_screen import EventEditScreen
 from chronos.tui.screens.goto_screen import GotoScreen
 from chronos.tui.screens.grid_view_screen import (
     DEFAULT_GRID_DAYS,
@@ -601,37 +595,19 @@ class MainScreen(Screen[None]):
     def on_timeline_grid_move_requested(
         self, event: TimelineGrid.MoveRequested
     ) -> None:
-        component = self._services().index.get_component(event.ref)
-        if not isinstance(component, VEvent) or component.dtstart is None:
-            return
         services = self._services()
-        dtstart = component.dtstart + event.delta
-        dtend = component.dtend + event.delta if component.dtend is not None else None
-        try:
-            raw_ics = reschedule_event_ics(
-                component.raw_ics,
-                component.ref.uid,
-                dtstart,
-                dtend,
-                services.now(),
-            )
-        except ValueError as exc:
-            self.app.notify(str(exc))  # pyright: ignore[reportUnknownMemberType]
+        component = services.index.get_component(event.ref)
+        if component is None:
             return
-        updated = replace(
+        outcome = reschedule_event(
+            self._calendars(),
             component,
-            raw_ics=raw_ics,
-            dtstart=dtstart,
-            dtend=dtend,
-            local_flags=edited_flags(component),
+            event.delta,
+            now=services.now(),
         )
-        services.mirror.write(component.ref.resource, raw_ics)
-        services.index.upsert_component(updated)
-        self._refresh_local_caches(updated)
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Moved {component.summary or component.ref.uid!r}"
-        )
-        self.refresh_view()
+        self._report(outcome)
+        if outcome.acted:
+            self.refresh_view()
 
     def _currently_selected_component(self) -> StoredComponent | None:
         # Different views surface "what's highlighted" through
@@ -651,6 +627,20 @@ class MainScreen(Screen[None]):
         if ref is None:
             return None
         return self._services().index.get_component(ref)
+
+    def _calendars(self) -> Calendars:
+        """The stores every event operation works on."""
+        services = self._services()
+        return Calendars(
+            config=services.config,
+            mirror=services.mirror,
+            index=services.index,
+        )
+
+    def _report(self, outcome: Outcome) -> None:
+        """Say everything an operation had to say, in the order it said it."""
+        for notice in outcome.notices:
+            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
 
     def _services(self) -> TuiServices:
         # Whichever app hosts this screen supplies the dependencies:
@@ -675,112 +665,15 @@ class MainScreen(Screen[None]):
 
     def _save_event(self, draft: EditDraft) -> None:
         services = self._services()
-        now = services.now()
-        if draft.existing is None:
-            uid = generate_uid(
-                draft.target.account_name,
-                draft.target.calendar_name,
-                draft.summary,
-                draft.dtstart,
-                now,
-            )
-            ref = ComponentRef(
-                draft.target.account_name, draft.target.calendar_name, uid
-            )
-            ics = build_event_ics(
-                uid,
-                draft.summary,
-                draft.dtstart,
-                draft.dtend,
-                now,
-                location=draft.location,
-                description=draft.description,
-                attendees=draft.attendees,
-                organizer=_organizer_for(draft.target, services.config),
-                alarms=draft.alarms,
-                all_day=draft.all_day,
-            )
-            services.mirror.write(
-                ResourceRef(draft.target.account_name, draft.target.calendar_name, uid),
-                ics,
-            )
-            component = VEvent(
-                ref=ref,
-                href=None,
-                etag=None,
-                raw_ics=ics,
-                summary=draft.summary,
-                description=draft.description or None,
-                location=draft.location or None,
-                dtstart=draft.dtstart,
-                dtend=draft.dtend,
-                status=None,
-                local_flags=frozenset(),
-                server_flags=frozenset(),
-                local_status=LocalStatus.ACTIVE,
-                trashed_at=None,
-                synced_at=None,
-            )
-            services.index.upsert_component(component)
-            self._refresh_local_caches(component)
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Created {draft.summary!r}"
-            )
-            self._post_invitations(
-                ics=ics,
-                attendees=draft.attendees,
-                organizer=_organizer_for(draft.target, services.config),
-                summary=draft.summary,
-                is_update=False,
-            )
-        else:
-            existing = draft.existing
-            organizer = extract_organizer(existing.raw_ics, existing.ref.uid)
-            if organizer is None:
-                organizer = _organizer_for(existing.ref.calendar, services.config)
-            ics = build_event_ics(
-                existing.ref.uid,
-                draft.summary,
-                draft.dtstart,
-                draft.dtend,
-                now,
-                location=draft.location,
-                description=draft.description,
-                attendees=draft.attendees,
-                organizer=organizer,
-                alarms=draft.alarms,
-                all_day=draft.all_day,
-            )
-            services.mirror.write(existing.ref.resource, ics)
-            updated = VEvent(
-                ref=existing.ref,
-                href=existing.href,
-                etag=existing.etag,
-                raw_ics=ics,
-                summary=draft.summary,
-                description=draft.description or None,
-                location=draft.location or None,
-                dtstart=draft.dtstart,
-                dtend=draft.dtend,
-                status=existing.status,
-                local_flags=edited_flags(existing),
-                server_flags=existing.server_flags,
-                local_status=existing.local_status,
-                trashed_at=existing.trashed_at,
-                synced_at=existing.synced_at,
-            )
-            services.index.upsert_component(updated)
-            self._refresh_local_caches(updated)
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Updated {draft.summary!r}"
-            )
-            self._post_invitations(
-                ics=ics,
-                attendees=draft.attendees,
-                organizer=organizer,
-                summary=draft.summary,
-                is_update=True,
-            )
+        saved = save_event(self._calendars(), draft, now=services.now())
+        self._report(saved.outcome)
+        self._post_invitations(
+            ics=saved.ics,
+            attendees=draft.attendees,
+            organizer=saved.organizer,
+            summary=draft.summary,
+            is_update=not saved.created,
+        )
         self.refresh_view()
 
     def _post_invitations(
@@ -810,33 +703,13 @@ class MainScreen(Screen[None]):
             is_update=is_update,
         )
 
-    def _refresh_local_caches(self, component: StoredComponent) -> None:
-        """Rebuild the occurrence + alarm caches after a local create/edit.
-
-        `IndexRepository.upsert_component` invalidates (deletes) the
-        occurrence rows for the master so a stale cache doesn't outlive a
-        content change. The sync engine repopulates them, but local
-        create/edit flows have no such backstop — without this the saved
-        event vanishes from every view that joins `components` against
-        `occurrences` (agenda, day, grid) until the next sync. Delegates
-        to `recurrence.rebuild_caches`, the same path sync and ingest
-        use, so the window and override handling stay consistent.
-        """
-        services = self._services()
-        rebuild_caches(
-            index=services.index,
-            calendar=component.ref.calendar,
-            now=services.now(),
-            uids=frozenset({component.ref.uid}),
-        )
-
     def _trash(self, component: StoredComponent) -> None:
-        services = self._services()
-        trashed = trashed_copy(component, trashed_at=services.now())
-        services.index.upsert_component(trashed)
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Trashed {component.summary or component.ref.uid!r}"
+        outcome = trash_event(
+            self._calendars(),
+            component,
+            now=self._services().now(),
         )
+        self._report(outcome)
         self.refresh_view()
 
     def _edit_specific(self, component: StoredComponent) -> None:
@@ -917,29 +790,11 @@ class MainScreen(Screen[None]):
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
     def _import_ics(self, target: CalendarRef, path: Path, *, sync: bool) -> None:
-        from chronos.ingest import ingest_ics_bytes
-
-        services = self._services()
-        try:
-            payload = path.read_bytes()
-            report = ingest_ics_bytes(
-                payload,
-                target=target,
-                mirror=services.mirror,
-                index=services.index,
-                on_conflict="skip",
-            )
-        except Exception as exc:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Import failed: {exc}", severity="error"
-            )
-            return
-        self.refresh_view()
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Imported {report.imported}, updated {report.updated}, "
-            f"cancelled {report.cancelled} (skipped {report.skipped})"
-        )
-        if sync:
+        outcome = import_ics_file(self._calendars(), target, path)
+        if not outcome.failed:
+            self.refresh_view()
+        self._report(outcome)
+        if sync and not outcome.failed:
             self._run_sync()
 
     def _sync_finished(
@@ -1085,15 +940,6 @@ def _save_last_view(view: ViewKind) -> None:
 
     with contextlib.suppress(OSError):
         default_tui_state_path().write_text(view.value, encoding="utf-8")
-
-
-def _organizer_for(calendar: CalendarRef, config: AppConfig) -> str | None:
-    for account in config.accounts:
-        if account.name != calendar.account_name:
-            continue
-        username = account.username.strip()
-        return username if "@" in username else None
-    return None
 
 
 def _load_last_view() -> ViewKind:

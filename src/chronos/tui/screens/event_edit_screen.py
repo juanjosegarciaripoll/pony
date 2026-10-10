@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, cast
 
@@ -18,6 +17,7 @@ from chronos.domain import (
     StoredComponent,
     VEvent,
 )
+from chronos.event_actions import EditDraft
 from chronos.ical_parser import extract_alarm_triggers, extract_attendees
 from chronos.mutations import (
     all_day_bounds,
@@ -36,25 +36,6 @@ _HALF_HOUR_OPTIONS = tuple(
     for minute in (0, 30)
     if (label := f"{hour:02d}:{minute:02d}")
 )
-
-
-@dataclass(frozen=True, kw_only=True)
-class EditDraft:
-    """Output of `EventEditScreen` — passed to the caller's save callback."""
-
-    target: CalendarRef
-    summary: str
-    dtstart: datetime
-    dtend: datetime | None
-    location: str
-    description: str
-    attendees: tuple[str, ...]
-    alarms: tuple[ParsedAlarm, ...]
-    existing: StoredComponent | None
-    # When set, `dtstart`/`dtend` are the UTC-midnight bounds from
-    # `all_day_bounds` (end exclusive) and the event is saved as
-    # `VALUE=DATE`.
-    all_day: bool = False
 
 
 class EventEditScreen(Screen[None]):
