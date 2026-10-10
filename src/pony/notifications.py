@@ -31,11 +31,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 
-# Textual's own severity levels, spelled out here so this module stays
-# free of Textual; `App.notify` takes exactly these three.
-Severity = Literal["information", "warning", "error"]
+from chronos.outcome import Severity
 
 # Keeps the history bounded on a long-running session.  Large enough
 # that a day of reminders and syncs stays readable.

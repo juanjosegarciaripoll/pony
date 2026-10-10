@@ -119,7 +119,12 @@ async def test_archive_policy_guards(folders: FolderConfig, expected: str) -> No
     assert any(expected in message for message in messages)
 
 
-async def test_archive_and_same_account_move_report_mirror_failures() -> None:
+async def test_archive_reports_mirror_failures() -> None:
+    """A mirror that refuses the rename is reported, not swallowed.
+
+    The move itself is :mod:`pony.mailbox_actions`' job and is tested
+    there; what this covers is that the screen passes its notices on.
+    """
     paths = make_tmp_paths("main-mirror-failures")
     account = make_test_account(paths, archive_folder="Archive")
     folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -136,24 +141,14 @@ async def test_archive_and_same_account_move_report_mirror_failures() -> None:
         panel = screen.query_one(MessageListPanel)
         summary = panel.get_selected_summary()
         assert summary is not None
-        message = index.get_message(message_ref=summary.message_ref)
-        assert message is not None
+        assert index.get_message(message_ref=summary.message_ref) is not None
         mirrors["acct"].move_message_to_folder = Mock(
             side_effect=OSError("fictional mirror failure")
         )
 
         screen.archive_current_message()
-        assert (
-            screen._move_same_account(
-                msg=message,
-                mirror=mirrors["acct"],
-                source=folder,
-                target=FolderRef(account_name="acct", folder_name="Archive"),
-            )
-            is False
-        )
 
-    assert messages.count("Failed to move message in local mirror.") == 2
+    assert messages.count("Failed to move message in local mirror.") == 1
 
 
 async def test_copy_move_and_folder_creation_error_guards() -> None:

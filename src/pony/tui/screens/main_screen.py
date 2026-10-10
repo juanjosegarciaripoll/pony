@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
-import contextlib
 import dataclasses
 import tempfile
 from datetime import UTC, datetime
@@ -20,7 +19,10 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
-from ...accounts import find_imap_account, resolve_smtp_password
+from chronos.outcome import Outcome
+
+from ... import mailbox_actions
+from ...accounts import resolve_smtp_password
 from ...composer import (
     DraftSpec,
     forward_attachment_name,
@@ -31,7 +33,6 @@ from ...composer import (
 )
 from ...contact_naming import harvested_name
 from ...domain import (
-    AccountConfig,
     AnyAccount,
     AppConfig,
     Contact,
@@ -39,12 +40,10 @@ from ...domain import (
     FolderRef,
     IndexedMessage,
     MessageFlag,
-    MessageStatus,
 )
 from ...folder_utils import is_sent_folder
 from ...invitation import Invitation
-from ...mailbox_ops import flush_mirror, landed_in_folder, moved_to_folder
-from ...message_copy import copy_message_bytes
+from ...mailbox_actions import Mailboxes
 from ...message_renderer import (
     RenderedMessage,
     render_message,
@@ -1170,22 +1169,21 @@ class MainScreen(Screen[None]):
         message = self._index.get_message(message_ref=summary.message_ref)
         if message is None:
             return
-        updated = dataclasses.replace(
-            message,
-            local_flags=message.local_flags | {MessageFlag.SEEN},
-        )
-        self._record_flags(updated)
+        updated = mailbox_actions.add_flag(self._mailboxes, message, MessageFlag.SEEN)
+        if updated is None:
+            return
         self.query_one(MessageListPanel).update_from_indexed(updated)
         self._refresh_folder_indicators()
 
-    def _record_flags(self, message: IndexedMessage) -> None:
-        """Persist *message*'s flags.
+    @property
+    def _mailboxes(self) -> Mailboxes:
+        """The stores every mailbox action works on."""
+        return Mailboxes(self._config, self._index, self._mirrors)
 
-        The index is the only store of flag state — nothing reads flags
-        back out of the mirror, so writing them there would be data no
-        one consumes.
-        """
-        self._index.upsert_message(message=message)
+    def _report(self, outcome: Outcome) -> None:
+        """Say everything an action had to say, in the order it said it."""
+        for notice in outcome.notices:
+            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""
@@ -1194,200 +1192,94 @@ class MainScreen(Screen[None]):
     def _resolve_targets(
         self, summaries: list[FolderMessageSummary]
     ) -> list[IndexedMessage]:
-        """Fetch full IndexedMessage rows for each summary in *summaries*.
+        """Fetch full IndexedMessage rows for each summary in *summaries*."""
+        return mailbox_actions.resolve_messages(
+            self._mailboxes,
+            [s.message_ref for s in summaries],
+        )
 
-        Any rows that have vanished from the index (e.g. raced with a
-        sync delete) are silently dropped.
+    def _act_on_targets(
+        self,
+        act: collections.abc.Callable[[list[IndexedMessage], FolderRef], Outcome],
+    ) -> None:
+        """Run *act* over the marked rows, then report and repaint.
+
+        The shape every list action shares: resolve what the cursor and
+        the marks point at, hand it to the model, say what came back and
+        reload the folder it happened in.
         """
-        resolved: list[IndexedMessage] = []
-        for s in summaries:
-            msg = self._index.get_message(message_ref=s.message_ref)
-            if msg is not None:
-                resolved.append(msg)
-        return resolved
+        targets = self._targets()
+        if not targets:
+            return
+        messages = self._resolve_targets(targets)
+        if not messages:
+            return
+        source = self._folder_ref_from_summary(targets[0])
+        outcome = act(messages, source)
+        self.query_one(MessageListPanel).clear_marks()
+        self._reload_folder(source)
+        self._report(outcome)
 
     def set_flag(self, flag: MessageFlag, *, present: bool) -> None:
         """Add or remove *flag* on every target message and refresh."""
-        targets = self._targets()
-        if not targets:
-            return
-        messages = self._resolve_targets(targets)
-        if not messages:
-            return
-        with self._index.connection():
-            for msg in messages:
-                new_flags = (
-                    msg.local_flags | {flag} if present else msg.local_flags - {flag}
-                )
-                if new_flags == msg.local_flags:
-                    continue
-                updated = dataclasses.replace(msg, local_flags=new_flags)
-                self._record_flags(updated)
-        self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(self._folder_ref_from_summary(targets[0]))
+        self._act_on_targets(
+            lambda messages, _source: mailbox_actions.set_flag(
+                self._mailboxes,
+                messages,
+                flag,
+                present=present,
+            ),
+        )
 
     def _mark_answered(self, msg: IndexedMessage) -> None:
-        if MessageFlag.ANSWERED in msg.local_flags:
+        if mailbox_actions.add_flag(self._mailboxes, msg, MessageFlag.ANSWERED) is None:
             return
-        updated = dataclasses.replace(
-            msg, local_flags=msg.local_flags | {MessageFlag.ANSWERED}
+        self._reload_folder(
+            FolderRef(
+                account_name=msg.message_ref.account_name,
+                folder_name=msg.message_ref.folder_name,
+            ),
         )
-        with self._index.connection():
-            self._record_flags(updated)
-        folder_ref = FolderRef(
-            account_name=msg.message_ref.account_name,
-            folder_name=msg.message_ref.folder_name,
-        )
-        self._reload_folder(folder_ref)
 
     def toggle_flag(self, flag: MessageFlag) -> None:
         """Toggle *flag* on every target message and refresh the list."""
-        targets = self._targets()
-        if not targets:
-            return
-        messages = self._resolve_targets(targets)
-        if not messages:
-            return
-        with self._index.connection():
-            for msg in messages:
-                if flag in msg.local_flags:
-                    new_flags = msg.local_flags - {flag}
-                else:
-                    new_flags = msg.local_flags | {flag}
-                updated = dataclasses.replace(msg, local_flags=new_flags)
-                self._record_flags(updated)
-        self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(self._folder_ref_from_summary(targets[0]))
+        self._act_on_targets(
+            lambda messages, _source: mailbox_actions.toggle_flag(
+                self._mailboxes,
+                messages,
+                flag,
+            ),
+        )
 
     def trash_current_message(self) -> None:
         """Mark every target message as trashed in the index."""
-        targets = self._targets()
-        if not targets:
-            return
-        messages = self._resolve_targets(targets)
-        if not messages:
-            return
-        now = datetime.now(tz=UTC)
-        with self._index.connection():
-            for msg in messages:
-                updated = dataclasses.replace(
-                    msg,
-                    local_status=MessageStatus.TRASHED,
-                    # Retention and the sync planner both key off this.
-                    # Without it a trashed row with no server UID is
-                    # purged outright instead of being recoverable.
-                    trashed_at=msg.trashed_at or now,
-                )
-                self._index.upsert_message(message=updated)
-        self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(self._folder_ref_from_summary(targets[0]))
+        self._act_on_targets(
+            lambda messages, _source: mailbox_actions.trash_messages(
+                self._mailboxes,
+                messages,
+                now=datetime.now(tz=UTC),
+            ),
+        )
 
     def archive_current_message(self) -> None:
-        """Move every target message into the account's archive folder.
-
-        Moves are applied locally (index + mirror) immediately; the next
-        sync pushes them to the server via ``UID MOVE``.  Refuses to
-        act when the account has no ``archive_folder`` or when the
-        source/target folder cannot accept the move.
-        """
-        targets = self._targets()
-        if not targets:
-            return
-        # All rows in the current view share one account + source folder,
-        # so the precondition checks only need to run once.
-        sample = targets[0]
-        account = next(
-            (
-                a
-                for a in self._config.accounts
-                if a.name == sample.message_ref.account_name
-                and isinstance(a, AccountConfig)
+        """Move every target message into the account's archive folder."""
+        self._act_on_targets(
+            lambda messages, source: mailbox_actions.archive_messages(
+                self._mailboxes,
+                messages,
+                source,
             ),
-            None,
         )
-        if account is None:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Archive requires an IMAP account.",
-                severity="warning",
-            )
-            return
-        target = account.archive_folder
-        if not target:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "No archive_folder configured for this account.",
-                severity="error",
-            )
-            return
-        source = sample.message_ref.folder_name
-        if source == target:
-            return
-        if account.folders.is_read_only(source):
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Cannot archive from read-only folder {source!r}.",
-                severity="warning",
-            )
-            return
-        if not account.folders.should_sync(target):
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Archive folder {target!r} is excluded from sync.",
-                severity="warning",
-            )
-            return
-        if account.folders.is_read_only(target):
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Archive folder {target!r} is read-only.",
-                severity="warning",
-            )
-            return
-
-        mirror = self._mirrors[account.name]
-        source_folder = FolderRef(account_name=account.name, folder_name=source)
-        messages = self._resolve_targets(targets)
-        archived = 0
-        with self._index.connection():
-            for msg in messages:
-                try:
-                    new_storage_key = mirror.move_message_to_folder(
-                        folder=source_folder,
-                        storage_key=msg.storage_key,
-                        target_folder=target,
-                    )
-                except Exception:  # noqa: BLE001
-                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                        "Failed to move message in local mirror.",
-                        severity="error",
-                    )
-                    continue
-                # Update in place: same row, new folder, PENDING_MOVE
-                # status with the original (folder, uid) recorded as the
-                # server-side source.  Sync executes UID MOVE (or
-                # APPEND+EXPUNGE) and clears the source fields.
-                updated = moved_to_folder(
-                    msg,
-                    target=FolderRef(account_name=account.name, folder_name=target),
-                    storage_key=new_storage_key,
-                )
-                self._index.update_message(message=updated)
-                archived += 1
-        self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(source_folder)
-        if archived:
-            suffix = "" if archived == 1 else f" ({archived} messages)"
-            self.app.notify(f"Archived to {target}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
 
     def action_mark_all_read(self) -> None:
         """Mark every message in the current folder as read."""
         folder_ref = self._current_folder_ref
         if folder_ref is None:
             return
-        count = self._index.mark_folder_read(folder=folder_ref)
+        outcome = mailbox_actions.mark_folder_read(self._mailboxes, folder_ref)
         self._reload_keeping_cursor(folder_ref)
         self._refresh_folder_indicators()
-        if count:
-            suffix = "s" if count != 1 else ""
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Marked {count} message{suffix} as read.",
-            )
+        self._report(outcome)
 
     def action_mark_unread(self) -> None:
         self.set_flag(MessageFlag.SEEN, present=False)
@@ -1459,66 +1351,12 @@ class MainScreen(Screen[None]):
         source: FolderRef,
         target: FolderRef,
     ) -> None:
-        """Copy every *targets* row from *source* into *target*.
-
-        See :meth:`action_copy` for the MID-rewrite rationale.
-        """
-        source_mirror = self._mirrors.get(source.account_name)
-        target_mirror = self._mirrors.get(target.account_name)
-        if source_mirror is None or target_mirror is None:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Missing mirror for source or target account.",
-                severity="error",
-            )
-            return
-
-        rewrite_mid = target.account_name == source.account_name
-        copied = 0
-        with self._index.connection():
-            for msg in targets:
-                try:
-                    raw_source = source_mirror.get_message_bytes(
-                        folder=source,
-                        storage_key=msg.storage_key,
-                    )
-                except Exception:  # noqa: BLE001
-                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                        f"Could not read source message {msg.subject!r}.",
-                        severity="error",
-                    )
-                    continue
-                new_raw, new_mid = copy_message_bytes(
-                    raw_source,
-                    rewrite_message_id=rewrite_mid,
-                )
-                try:
-                    new_key = target_mirror.store_message(
-                        folder=target,
-                        raw_message=new_raw,
-                    )
-                except Exception:  # noqa: BLE001
-                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                        f"Failed to write copy to {target.folder_name}.",
-                        severity="error",
-                    )
-                    continue
-                new_row = landed_in_folder(
-                    msg,
-                    target=target,
-                    storage_key=new_key,
-                    message_id=new_mid,
-                )
-                self._index.insert_message(message=new_row)
-                copied += 1
+        """Copy every *targets* row from *source* into *target*."""
+        outcome = mailbox_actions.copy_messages(
+            self._mailboxes, targets, source, target
+        )
         self.query_one(MessageListPanel).clear_marks()
-        if copied:
-            suffix = "" if copied == 1 else f" ({copied} messages)"
-            where = (
-                target.folder_name
-                if target.account_name == source.account_name
-                else f"{target.account_name}/{target.folder_name}"
-            )
-            self.app.notify(f"Copied to {where}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
+        self._report(outcome)
 
     def action_move(self) -> None:
         """Prompt for a target folder and move every target message there.
@@ -1552,175 +1390,13 @@ class MainScreen(Screen[None]):
         source: FolderRef,
         target: FolderRef,
     ) -> None:
-        """Move every *targets* row from *source* into *target*.
-
-        See :meth:`action_move` for the branch rationale.
-        """
-        if source == target:
-            return
-
-        source_mirror = self._mirrors.get(source.account_name)
-        target_mirror = self._mirrors.get(target.account_name)
-        if source_mirror is None or target_mirror is None:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Missing mirror for source or target account.",
-                severity="error",
-            )
-            return
-
-        source_account = find_imap_account(self._config, source.account_name)
-        target_account = find_imap_account(self._config, target.account_name)
-
-        # IMAP-policy guards.  Move is destructive on the source side, so
-        # we refuse when either end can't reconcile server-side.
-        if source_account is not None and source_account.folders.is_read_only(
-            source.folder_name,
-        ):
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Cannot move from read-only folder {source.folder_name!r}.",
-                severity="warning",
-            )
-            return
-        if target_account is not None:
-            if not target_account.folders.should_sync(target.folder_name):
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Target folder {target.folder_name!r} is excluded from sync.",
-                    severity="warning",
-                )
-                return
-            if target_account.folders.is_read_only(target.folder_name):
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Target folder {target.folder_name!r} is read-only.",
-                    severity="warning",
-                )
-                return
-
-        same_account = source.account_name == target.account_name
-        moved = 0
-        with self._index.connection():
-            for msg in targets:
-                if same_account:
-                    ok = self._move_same_account(
-                        msg=msg,
-                        mirror=source_mirror,
-                        source=source,
-                        target=target,
-                    )
-                else:
-                    ok = self._move_cross_account(
-                        msg=msg,
-                        source_mirror=source_mirror,
-                        target_mirror=target_mirror,
-                        source=source,
-                        target=target,
-                        source_is_imap=source_account is not None,
-                    )
-                if ok:
-                    moved += 1
-
+        """Move every *targets* row from *source* into *target*."""
+        outcome = mailbox_actions.move_messages(
+            self._mailboxes, targets, source, target
+        )
         self.query_one(MessageListPanel).clear_marks()
         self._reload_folder(source)
-        if moved:
-            suffix = "" if moved == 1 else f" ({moved} messages)"
-            where = (
-                target.folder_name
-                if same_account
-                else f"{target.account_name}/{target.folder_name}"
-            )
-            self.app.notify(f"Moved to {where}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
-
-    def _move_same_account(
-        self,
-        *,
-        msg: IndexedMessage,
-        mirror: MirrorRepository,
-        source: FolderRef,
-        target: FolderRef,
-    ) -> bool:
-        """Rename the mirror file in place, swap the index row.  See
-        :meth:`action_move` for why Message-ID is preserved here."""
-        try:
-            new_key = mirror.move_message_to_folder(
-                folder=source,
-                storage_key=msg.storage_key,
-                target_folder=target.folder_name,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Failed to move message in local mirror.",
-                severity="error",
-            )
-            return False
-        # Same-account move: keep the row, mark PENDING_MOVE so sync
-        # executes UID MOVE on the server.  No delete-then-insert.
-        updated = moved_to_folder(msg, target=target, storage_key=new_key)
-        self._index.update_message(message=updated)
-        return True
-
-    def _move_cross_account(
-        self,
-        *,
-        msg: IndexedMessage,
-        source_mirror: MirrorRepository,
-        target_mirror: MirrorRepository,
-        source: FolderRef,
-        target: FolderRef,
-        source_is_imap: bool,
-    ) -> bool:
-        """Copy bytes to target, then retire the source side."""
-        try:
-            raw = source_mirror.get_message_bytes(
-                folder=source,
-                storage_key=msg.storage_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Could not read source message {msg.subject!r}.",
-                severity="error",
-            )
-            return False
-        # Cross-account: preserve Message-ID.  Distinct accounts are
-        # independent identity namespaces, so a true copy keeps IMAP
-        # thread integrity intact.
-        new_raw, new_mid = copy_message_bytes(raw, rewrite_message_id=False)
-        try:
-            new_key = target_mirror.store_message(
-                folder=target,
-                raw_message=new_raw,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Failed to write copy to {target.folder_name}.",
-                severity="error",
-            )
-            return False
-        new_row = landed_in_folder(
-            msg,
-            target=target,
-            storage_key=new_key,
-            message_id=new_mid,
-        )
-        self._index.insert_message(message=new_row)
-
-        # Retire the source: IMAP sources get TRASHED so the next sync
-        # expunges them; local sources have no sync to relay the
-        # deletion, so we remove them outright (row + mirror file).
-        if source_is_imap:
-            trashed = dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
-            self._index.update_message(message=trashed)
-        else:
-            # Best-effort delete: the index row is authoritative; a stray
-            # file will be picked up by the mirror integrity scan.
-            with contextlib.suppress(Exception):
-                source_mirror.delete_message(
-                    folder=source,
-                    storage_key=msg.storage_key,
-                )
-            # Without this an mbox deletion is only queued: the message is
-            # still in the file and comes back on the next read.
-            flush_mirror(source_mirror)
-            self._index.delete_message(message_ref=msg.message_ref)
-        return True
+        self._report(outcome)
 
     # ------------------------------------------------------------------
     # Folder management
@@ -1764,43 +1440,12 @@ class MainScreen(Screen[None]):
 
     def _create_folder(self, account_name: str, folder_name: str) -> None:
         """Create *folder_name* in the account's local mirror and refresh."""
-        mirror = self._mirrors.get(account_name)
-        if mirror is None:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Unknown account {account_name!r}.",
-                severity="error",
-            )
-            return
-        # The mirror directory *is* the request to create the folder, but
-        # the planner only issues CREATE for names it would sync.  Making
-        # an excluded folder would leave it local forever, and anything
-        # moved into it stranded, with nothing said at any point.
-        account = find_imap_account(self._config, account_name)
-        if account is not None and not account.folders.should_sync(folder_name):
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Folder {folder_name!r} is excluded from sync; "
-                "it would never be created on the server.",
-                severity="warning",
-            )
-            return
-        try:
-            mirror.create_folder(
-                account_name=account_name,
-                folder_name=folder_name,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Failed to create folder {folder_name!r}.",
-                severity="error",
-            )
-            return
-        self._refresh_folder_indicators()
-        # Local accounts have no server side: the creation is terminal.
-        # IMAP accounts get the folder pushed upstream on the next sync.
-        suffix = "; run sync to propagate." if account is not None else "."
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Folder {folder_name!r} created locally{suffix}"
+        outcome = mailbox_actions.create_folder(
+            self._mailboxes, account_name, folder_name
         )
+        if outcome.acted:
+            self._refresh_folder_indicators()
+        self._report(outcome)
 
     # ------------------------------------------------------------------
     # Compose entry points
@@ -2032,19 +1677,14 @@ class MainScreen(Screen[None]):
             # original.  IMAP messages are marked TRASHED so the sync planner
             # expunges them on the server; local-only messages are deleted
             # outright since there is nothing to relay to the server.
-            if msg.uid is not None:
-                self._index.update_message(
-                    message=dataclasses.replace(msg, local_status=MessageStatus.TRASHED)
-                )
-            else:
-                mirror = self._mirrors.get(msg.message_ref.account_name)
-                if mirror is not None:
-                    with contextlib.suppress(Exception):
-                        mirror.delete_message(
-                            folder=folder_ref, storage_key=msg.storage_key
-                        )
-                    flush_mirror(mirror)
-                self._index.delete_message(message_ref=msg.message_ref)
+            mailbox_actions.retire_message(
+                self._mailboxes,
+                msg,
+                folder_ref,
+                # A row with no server UID was never on the server, so
+                # there is no expunge to relay: it goes outright.
+                expunge_on_server=msg.uid is not None,
+            )
             self._reload_folder(folder_ref)
 
         from .compose_screen import ComposeScreen
