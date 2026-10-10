@@ -5,7 +5,7 @@ All notable changes to Pony Express are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [2.0.0]
+## [2.0.0] - 2026-10-10
 ### Added
 
 - **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`
@@ -1266,3 +1266,4 @@ First feature-complete release of Pony Express.
 [0.7.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.7.0
 [0.8.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v0.8.0
 [1.0.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v1.0.0
+[2.0.0]: https://github.com/juanjosegarciaripoll/pony/releases/tag/v2.0.0
