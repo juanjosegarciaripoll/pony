@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from chronos.domain import CalendarRef
 from chronos.protocols import IndexRepository
-from chronos.tui.views import (
+from chronos.views import (
     CalendarSelection,
     OccurrenceRow,
     day_window,

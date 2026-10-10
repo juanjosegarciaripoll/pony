@@ -34,7 +34,7 @@ from chronos.oauth import StoredTokens
 from chronos.protocols import IndexRepository as CalendarIndexRepository
 from chronos.tui.app import AttendeeCompleter, InvitationSender, TuiServices
 from chronos.tui.bindings import BindingType
-from chronos.tui.views import (
+from chronos.views import (
     CalendarSelection,
     all_calendar_refs,
     format_friendly_start,

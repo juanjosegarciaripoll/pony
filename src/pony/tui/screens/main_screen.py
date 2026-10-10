@@ -40,7 +40,7 @@ from ...domain import (
     IndexedMessage,
     MessageFlag,
 )
-from ...folder_utils import is_sent_folder
+from ...folder_utils import holds_drafts, holds_sent_mail
 from ...invitation import Invitation
 from ...mailbox_actions import Mailboxes
 from ...message_renderer import (
@@ -798,7 +798,7 @@ class MainScreen(Screen[None]):
         organizer is told, because those are one decision for the user
         even though they are two operations underneath.
         """
-        from chronos.tui.views import all_calendar_refs
+        from chronos.views import all_calendar_refs
 
         from .invitation_screen import InvitationScreen
 
@@ -1042,34 +1042,11 @@ class MainScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def _in_sent_folder(self, folder_ref: FolderRef) -> bool:
-        """True when *folder_ref* holds the user's own outgoing mail.
-
-        The account's ``sent_folder`` setting decides it when configured;
-        otherwise the name is matched against the ones servers localise
-        the folder into, so ``Enviados`` is recognised as readily as
-        ``Sent``.
-        """
-        account = next(
-            (a for a in self._config.accounts if a.name == folder_ref.account_name),
-            None,
-        )
-        if account is not None and account.sent_folder:
-            return folder_ref.folder_name == account.sent_folder
-        return is_sent_folder(folder_ref.folder_name)
+        return holds_sent_mail(self._config, folder_ref)
 
     def _in_drafts_folder(self) -> bool:
-        from ...folder_utils import find_folder
-
         ref = self._current_folder_ref
-        if ref is None:
-            return False
-        folder_name = ref.folder_name
-        account = next(
-            (a for a in self._config.accounts if a.name == ref.account_name), None
-        )
-        if account is not None and account.drafts_folder:
-            return folder_name == account.drafts_folder
-        return find_folder([folder_name], "Drafts") is not None
+        return ref is not None and holds_drafts(self._config, ref)
 
     def check_action(
         self,

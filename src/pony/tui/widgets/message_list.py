@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
 
 from rich.text import Text
 from textual import work
@@ -20,11 +19,12 @@ from ...domain import (
     MessageFlag,
 )
 from ...protocols import IndexRepository
+from ...views import message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
-# Width of the date cell. Widest format produced by ``_format_date`` is
-# ``YYYY-MM-DD`` (10 chars).
+# Width of the date cell. Widest format produced by ``views.format_received``
+# is ``YYYY-MM-DD`` (10 chars).
 _DATE_WIDTH = 10
 
 
@@ -121,26 +121,27 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         label = "To" if self._show_recipients else "From"
         return f"  {'Date':<{_DATE_WIDTH}} {label:<{who_w}} Subject"
 
-    def _icon_for(self, summary: FolderMessageSummary) -> str:
-        if self._marked and str(summary.message_ref.id) in self._marked:
-            return "*"
-        return _icon_column(summary)
-
     def _cell_for(self, summary: FolderMessageSummary) -> Text:
+        """Pad one projected row into this table's columns.
+
+        The fields come from :func:`pony.views.message_row`; what is
+        left here is the part that only means anything in a terminal —
+        padding and truncating each field to a character width, and
+        choosing between the widget's dim default and full brightness.
+        """
         who_w = self._who_width_cached
-        icon = self._icon_for(summary)
-        date = _format_date(summary.received_at)
-        who = summary.recipients if self._show_recipients else summary.sender
-        subject = summary.subject or "(no subject)"
-        line = (
-            f"{icon} "
-            f"{date:<{_DATE_WIDTH}.{_DATE_WIDTH}} "
-            f"{who:<{who_w}.{who_w}} "
-            f"{subject}"
+        row = message_row(
+            summary,
+            show_recipients=self._show_recipients,
+            marked=bool(self._marked) and str(summary.message_ref.id) in self._marked,
         )
-        if MessageFlag.SEEN in summary.local_flags:
-            return Text(line, style="dim")
-        return Text(line, style="not dim")
+        line = (
+            f"{row.icon} "
+            f"{row.date:<{_DATE_WIDTH}.{_DATE_WIDTH}} "
+            f"{row.correspondent:<{who_w}.{who_w}} "
+            f"{row.subject}"
+        )
+        return Text(line, style="not dim" if row.unread else "dim")
 
     def _update_row(self, summary: FolderMessageSummary) -> None:
         assert self._row_col_key is not None
@@ -268,7 +269,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self._set_correspondent_column(False)
         msgs = list(messages)
         msgs.sort(key=lambda m: m.received_at, reverse=True)
-        summaries = [_summary_from_indexed(m) for m in msgs]
+        summaries = [summary_of(m) for m in msgs]
         self._summaries = summaries
         self._load_worker = self._stream_rows(summaries)
         if not msgs:
@@ -389,7 +390,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
 
     def update_from_indexed(self, updated: IndexedMessage) -> None:
         """Convenience — derive a summary from a full IndexedMessage."""
-        self.update_summary(_summary_from_indexed(updated))
+        self.update_summary(summary_of(updated))
 
     def on_key(self, event: object) -> None:
         """Ask the screen to back out of search when q or escape is pressed.
@@ -487,40 +488,3 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
-# ---------------------------------------------------------------------------
-
-
-def _summary_from_indexed(msg: IndexedMessage) -> FolderMessageSummary:
-    """Project an IndexedMessage down to the fields the list needs."""
-    return FolderMessageSummary(
-        message_ref=msg.message_ref,
-        message_id=msg.message_id,
-        storage_key=msg.storage_key,
-        sender=msg.sender,
-        recipients=msg.recipients,
-        subject=msg.subject,
-        received_at=msg.received_at,
-        has_attachments=msg.has_attachments,
-        local_flags=msg.local_flags,
-        local_status=msg.local_status,
-    )
-
-
-def _icon_column(summary: FolderMessageSummary) -> str:
-    """Status marker: ``!`` flagged, ``↩`` answered, ``+`` has-attachments."""
-    if MessageFlag.FLAGGED in summary.local_flags:
-        return "!"
-    if MessageFlag.ANSWERED in summary.local_flags:
-        return "↩"
-    if summary.has_attachments:
-        return "+"
-    return " "
-
-
-def _format_date(dt: datetime) -> str:
-    now = datetime.now(tz=dt.tzinfo)
-    if dt.date() == now.date():
-        return dt.strftime("%H:%M")
-    if dt.year == now.year:
-        return dt.strftime("%b %d")
-    return dt.strftime("%Y-%m-%d")

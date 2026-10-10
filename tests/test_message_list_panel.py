@@ -10,14 +10,14 @@ repository would not exercise the streaming loader.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from corpus import plain_text
 from tui_helpers import build_pony_app, seed_message
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
 from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.message_list import MessageListPanel, _format_date
+from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
 
 _INBOX = FolderRef(account_name="acct", folder_name="INBOX")
@@ -322,57 +322,6 @@ async def test_lookup_of_an_unknown_row_key_returns_none() -> None:
         assert panel._find_summary("999999") is None  # noqa: SLF001
         # A non-RowKey object never reaches the summary list.
         assert panel._summary_for_row_key(object()) is None  # noqa: SLF001
-
-
-# ---------------------------------------------------------------------------
-# Date formatting
-# ---------------------------------------------------------------------------
-
-
-def test_todays_messages_show_only_the_time() -> None:
-    now = datetime.now(tz=UTC)
-    assert _format_date(now) == now.strftime("%H:%M")
-
-
-def test_messages_earlier_this_year_show_month_and_day() -> None:
-    now = datetime.now(tz=UTC)
-    earlier = now - timedelta(days=1)
-    if earlier.year != now.year:  # pragma: no cover - only on Jan 1
-        earlier = now + timedelta(days=1)
-    assert _format_date(earlier) == earlier.strftime("%b %d")
-
-
-def test_older_messages_show_the_full_iso_date() -> None:
-    old = datetime(2001, 3, 4, 9, 30, tzinfo=UTC)
-    assert _format_date(old) == "2001-03-04"
-
-
-def test_marked_rows_render_a_star_icon() -> None:
-    """The mark icon wins over the flag/attachment status icon."""
-    from pony.domain import FolderMessageSummary, MessageRef, MessageStatus
-    from pony.tui.widgets.message_list import _icon_column
-
-    def _summary(
-        flags: frozenset[MessageFlag], *, has_attachments: bool = False
-    ) -> FolderMessageSummary:
-        return FolderMessageSummary(
-            message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=7),
-            message_id="<icon@example.com>",
-            storage_key="key",
-            sender="sender@example.com",
-            recipients="me@example.com",
-            subject="Icon probe",
-            received_at=datetime(2026, 4, 17, 12, tzinfo=UTC),
-            has_attachments=has_attachments,
-            local_flags=flags,
-            local_status=MessageStatus.ACTIVE,
-        )
-
-    # Flagged wins over answered, which wins over the attachment marker.
-    assert _icon_column(_summary(frozenset({MessageFlag.FLAGGED}))) == "!"
-    assert _icon_column(_summary(frozenset({MessageFlag.ANSWERED}))) == "↩"
-    assert _icon_column(_summary(frozenset(), has_attachments=True)) == "+"
-    assert _icon_column(_summary(frozenset())) == " "
 
 
 # ---------------------------------------------------------------------------

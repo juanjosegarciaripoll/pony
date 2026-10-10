@@ -58,11 +58,19 @@ from chronos.tui.screens.import_ics_screen import ImportIcsScreen
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
 from chronos.tui.screens.sync_confirm_screen import SyncConfirmScreen
-from chronos.tui.views import (
+from chronos.tui.widgets.date_picker import (
+    DatePicker,
+    InvalidDateError,
+    parse_date_input,
+)
+from chronos.tui.widgets.event_list import EventList, component_ref_for_row
+from chronos.tui.widgets.event_view import EventView
+from chronos.views import (
     IN_PROGRESS_MARK,
     AgendaWindow,
     CalendarSelection,
     OccurrenceRow,
+    RowEmphasis,
     ViewKind,
     agenda_window,
     all_calendar_refs,
@@ -80,13 +88,6 @@ from chronos.tui.views import (
     search_components,
     week_window,
 )
-from chronos.tui.widgets.date_picker import (
-    DatePicker,
-    InvalidDateError,
-    parse_date_input,
-)
-from chronos.tui.widgets.event_list import EventList, component_ref_for_row
-from chronos.tui.widgets.event_view import EventView
 from tests_calendar import corpus
 
 ACCOUNT_NAME = "personal"
@@ -505,7 +506,7 @@ class RowFormattingTest(unittest.TestCase):
             ),
             component=event,
         )
-        cells = format_event_row(row, self.TODAY)
+        cells = format_event_row(row, self.TODAY).cells
         # 6 cells: Day, Time, Duration, Summary, Calendar, Location.
         self.assertEqual(len(cells), 6)
         # 2026-06-15 is a Monday, well outside the today/tomorrow/
@@ -536,7 +537,7 @@ class RowFormattingTest(unittest.TestCase):
                 ),
                 component=event,
             )
-            cells = format_event_row(row, self.TODAY)
+            cells = format_event_row(row, self.TODAY).cells
             self.assertEqual(cells[0], label, f"delta={delta}")
 
     def test_format_event_row_handles_missing_summary_and_location(self) -> None:
@@ -552,7 +553,7 @@ class RowFormattingTest(unittest.TestCase):
             ),
             component=event,
         )
-        cells = format_event_row(row, self.TODAY)
+        cells = format_event_row(row, self.TODAY).cells
         self.assertEqual(cells[1], "09:00")  # Time
         self.assertEqual(cells[2], "")  # no end -> no duration
         self.assertEqual(cells[3], "(no summary)")
@@ -562,7 +563,6 @@ class RowFormattingTest(unittest.TestCase):
         # Regression: in the agenda view, events whose end has already
         # passed should render muted so the user's eye is drawn to
         # what's still upcoming.
-        from rich.text import Text
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         event = _empty_event(ref)
@@ -577,11 +577,12 @@ class RowFormattingTest(unittest.TestCase):
             component=event,
         )
         now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
-        cells = format_event_row(row, self.TODAY, now=now)
-        for cell in cells:
-            self.assertIsInstance(cell, Text)
-            assert isinstance(cell, Text)
-            self.assertEqual(cell.style, "dim")
+        # An event that has ended is reported as past; what "past" looks
+        # like is `EventList`'s business, not the projection's.
+        self.assertIs(
+            format_event_row(row, self.TODAY, now=now).emphasis,
+            RowEmphasis.PAST,
+        )
 
     def test_in_progress_event_is_highlighted(self) -> None:
         # An event that started before `now` but hasn't ended yet is
@@ -599,14 +600,9 @@ class RowFormattingTest(unittest.TestCase):
             component=event,
         )
         now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
-        cells = format_event_row(row, self.TODAY, now=now, active_style="bold red")
-        for cell in cells:
-            self.assertIsInstance(cell, Text)
-            assert isinstance(cell, Text)
-            self.assertEqual(cell.style, "bold red")
-        time_cell = cells[1]
-        assert isinstance(time_cell, Text)
-        self.assertTrue(time_cell.plain.startswith(IN_PROGRESS_MARK))
+        event_row = format_event_row(row, self.TODAY, now=now)
+        self.assertIs(event_row.emphasis, RowEmphasis.IN_PROGRESS)
+        self.assertTrue(event_row.cells[1].startswith(IN_PROGRESS_MARK))
 
     def test_future_event_is_plain(self) -> None:
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
@@ -621,8 +617,10 @@ class RowFormattingTest(unittest.TestCase):
             component=_empty_event(ref),
         )
         now = datetime(2026, 4, 25, 9, 0, tzinfo=UTC)
-        for cell in format_event_row(row, self.TODAY, now=now):
-            self.assertIsInstance(cell, str)
+        self.assertIs(
+            format_event_row(row, self.TODAY, now=now).emphasis,
+            RowEmphasis.NORMAL,
+        )
 
     def test_format_todo_row_renders_due_and_status(self) -> None:
         ref = ComponentRef(ACCOUNT_NAME, PERSONAL_CAL, "y")
@@ -1616,10 +1614,10 @@ class EditExistingEventTest(TuiFlowTestCase):
         # The agenda window covers 2026-04-25 → 2026-05-09 (NOW.date()
         # + 14 days). simple-event-1 starts 2026-05-01, so it falls
         # inside the window after the edit.
-        from chronos.tui.views import (
+        from chronos.views import (
             CalendarSelection as _Sel,
         )
-        from chronos.tui.views import (
+        from chronos.views import (
             agenda_window,
             gather_occurrences,
         )
@@ -2863,7 +2861,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_minutes_before_start(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2875,7 +2873,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_hours(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2887,7 +2885,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_mixed_hours_minutes(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2899,7 +2897,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_end_related(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2911,7 +2909,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_after_start(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2923,7 +2921,7 @@ class AlarmHelperTest(unittest.TestCase):
 
     def test_format_alarm_at_start(self) -> None:
         from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.tui.views import _format_alarm
+        from chronos.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2997,7 +2995,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_alarms_to_input(alarms), "")
 
     def test_render_event_detail_shows_reminders(self) -> None:
-        from chronos.tui.views import render_event_detail
+        from chronos.views import render_event_detail
         from tests_calendar import corpus
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "alarm-display-1@example.com")
@@ -3023,7 +3021,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn("15 min before start", detail)
 
     def test_render_event_detail_no_reminders_field_when_none(self) -> None:
-        from chronos.tui.views import render_event_detail
+        from chronos.views import render_event_detail
         from tests_calendar import corpus
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
@@ -3602,7 +3600,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
 
     def test_is_full_day_accepts_local_and_utc_midnight(self) -> None:
-        from chronos.tui.views import _is_full_day
+        from chronos.views import is_full_day
 
         # Standard VALUE=DATE all-day event: UTC midnight to UTC midnight.
         utc_all_day = self._all_day_row(
@@ -3611,7 +3609,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
             datetime(2026, 5, 1, tzinfo=UTC),
             datetime(2026, 5, 2, tzinfo=UTC),
         )
-        self.assertTrue(_is_full_day(utc_all_day.occurrence))
+        self.assertTrue(is_full_day(utc_all_day.occurrence))
 
         # All-day event stored as local midnight-to-midnight (the case
         # some clients write and the old UTC-only check missed).
@@ -3621,10 +3619,10 @@ class TimelineGridHelpersTest(unittest.TestCase):
             datetime(2026, 5, 1, 0, 0).astimezone(),
             datetime(2026, 5, 2, 0, 0).astimezone(),
         )
-        self.assertTrue(_is_full_day(local_all_day.occurrence))
+        self.assertTrue(is_full_day(local_all_day.occurrence))
 
     def test_is_full_day_rejects_timed_events(self) -> None:
-        from chronos.tui.views import _is_full_day
+        from chronos.views import is_full_day
 
         # Ordinary short meeting.
         short = self._all_day_row(
@@ -3633,7 +3631,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
             datetime(2026, 5, 1, 9, 0).astimezone(),
             datetime(2026, 5, 1, 9, 30).astimezone(),
         )
-        self.assertFalse(_is_full_day(short.occurrence))
+        self.assertFalse(is_full_day(short.occurrence))
 
         # A 24h-long event that is NOT anchored at midnight is timed, not
         # all-day — guards the midnight-anchor requirement. The zone is
@@ -3647,7 +3645,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
             datetime(2026, 5, 1, 9, 0, tzinfo=offset_zone),
             datetime(2026, 5, 2, 9, 0, tzinfo=offset_zone),
         )
-        self.assertFalse(_is_full_day(day_long_offset.occurrence))
+        self.assertFalse(is_full_day(day_long_offset.occurrence))
 
     def test_cell_for_slot_skips_local_midnight_all_day_event(self) -> None:
         from chronos.tui.widgets.timeline_grid import _cell_for_slot

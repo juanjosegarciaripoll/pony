@@ -7,7 +7,7 @@ from textual.binding import Binding
 from textual.widgets import Tree
 
 from chronos.domain import CalendarRef
-from chronos.tui.views import CalendarSelection
+from chronos.views import CalendarSelection
 
 
 class CalendarPanel(Tree[CalendarRef | None]):

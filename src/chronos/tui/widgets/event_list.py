@@ -8,7 +8,12 @@ from rich.text import Text
 from textual.widgets import DataTable
 
 from chronos.domain import ComponentRef, StoredComponent, VTodo
-from chronos.tui.views import OccurrenceRow, format_event_row, format_todo_row
+from chronos.views import (
+    OccurrenceRow,
+    RowEmphasis,
+    format_event_row,
+    format_todo_row,
+)
 
 # (header, fixed width). `width=None` would mean "auto-size to the
 # wider of header / cell content", but Textual 8 sizes the column to
@@ -51,8 +56,9 @@ _TODO_COLUMNS: tuple[tuple[str, int | None], ...] = (
 class EventList(DataTable[str]):
     """A `DataTable` of events or todos, keyed by `ComponentRef`.
 
-    Rendering is backed by `views.format_event_row` /
-    `views.format_todo_row`, so the formatting logic stays unit-testable.
+    The cells come from `views.format_event_row` / `views.format_todo_row`,
+    which also say how each row should be emphasised; turning that into
+    Rich styles is this widget's half of the job.
     """
 
     def on_mount(self) -> None:  # noqa: D401 — Textual lifecycle.
@@ -77,37 +83,43 @@ class EventList(DataTable[str]):
         """
         columns = _EVENT_COLUMNS_AGENDA if compact else _EVENT_COLUMNS_FULL
         self._reset(columns, "events")
-        # The Day cell is blanked on rows that share the previous
-        # row's day, so each day is announced once and the eye reads
-        # the column as a paper-agenda-style header. Rows are already
-        # sorted by start time in `gather_occurrences`, so a simple
-        # last-seen tracker is enough.
-        prev_day_plain: str | None = None
-        active_style = self._active_style()
+        prev_day: str | None = None
+        styles = {
+            RowEmphasis.IN_PROGRESS: self._active_style(),
+            RowEmphasis.PAST: "dim",
+        }
         for row in rows:
             key = self._row_key(
                 row.component.ref,
                 row.occurrence.recurrence_id,
                 instance=row.occurrence.start.isoformat(),
             )
-            cells = format_event_row(row, today, now=now, active_style=active_style)
-            day_cell = cells[0]
-            day_plain = day_cell.plain if isinstance(day_cell, Text) else day_cell
-            if day_plain == prev_day_plain:
-                day_cell = Text("", style="dim") if isinstance(day_cell, Text) else ""
+            event_row = format_event_row(row, today, now=now)
+            day, *rest = event_row.cells
+            # The Day cell is blanked on rows that share the previous
+            # row's day, so each day is announced once and the eye reads
+            # the column as a paper-agenda-style header. Rows are already
+            # sorted by start time in `gather_occurrences`, so a simple
+            # last-seen tracker is enough.
+            if day == prev_day:
+                day = ""
             else:
-                prev_day_plain = day_plain
-            full_row = (day_cell, *cells[1:])
+                prev_day = day
+            style = styles.get(event_row.emphasis)
+            plain: tuple[str, ...] = (day, *rest)
+            cells: tuple[str | Text, ...] = (
+                plain
+                if style is None
+                else tuple(Text(cell, style=style) for cell in plain)
+            )
             # Slice to whichever column set is active so compact mode
             # actually drops the trailing cells instead of feeding
             # `add_row` more values than there are columns.
-            sliced = full_row[: len(columns)]
+            #
             # DataTable accepts `Text` cells at runtime, but its public
-            # type stub only declares `str`. Past-event rows come back
-            # as `Text(..., style="dim")` so the row renders muted; the
-            # cast keeps the type-checker happy without lying about the
-            # element type at the source.
-            rendered = cast(tuple[Any, ...], sliced)
+            # type stub only declares `str`, so the cast keeps the
+            # type-checker happy without lying at the source.
+            rendered = cast(tuple[Any, ...], cells[: len(columns)])
             self.add_row(*rendered, key=key)
             self._refs[key] = row.component.ref
 

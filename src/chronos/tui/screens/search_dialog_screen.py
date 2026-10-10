@@ -9,7 +9,7 @@ from textual.widgets import Footer, Input, Label, ListItem, ListView
 
 from chronos.domain import StoredComponent
 from chronos.tui.bindings import search_bindings
-from chronos.tui.views import search_components
+from chronos.views import search_components
 
 
 class SearchDialogScreen(Screen[None]):

@@ -1,13 +1,26 @@
-"""Folder name discovery helpers for Pony Express.
+"""Which folder is which, by configuration or by name.
 
 Used by the composer to locate Sent and Drafts folders without requiring
 explicit configuration, and by the message list to tell a Sent folder from
 an ordinary one.
+
+Two layers: the pure name matchers, which know what servers call these
+folders in other languages, and :func:`holds_sent_mail` /
+:func:`holds_drafts`, which consult the account's own setting first and
+fall back to the matchers.  Both predicates answer a question a front end
+asks and neither is about rendering, so they are not the reader's to
+answer.
 """
 
 from __future__ import annotations
 
 import unicodedata
+from typing import TYPE_CHECKING
+
+from .accounts import find_account
+
+if TYPE_CHECKING:
+    from .domain import AppConfig, FolderRef
 
 
 def find_folder(candidates: list[str], hint: str) -> str | None:
@@ -129,3 +142,26 @@ def is_sent_folder(folder_name: str) -> bool:
     """
     leaf = folder_name.replace(".", "/").rsplit("/", 1)[-1]
     return _fold(leaf) in _SENT_FOLDER_NAMES
+
+
+def holds_sent_mail(config: AppConfig, folder: FolderRef) -> bool:
+    """True when *folder* holds the user's own outgoing mail.
+
+    The account's ``sent_folder`` setting decides it when configured;
+    otherwise the name is matched against the ones servers localise the
+    folder into, so ``Enviados`` is recognised as readily as ``Sent``.
+    """
+    account = find_account(config, folder.account_name)
+    configured = account.sent_folder if account is not None else None
+    if configured:
+        return folder.folder_name == configured
+    return is_sent_folder(folder.folder_name)
+
+
+def holds_drafts(config: AppConfig, folder: FolderRef) -> bool:
+    """True when *folder* is where this account's drafts are kept."""
+    account = find_account(config, folder.account_name)
+    configured = account.drafts_folder if account is not None else None
+    if configured:
+        return folder.folder_name == configured
+    return find_folder([folder.folder_name], "Drafts") is not None

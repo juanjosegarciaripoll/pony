@@ -5,7 +5,7 @@ from datetime import date
 from textual.widgets import Static
 
 from chronos.domain import StoredComponent
-from chronos.tui.views import render_event_detail
+from chronos.views import render_event_detail
 
 
 class EventView(Static):

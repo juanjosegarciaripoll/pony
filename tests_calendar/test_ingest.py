@@ -170,8 +170,8 @@ class IngestBytesTest(unittest.TestCase):
         half-hour slot. So the event the user was invited to simply was
         not on the timeline.
         """
-        from chronos.tui.views import OccurrenceRow
         from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from chronos.views import OccurrenceRow
 
         self._ingest(corpus.event_with_duration())
         occ = self.index.query_occurrences(

@@ -1,8 +1,15 @@
-"""Pure projection helpers used by every view screen.
+"""What the calendar's views are *of*, with no renderer attached.
 
-Window arithmetic and index queries live here so tests exercise them
-without spinning up a Textual app. Screens are then thin shells that
-call these and render the results.
+Window arithmetic, the index queries each view needs, and the strings
+those rows are made of all live here.  A screen is then a thin shell:
+it asks for the rows and hands them to a widget.
+
+Nothing in this module knows how a row will be drawn.  Where a row needs
+emphasis — an event in progress, one that has already ended — it says so
+as :class:`RowEmphasis` and leaves the terminal's bold and dim, or a
+browser's CSS classes, to whatever is rendering.  That is what lets the
+same projections serve a second front end, and it is why this module
+sits beside the stores rather than under ``tui/``.
 """
 
 from __future__ import annotations
@@ -11,8 +18,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
-
-from rich.text import Text
 
 from chronos.domain import (
     AppConfig,
@@ -81,6 +86,26 @@ class CalendarSelection:
 
     def contains(self, ref: CalendarRef) -> bool:
         return not self.refs or ref in self.refs
+
+
+class RowEmphasis(StrEnum):
+    """How much of the user's attention a row has earned.
+
+    The model decides *that* a row is running or already over; bold,
+    dim, a CSS class or nothing at all is the renderer's business.
+    """
+
+    NORMAL = "normal"
+    IN_PROGRESS = "in_progress"
+    PAST = "past"
+
+
+@dataclass(frozen=True, kw_only=True)
+class EventRow:
+    """One agenda line: its cells, and how to emphasise them."""
+
+    cells: tuple[str, str, str, str, str, str]
+    emphasis: RowEmphasis = RowEmphasis.NORMAL
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -268,33 +293,31 @@ def format_event_row(
     today: date,
     *,
     now: datetime | None = None,
-    active_style: str = "bold",
-) -> tuple[str | Text, str | Text, str | Text, str | Text, str | Text, str | Text]:
-    """Six cells for the agenda DataTable: Day, Time, Duration,
-    Summary, Calendar, Location.
+) -> EventRow:
+    """Six cells for one agenda line: Day, Time, Duration, Summary,
+    Calendar, Location — and how the line should be emphasised.
 
-    Day and Time are split into separate columns so `EventList` can
-    blank the Day cell on rows that share the previous row's day,
-    producing a paper-agenda look where each day is announced once.
-    The view title carries the year, so the Day cell never repeats it.
+    Day and Time are separate columns so a renderer can blank the Day
+    cell on rows that share the previous row's day, producing a
+    paper-agenda look where each day is announced once. The view title
+    carries the year, so the Day cell never repeats it.
 
-    When `now` is supplied and the occurrence has fully ended (its
-    `end`, or `start` if there's no end, is strictly before `now`),
-    every cell is wrapped in a Rich `Text` with a `dim` style so the
-    row renders muted. A row in progress at `now` is wrapped in
-    `active_style` instead, with `IN_PROGRESS_MARK` before its time.
-    Future rows return plain strings — DataTable accepts a mix of
-    `str` and `Text` cells.
+    When `now` is supplied, a row that has fully ended (its `end`, or
+    `start` if there is no end, is strictly before `now`) comes back as
+    `PAST`, and one running at `now` as `IN_PROGRESS` with
+    `IN_PROGRESS_MARK` before its time. Without `now` every row is
+    `NORMAL`: a caller that does not say when now is cannot be told what
+    is current.
 
     VTodo rows (and any synthesised full-day occurrence) get a
     📋 marker on the summary, "all day" in the Time column, and an
     empty Duration cell so the eye doesn't see "1d" repeated for
     every todo.
     """
-    is_full_day = _is_full_day(row.occurrence)
+    full_day = is_full_day(row.occurrence)
     is_todo = isinstance(row.component, VTodo)
     day = _format_event_day(row.occurrence.start, today)
-    if is_full_day:
+    if full_day:
         event_time = "all day"
         duration = ""
     else:
@@ -304,15 +327,22 @@ def format_event_row(
     summary = f"📋 {raw_summary}" if is_todo else raw_summary
     calendar = row.component.ref.calendar_name
     location = row.component.location or ""
-    cells = (day, event_time, duration, summary, calendar, location)
     if now is not None and is_in_progress(row.occurrence, now):
-        cells = (day, f"{IN_PROGRESS_MARK} {event_time}", *cells[2:])
-        styled = tuple(Text(c, style=active_style) for c in cells)
-        return styled[0], styled[1], styled[2], styled[3], styled[4], styled[5]
-    if now is None or not _occurrence_is_past(row.occurrence, now):
-        return cells
-    dimmed = tuple(Text(c, style="dim") for c in cells)
-    return dimmed[0], dimmed[1], dimmed[2], dimmed[3], dimmed[4], dimmed[5]
+        return EventRow(
+            cells=(
+                day,
+                f"{IN_PROGRESS_MARK} {event_time}",
+                duration,
+                summary,
+                calendar,
+                location,
+            ),
+            emphasis=RowEmphasis.IN_PROGRESS,
+        )
+    cells = (day, event_time, duration, summary, calendar, location)
+    if now is not None and _occurrence_is_past(row.occurrence, now):
+        return EventRow(cells=cells, emphasis=RowEmphasis.PAST)
+    return EventRow(cells=cells)
 
 
 def _format_event_day(start: datetime, today: date) -> str:
@@ -335,7 +365,7 @@ def _format_event_day(start: datetime, today: date) -> str:
     return moment.strftime("%d %b %a")
 
 
-def _is_full_day(occurrence: Occurrence) -> bool:
+def is_full_day(occurrence: Occurrence) -> bool:
     """A whole-day span: >= ~23h long and beginning at midnight in UTC
     (VALUE=DATE all-day) or in the local timezone.
 
@@ -368,7 +398,7 @@ def is_in_progress(occurrence: Occurrence, now: datetime) -> bool:
     Full-day spans are excluded: they would be "in progress" all day
     long, so highlighting them says nothing about the current moment.
     """
-    if occurrence.end is None or _is_full_day(occurrence):
+    if occurrence.end is None or is_full_day(occurrence):
         return False
     return occurrence.start <= now < occurrence.end
 
@@ -532,7 +562,9 @@ __all__ = [
     "IN_PROGRESS_MARK",
     "AgendaWindow",
     "CalendarSelection",
+    "EventRow",
     "OccurrenceRow",
+    "RowEmphasis",
     "ViewKind",
     "agenda_window",
     "all_calendar_refs",
@@ -544,6 +576,7 @@ __all__ = [
     "gather_occurrences",
     "gather_todos",
     "in_progress_keys",
+    "is_full_day",
     "is_in_progress",
     "month_window",
     "render_event_detail",

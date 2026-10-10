@@ -66,7 +66,13 @@ from chronos.tui.screens.month_view_screen import (
 from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
 from chronos.tui.screens.sync_confirm_screen import SyncConfirmScreen
 from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
-from chronos.tui.views import (
+from chronos.tui.widgets.calendar_panel import CalendarPanel
+from chronos.tui.widgets.event_list import EventList
+from chronos.tui.widgets.event_view import EventView
+from chronos.tui.widgets.month_grid import MonthGrid
+from chronos.tui.widgets.sync_status import SyncStatus
+from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
+from chronos.views import (
     AgendaWindow,
     CalendarSelection,
     OccurrenceRow,
@@ -74,12 +80,6 @@ from chronos.tui.views import (
     all_calendar_refs,
     in_progress_keys,
 )
-from chronos.tui.widgets.calendar_panel import CalendarPanel
-from chronos.tui.widgets.event_list import EventList
-from chronos.tui.widgets.event_view import EventView
-from chronos.tui.widgets.month_grid import MonthGrid
-from chronos.tui.widgets.sync_status import SyncStatus
-from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
 
 if TYPE_CHECKING:
     from chronos.tui.app import CalendarHost, TuiServices

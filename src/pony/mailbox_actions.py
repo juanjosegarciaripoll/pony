@@ -32,7 +32,6 @@ from chronos.outcome import Notice, NoticeLog, Outcome, failure, warn
 
 from .accounts import find_imap_account
 from .domain import (
-    AccountConfig,
     AppConfig,
     FolderRef,
     IndexedMessage,
@@ -196,7 +195,7 @@ def archive_messages(
     locally (index + mirror) immediately; the next sync pushes them to
     the server via ``UID MOVE``.
     """
-    account = _imap_account(mailboxes.config, source.account_name)
+    account = find_imap_account(mailboxes.config, source.account_name)
     if account is None:
         return Outcome.refused(warn("Archive requires an IMAP account."))
     target_name = account.archive_folder
@@ -572,13 +571,6 @@ def resolve_messages(
         if msg is not None:
             resolved.append(msg)
     return resolved
-
-
-def _imap_account(config: AppConfig, account_name: str) -> AccountConfig | None:
-    for account in config.accounts:
-        if account.name == account_name and isinstance(account, AccountConfig):
-            return account
-    return None
 
 
 def _mirror_pair(

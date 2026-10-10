@@ -17,8 +17,8 @@ from textual.message import Message
 from textual.widgets import DataTable
 
 from chronos.tui.screens.month_view_screen import grid_dates
-from chronos.tui.views import OccurrenceRow, _is_full_day, is_in_progress
 from chronos.tui.widgets.timeline_grid import _full_day_dates
+from chronos.views import OccurrenceRow, is_full_day, is_in_progress
 
 _WEEKDAY_HEADERS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MIN_COL_WIDTH = 10
@@ -160,14 +160,14 @@ def _bucket_by_day(
             out.setdefault(day, []).append(row)
             day += timedelta(days=1)
     for bucket in out.values():
-        bucket.sort(key=lambda r: (not _is_full_day(r.occurrence), r.occurrence.start))
+        bucket.sort(key=lambda r: (not is_full_day(r.occurrence), r.occurrence.start))
     return out
 
 
 def _local_days(row: OccurrenceRow) -> tuple[date, date]:
     """First and last local day an occurrence touches (end exclusive)."""
     occ = row.occurrence
-    if _is_full_day(occ):
+    if is_full_day(occ):
         first, end_exclusive = _full_day_dates(occ)
         return first, max(first, end_exclusive - timedelta(days=1))
     start = occ.start.astimezone()
@@ -217,7 +217,7 @@ def _render_day(
 def _event_line(row: OccurrenceRow, day: date) -> str:
     summary = row.component.summary or "(no summary)"
     start = row.occurrence.start.astimezone()
-    if _is_full_day(row.occurrence) or start.date() != day:
+    if is_full_day(row.occurrence) or start.date() != day:
         return summary
     return f"{start:%H:%M} {summary}"
 

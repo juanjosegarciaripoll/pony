@@ -26,8 +26,12 @@ from textual.widgets import DataTable
 
 from chronos.domain import ComponentRef, Occurrence
 from chronos.mutations import all_day_bounds
-from chronos.tui.views import IN_PROGRESS_MARK, OccurrenceRow, in_progress_keys
-from chronos.tui.views import _is_full_day as _occurrence_is_full_day
+from chronos.views import (
+    IN_PROGRESS_MARK,
+    OccurrenceRow,
+    in_progress_keys,
+    is_full_day,
+)
 
 _SLOT_MINUTES = 30
 _DEFAULT_START_HOUR = 6
@@ -615,7 +619,7 @@ def _compute_hour_range(
     end_hour = _DEFAULT_END_HOUR
     for _, events in days:
         for row in events:
-            if _occurrence_is_full_day(row.occurrence):
+            if is_full_day(row.occurrence):
                 continue
             occ_start = row.occurrence.start.astimezone()
             occ_end = (row.occurrence.end or row.occurrence.start).astimezone()
@@ -696,7 +700,7 @@ def _cell_for_slot(
     starting: list[tuple[OccurrenceRow, int, int]] = []
     continuing: list[tuple[OccurrenceRow, int, int]] = []
     for row in events:
-        if _occurrence_is_full_day(row.occurrence):
+        if is_full_day(row.occurrence):
             continue
         span = _timed_day_minutes(row.occurrence, day)
         if span is None:
@@ -773,7 +777,7 @@ def bucket_by_day(
         (first_day + timedelta(days=offset), []) for offset in range(count)
     ]
     for row in rows:
-        if _occurrence_is_full_day(row.occurrence):
+        if is_full_day(row.occurrence):
             start_d, end_d = _full_day_dates(row.occurrence)
             indices = range(
                 max(0, (start_d - first_day).days),
@@ -808,7 +812,7 @@ def _full_day_rows(
     """
     out: list[OccurrenceRow] = []
     for row in events:
-        if not _occurrence_is_full_day(row.occurrence):
+        if not is_full_day(row.occurrence):
             continue
         start_d, end_d = _full_day_dates(row.occurrence)
         if start_d <= day < end_d:
