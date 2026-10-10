@@ -1,9 +1,11 @@
-"""Tests for the pure-function parts of ``pony.tui.widgets.folder_panel``.
+"""Tests for the folder tree the panel displays.
 
 The widget itself needs a running Textual app to mount; this file
-exercises the builder that shapes what the widget displays —
-``build_folder_tree`` — so the nesting + unread-aggregation logic can
-be pinned without spinning up the UI.
+exercises what shapes what it displays — ``build_folder_tree``, now in
+``pony.views`` because the web front end renders the same tree — so the
+nesting and unread-aggregation logic can be pinned without a UI. The
+countdown and label formatting that are still the widget's own are
+imported from it.
 """
 
 from __future__ import annotations
@@ -13,11 +15,13 @@ import unittest
 from pony.domain import FolderRef
 from pony.tui.widgets.folder_panel import (
     COUNTDOWN_STEP_SECONDS,
+    format_account_label,
+    format_countdown,
+)
+from pony.views import (
     FolderTreeNode,
     _split_folder_name,
     build_folder_tree,
-    format_account_label,
-    format_countdown,
     has_inbox_mail,
 )
 

@@ -1,0 +1,328 @@
+/* Two panes on a desktop, one column on a phone.
+ *
+ * The layout is plain CSS grid with one breakpoint: there is no
+ * JavaScript in the layout at all, so a narrow screen reflows rather
+ * than being a zoomed-out copy of a wide one. Densities differ too —
+ * a touch target needs more room than a mouse does.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --dim: #6b6b6b;
+  --line: #e0e0e0;
+  --accent: #0b5fa5;
+  --unread: #0b5fa5;
+  --surface: #f6f6f6;
+  --warning: #8a5a00;
+  --error: #a31515;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e6e6e6;
+    --dim: #9a9a9a;
+    --line: #2c2f36;
+    --accent: #6cb6ff;
+    --unread: #6cb6ff;
+    --surface: #1d2026;
+    --warning: #e0b050;
+    --error: #ff8080;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) 1fr;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* --- folders ------------------------------------------------------- */
+
+#folders {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  padding: 0.75rem 0.5rem 2rem;
+  overflow-y: auto;
+}
+
+#folders h2 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin: 1rem 0.5rem 0.25rem;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding-left: 0.5rem;
+}
+
+#folders .tree .tree {
+  padding-left: 0.75rem;
+}
+
+.folder,
+.agenda-link {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.agenda-link {
+  font-weight: 600;
+}
+
+.folder:hover,
+.agenda-link:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.folder.current {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  font-weight: 600;
+}
+
+.folder.synthetic {
+  color: var(--dim);
+}
+
+.unread {
+  color: var(--unread);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* --- message list -------------------------------------------------- */
+
+#main {
+  display: grid;
+  grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);
+  min-width: 0;
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.row a {
+  display: grid;
+  grid-template-columns: 1.5rem 5rem minmax(6rem, 14rem) 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.5rem 0.75rem;
+  color: var(--dim);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+}
+
+.row.unread a {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.row[aria-selected="true"] a {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.row.marked a {
+  border-left: 4px solid var(--accent);
+}
+
+.row .mark,
+.row .date {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+.row .who,
+.row .subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- reader -------------------------------------------------------- */
+
+#reader {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#reader header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+#reader h1 {
+  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+}
+
+#reader .from,
+#reader .to {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+iframe.body {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
+/* --- agenda -------------------------------------------------------- */
+
+.agenda {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0;
+  overflow-y: auto;
+}
+
+.agenda-row {
+  display: grid;
+  grid-template-columns: 7rem 5rem 1fr 10rem;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+}
+
+.agenda-row.past {
+  color: var(--dim);
+}
+
+.agenda-row.in_progress {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* --- notices and help --------------------------------------------- */
+
+#notices {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+}
+
+.notice {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+}
+
+.notice.warning {
+  color: var(--warning);
+}
+
+.notice.error {
+  color: var(--error);
+}
+
+#help {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  max-width: min(40rem, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+#help dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 1rem;
+  margin: 0;
+}
+
+#help dt {
+  font-family: ui-monospace, monospace;
+  text-align: right;
+}
+
+#help dt.unavailable {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+
+#help dd {
+  margin: 0;
+}
+
+.empty {
+  padding: 1.5rem;
+  color: var(--dim);
+}
+
+/* --- phone --------------------------------------------------------- */
+
+@media (max-width: 52rem) {
+  body {
+    grid-template-columns: 1fr;
+  }
+
+  #folders {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 40vh;
+  }
+
+  /* Touch targets, and no fixed-width columns to overflow. */
+  .row a {
+    grid-template-columns: 1.5rem 4.5rem 1fr;
+    padding: 0.7rem 0.75rem;
+  }
+
+  .row .who {
+    grid-column: 3;
+  }
+
+  .row .subject {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+
+  .agenda-row {
+    grid-template-columns: 6rem 1fr;
+  }
+
+  .agenda-row .agenda-location {
+    display: none;
+  }
+
+  #main {
+    grid-template-rows: auto;
+  }
+}

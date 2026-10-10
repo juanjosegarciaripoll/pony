@@ -24,6 +24,7 @@ from ..accounts import resolve_smtp_password
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
+from ..keymap import APPLICATION_KEYS
 from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import AppPaths
 from ..protocols import (
@@ -33,6 +34,8 @@ from ..protocols import (
     MirrorRepository,
 )
 from ..sync import MailSyncOutcome, MailSyncScheduler, build_sync_service
+from ..views import has_inbox_mail
+from .bindings import to_textual
 from .calendar_host import (
     AlarmPoller,
     build_calendar_services,
@@ -46,7 +49,6 @@ from .terminal import (
     push_terminal_title,
     set_terminal_title,
 )
-from .widgets.folder_panel import has_inbox_mail
 
 # How often reminders are checked and the two status lines refreshed.
 # Matches the calendar's own alarm poll when it runs standalone.
@@ -95,14 +97,7 @@ class PonyApp(App[None]):
     # which only ever exist under the calendar's own screens.
     CSS = CALENDAR_CSS
 
-    BINDINGS = [
-        Binding("Q", "quit", "Quit", priority=True),
-        Binding("f1", "show_help", "Help"),
-        # One description serves both footers and both help screens,
-        # so it names the pair rather than the destination: "Calendar"
-        # reads wrong from inside the calendar.
-        Binding("f2", "toggle_calendar", "Mail / Calendar"),
-    ]
+    BINDINGS = to_textual(APPLICATION_KEYS)
 
     def action_show_help(self) -> None:
         """Push the centered help dialog (keybinding reference)."""

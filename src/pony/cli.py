@@ -180,6 +180,30 @@ def build_parser() -> argparse.ArgumentParser:
     tui_parser = subparsers.add_parser("tui", help="Launch the terminal UI.")
     tui_parser.add_argument("account", nargs="?", help="Focus the given account.")
 
+    web_parser = subparsers.add_parser("web", help="Serve the browser interface.")
+    web_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Address to bind (default: 127.0.0.1). Pass a tailnet address, "
+            "or use 'tailscale serve' to publish the loopback port instead."
+        ),
+    )
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=8730,
+        help="Port to bind (default: 8730).",
+    )
+    web_parser.add_argument(
+        "--no-token",
+        action="store_true",
+        help=(
+            "Serve without the access token. Only sensible when the "
+            "address is already restricted to people who may read the mail."
+        ),
+    )
+
     compose_parser = subparsers.add_parser(
         "compose", help="Open the composer directly to write a new message."
     )
@@ -590,6 +614,14 @@ def _dispatch(
             config_path=args.config,
             account=args.account,
             theme=args.theme,
+        )
+    if args.command == "web":
+        return run_web(
+            paths=paths,
+            config_path=args.config,
+            host=args.host,
+            port=args.port,
+            use_token=not args.no_token,
         )
     if args.command == "compose":
         return run_compose(
@@ -2579,6 +2611,72 @@ def run_tui(
     )
     try:
         app.run()
+    finally:
+        if calendar is not None:
+            calendar.close()
+    return 0
+
+
+def run_web(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    host: str,
+    port: int,
+    use_token: bool,
+) -> int:
+    """Serve the browser interface.
+
+    The same stores the TUI opens, behind HTTP instead of a terminal.
+    It does not sync: the mail half has no cross-process sync lock, so a
+    server syncing while a terminal is open would be two syncs against
+    one account.  Local mutations are safe — archive, trash and flag
+    changes rewrite the index row and the next ``pony sync`` pushes
+    them — which is what the browser offers.
+
+    Bound to loopback by default.  Published through a tailnet (either
+    by binding the tailnet address or by pointing ``tailscale serve`` at
+    the loopback port), the device is already authenticated, so
+    ``--no-token`` is reasonable there; anywhere else the token is what
+    stands between the port and the mail.
+    """
+    import secrets
+
+    try:
+        import uvicorn
+
+        from .web import WebServices, build_web_app
+    except ImportError:
+        print(
+            "error: the browser interface needs its extra. "
+            "Install it with: pip install 'pony[web]'",
+        )
+        return 1
+
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+    mirrors = build_mirrors(config)
+    calendar = _open_calendar_or_warn(config_path)
+
+    token = secrets.token_urlsafe(24) if use_token else None
+    services = WebServices(
+        config=config,
+        index=index,
+        mirrors=mirrors,
+        contacts=index,
+        calendar=calendar,
+        token=token,
+    )
+    shown_host = f"[{host}]" if ":" in host else host
+    suffix = f"/?token={token}" if token is not None else "/"
+    print(f"Pony Express on http://{shown_host}:{port}{suffix}")
+    if token is not None:
+        # Said once, because the cookie it sets lasts a year: a phone
+        # needs the full URL only the first time.
+        print("The link carries the access token; it is remembered per browser.")
+    try:
+        uvicorn.run(build_web_app(services), host=host, port=port, log_level="warning")
     finally:
         if calendar is not None:
             calendar.close()

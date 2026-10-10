@@ -1,26 +1,51 @@
-"""Shared key bindings for list-style TUI widgets.
+"""Turning the shared keymap into Textual bindings.
 
-Both the contacts browser and the messages panel let the user mark
-multiple rows with ``m`` / ``Shift+Down`` / ``Shift+Up`` and then act
-on the marks in bulk; several list widgets also share ``n`` / ``p`` /
-``<`` / ``>`` for row-cursor motion.  Only the bindings are shared —
-the per-widget toggle and rendering logic is too coupled to each
-host's internals to extract cleanly.
+The keymap itself is data in :mod:`pony.keymap`, because the browser
+front end needs the same table and a ``textual.binding.Binding`` means
+nothing to it.  This module is the terminal's half of it: a converter,
+plus the two groups several list widgets assign straight into their
+``BINDINGS``.  Both are derived from the keymap now rather than written
+out a second time, so a key cannot be live in one front end and absent
+from the other.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual.binding import Binding
 
-MARK_BINDINGS: tuple[Binding, ...] = (
-    Binding("m", "mark_down", "Mark"),
-    Binding("shift+down", "mark_down", "Mark \u2193", show=False),
-    Binding("shift+up", "mark_up", "Mark \u2191", show=False),
-)
+from ..keymap import MARK_KEYS, MOTION_KEYS
 
-MOTION_BINDINGS: tuple[Binding, ...] = (
-    Binding("n", "cursor_down", "Next", show=False),
-    Binding("p", "cursor_up", "Prev", show=False),
-    Binding("<", "cursor_first", "First", show=False),
-    Binding(">", "cursor_last", "Last", show=False),
-)
+if TYPE_CHECKING:
+    from ..keymap import KeyBinding
+
+
+# `Screen.BINDINGS` is an invariant list typed as
+# `list[Binding | tuple[str, str] | tuple[str, str, str]]`.  We only ever
+# build `Binding` instances, but the declared type has to match that
+# wider element type for a subclass to be able to assign the result.
+BindingType = Binding | tuple[str, str] | tuple[str, str, str]
+
+
+def to_textual(bindings: tuple[KeyBinding, ...]) -> list[BindingType]:
+    """Each of *bindings* as Textual wants it."""
+    return list[BindingType](
+        Binding(
+            binding.key,
+            binding.action,
+            binding.description,
+            show=binding.show,
+            priority=binding.priority,
+        )
+        for binding in bindings
+    )
+
+
+# Kept as tuples because several widgets splat them into a `BINDINGS`
+# list of their own.
+MARK_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MARK_KEYS))
+MOTION_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MOTION_KEYS))
+
+
+__all__ = ["BindingType", "MARK_BINDINGS", "MOTION_BINDINGS", "to_textual"]

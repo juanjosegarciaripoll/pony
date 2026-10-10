@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from time import monotonic
 
 from rich.markup import escape as markup_escape
@@ -15,6 +15,7 @@ from textual.widgets._tree import TreeNode
 
 from ...domain import AppConfig, FolderRef
 from ...protocols import IndexRepository, MirrorRepository
+from ...views import FolderTreeNode, build_folder_tree, has_inbox_mail
 from .edge_drag import DraggableEdgeMixin
 
 ACCOUNT_MAIL_SUFFIX = "✉"
@@ -50,115 +51,6 @@ def format_countdown(seconds: float) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
-
-
-@dataclass(frozen=True, slots=True)
-class FolderTreeNode:
-    """One node in the nested folder display tree.
-
-    ``folder_ref`` is ``None`` for *synthetic* parents — tree levels
-    that exist only because a child folder name was hierarchical
-    (``Archives.2026`` with no ``Archives`` folder on the server).
-    The stored folder_name on the server is always the *full* path
-    (``Archives.2026``); nesting is a display concern only.
-    """
-
-    label: str  # last path segment
-    folder_ref: FolderRef | None  # None for synthetic parents
-    own_unread: int  # 0 for synthetic parents
-    children: tuple[FolderTreeNode, ...] = field(default_factory=tuple)
-
-    def descendant_unread(self) -> int:
-        """Total unread in this node and all descendants.
-
-        Used to decide whether a synthetic parent is dim (all quiet) or
-        bright (at least one descendant has unread).
-        """
-        return self.own_unread + sum(c.descendant_unread() for c in self.children)
-
-
-def _split_folder_name(name: str) -> tuple[str, ...]:
-    """Split *name* on the first ``.`` or ``/`` delimiter it contains.
-
-    Per-folder detection (rather than a single account-wide delimiter)
-    handles the rare case where different folders on the same server
-    use different conventions.  ``INBOX`` is never split.  Empty
-    segments (leading / trailing / doubled delimiters) are dropped.
-    """
-    if name == "INBOX":
-        return (name,)
-    dot = name.find(".")
-    slash = name.find("/")
-    candidates = [pos for pos in (dot, slash) if pos != -1]
-    if not candidates:
-        return (name,)
-    first = min(candidates)
-    delim = name[first]
-    segments = tuple(seg for seg in name.split(delim) if seg)
-    return segments or (name,)
-
-
-def build_folder_tree(
-    *,
-    folder_names: Sequence[str],
-    unread_counts: Mapping[str, int],
-    account_name: str,
-) -> tuple[FolderTreeNode, ...]:
-    """Build a nested display tree from flat folder names.
-
-    The returned nodes are roots under the account.  ``INBOX`` (if
-    present) is pinned first; remaining siblings are sorted
-    alphabetically at every level.
-    """
-    # Collect every distinct path prefix: ancestors are created on
-    # demand, a real folder's full segmentation is the exact path.
-    real_by_path: dict[tuple[str, ...], str] = {}
-    all_paths: set[tuple[str, ...]] = set()
-    for name in folder_names:
-        segments = _split_folder_name(name)
-        real_by_path[segments] = name
-        for i in range(1, len(segments) + 1):
-            all_paths.add(segments[:i])
-
-    def _build_at(prefix: tuple[str, ...]) -> tuple[FolderTreeNode, ...]:
-        direct = sorted(
-            {
-                p[len(prefix)]
-                for p in all_paths
-                if len(p) == len(prefix) + 1 and p[: len(prefix)] == prefix
-            }
-        )
-        nodes: list[FolderTreeNode] = []
-        for seg in direct:
-            child_path = (*prefix, seg)
-            real_name = real_by_path.get(child_path)
-            folder_ref = (
-                FolderRef(account_name=account_name, folder_name=real_name)
-                if real_name is not None
-                else None
-            )
-            own_unread = unread_counts.get(real_name, 0) if real_name else 0
-            nodes.append(
-                FolderTreeNode(
-                    label=seg,
-                    folder_ref=folder_ref,
-                    own_unread=own_unread,
-                    children=_build_at(child_path),
-                )
-            )
-        return tuple(nodes)
-
-    roots = list(_build_at(()))
-    inbox = [n for n in roots if n.label == "INBOX"]
-    others = [n for n in roots if n.label != "INBOX"]
-    return tuple(inbox + others)
-
-
-def has_inbox_mail(counts: Mapping[str, int]) -> bool:
-    """True when any INBOX-cased folder has one or more unread messages."""
-    return any(
-        name.casefold() == "inbox" and count > 0 for name, count in counts.items()
-    )
 
 
 def format_account_label(account_name: str, *, has_mail: bool) -> str:

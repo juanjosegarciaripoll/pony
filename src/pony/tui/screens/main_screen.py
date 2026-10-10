@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, cast
 
 from textual import work
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header
@@ -42,6 +41,7 @@ from ...domain import (
 )
 from ...folder_utils import holds_drafts, holds_sent_mail
 from ...invitation import Invitation
+from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
 from ...message_renderer import (
     RenderedMessage,
@@ -65,6 +65,8 @@ from ...sync import (
     SyncResult,
     build_sync_service,
 )
+from ...views import has_inbox_mail
+from ..bindings import to_textual
 from ..terminal import (
     format_terminal_title,
     launch_file,
@@ -74,7 +76,7 @@ from ..terminal import (
 )
 from ..ui_state import RESIZE_STEP, load_pane_sizes, save_pane_sizes
 from ..widgets.edge_drag import PaneDragged
-from ..widgets.folder_panel import FolderPanel, has_inbox_mail
+from ..widgets.folder_panel import FolderPanel
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
 
@@ -95,37 +97,11 @@ class MainScreen(Screen[None]):
       +-------------+---------------------------+
     """
 
-    BINDINGS = [
-        Binding("g", "sync", "Get mail"),
-        Binding("ctrl+g", "background_sync", "Bg sync", show=False),
-        Binding("c", "compose_new", "Compose"),
-        Binding("e", "edit_draft", "Edit draft"),
-        Binding("r", "compose_reply", "Reply"),
-        Binding("R", "compose_reply_all", "Reply all"),
-        Binding("f", "compose_forward", "Forward"),
-        Binding("w", "open_browser", "Web view"),
-        Binding("ctrl+p", "print_pdf", "Print PDF"),
-        Binding("u", "mark_unread", "Mark unread"),
-        Binding("!", "toggle_flagged", "Flag"),
-        Binding("D", "trash", "Trash"),
-        Binding("A", "archive", "Archive"),
-        Binding("C", "mark_all_read", "Mark all read"),
-        Binding("Y", "copy", "Copy"),
-        Binding("M", "move", "Move"),
-        Binding("N", "new_folder", "New folder"),
-        Binding("s", "save_message", "Save", show=False),
-        Binding("O", "attachments_open", "Open att.", show=False),
-        Binding("S", "attachments_save", "Save att.", show=False),
-        Binding("/", "search", "Search", show=False),
-        Binding("G", "goto_folder", "Goto folder", show=False),
-        Binding("H", "harvest_contacts", "Harvest contacts", show=False),
-        Binding("B", "browse_contacts", "Contacts"),
-        Binding("i", "respond_invitation", "Invitation", show=False),
-        Binding("ctrl+left", "narrow_folders", "Narrower folders", show=False),
-        Binding("ctrl+right", "widen_folders", "Wider folders", show=False),
-        Binding("ctrl+up", "shrink_list", "Smaller list", show=False),
-        Binding("ctrl+down", "grow_list", "Bigger list", show=False),
-    ]
+    # Every key the reader answers to, from the one keymap both front
+    # ends read (see `pony.keymap`).
+    BINDINGS = to_textual(
+        for_surface(MAIL_KEYMAP, Surface.READER, Surface.LIST),
+    )
 
     CSS = """
     MainScreen {

@@ -101,10 +101,19 @@ pony doctor
 pony sync
 pony tui
 
+# ...or read it in a browser, on this machine or over a tailnet
+pony web                      # http://127.0.0.1:8730
+pony web --host 100.x.y.z     # or point `tailscale serve` at the port
+
 # The calendar: F2 inside the TUI, or from the command line
 pony calendar sync
 pony calendar list
 ```
+
+The browser interface is an optional extra (`pip install 'pony[web]'`). It
+shares the terminal UI's keymap — the same keys do the same things, and `F1`
+lists them — reflows for a phone, and makes its changes locally for the next
+`pony sync` to push. It does not sync or send yet.
 
 ## Development
 
@@ -117,7 +126,8 @@ uv run ruff format --check src/ tests/ tests_calendar/
 uv run mypy
 uv run basedpyright src/
 
-# Tests (mail + calendar)
+# Tests (mail + calendar, both front ends)
+uv sync --group dev --extra web
 uv run python -m pytest
 
 # Build documentation locally

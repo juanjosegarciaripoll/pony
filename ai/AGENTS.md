@@ -1,8 +1,8 @@
 # Pony Express — Agent Instructions
 
-Terminal-first Python 3.13 MUA **and calendar**, one program:
+Python 3.13 MUA **and calendar**, one program, two front ends:
 
-- Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI; SMTP out, optional Markdown compose.
+- Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI (`pony tui`) or browser UI (`pony web`); SMTP out, optional Markdown compose.
 - Calendar (`src/chronos`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++).
 
 One config file, one notification space, one entry point (`pony`).
@@ -29,6 +29,10 @@ so `tests_calendar/` still exercises the calendar standalone.
 1. **Read first.** Use `docs/architecture.md` to locate the right module.
 2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright src`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
 
+   A development environment needs the web extra as well as the dev
+   group, because the suite covers both front ends:
+   `uv sync --group dev --extra web`. Both CI workflows pass it.
+
    The run is parallel: `addopts` carries `-n auto --dist loadfile`
    (pytest-xdist). Most of the suite drives a Textual app through `Pilot`
    and pays for starting one, and there is no hot spot to cut — the
@@ -45,7 +49,7 @@ so `tests_calendar/` still exercises the calendar standalone.
    (`tests/test_mailbox_actions.py`, `tests_calendar/test_event_actions.py`);
    reach for those before the Pilot-driven ones.
 3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
-4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval.
+4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval. The browser front end's `starlette` + `uvicorn` are an **extra** (`[project.optional-dependencies] web`), not required deps; keep it that way, and add nothing to it without asking. `pony.web` must never import Textual and nothing outside it may import Starlette — `tests/test_layering.py` enforces both.
 5. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
 6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
 7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
@@ -99,6 +103,9 @@ Key test infrastructure:
 | Calendar config section | `tests/test_calendar_config.py` |
 | Notification space | `tests/test_notifications.py` |
 | Mail + calendar in one app | `tests/test_calendar_in_app.py` — `build_pony_app(calendar=make_calendar_runtime(...))` |
+| Browser front end | `tests/test_web_app.py` — Starlette `TestClient` over real stores |
+| The HTML builder's escaping | `tests/test_web_html.py` |
+| The shared keymap | `tests/test_keymap.py` — including that the screens bind exactly it |
 | Invitations (parsing, replies) | `tests/test_invitation.py` |
 | Invitations in the reader | `tests/test_invitation_flows.py` |
 | Invitations out of the calendar | `tests/test_invitation_sending.py` |
@@ -220,6 +227,13 @@ the stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
 `pony/contact_actions.py`, `chronos/event_actions.py`) and return a
 `chronos.outcome.Outcome` — a count of what changed, and the notices to
 show. No `app.notify`, no `query_one`, no Textual import.
+
+**A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.keymap`
+is the one table; `pony.tui.bindings.to_textual` converts it for Textual
+and `/keymap.json` serves it to the browser. A key written straight into
+a screen's `BINDINGS` exists in the terminal and nowhere else, and
+`tests/test_keymap.py` fails when the reader or the app stops matching
+the table.
 
 **A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
 and `chronos/views.py` decide what a row is *of*; padding it to a column

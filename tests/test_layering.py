@@ -22,6 +22,12 @@ import unittest
 # is in here because the mail half runs the periodic sync off it: the
 # class has to stay free of Textual for `pony` to be able to import it
 # without dragging the calendar's widget tree along.
+#
+# The action modules, the view projections and the keymap are in here
+# because the browser front end is built on exactly them: anything one
+# of these reaches for Textual to do is something the web interface
+# cannot do, and `textual` is an optional extra, so it might not even be
+# installed.
 _BACKEND_MODULES = (
     "chronos.scheduler",
     "pony.sync",
@@ -35,6 +41,15 @@ _BACKEND_MODULES = (
     "pony.composer",
     "pony.accounts",
     "pony.mailbox_ops",
+    "pony.mailbox_actions",
+    "pony.delivery",
+    "pony.contact_actions",
+    "pony.views",
+    "pony.keymap",
+    "pony.folder_utils",
+    "chronos.outcome",
+    "chronos.event_actions",
+    "chronos.views",
     "pony.search_parser",
     "pony.contact_naming",
     "pony.config",
@@ -81,3 +96,20 @@ class BackendIsHeadlessTest(unittest.TestCase):
     def test_the_tui_package_does_load_textual(self) -> None:
         """Guards the test itself: prove the probe can detect a real import."""
         self.assertTrue(_imports_textual("pony.tui"))
+
+
+class WebFrontEndIsIndependentTest(unittest.TestCase):
+    """The browser front end must not need the terminal one.
+
+    ``textual`` and ``starlette`` are separate extras, so an install can
+    have either. A web module that imported Textual would make
+    ``pip install pony[web]`` fail at the first request.
+    """
+
+    def test_the_web_package_does_not_load_textual(self) -> None:
+        self.assertFalse(_imports_textual("pony.web"))
+
+    def test_the_web_package_renders_without_textual(self) -> None:
+        """Not just the import: the pages themselves must come out."""
+        self.assertFalse(_imports_textual("pony.web.app"))
+        self.assertFalse(_imports_textual("pony.web.html"))

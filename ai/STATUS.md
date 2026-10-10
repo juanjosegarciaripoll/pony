@@ -78,7 +78,10 @@ All v1 capabilities implemented and tested:
 ## Deferred (out of scope for now)
 
 - POP support
-- OAuth
-- Browser UI
+- Multi-user serving (one config file, one credential store — several
+  people means an instance each)
+- Composing and sending from the browser front end
+- Syncing from the browser front end (needs a cross-process mail lock
+  first; `chronos.locking` covers the calendar only)
 - Multi-machine conflict handling (beyond current state-based reconciliation)
 - Aggressive auto remote mutations

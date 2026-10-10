@@ -23,6 +23,12 @@ tinymcp = { git = "https://github.com/juanjosegarciaripoll/tinymcp.git" }
 [project.scripts]
 pony = "pony.cli:main"
 
+[project.optional-dependencies]
+web = [
+    "starlette>=0.41",
+    "uvicorn>=0.32",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -118,6 +124,7 @@ skip_covered = false
 dev = [
     "basedpyright>=1.39.0",
     "coverage>=7.0",
+    "httpx>=0.28",
     "mypy>=1.20.0",
     "pyinstrument>=5.1.2",
     "pytest>=9.0.3",

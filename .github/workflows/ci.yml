@@ -55,7 +55,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --group dev --group docs
+        run: uv sync --group dev --group docs --extra web
         shell: bash
 
       - name: Lint
@@ -102,7 +102,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --extra web
 
       # The harness runs an unpacked Dovecot under bubblewrap when it has
       # to, but a system install needs no sandbox and CI has the rights

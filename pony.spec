@@ -21,6 +21,15 @@ hidden = collect_submodules("chronos")
 
 site_dir = Path("site")
 datas: list[tuple[str, str]] = [("config-sample.toml", ".")]
+
+# The browser front end's stylesheet and keymap dispatcher are read from
+# disk at request time, so they have to travel with the bundle.  Its
+# Python dependencies are an extra (`pony[web]`); when they are absent
+# from the build environment `pony web` reports that and the rest of the
+# program is unaffected.
+web_static = Path("src/pony/web/static")
+if web_static.exists():
+    datas.append((str(web_static), "pony/web/static"))
 if site_dir.exists():
     datas.append(("site", "site"))
 else:

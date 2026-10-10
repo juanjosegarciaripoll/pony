@@ -8,9 +8,13 @@ title: Architecture
 
 Pony Express is organized as a layered application that separates user-facing
 workflows from protocol, storage, and indexing concerns. Multiple interfaces
-can share the same core: the TUI, standalone composer, and contacts browser
-are all separate Textual `App` subclasses that push their own screens and
-own their own keybindings.
+share the same core, and two of them are different kinds of interface: a
+terminal UI built on Textual (`pony tui`) and a browser UI built on Starlette
+(`pony web`). Both are optional extras, both read the same keymap, and both
+call the same actions — see [Actions and projections](#actions-and-projections)
+and [The browser front end](#the-browser-front-end). Within the terminal, the
+TUI, standalone composer and contacts browser are separate Textual `App`
+subclasses that push their own screens.
 
 Mail is one of two subsystems. The other is the calendar (`src/chronos`), a
 CalDAV client with its own mirror, index, sync engine and screens, which
@@ -48,7 +52,8 @@ src/pony/
   mailbox_actions.py   # archive / move / copy / trash / flags, over the stores
   delivery.py          # filing a message that has been written or sent
   contact_actions.py   # harvest, delete, merge
-  views.py             # what a message-list row is, before anything draws it
+  keymap.py            # which key does what, for both front ends
+  views.py             # what a row and the folder tree are, before drawing
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
@@ -104,6 +109,10 @@ src/pony/
       contact_suggester.py   # autocomplete dropdown
       address_input.py       # address field that keeps pasted lists whole
       edge_drag.py           # mouse-draggable pane borders
+  web/                   # the browser front end (extra: pony[web])
+    app.py               # Starlette routes over the same actions
+    html.py              # escaping element builder, in place of templates
+    static/              # one stylesheet, one keymap dispatcher
 ```
 
 ## Subsystems
@@ -336,6 +345,55 @@ the saved path appended, falling back to the OS handler (`xdg-open` / `open` /
 message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 `ui_state.json`. Theme selection comes from `theme` in `config.toml`, the
 `--theme NAME` flag, or `--list-themes`.
+
+### The browser front end
+
+`pony web` serves the same stores over HTTP (`pony.web`, Starlette and
+Uvicorn, installed by the `web` extra). It is a second front end, not a
+second program: every operation is a call into `pony.mailbox_actions`,
+every row comes from `pony.views` or `chronos.views`, and every key comes
+from `pony.keymap`. What is new in the package is HTTP, HTML and the
+keyboard dispatch.
+
+**One keymap, two front ends.** `pony.keymap` holds `KeyBinding(key,
+action, description, surface)` as data. `pony.tui.bindings.to_textual`
+turns it into Textual `Binding`s — which is where `MainScreen.BINDINGS`
+and `PonyApp.BINDINGS` now come from — and `/keymap.json` serves it to a
+browser that matches `keydown` against it. Each entry carries
+`available`, so a key the terminal has and the browser has not is listed
+in the help and marked, rather than appearing to work.
+
+**No template engine and no CDN.** `pony.web.html` builds markup from
+Python with escaping that a template author cannot forget; `Raw` is the
+only way past it, which makes injection auditable by grep. The client
+side is one stylesheet and one script with no framework, because a
+tailnet has no reason to reach the public internet.
+
+**Three deliberate restrictions.**
+
+- *It does not sync.* The mail half has no cross-process sync lock —
+  `chronos.locking` covers the calendar only — so a server syncing while
+  a terminal is open would be two syncs against one account. Instead the
+  browser makes *local* mutations: archive, trash and flag changes
+  rewrite the index row, and the next `pony sync` from anywhere pushes
+  them. That is the `uid IS NULL` design (see
+  [Local mutations](#local-mutations)) doing what it was built for.
+- *It does not send.* `pony.delivery` has the filing and the credential
+  lookup; the form and the SMTP call are not wired up yet.
+- *A message body is served into a sandboxed frame.* Mail is hostile
+  input. `/m/.../body` returns `build_browser_html` output — which has
+  already inlined `cid:` images as data URIs — under
+  `Content-Security-Policy: default-src 'none'; img-src data:` in an
+  `<iframe sandbox="">`, so nothing in a message can run or phone home.
+
+**Access.** Bound to `127.0.0.1` by default, with an access token that
+arrives once in the URL and is then kept in an `HttpOnly` cookie, so a
+phone needs the long link only the first time. Published through a
+tailnet — either by binding the tailnet address or by pointing
+`tailscale serve` at the loopback port — the device is already
+authenticated and `--no-token` is reasonable. There is deliberately no
+login form: Pony holds one user's credentials in one config file, so
+serving it to several people is an instance each, not a session each.
 
 ### MCP (`pony.mcp_server`)
 
