@@ -31,11 +31,10 @@ from ...composer import (
     reply_draft,
     resumed_draft,
 )
-from ...contact_naming import harvested_name
+from ...contact_actions import contact_for_address, harvest_folder
 from ...domain import (
     AnyAccount,
     AppConfig,
-    Contact,
     FolderMessageSummary,
     FolderRef,
     IndexedMessage,
@@ -447,27 +446,10 @@ class MainScreen(Screen[None]):
             return
         from .contact_edit_screen import ContactEditScreen
 
-        display, addr = pair
-        addr = addr.lower().strip()
-
-        existing = self._contacts.find_contact_by_email(email_address=addr)
-        if existing is not None:
-            if not existing.first_name and not existing.last_name and display.strip():
-                first, last = harvested_name(display)
-                existing = dataclasses.replace(
-                    existing, first_name=first, last_name=last
-                )
-            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                ContactEditScreen(existing, self._contacts),
-            )
-            return
-
-        first, last = harvested_name(display)
+        display, address = pair
+        contact = contact_for_address(self._contacts, display, address)
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ContactEditScreen(
-                Contact(id=None, first_name=first, last_name=last, emails=(addr,)),
-                self._contacts,
-            ),
+            ContactEditScreen(contact, self._contacts),
         )
 
     def _navigate_from_view(self, delta: int) -> None:
@@ -2034,13 +2016,12 @@ class MainScreen(Screen[None]):
 
     def harvest_folder_contacts(self) -> None:
         """Harvest To/Cc contacts from every message in the current folder."""
-        if self._contacts is None or self._current_folder_ref is None:
+        if self._current_folder_ref is None:
             return
-        messages = list(
-            self._index.list_folder_messages(folder=self._current_folder_ref)
-        )
-        self._contacts.harvest_contacts(messages)
-        self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-            f"Harvested contacts from {len(messages)} message(s) "
-            f"in {self._current_folder_ref.folder_name}."
+        self._report(
+            harvest_folder(
+                self._contacts,
+                self._index.list_folder_messages(folder=self._current_folder_ref),
+                self._current_folder_ref.folder_name,
+            ),
         )

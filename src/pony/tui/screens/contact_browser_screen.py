@@ -7,6 +7,15 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input
 
+from chronos.outcome import Notice, Outcome
+
+from ...contact_actions import (
+    MergePlan,
+    delete_contacts,
+    merge_contacts,
+    plan_merge,
+    summarize,
+)
 from ...domain import Contact
 from ...protocols import ContactRepository
 from ..bindings import MARK_BINDINGS
@@ -224,115 +233,82 @@ class ContactBrowserScreen(Screen[None]):
     # Delete
     # ------------------------------------------------------------------
 
+    def _report(self, outcome: Outcome) -> None:
+        """Say everything an operation had to say."""
+        for notice in outcome.notices:
+            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
+
     def action_delete_marked(self) -> None:
+        """Delete the marked contacts, or the cursor row when none are."""
         from .confirm_screen import ConfirmScreen
 
         if self._marked:
-            ids = list(self._marked)
-            names = []
-            for c in self._displayed:
-                if c.id in self._marked:
-                    label = c.display_name or (c.emails[0] if c.emails else "(no name)")
-                    names.append(label)
-            body = "\n".join(f"  - {n}" for n in names[:10])
-            if len(names) > 10:
-                body += f"\n  … and {len(names) - 10} more"
-
-            def _on_confirm(yes: bool | None) -> None:
-                if not yes:
-                    return
-                for cid in ids:
-                    self._contacts.delete_contact(contact_id=cid)
-                self._marked.clear()
-                self._refresh_list()
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Deleted {len(ids)} contact(s).",
-                )
-
-            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                ConfirmScreen(
-                    f"Delete {len(ids)} contact(s)?",
-                    body,
-                ),
-                _on_confirm,
-            )
+            ids = sorted(self._marked)
+            labels = [
+                contact.display_name
+                or (contact.emails[0] if contact.emails else "(no name)")
+                for contact in self._displayed
+                if contact.id in self._marked
+            ]
+            prompt = f"Delete {len(ids)} contact(s)?"
+            body = summarize(labels)
         else:
-            # No marks — delete the selected contact.
             contact = self._selected_contact()
             if contact is None or contact.id is None:
                 return
-            cid = contact.id
-            name = contact.display_name or "(no name)"
+            ids = [contact.id]
+            prompt = "Delete contact?"
+            body = f"  {contact.display_name or '(no name)'}"
 
-            def _on_confirm_single(yes: bool | None) -> None:
-                if not yes:
-                    return
-                self._contacts.delete_contact(contact_id=cid)
-                self._refresh_list()
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Deleted {name}.",
-                )
+        def _on_confirm(yes: bool | None) -> None:
+            if not yes:
+                return
+            outcome = delete_contacts(self._contacts, ids)
+            self._marked.clear()
+            self._refresh_list()
+            self._report(outcome)
 
-            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                ConfirmScreen(
-                    "Delete contact?",
-                    f"  {name}",
-                ),
-                _on_confirm_single,
-            )
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ConfirmScreen(prompt, body),
+            _on_confirm,
+        )
 
     # ------------------------------------------------------------------
     # Merge
     # ------------------------------------------------------------------
 
     def action_merge_marked(self) -> None:
-        if len(self._marked) < 2:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Mark at least 2 contacts to merge.",
-                severity="warning",
-            )
+        """Fold the marked contacts into the oldest of them.
+
+        Which record survives is decided before the prompt goes up and
+        named in it, because merging is irreversible and the marks do not
+        convey who wins.
+        """
+        plan = plan_merge(self._contacts, sorted(self._marked))
+        if isinstance(plan, Notice):
+            self.app.notify(plan.text, severity=plan.severity)  # pyright: ignore[reportUnknownMemberType]
             return
         from .confirm_screen import ConfirmScreen
-
-        ids = sorted(self._marked)
-        target = ids[0]
-        sources = ids[1:]
-        # Merging is irreversible and, unlike deleting, was doing it
-        # without asking.  Name the record that survives, since which one
-        # that is — the oldest — is not something the marks convey.
-        by_id = {c.id: c for c in self._contacts.list_all_contacts()}
-
-        def _label(contact_id: int) -> str:
-            contact = by_id.get(contact_id)
-            if contact is None:
-                return f"contact {contact_id}"
-            return contact.display_name or (
-                contact.emails[0] if contact.emails else "(no name)"
-            )
-
-        body = f"  keeping: {_label(target)}\n" + "\n".join(
-            f"  merging in: {_label(cid)}" for cid in sources[:10]
-        )
-        if len(sources) > 10:
-            body += f"\n  … and {len(sources) - 10} more"
 
         def _on_confirm(yes: bool | None) -> None:
             if not yes:
                 return
-            self._contacts.merge_contacts(target_id=target, source_ids=sources)
-            self._marked.clear()
-            self._refresh_list()
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Merged {len(sources) + 1} contacts.",
-            )
+            self._apply_merge(plan)
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ConfirmScreen(
-                f"Merge {len(ids)} contacts into one?",
-                body,
+                f"Merge {plan.total} contacts into one?",
+                f"  keeping: {plan.target_label}\n"
+                + summarize(plan.source_labels, prefix="  merging in: "),
             ),
             _on_confirm,
         )
+
+    def _apply_merge(self, plan: MergePlan) -> None:
+        outcome = merge_contacts(self._contacts, plan)
+        self._marked.clear()
+        self._refresh_list()
+        self._report(outcome)
 
     # ------------------------------------------------------------------
     # Close

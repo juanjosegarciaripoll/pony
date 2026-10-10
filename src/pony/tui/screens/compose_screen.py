@@ -8,7 +8,6 @@ import logging
 import subprocess
 import tempfile
 from email.message import EmailMessage
-from email.utils import getaddresses
 from pathlib import Path
 
 from textual import work
@@ -28,24 +27,22 @@ from textual.widgets import (
     TextArea,
 )
 
+from chronos.outcome import Notice, Outcome
+
 from ...compose_utils import (
     build_email_message,
     format_display_address,
     split_address_list,
 )
 from ...composer import DraftSpec
-from ...contact_naming import harvested_name
+from ...contact_actions import contact_for_address
+from ...delivery import file_message, record_sent, resolve_send_password
 from ...domain import (
     AnyAccount,
     AppConfig,
-    Contact,
-    FolderRef,
     IndexedMessage,
-    MessageRef,
 )
-from ...folder_utils import find_folder
-from ...mailbox_ops import flush_mirror
-from ...message_projection import project_rfc822_message
+from ...mailbox_actions import Mailboxes
 from ...protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -503,12 +500,9 @@ class ComposeScreen(Screen[bool]):
             return
         from .contact_edit_screen import ContactEditScreen
 
-        existing = self._contacts.find_contact_by_email(
-            email_address=account.email_address
-        )
-        contact = existing or Contact(
-            id=None, first_name="", last_name="", emails=(account.email_address,)
-        )
+        # No display name to offer, so this either finds the record the
+        # address already has or starts an empty one for it.
+        contact = contact_for_address(self._contacts, "", account.email_address)
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ContactEditScreen(contact, self._contacts),
         )
@@ -544,33 +538,23 @@ class ComposeScreen(Screen[bool]):
     # Actions
     # ------------------------------------------------------------------
 
-    def _resolve_password(self, account: AnyAccount) -> str | None:
-        """Resolve *account*'s SMTP password, or notify and return None.
+    @property
+    def _mailboxes(self) -> Mailboxes:
+        """The stores filing a draft or a sent copy works on."""
+        return Mailboxes(self._config, self._index, self._mirrors)
 
-        Sending goes through the same credentials provider as syncing, so
-        the ``env``, ``command`` and ``encrypted`` backends work here too.
-        Reading ``account.password`` directly — as this used to — meant
-        every account not using the plaintext backend appeared in the From
-        dropdown and was then refused at send time.
-        """
-        if self._credentials is not None:
-            try:
-                password = self._credentials.get_password(account_name=account.name)
-            except Exception as exc:  # noqa: BLE001
-                self.notify(f"Could not get password: {exc}", severity="error")
-                _log.error("credential lookup failed for %r: %s", account.name, exc)
-                return None
-            if password:
-                return password
-        # No provider wired in (a bare ComposeScreen in a test, or an
-        # embedding that never built one): fall back to the config field.
-        elif account.password:
-            return account.password
-        self.notify(
-            f"No password available for account {account.name!r}.",
-            severity="error",
-        )
-        return None
+    def _report(self, outcome: Outcome) -> None:
+        """Say everything an operation had to say, in the order it said it."""
+        for notice in outcome.notices:
+            self.notify(notice.text, severity=notice.severity)
+
+    def _resolve_password(self, account: AnyAccount) -> str | None:
+        """Resolve *account*'s SMTP password, or say why there is none."""
+        found = resolve_send_password(self._credentials, account)
+        if isinstance(found, Notice):
+            self.notify(found.text, severity=found.severity)
+            return None
+        return found
 
     def _build_message(self, account: AnyAccount) -> EmailMessage:
         """Assemble the current form state into an ``EmailMessage``.
@@ -633,13 +617,15 @@ class ComposeScreen(Screen[bool]):
         # Save to Drafts before attempting SMTP so the message survives a
         # connection failure.  On success we remove this draft entry and store
         # the message in Sent instead.
-        draft_entry = self._save_to_folder(
+        # Filing this is best-effort: a Drafts folder that cannot be
+        # found must not stop a send, so its notices are dropped.
+        draft_entry = file_message(
+            self._mailboxes,
             raw,
             account,
             folder_hint="Drafts",
             override=account.drafts_folder,
-            silent=True,
-        )
+        ).message
 
         self._sending = True
         self._deliver(account, msg, raw, to, cc, draft_entry, password)
@@ -700,33 +686,20 @@ class ComposeScreen(Screen[bool]):
         finally:
             self._sending = False
 
-        # SMTP succeeded — remove the pre-send draft and record the sent copy.
-        # The source draft (if any) is cleaned up by the caller's dismiss callback.
-        if draft_entry is not None:
-            mirror = self._mirrors.get(draft_entry.message_ref.account_name)
-            if mirror is not None:
-                try:
-                    mirror.delete_message(
-                        folder=FolderRef(
-                            account_name=draft_entry.message_ref.account_name,
-                            folder_name=draft_entry.message_ref.folder_name,
-                        ),
-                        storage_key=draft_entry.storage_key,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning("Could not delete pre-send draft from mirror: %s", exc)
-                else:
-                    # An uncommitted mbox deletion has not happened yet —
-                    # the draft would still be in the file after sending.
-                    flush_mirror(mirror)
-            self._index.delete_message(message_ref=draft_entry.message_ref)
-        self._save_to_folder(
-            raw,
-            account,
-            folder_hint="Sent",
-            override=account.sent_folder,
+        # SMTP succeeded — retire the pre-send draft, file the sent copy
+        # and remember who it went to.  The *source* draft, when the
+        # composer was opened on one, is cleaned up by the caller's
+        # dismiss callback.
+        self._report(
+            record_sent(
+                self._mailboxes,
+                raw,
+                account,
+                draft=draft_entry,
+                contacts=self._contacts,
+                recipients=(to, cc),
+            ),
         )
-        self._harvest_outgoing(to, cc)
         self.notify(f"Message sent to {to} via {host}.", timeout=6)
         self.dismiss(True)
 
@@ -745,40 +718,20 @@ class ComposeScreen(Screen[bool]):
             if save:
                 account = self._get_account()
                 if account is not None:
-                    self._save_to_folder(
-                        self._build_message(account).as_bytes(),
-                        account,
-                        folder_hint="Drafts",
-                        override=account.drafts_folder,
+                    self._report(
+                        file_message(
+                            self._mailboxes,
+                            self._build_message(account).as_bytes(),
+                            account,
+                            folder_hint="Drafts",
+                            override=account.drafts_folder,
+                        ).outcome,
                     )
             self.dismiss(False)
 
         from .save_draft_screen import SaveDraftScreen
 
         self.app.push_screen(SaveDraftScreen(), _on_save)  # pyright: ignore[reportUnknownMemberType]
-
-    def _harvest_outgoing(self, to: str, cc: str) -> None:
-        """Upsert To and Cc addresses into the contacts store after a send."""
-        if self._contacts is None:
-            return
-        for display_name, addr in getaddresses([to, cc]):
-            addr = addr.lower().strip()
-            if not addr:
-                continue
-            existing = self._contacts.find_contact_by_email(
-                email_address=addr,
-            )
-            if existing is not None:
-                continue
-            first, last = harvested_name(display_name)
-            self._contacts.upsert_contact(
-                contact=Contact(
-                    id=None,
-                    first_name=first,
-                    last_name=last,
-                    emails=(addr,),
-                )
-            )
 
     def action_toggle_markdown(self) -> None:
         self._markdown_mode = not self._markdown_mode
@@ -1023,68 +976,3 @@ class ComposeScreen(Screen[bool]):
                 )
 
         self.call_after_refresh(_mount)
-
-    def _save_to_folder(
-        self,
-        raw: bytes,
-        account: AnyAccount,
-        folder_hint: str,
-        override: str | None,
-        *,
-        silent: bool = False,
-    ) -> IndexedMessage | None:
-        """Store *raw* bytes in the named folder and insert the index row.
-
-        Returns the inserted ``IndexedMessage`` (with its assigned id) on
-        success, or ``None`` if the folder could not be found or the write
-        failed.  Sync's PushAppendOp picks up rows where ``uid IS NULL``.
-
-        Pass ``silent=True`` to suppress user-visible notifications on
-        folder-not-found and write errors (used when the save is best-effort).
-        """
-        mirror = self._mirrors.get(account.name)
-        if mirror is None:
-            _log.warning(
-                "No mirror for account %r — cannot save to %s",
-                account.name,
-                folder_hint,
-            )
-            return None
-
-        folder_refs = mirror.list_folders(account_name=account.name)
-        folder_names = [fr.folder_name for fr in folder_refs]
-        folder_name = override or find_folder(folder_names, folder_hint)
-        if folder_name is None:
-            if not silent:
-                self.notify(
-                    f"Could not find '{folder_hint}' folder for {account.name}",
-                    severity="warning",
-                )
-            return None
-
-        folder_ref = FolderRef(account_name=account.name, folder_name=folder_name)
-        try:
-            storage_key = mirror.store_message(folder=folder_ref, raw_message=raw)
-        except Exception as exc:  # noqa: BLE001
-            _log.error(
-                "Failed to store message in %s/%s: %s",
-                account.name,
-                folder_name,
-                exc,
-            )
-            if not silent:
-                self.notify(
-                    f"Could not save to {folder_hint}: {exc}", severity="warning"
-                )
-            return None
-
-        projected = project_rfc822_message(
-            message_ref=MessageRef(
-                account_name=account.name,
-                folder_name=folder_name,
-                id=0,
-            ),
-            raw_message=raw,
-            storage_key=storage_key,
-        )
-        return self._index.insert_message(message=projected)
