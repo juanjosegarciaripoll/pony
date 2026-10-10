@@ -87,8 +87,14 @@ async def test_mark_seen_handles_seen_and_missing_rows() -> None:
         assert MessageFlag.SEEN in updated.local_flags
         screen._mark_seen(dataclasses.replace(summary, local_flags=updated.local_flags))
 
+        # A summary from before someone else marked the row read: the
+        # index says there is nothing to write, so there is nothing to
+        # repaint either.
+        stale = dataclasses.replace(summary, local_flags=frozenset())
+        screen._mark_seen(stale)
+
         index.delete_message(message_ref=summary.message_ref)
-        screen._mark_seen(dataclasses.replace(summary, local_flags=frozenset()))
+        screen._mark_seen(stale)
 
 
 @pytest.mark.parametrize(

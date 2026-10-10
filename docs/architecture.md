@@ -45,12 +45,16 @@ src/pony/
   message_projection.py# RFC 5322 parsing and metadata projection
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
   mailbox_ops.py       # index-row rewrites for local moves, copies and flags
+  mailbox_actions.py   # archive / move / copy / trash / flags, over the stores
+  delivery.py          # filing a message that has been written or sent
+  contact_actions.py   # harvest, delete, merge
+  views.py             # what a message-list row is, before anything draws it
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
   search_parser.py     # query language parser
   contact_naming.py    # display name -> contact first/last name
-  folder_utils.py      # sent/drafts folder auto-discovery
+  folder_utils.py      # which folder is which, by configuration or by name
   html_sanitize.py     # shared HTML→text helpers (preview + renderer)
   sync.py              # IMAP sync engine (plan/execute) + plan formatters
   imap_client.py       # ImapSession wrapper around imaplib
@@ -221,6 +225,55 @@ timeout times the attempt count, which freezes the whole app rather than just
 the send. A `_sending` guard rejects a second `ctrl+s` while one is in
 flight, since the binding stays live throughout.
 
+### Actions and projections
+
+There is one line through both halves of the program: **what an operation
+does** is decided over the stores, and **how it looks** is decided by
+whatever is on screen.
+
+The *actions* are the operations a user asks for — archive, move, copy,
+trash, a flag change, a new folder, saving an event, filing a sent
+message, merging two contacts. Each takes the stores it needs and
+returns a `chronos.outcome.Outcome`: a count of what changed and the
+`Notice`s to show, each carrying its own severity. None of them imports
+Textual, calls `app.notify`, or touches a widget.
+
+| Module | Operations |
+|---|---|
+| `pony.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message |
+| `pony.delivery` | filing a draft or a sent copy, the credential a send needs |
+| `pony.contact_actions` | harvesting an address, deleting, planning and applying a merge |
+| `chronos.event_actions` | saving, rescheduling, trashing and importing an event |
+
+The *projections* are what a view is of: `pony.views` turns an indexed
+message into the four fields and the one state a list row shows, and
+`chronos.views` holds the calendar's window arithmetic, the index query
+each view needs, and the strings its rows are made of. Neither knows how
+a row will be drawn. Where a row needs emphasis — unread mail, an event
+in progress, one already over — it says so as data (`MessageRow.unread`,
+`RowEmphasis`) and leaves bold, dim or a CSS class to the renderer.
+
+A screen is then the part that is genuinely terminal-specific: it
+gathers what the cursor and the marks point at, calls one action, turns
+each notice into a toast, repaints, and owns the workers and modal
+dialogs. `MainScreen._act_on_targets` is that shape written once for
+every list action.
+
+Two consequences are the point of the arrangement. A second front end
+offers the same operations without reimplementing any of them — it
+renders `Notice`s and `MessageRow`s its own way. And the operations are
+tested directly, against real SQLite and real maildirs, with no
+application running: `tests/test_mailbox_actions.py`,
+`tests/test_contact_actions.py`, `tests/test_views.py` and
+`tests_calendar/test_event_actions.py` finish in seconds, where reaching
+the same code through a `Pilot` costs a second an assertion.
+
+`chronos.outcome` lives on the calendar's side of the dependency arrow
+for the same reason `chronos.scheduler` does: `pony` imports `chronos`,
+never the reverse, so anything both halves share has to sit there.
+Nothing in it knows about calendars, and `pony.notifications` takes its
+`Severity` from it rather than spelling the three levels out twice.
+
 ### TUI (`pony.tui`)
 
 Three separate Textual `App` classes, each minimal:
@@ -240,6 +293,12 @@ the footer. Screens communicate upward via Textual messages or callbacks
 passed at construction time, not by calling private App methods.
 `SyncConfirmScreen` takes an `on_confirm` callback rather than reaching back
 into the app.
+
+What a screen does *not* do is decide what an action means: that lives in
+the action modules above, and the screen reports the outcome. The
+message list is the same split one level down — `pony.views` decides the
+fields of a row, and the widget pads them into fixed-width columns,
+which is the only part of it that means anything in a terminal.
 
 Alongside the modal `g` sync flow there is a non-blocking background sync that
 auto-confirms every folder and shows a spinner on the `FolderPanel` border
@@ -314,14 +373,15 @@ hosts its screens.
 
 ```
 src/chronos/
-  config.py domain.py paths.py protocols.py
+  config.py domain.py paths.py protocols.py outcome.py
   storage.py index_store.py storage_indexing.py locking.py scheduler.py
   ical_parser.py recurrence.py mutations.py ingest.py
+  event_actions.py     # save / reschedule / trash / import, over the stores
+  views.py             # what each view is of, before anything draws it
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   cli.py mcp_server.py
   tui/
     app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS
-    views.py           # pure projections the screens render
     screens/           # agenda, day, grid, month, event edit, …
     widgets/           # calendar panel, timeline grid, month grid, …
 ```

@@ -71,7 +71,7 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **91.99 %** across both packages, measured on the full suite after the calendar merge — mail alone sat at 96.20 % before it, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.17 %** across both packages, measured on the full suite after the model/view split — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -84,6 +84,10 @@ Key test infrastructure:
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
 | Message projection | `tests/test_message_projection.py` |
+| Mailbox actions (archive/move/copy/trash/flags) | `tests/test_mailbox_actions.py` — real stores, no app |
+| Filing a draft or sent copy, contacts | `tests/test_contact_actions.py` |
+| Message-list row projections | `tests/test_views.py` |
+| Calendar event operations | `tests_calendar/test_event_actions.py` |
 | Sync / IMAP | `tests/test_sync.py` with `FakeImapSession` |
 | SMTP send | `tests/test_smtp_sender.py` — patched `smtplib.SMTP_SSL` / `SMTP` |
 | Sync failures + races | `tests/test_sync_execution_failures.py` |
@@ -144,16 +148,16 @@ both packages:
 
 | Missing | File | % |
 |---:|---|---:|
-| 290 | `chronos/cli.py` | 77.68 |
-| 107 | `chronos/tui/screens/main_screen.py` | 83.64 |
-| 92 | `chronos/sync.py` | 85.23 |
+| 292 | `chronos/cli.py` | 77.59 |
+| 96 | `chronos/tui/screens/main_screen.py` | 84.52 |
+| 94 | `chronos/sync.py` | 87.02 |
+| 72 | `pony/cli.py` | 96.76 |
 | 70 | `chronos/recurrence.py` | 83.41 |
-| 64 | `pony/cli.py` | 97.05 |
+| 67 | `pony/tui/screens/main_screen.py` | 94.48 |
 | 63 | `chronos/ingest.py` | 82.20 |
 | 61 | `chronos/locking.py` | 46.02 |
-| 56 | `pony/tui/app.py` | 83.18 |
+| 55 | `pony/tui/app.py` | 86.22 |
 | 50 | `pony/storage.py` | 92.78 |
-| 47 | `pony/tui/screens/main_screen.py` | 96.82 |
 
 The calendar's files dominate this list because its suite was written to
 its own 85 % floor, not Pony's habits — that is where the headroom is.
@@ -170,9 +174,10 @@ copies into one helper removes N-1 *covered* lines from the file they left.
 If those lines were better covered than the file's average — duplicated
 logic usually is, since one test exercises every copy — the donor's
 percentage falls even though the code improved. `main_screen.py` went
-97.62 → 97.50 while losing 25 lines for exactly this reason. Judge a
-refactor by the project total and by missing-line counts, not by the donor
-file's percentage.
+97.62 → 97.50 while losing 25 lines for exactly this reason, and then
+96.82 → 94.48 on the way from 2406 lines to 2004, while the project total
+rose. Judge a refactor by the project total and by missing-line counts,
+not by the donor file's percentage.
 
 ## Coverage that is not worth chasing
 
@@ -205,6 +210,28 @@ defensive, so re-deriving it is wasted effort:
   `email.policy.default` always parses `message/rfc822` into a sub-message
   list, including when the part is base64-encoded (see
   `corpus.base64_rfc822_attachment`).
+
+## Where an operation lives
+
+**An operation goes in an action module, not in a screen.** Archive,
+move, copy, trash, flags, folder creation, filing a sent message, the
+contact operations and the calendar's event operations each live over
+the stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
+`pony/contact_actions.py`, `chronos/event_actions.py`) and return a
+`chronos.outcome.Outcome` — a count of what changed, and the notices to
+show. No `app.notify`, no `query_one`, no Textual import.
+
+**A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
+and `chronos/views.py` decide what a row is *of*; padding it to a column
+width or wrapping it in a Rich `Text` is the widget's half. Emphasis
+travels as data (`MessageRow.unread`, `chronos.views.RowEmphasis`) so a
+second front end can render it as a CSS class.
+
+A screen gathers what the cursor and the marks point at, calls one
+action, reports its notices and repaints — see
+`MainScreen._act_on_targets`. New operations get unit tests against the
+stores rather than a `Pilot`; see the table above.
+See `docs/architecture.md → Actions and projections`.
 
 ## Local mutations
 
