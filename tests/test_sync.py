@@ -3678,3 +3678,66 @@ class EncodedFolderNameTestCase(unittest.TestCase):
 
         service.sync()
         self.assertEqual(session.created_folders, [])
+
+
+class ProgressCadenceTestCase(unittest.TestCase):
+    """Reporting per item makes the terminal the bottleneck.
+
+    The consumer loop pays for each report between one message and the
+    next: a flushed terminal write in the CLI, a hop into the event loop
+    in the reader.  The engine decides the cadence so neither front end
+    has to throttle for itself.
+    """
+
+    def test_a_gate_reports_at_most_once_per_interval(self) -> None:
+        from chronos.outcome import ProgressGate
+
+        gate = ProgressGate(interval=60.0)
+
+        allowed = [gate.due() for _ in range(1000)]
+
+        self.assertEqual(allowed.count(True), 1)
+
+    def test_the_last_item_always_reports(self) -> None:
+        from chronos.outcome import ProgressGate
+
+        gate = ProgressGate(interval=60.0)
+        gate.due()
+
+        self.assertFalse(gate.due())
+        self.assertTrue(gate.due(final=True))
+
+    def test_a_long_sync_does_not_report_once_per_message(self) -> None:
+        """What the engine emits, not what a front end chooses to print."""
+        reports: list[str] = []
+        service, index, _mirror, _session = _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<m{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(
+                            f"Message {uid}",
+                            f"<m{uid}@example.com>",
+                        ),
+                    )
+                    for uid in range(1, 61)
+                },
+            },
+        )
+
+        plan = service.plan()
+        service.execute(
+            plan,
+            confirmed_folders=plan.folders_needing_confirmation(),
+            progress=lambda info: reports.append(info.message),
+        )
+
+        rows = index.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX"),
+        )
+        self.assertEqual(len(rows), 60)
+        # Sixty messages, far fewer reports — and the final count is one
+        # of them, so a finished folder shows its true total.
+        self.assertLess(len(reports), 60)
+        self.assertTrue(any("60/60" in message for message in reports))

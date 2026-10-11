@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +20,7 @@ from pony.domain import (
     MessageStatus,
     SearchQuery,
 )
-from pony.index_store import SqliteIndexRepository
+from pony.index_store import _BATCH_COMMIT_ROWS, SqliteIndexRepository
 from pony.search_parser import parse_query
 
 
@@ -1138,3 +1140,77 @@ class SearchSemanticsTest(unittest.TestCase):
             )
         )
         self.assertEqual(self._find(repo, "archived"), {"Archived thing"})
+
+
+class OneConnectionPerRepositoryTest(unittest.TestCase):
+    """The repository owns its connection and channels access through it.
+
+    A reader and a writer used to hold different connections, so each had
+    its own WAL snapshot: a long sync or rescan was invisible to the
+    front end until it committed, which is what made a running rebuild
+    look like an empty mailbox.
+    """
+
+    def setUp(self) -> None:
+        self.path = TMP_ROOT / f"one-conn-{uuid4().hex}" / "index.sqlite3"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.repo = SqliteIndexRepository(database_path=self.path)
+        self.repo.initialize()
+        self.addCleanup(self.repo.close)
+
+    def _insert(self, name: str) -> None:
+        self.repo.insert_message(message=_make_message(name, subject=name))
+
+    def test_a_reader_sees_a_batch_that_has_not_committed(self) -> None:
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        seen: list[int] = []
+
+        with self.repo.connection():
+            self._insert("during the batch")
+            # Another thread, mid-batch: it goes through the same
+            # connection, so the row is there to be read.
+            reader = threading.Thread(
+                target=lambda: seen.append(
+                    len(self.repo.list_folder_messages(folder=folder)),
+                ),
+            )
+            reader.start()
+            reader.join(timeout=10)
+
+        self.assertEqual(seen, [1])
+
+    def test_a_long_batch_commits_as_it_goes(self) -> None:
+        """A killed rebuild keeps what it had done, minus the last batch."""
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        written = _BATCH_COMMIT_ROWS + 10
+
+        with contextlib.suppress(RuntimeError), self.repo.connection():
+            for n in range(written):
+                self._insert(f"message {n}")
+            raise RuntimeError("killed")
+
+        # Everything up to the last commit point survived; only the
+        # trailing partial batch was rolled back.
+        kept = len(self.repo.list_folder_messages(folder=folder))
+        self.assertEqual(kept, _BATCH_COMMIT_ROWS)
+
+    def test_a_nested_block_does_not_end_the_batch(self) -> None:
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+        with contextlib.suppress(RuntimeError), self.repo.connection():
+            with self.repo.connection():
+                self._insert("inner")
+            raise RuntimeError("abandoned")
+
+        self.assertEqual(len(self.repo.list_folder_messages(folder=folder)), 0)
+
+    def test_closing_commits_and_releases_the_file(self) -> None:
+        self._insert("kept")
+        self.repo.close()
+
+        reopened = SqliteIndexRepository(database_path=self.path)
+        self.addCleanup(reopened.close)
+        rows = reopened.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX"),
+        )
+        self.assertEqual(len(rows), 1)

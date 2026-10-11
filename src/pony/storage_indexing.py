@@ -6,6 +6,8 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from chronos.outcome import ProgressGate
+
 from .domain import FolderRef, IndexedMessage, MessageRef
 from .message_projection import project_rfc822_message
 from .protocols import IndexRepository, MirrorRepository
@@ -223,6 +225,7 @@ def rescan_local_account(
     total = planned.added + planned.removed + planned.reprojected_scanned
     done = 0
     reprojected = 0
+    gate = ProgressGate()
     with index_repository.connection():
         for plan in plans:
             for key in plan.new_keys:
@@ -233,12 +236,12 @@ def rescan_local_account(
                     storage_key=key,
                 )
                 done += 1
-                if progress is not None:
+                if progress is not None and gate.due(final=done == total):
                     progress(plan.folder.folder_name, done, total)
             for _key, message_ref in plan.gone:
                 index_repository.delete_message(message_ref=message_ref)
                 done += 1
-                if progress is not None:
+                if progress is not None and gate.due(final=done == total):
                     progress(plan.folder.folder_name, done, total)
             for stored in plan.existing:
                 raw = mirror_repository.get_message_bytes(
@@ -264,7 +267,7 @@ def rescan_local_account(
                     index_repository.update_message(message=merged)
                     reprojected += 1
                 done += 1
-                if progress is not None:
+                if progress is not None and gate.due(final=done == total):
                     progress(plan.folder.folder_name, done, total)
 
     return dataclasses.replace(planned, reprojected=reprojected)

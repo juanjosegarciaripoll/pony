@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import Empty, SimpleQueue
 
+from chronos.outcome import ProgressGate
 from chronos.scheduler import PeriodicSync, SyncOutcome
 
 from .accounts import find_imap_account, select_imap_accounts
@@ -1814,6 +1815,7 @@ class ImapSyncService:
         total_ops = len(plan.ops)
         completed = 0
         had_failure = False
+        gate = ProgressGate()
         with self._index.connection():
             try:
                 if phase1:
@@ -1847,7 +1849,9 @@ class ImapSyncService:
                                 folder_name,
                             )
                         completed += 1
-                        if progress is not None:
+                        if progress is not None and gate.due(
+                            final=completed == total_ops,
+                        ):
                             progress(
                                 ProgressInfo(
                                     f"{account.name}/{folder_name}: "
@@ -1893,7 +1897,7 @@ class ImapSyncService:
                         folder_name,
                     )
                 completed += 1
-                if progress is not None:
+                if progress is not None and gate.due(final=completed == total_ops):
                     progress(
                         ProgressInfo(
                             f"{account.name}/{folder_name}: {completed}/{total_ops}",

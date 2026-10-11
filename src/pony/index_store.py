@@ -38,6 +38,12 @@ from .protocols import ContactRepository, IndexRepository
 # (dropping synthetic-mid orphans en route); anything older is refused
 # and pointed at the reset workflow.
 _SCHEMA_VERSION = 3
+
+# How many writes a batch accumulates before it commits and opens a new
+# transaction.  Small enough that a killed rebuild loses a second of
+# work and the WAL stays checkpointable; large enough that the commit
+# cost disappears into the work.
+_BATCH_COMMIT_ROWS = 500
 _MIGRATABLE_FROM = 2
 
 
@@ -238,23 +244,47 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
 class SqliteIndexRepository(IndexRepository, ContactRepository):
     """Persist indexed metadata and sync state in SQLite.
 
-    By default every public method opens its own connection, executes one
-    statement, commits, and closes.  For bulk operations (e.g. syncing a
-    whole folder) callers can wrap a block of calls in::
+    **One repository owns one connection, and every call goes through
+    it.**  That is what lets a front end read the database while
+    something else is writing to it: the reader and the writer are the
+    same connection, so a long rebuild is visible as it progresses
+    rather than appearing as an empty mailbox until it commits.  It used
+    to open a connection per call, which gave each thread its own WAL
+    snapshot — the UI could not see a sync's work until the sync
+    finished, and a 14-minute local rescan therefore looked like a lost
+    index.
+
+    Access is serialised on a re-entrant lock.  Statements are short, so
+    a reader waits for a statement and not for a transaction.
+
+    For bulk work (syncing a folder, rescanning an archive) callers wrap
+    a block in::
 
         with repo.connection():
             repo.insert_message(...)
-            repo.update_message(...)
             ...
 
-    All calls inside the block reuse a single connection and commit once
-    at the end.  On exception the transaction is rolled back.  Nesting is
-    safe — only the outermost ``connection()`` block commits.
+    which defers the commit — but only up to ``_BATCH_COMMIT_ROWS``
+    writes, after which the batch commits and carries on.  An unbounded
+    transaction grows the WAL until throughput collapses, and loses
+    everything it has done if the process is killed; committing in
+    bounded steps keeps a long rebuild both fast and resumable.  On
+    exception whatever is uncommitted is rolled back.  Nesting is safe —
+    only the outermost ``connection()`` block ends the batch.
+
+    The connection stays open for the life of the repository.  Nothing
+    else in this process may open the same file: a second connection
+    reintroduces the second snapshot this design exists to remove.
     """
 
     def __init__(self, *, database_path: Path) -> None:
         self._database_path = database_path
-        self._local = threading.local()
+        self._lock = threading.RLock()
+        self._conn_held: sqlite3.Connection | None = None
+        # Depth of nested connection() blocks, and how many writes the
+        # current batch has accumulated since its last commit.
+        self._batch_depth = 0
+        self._batch_writes = 0
 
     # ------------------------------------------------------------------
     # Connection management
@@ -268,7 +298,14 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         # crash-left journal correctly on its own.  The guard could not
         # fire anyway: connect() is lazy, so a database that cannot be
         # opened raises on the first statement below, not here.
-        conn = sqlite3.connect(self._database_path, timeout=10)
+        # check_same_thread=False because the connection is shared: the
+        # lock below, not the thread it was created on, is what keeps
+        # access serialised.
+        conn = sqlite3.connect(
+            self._database_path,
+            timeout=10,
+            check_same_thread=False,
+        )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         # Per-connection, and SQLite ignores it while a transaction is
@@ -279,92 +316,98 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def _owned(self) -> sqlite3.Connection:
+        """The one connection this repository works through."""
+        with self._lock:
+            if self._conn_held is None:
+                self._conn_held = self._open_connection()
+            return self._conn_held
+
+    def __del__(self) -> None:
+        # A repository that goes out of scope without close() still has
+        # to let go of the file; nothing is imported here because this
+        # can run during interpreter shutdown.
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def close(self) -> None:
+        """Close the owned connection, committing what it holds."""
+        with self._lock:
+            conn, self._conn_held = self._conn_held, None
+            self._batch_depth = 0
+            self._batch_writes = 0
+        if conn is not None:
+            with contextlib.suppress(sqlite3.Error):
+                conn.commit()
+            conn.close()
+
     @contextlib.contextmanager
     def connection(self) -> Generator[None]:
-        """Hold a single connection for a batch of operations.
+        """Hold one transaction across a batch of operations.
 
-        All repository methods called inside this block reuse the same
-        connection and skip per-call commits.  The transaction is committed
-        when the block exits cleanly, or rolled back on exception.
+        Commits when the block exits cleanly, rolls back on exception,
+        and commits along the way every ``_BATCH_COMMIT_ROWS`` writes so
+        the transaction never grows without bound.
 
-        Reentrant: nested ``connection()`` blocks are no-ops — only the
-        outermost block owns the connection lifecycle.
+        Reentrant: nested blocks are no-ops — only the outermost one
+        ends the batch.
         """
-        depth: int = getattr(self._local, "depth", 0)
-        if depth > 0:
-            # Nested — reuse the outer connection.
-            self._local.depth = depth + 1
+        conn = self._owned()
+        with self._lock:
+            self._batch_depth += 1
+            outermost = self._batch_depth == 1
+        if not outermost:
             try:
                 yield
             finally:
-                self._local.depth -= 1
+                with self._lock:
+                    self._batch_depth -= 1
             return
-
-        conn = self._open_connection()
-        self._local.conn = conn
-        self._local.depth = 1
         try:
             yield
-            conn.commit()
+            with self._lock:
+                conn.commit()
         except BaseException:
-            conn.rollback()
-            raise
-        finally:
-            self._local.depth = 0
-            self._local.conn = None
-            conn.close()
-
-    def _conn(self) -> tuple[sqlite3.Connection, bool]:
-        """Return ``(connection, is_managed)``.
-
-        When inside a ``connection()`` block, returns the shared connection
-        with ``is_managed=True`` (caller must **not** commit or close).
-        Otherwise opens a fresh connection with ``is_managed=False``
-        (caller must commit and close via the ``with`` statement).
-        """
-        active: sqlite3.Connection | None = getattr(
-            self._local,
-            "conn",
-            None,
-        )
-        if active is not None:
-            return active, True
-        return self._open_connection(), False
-
-    def _done(
-        self,
-        conn: sqlite3.Connection,
-        managed: bool,
-    ) -> None:
-        """Commit and close *conn* if it is **not** managed."""
-        if not managed:
-            conn.commit()
-            conn.close()
-
-    @contextlib.contextmanager
-    def _use(self) -> Generator[sqlite3.Connection]:
-        """Convenience wrapper: yield a connection, auto-commit if unmanaged.
-
-        Use this as ``with self._use() as conn:`` in every public method.
-        Inside an outer ``connection()`` block it reuses the shared
-        connection and skips commit.  Otherwise it behaves like the old
-        ``with self._use() as conn:`` pattern.
-        """
-        conn, managed = self._conn()
-        try:
-            yield conn
-        except BaseException:
-            if not managed:
+            with self._lock:
                 conn.rollback()
             raise
         finally:
-            self._done(conn, managed)
+            with self._lock:
+                self._batch_depth = 0
+                self._batch_writes = 0
+
+    @contextlib.contextmanager
+    def _use(self) -> Generator[sqlite3.Connection]:
+        """Yield the owned connection, holding the lock for the call.
+
+        Outside a batch the statement is committed when it completes, as
+        a single-statement call expects.  Inside one, the commit is the
+        batch's business -- except that a batch which has accumulated
+        ``_BATCH_COMMIT_ROWS`` writes commits here and starts a new
+        transaction, so a long rebuild stays bounded and resumable.
+        """
+        conn = self._owned()
+        with self._lock:
+            batched = self._batch_depth > 0
+            try:
+                yield conn
+            except BaseException:
+                conn.rollback()
+                if batched:
+                    # The batch is finished: its caller sees the
+                    # exception and connection() will not commit.
+                    self._batch_writes = 0
+                raise
+            if not batched:
+                conn.commit()
+                return
+            self._batch_writes += 1
+            if self._batch_writes >= _BATCH_COMMIT_ROWS:
+                conn.commit()
+                self._batch_writes = 0
 
     def _connect(self) -> sqlite3.Connection:
-        """Legacy alias — delegates to ``_open_connection``.
-
-        Kept for ``initialize()`` which must always use its own connection.
-        """
+        """Legacy alias — delegates to ``_open_connection``."""
         return self._open_connection()
 
     def initialize(self) -> None:

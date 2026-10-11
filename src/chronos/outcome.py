@@ -16,6 +16,7 @@ knows about calendars.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -83,6 +84,41 @@ class Outcome:
         return self.failed or not self.acted
 
 
+# Progress is reported at most this often while work is flowing.  A
+# per-item report costs a flushed terminal write in a CLI and a hop into
+# the event loop in a TUI, and the loop doing the work pays for it
+# between one item and the next -- so the slower the terminal, the
+# slower the operation.  Ten a second is more than a person can read.
+PROGRESS_INTERVAL_SECONDS = 0.1
+
+
+class ProgressGate:
+    """Decides when a per-item loop may report progress.
+
+    Asking costs one ``monotonic()`` call, so the message itself is only
+    built when it will actually be shown.  The last item always reports,
+    so a finished unit of work never leaves a stale count on screen.
+
+    It lives beside :class:`Notice` because it answers the same kind of
+    question -- how an operation talks to whoever asked for it -- and
+    because both halves of the program need it.  A front end that
+    throttles for itself (``if done % 20``) fixes it only for itself.
+    """
+
+    __slots__ = ("_interval", "_last")
+
+    def __init__(self, interval: float = PROGRESS_INTERVAL_SECONDS) -> None:
+        self._interval = interval
+        self._last = 0.0
+
+    def due(self, *, final: bool = False) -> bool:
+        now = time.monotonic()
+        if not final and now - self._last < self._interval:
+            return False
+        self._last = now
+        return True
+
+
 @dataclass
 class NoticeLog:
     """Collects notices while an operation runs.
@@ -109,9 +145,11 @@ class NoticeLog:
 
 
 __all__ = [
+    "PROGRESS_INTERVAL_SECONDS",
     "Notice",
     "NoticeLog",
     "Outcome",
+    "ProgressGate",
     "Severity",
     "failure",
     "info",

@@ -1501,9 +1501,12 @@ def run_rescan(
 
 
 def _rescan_progress(folder_name: str, done: int, total: int) -> None:
-    """Overwrite-in-place progress ticker; throttled to avoid stdout flooding."""
-    if done != total and done % 20 != 0:
-        return
+    """Overwrite-in-place progress ticker.
+
+    How often this is called is the engine's business (see
+    ``chronos.outcome.ProgressGate``); it used to throttle itself here,
+    which fixed the flooding for this front end only.
+    """
     end = "\n" if done == total else ""
     print(
         f"\r  {folder_name}: {done}/{total}" + " " * 20,
