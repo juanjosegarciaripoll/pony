@@ -22,6 +22,9 @@ const state = {
   keymap: [],
   surface: "reader",
   marked: new Set(),
+  // Set once `Q` has stopped the server: the page is a corpse after
+  // that and must not keep acting as though it were live.
+  quitting: false,
 };
 
 // ── Rows, selection and marks ──────────────────────────────────
@@ -395,7 +398,7 @@ const clientActions = {
   show_help: showHelp,
   toggle_calendar: () => go(state.surface === "calendar" ? "/mail" : "/calendar"),
   browse_contacts: () => go("/contacts"),
-  quit: () => say("Close the tab to quit."),
+  quit: quit,
 
   // Mail
   search: async () => {
@@ -569,6 +572,25 @@ function openAttachment() {
   window.location.assign(link.href);
 }
 
+// ── Quitting ───────────────────────────────────────────────────
+
+// `Q` means the same thing here as in the reader: stop Pony. Both
+// halves are needed — closing the tab alone leaves the process serving,
+// and stopping the process alone leaves a dead page on screen. The tab
+// goes second, because the answer has to arrive before the socket does.
+async function quit() {
+  const outcome = await server("quit");
+  if (!outcome || outcome.changed === 0) return;
+  state.quitting = true;
+  window.close();
+  // A tab the user opened themselves cannot be closed by script, so
+  // say what happened instead of leaving a page that no longer works.
+  window.setTimeout(() => {
+    document.body.dataset.stopped = "1";
+    say("Pony Express has stopped. You can close this tab.", "warning");
+  }, 200);
+}
+
 // ── Key dispatch ───────────────────────────────────────────────
 
 // The same normalised spelling `keymap.web_key` produces, so the two
@@ -592,7 +614,7 @@ function typing(target) {
 }
 
 function onKeyDown(event) {
-  if (event.metaKey) return;
+  if (event.metaKey || state.quitting) return;
   const inField = typing(event.target);
   const spelling = pressed(event);
   const binding = state.keymap.find((entry) => entry.key === spelling);

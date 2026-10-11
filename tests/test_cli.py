@@ -3858,3 +3858,64 @@ class ReindexCommandTest(unittest.TestCase):
                 "ghost",
             )
         self.assertIn("ghost", str(caught.exception))
+
+
+class WebQuitWiringTest(unittest.TestCase):
+    """`pony web` has to hand the page a way to stop the process.
+
+    The server is not started here — what is checked is the wiring,
+    because the feature is exactly the wiring: a `Q` in the browser
+    reaches `Shutdown.stop`, which tells uvicorn to exit.
+    """
+
+    def test_the_quit_hook_stops_the_server(self) -> None:
+        import sys
+        import types
+        from unittest.mock import patch
+
+        import pony.web as web_module
+
+        captured: dict[str, object] = {}
+
+        class _FakeServer:
+            def __init__(self, config: object) -> None:
+                self.config = config
+                self.should_exit = False
+                captured["server"] = self
+
+            def run(self) -> None:
+                captured["ran"] = True
+
+        fake_uvicorn = types.ModuleType("uvicorn")
+        fake_uvicorn.Config = lambda app, **kwargs: {"app": app, **kwargs}  # type: ignore[attr-defined]
+        fake_uvicorn.Server = _FakeServer  # type: ignore[attr-defined]
+
+        def _capture_app(services: object) -> object:
+            captured["services"] = services
+            return "asgi-app"
+
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+            patch.object(web_module, "build_web_app", _capture_app),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            rc = run_cli_ret(
+                "--config",
+                str(config_path),
+                "web",
+                "--port",
+                "0",
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(captured.get("ran"))
+        server = captured["server"]
+        services = captured["services"]
+        assert isinstance(server, _FakeServer)
+
+        # The page's quit action goes through this and nothing else.
+        self.assertFalse(server.should_exit)
+        self.assertTrue(services.shutdown.request())  # type: ignore[attr-defined]
+        self.assertTrue(server.should_exit)

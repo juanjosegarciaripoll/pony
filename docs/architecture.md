@@ -411,6 +411,14 @@ not (editing the body in `$EDITOR`) is listed in the help and marked,
 rather than appearing to work. `tests/test_web_app.py` fails if the
 server calls an action available that the dispatcher does not implement.
 
+++shift+q++ stops Pony from either front end. A browser cannot end a
+process, so the page asks the server to end itself: `POST /action/quit`
+reaches `WebServices.shutdown`, which `pony web` wires to uvicorn's
+exit flag — set rather than signalled, so the request that asked is
+answered before the socket closes. The page then closes its own tab,
+and says so instead if the browser refuses (a tab the user opened
+cannot be closed by script).
+
 **A phone has no keyboard.** Every key that changes something has a
 button or a link too — Archive, Trash, Flag, Unread and Write beside the
 list and the reader, Delete marked and Merge marked on the contacts

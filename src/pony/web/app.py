@@ -107,6 +107,26 @@ NOTICE_LIMIT = 300
 NOTICE_COUNT_LIMIT = 6
 
 
+@dataclass(slots=True)
+class Shutdown:
+    """How the browser's quit key stops the server.
+
+    The services are built before the server exists, so the hook is
+    wired afterwards -- the same shape as :class:`SyncGate` getting its
+    engine.  Keeping it behind an object rather than reaching for the
+    server also keeps ``pony.web`` from knowing what uvicorn is.
+    """
+
+    stop: Callable[[], None] | None = None
+
+    def request(self) -> bool:
+        """Ask the host to stop.  False when nobody is listening."""
+        if self.stop is None:
+            return False
+        self.stop()
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class WebServices:
     """Everything a request needs, opened once at startup."""
@@ -124,6 +144,9 @@ class WebServices:
     # what makes sense behind a tailnet that already authenticates the
     # device.
     token: str | None = None
+    # What ``Q`` does here.  The browser cannot stop a process on its
+    # own, so the server is asked to stop itself; the host wires in how.
+    shutdown: Shutdown = field(default_factory=Shutdown)
     sync: SyncGate = field(default_factory=SyncGate)
 
     @property
@@ -592,10 +615,6 @@ CLIENT_ACTIONS = frozenset(
         "mark_down",
         "mark_up",
         "show_help",
-        # The page answers it ("close the tab"), which is the honest
-        # browser answer; leaving it out of this set had the help
-        # striking it through while the key worked.
-        "quit",
         "toggle_calendar",
         "search",
         "goto_folder",
@@ -706,6 +725,20 @@ def _is_available(action: str) -> bool:
 # ----------------------------------------------------------------------
 
 
+def _quit(context: ActionContext) -> Outcome:
+    """Stop the server, as ``Q`` stops the reader.
+
+    The page closes itself afterwards.  Both halves are needed: closing
+    the tab alone leaves the process serving, and stopping the process
+    alone leaves a dead page on screen.
+    """
+    if not context.services.shutdown.request():
+        return Outcome.refused(
+            warn("This server cannot stop itself; close it where it was started."),
+        )
+    return Outcome(changed=1, notices=(Notice("Pony Express is stopping."),))
+
+
 def _sync_mail(context: ActionContext) -> Reply:
     # The halt the engine raises on a mass deletion is confirmed here
     # the way the terminal confirms it: nothing is applied until the
@@ -727,6 +760,7 @@ SERVER_ACTIONS: dict[str, Action] = {
     "sync": _sync_mail,
     "background_sync": _sync_mail,
     "sync_calendar": _sync_calendar,
+    "quit": _quit,
 }
 
 
@@ -900,6 +934,7 @@ def _first_folder(services: WebServices) -> FolderRef | None:
 
 
 __all__ = [
+    "Shutdown",
     "CLIENT_ACTIONS",
     "NOTICE_COUNT_LIMIT",
     "NOTICE_LIMIT",

@@ -77,6 +77,12 @@ It shares the terminal's keymap, so the same keys do the same things and
 It syncs — ++g++, or the Sync button — holding one sync slot of its own,
 and runs the periodic sync when `background_sync_enabled` is set.
 
+++shift+q++ stops the server and closes the tab, as it quits the
+terminal. The server is asked to stop itself, because a page cannot end
+a process; if the browser refuses to close a tab it did not open, the
+page says that Pony has stopped instead of leaving a window that no
+longer works.
+
 There is deliberately no login form: one configuration file holds one
 user's credentials, so serving several people means an instance each.
 

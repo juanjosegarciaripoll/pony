@@ -1050,3 +1050,47 @@ def test_a_shift_letter_key_is_served_as_the_browser_reports_it() -> None:
     # A named key keeps its modifier, because the DOM reports it there.
     reader = {entry["key"] for entry in keymaps["reader"]}
     assert "shift+ArrowUp" in reader
+
+
+# ----------------------------------------------------------------------
+# Quitting
+# ----------------------------------------------------------------------
+
+
+def test_quit_stops_the_server() -> None:
+    """`Q` means the same here as in the reader: stop Pony."""
+    services, _index = _services("web-quit")
+    stopped: list[bool] = []
+    services.shutdown.stop = lambda: stopped.append(True)
+
+    with _client(services) as client:
+        response = client.post("/action/quit", data={})
+
+    assert stopped == [True]
+    body = response.json()
+    assert body["changed"] == 1
+    assert body["notices"][0]["text"] == "Pony Express is stopping."
+
+
+def test_quit_says_so_when_there_is_nothing_to_stop() -> None:
+    """A server embedded in something else does not stop itself."""
+    services, _index = _services("web-quit-unwired")
+
+    with _client(services) as client:
+        response = client.post("/action/quit", data={})
+
+    outcome = response.json()
+    assert outcome["changed"] == 0
+    assert "close it where it was started" in outcome["notices"][0]["text"]
+
+
+def test_the_page_closes_itself_after_the_server_stops() -> None:
+    """Both halves: the process stops and the tab goes."""
+    source = JS.read_text(encoding="utf-8")
+
+    assert "quit: quit," in source
+    assert 'await server("quit")' in source
+    assert "window.close()" in source
+    # And a page whose server has gone stops answering keys.
+    assert "state.quitting = true;" in source
+    assert "state.quitting" in source.split("function onKeyDown")[1]

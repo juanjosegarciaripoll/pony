@@ -2875,16 +2875,30 @@ def run_web(
     )
 
     token = secrets.token_urlsafe(24) if use_token else None
-    services = WebServices(
-        config=config,
-        index=index,
-        mirrors=mirrors,
-        contacts=index,
-        calendar=calendar,
-        credentials=credentials,
-        scheduler=scheduler,
-        token=token,
+    server = uvicorn.Server(
+        uvicorn.Config(
+            build_web_app(
+                services := WebServices(
+                    config=config,
+                    index=index,
+                    mirrors=mirrors,
+                    contacts=index,
+                    calendar=calendar,
+                    credentials=credentials,
+                    scheduler=scheduler,
+                    token=token,
+                ),
+            ),
+            host=host,
+            port=port,
+            log_level="warning",
+        ),
     )
+    # `Q` in the browser stops the server, as it stops the reader.
+    # Setting the flag rather than signalling lets uvicorn finish the
+    # request that asked -- the page needs the answer before the socket
+    # closes under it.
+    services.shutdown.stop = lambda: setattr(server, "should_exit", True)
     shown_host = f"[{host}]" if ":" in host else host
     suffix = f"/?token={token}" if token is not None else "/"
     print(f"Pony Express on http://{shown_host}:{port}{suffix}")
@@ -2893,7 +2907,7 @@ def run_web(
         # needs the full URL only the first time.
         print("The link carries the access token; it is remembered per browser.")
     try:
-        uvicorn.run(build_web_app(services), host=host, port=port, log_level="warning")
+        server.run()
     finally:
         if scheduler is not None:
             scheduler.stop()
