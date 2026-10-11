@@ -95,9 +95,31 @@ class ActionContext:
         return datetime.now(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class Confirmation:
+    """A question the page must put to the user before acting.
+
+    The model decides what is dangerous and what to ask -- this is only
+    how the answer gets back: the page re-sends the same action with
+    *fields* added once the user agrees.  It is the browser's spelling
+    of the terminal's confirmation dialog.
+    """
+
+    question: str
+    fields: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class Reply:
+    """What an action gives back when a bare outcome is not enough."""
+
+    outcome: Outcome
+    confirm: Confirmation | None = None
+
+
 # What every action behind `POST /action/<name>` looks like.  Lazily
 # evaluated, so the imports it names stay under TYPE_CHECKING.
-type Action = Callable[[ActionContext], Outcome]
+type Action = Callable[[ActionContext], Outcome | Reply]
 
 
 def parse_target(value: str) -> FolderRef | None:
@@ -113,4 +135,4 @@ def parse_target(value: str) -> FolderRef | None:
     return FolderRef(account_name=account, folder_name=folder)
 
 
-__all__ = ["Action", "ActionContext", "parse_target"]
+__all__ = ["Action", "ActionContext", "Confirmation", "Reply", "parse_target"]

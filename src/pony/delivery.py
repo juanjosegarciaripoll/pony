@@ -75,7 +75,14 @@ def file_message(
             account.name,
             folder_hint,
         )
-        return FiledMessage(None, Outcome())
+        # Said, not only logged: a front end that reports nothing here
+        # leaves the user believing the copy was filed.
+        return FiledMessage(
+            None,
+            Outcome.refused(
+                warn(f"No mirror for {account.name}, so nothing was filed."),
+            ),
+        )
 
     folder_names = [
         ref.folder_name for ref in mirror.list_folders(account_name=account.name)

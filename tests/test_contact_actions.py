@@ -310,8 +310,8 @@ def test_file_message_reports_a_folder_it_cannot_find() -> None:
     ]
 
 
-def test_file_message_without_a_mirror_says_nothing_to_the_user() -> None:
-    """A log line is the right place for it: no action asked for this."""
+def test_file_message_without_a_mirror_says_so() -> None:
+    """Silence here reads as "filed" to whoever sent the message."""
     mailboxes, account = _mailboxes("file-message-no-mirror")
     bare = Mailboxes(
         config=mailboxes.config,
@@ -328,7 +328,9 @@ def test_file_message_without_a_mirror_says_nothing_to_the_user() -> None:
     )
 
     assert filed.message is None
-    assert filed.outcome.notices == ()
+    assert [notice.text for notice in filed.outcome.notices] == [
+        "No mirror for acct, so nothing was filed.",
+    ]
 
 
 def test_file_message_reports_a_mirror_that_will_not_write() -> None:

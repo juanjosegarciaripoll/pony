@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -48,7 +49,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from chronos.keymap import web_key
-from chronos.outcome import Notice, Outcome, Severity
+from chronos.outcome import Notice, Outcome, Severity, warn
 
 from .. import mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef
@@ -58,7 +59,7 @@ from . import compose as compose_view
 from . import contacts as contacts_view
 from . import mail as mail_view
 from . import urls
-from .actions import ActionContext
+from .actions import ActionContext, Reply
 from .layout import PageSurface, bindings_for
 from .syncing import SyncGate
 
@@ -101,6 +102,9 @@ TOKEN_COOKIE = "pony_web_token"
 # How much of a notice survives a redirect.  Long enough for anything
 # the actions say, short enough that the URL stays a URL.
 NOTICE_LIMIT = 300
+
+# How many notices a redirect carries before the rest become a count.
+NOTICE_COUNT_LIMIT = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +399,9 @@ async def _compose_post(services: WebServices, request: Request) -> Response:
         outcome = compose_view.save_draft(services, form)
     else:
         outcome = await run_in_threadpool(compose_view.send, services, form)
-    if outcome.failed:
+    if outcome.blocked:
+        # Nothing was sent or filed, so the form stays up with what the
+        # user typed still in it, exactly as the composer screen does.
         return HTMLResponse(
             compose_view.compose_page(services, form, notices=outcome.notices),
         )
@@ -529,7 +535,7 @@ async def _event_save(services: WebServices, request: Request) -> Response:
     context = ActionContext.of(services, await request.body())
     form = calendar_view.form_from_fields(dict(context.fields))
     outcome = calendar_view.save(services, form)
-    if outcome.failed:
+    if outcome.blocked:
         return HTMLResponse(
             calendar_view.event_form_page(services, form, notices=outcome.notices),
         )
@@ -662,8 +668,11 @@ def _is_available(action: str) -> bool:
 # ----------------------------------------------------------------------
 
 
-def _sync_mail(context: ActionContext) -> Outcome:
-    return context.services.sync.mail()
+def _sync_mail(context: ActionContext) -> Reply:
+    # The halt the engine raises on a mass deletion is confirmed here
+    # the way the terminal confirms it: nothing is applied until the
+    # user has seen what it would do and said yes.
+    return context.services.sync.mail(confirmed=bool(context.first("confirm")))
 
 
 def _sync_calendar(context: ActionContext) -> Outcome:
@@ -702,21 +711,36 @@ async def _run_action(services: WebServices, request: Request) -> Response:
             status_code=404,
         )
     context = ActionContext.of(services, await request.body())
-    outcome = await run_in_threadpool(action, context)
-    return _outcome_response(outcome)
+    reply = await run_in_threadpool(action, context)
+    return _outcome_response(reply)
 
 
-def _outcome_response(outcome: Outcome, *, status_code: int = 200) -> JSONResponse:
-    return JSONResponse(
-        {
-            "changed": outcome.changed,
-            "notices": [
-                {"text": notice.text, "severity": notice.severity}
-                for notice in outcome.notices
-            ],
-        },
-        status_code=status_code,
-    )
+def _outcome_response(
+    reply: Outcome | Reply,
+    *,
+    status_code: int = 200,
+) -> JSONResponse:
+    """One action's result as data, for the page to render.
+
+    ``confirm``, when present, is a question the page has to put to the
+    user before anything happens; answering it re-sends the action with
+    the fields it names.
+    """
+    if isinstance(reply, Outcome):
+        reply = Reply(reply)
+    body: dict[str, object] = {
+        "changed": reply.outcome.changed,
+        "notices": [
+            {"text": notice.text, "severity": notice.severity}
+            for notice in reply.outcome.notices
+        ],
+    }
+    if reply.confirm is not None:
+        body["confirm"] = {
+            "question": reply.confirm.question,
+            "fields": dict(reply.confirm.fields),
+        }
+    return JSONResponse(body, status_code=status_code)
 
 
 # ----------------------------------------------------------------------
@@ -737,30 +761,54 @@ def _notices(request: Request) -> Sequence[Notice]:
 
     An action that navigates has nowhere to put its outcome but the
     URL, and the text is escaped like anything else on the way back in.
+    One ``notice`` and one ``severity`` per notice, paired by position.
     """
-    text = request.query_params.get("notice", "")[:NOTICE_LIMIT]
-    if not text:
-        return ()
-    offered = request.query_params.get("severity", "")
-    severity: Severity = (
-        "warning"
-        if offered == "warning"
-        else "error"
-        if offered == "error"
-        else "information"
+    texts = request.query_params.getlist("notice")
+    severities = request.query_params.getlist("severity")
+    return tuple(
+        Notice(
+            text[:NOTICE_LIMIT],
+            _severity(severities[index] if index < len(severities) else ""),
+        )
+        # One more than a redirect writes: the last may be its own
+        # "...and N more" summary.
+        for index, text in enumerate(texts[: NOTICE_COUNT_LIMIT + 1])
+        if text
     )
-    return (Notice(text, severity),)
+
+
+def _severity(offered: str) -> Severity:
+    if offered == "warning":
+        return "warning"
+    if offered == "error":
+        return "error"
+    return "information"
 
 
 def _back_with(location: str, outcome: Outcome) -> RedirectResponse:
-    """Go to *location*, carrying the outcome's last word with us."""
-    if outcome.notices:
-        notice = outcome.notices[-1]
+    """Go to *location*, carrying every notice the outcome produced.
+
+    A loop over several messages reports one notice per message, and
+    the terminal shows all of them; dropping all but the last would
+    hide exactly the per-message failures ``NoticeLog`` exists to
+    collect.  Beyond ``NOTICE_COUNT_LIMIT`` the rest are counted rather
+    than spelled out, to keep the URL a URL.
+    """
+    carried = list(outcome.notices[:NOTICE_COUNT_LIMIT])
+    dropped = len(outcome.notices) - len(carried)
+    if dropped > 0:
+        carried.append(warn(f"...and {dropped} more."))
+    if carried:
+        pairs = [
+            (name, value)
+            for notice in carried
+            for name, value in (
+                ("notice", notice.text[:NOTICE_LIMIT]),
+                ("severity", notice.severity),
+            )
+        ]
         separator = "&" if "?" in location else "?"
-        location += separator + urls.query(
-            notice=notice.text[:NOTICE_LIMIT],
-            severity=notice.severity,
-        ).removeprefix("?")
+        location += separator + urlencode(pairs)
     return RedirectResponse(location, status_code=303)
 
 
@@ -815,6 +863,7 @@ def _first_folder(services: WebServices) -> FolderRef | None:
 
 __all__ = [
     "CLIENT_ACTIONS",
+    "NOTICE_COUNT_LIMIT",
     "NOTICE_LIMIT",
     "SERVER_ACTIONS",
     "STATIC_DIR",

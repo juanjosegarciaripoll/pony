@@ -418,6 +418,43 @@ def format_plan_summary(plan: SyncPlan) -> str:
     return ", ".join(_format_op_counts(totals))
 
 
+_HALT_EXPLANATION = (
+    "A large share of a folder would be deleted locally, or uploaded to"
+    " the server. A server-side purge of old mail looks like this, and so"
+    " does a misconfigured account or an index that lost its UIDs."
+)
+
+
+def describe_halt(plan: SyncPlan) -> str:
+    """Why *plan* stopped, folder by folder, in one paragraph.
+
+    Both front ends ask the same question, so they ask it in the same
+    words: the terminal prints this before its prompt, the browser puts
+    it in the confirmation dialog.  Empty when nothing is halted.
+    """
+    reasons: list[str] = []
+    for account in plan.accounts:
+        for folder in account.folders:
+            if not folder.needs_confirmation:
+                continue
+            where = f"{account.account_name}/{folder.folder_name}"
+            if folder.pending_delete_total:
+                share = folder.pending_delete_count / folder.pending_delete_total * 100
+                reasons.append(
+                    f"{where} would delete {folder.pending_delete_count}"
+                    f" of {folder.pending_delete_total} ({share:.0f}%)"
+                )
+            elif folder.pending_push_count:
+                reasons.append(
+                    f"{where} would upload {folder.pending_push_count} message(s)"
+                )
+            else:
+                reasons.append(f"{where} needs confirmation")
+    if not reasons:
+        return ""
+    return "; ".join(reasons) + ". " + _HALT_EXPLANATION
+
+
 def format_plan_detail(plan: SyncPlan) -> str:
     """Multi-line detail: per-account, per-folder human-readable counts."""
     lines: list[str] = []

@@ -256,6 +256,10 @@ def test_a_message_with_no_recipient_is_refused_before_smtp() -> None:
 
     assert "A message needs at least one recipient." in response.text
     assert sent == []
+    # A refusal is a warning, not an error, and it must not cost the
+    # user what they had typed.
+    assert 'id="compose-form"' in response.text
+    assert "Lunch" in response.text
 
 
 def test_saving_a_draft_files_it_without_sending() -> None:

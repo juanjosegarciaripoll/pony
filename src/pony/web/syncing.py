@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING
 
 from chronos.outcome import Outcome, failure, info, warn
 
-from ..sync import describe_sync_result
+from ..sync import describe_halt, describe_sync_result
+from .actions import Confirmation, Reply
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -54,30 +55,51 @@ class SyncGate:
     scheduler: MailSyncScheduler | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def mail(self) -> Outcome:
+    def mail(self, *, confirmed: bool = False) -> Reply:
         """Fetch and push mail, or say why nothing was fetched.
+
+        Planned and executed in two steps, under one claim, because the
+        plan may trip the mass-deletion halt: then nothing is applied
+        and the page is handed the question to ask.  Answering it
+        re-plans with *confirmed*, which is the browser's version of the
+        terminal's dialog -- the engine's own gate, not a second one.
 
         Blocks for as long as the sync does, so the caller runs it off
         the event loop.
         """
         if self.service is None:
-            return Outcome.refused(
-                warn("No credentials provider, so there is nothing to sync with."),
+            return Reply(
+                Outcome.refused(
+                    warn("No credentials provider, so there is nothing to sync with."),
+                ),
             )
         if not self._claim():
-            return Outcome.refused(info("Sync already running."))
+            return Reply(Outcome.refused(info("Sync already running.")))
         try:
-            result = self.service.sync()
+            plan = self.service.plan()
+            halted = plan.folders_needing_confirmation()
+            if halted and not confirmed:
+                reason = describe_halt(plan)
+                return Reply(
+                    Outcome(changed=0, notices=(warn(reason),)),
+                    confirm=Confirmation(
+                        question=f"{reason}\n\nApply the sync anyway?",
+                        fields={"confirm": "1"},
+                    ),
+                )
+            result = self.service.execute(plan, confirmed_folders=halted)
         except Exception as exc:  # noqa: BLE001 — any backend may fail
             _log.error("web sync failed: %s", exc)
-            return Outcome.refused(failure(f"Sync failed: {exc}"))
+            return Reply(Outcome.refused(failure(f"Sync failed: {exc}")))
         finally:
             self._release()
-        return Outcome(
-            changed=_changed(result),
-            notices=(
-                info(
-                    describe_sync_result(result),
+        return Reply(
+            Outcome(
+                changed=_changed(result),
+                notices=(
+                    info(
+                        describe_sync_result(result),
+                    ),
                 ),
             ),
         )

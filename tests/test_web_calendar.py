@@ -380,6 +380,8 @@ def test_saving_an_event_with_no_summary_keeps_the_form() -> None:
 
     assert response.status_code == 200
     assert "An event needs a summary." in response.text
+    # And the rest of the form is still there to correct.
+    assert "2026-05-17T14:00" in response.text
 
 
 def test_an_event_that_ends_before_it_starts_is_refused() -> None:
@@ -398,6 +400,7 @@ def test_an_event_that_ends_before_it_starts_is_refused() -> None:
         )
 
     assert "The event ends before it starts." in response.text
+    assert "Time travel" in response.text
 
 
 def test_an_event_can_be_deleted_from_the_browser() -> None:

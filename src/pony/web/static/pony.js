@@ -228,6 +228,13 @@ async function runServerAction(name, extra = {}) {
     if (slow) delete document.body.dataset.busy;
   }
   notify(outcome.notices || []);
+  // The server may answer with a question instead of a result: a sync
+  // that would delete a large share of a folder is held until the user
+  // has seen what it would do, exactly as the terminal holds it.
+  if (outcome.confirm) {
+    if (!window.confirm(outcome.confirm.question)) return outcome;
+    return server(name, { ...extra, ...outcome.confirm.fields });
+  }
   if (outcome.changed > 0) {
     state.marked.clear();
     await refresh();

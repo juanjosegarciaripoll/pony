@@ -656,12 +656,28 @@ def test_an_action_ignores_ids_that_are_not_numbers() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_syncing_from_the_browser_runs_the_same_engine() -> None:
-    """`g` fetches mail here, as it does in the terminal."""
+def _plan(*, halted: bool = False) -> object:
+    """A sync plan with one folder, halted or not."""
+    from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
+
+    folder = FolderSyncPlan(
+        folder_name="INBOX",
+        uid_validity=1,
+        highest_uid=0,
+        ops=(),
+        needs_confirmation=halted,
+        pending_delete_count=9 if halted else 0,
+        pending_delete_total=10 if halted else 0,
+    )
+    return SyncPlan(
+        accounts=(AccountSyncPlan(account_name="acct", folders=(folder,)),),
+    )
+
+
+def _result() -> object:
     from pony.sync import AccountSyncResult, FolderSyncResult, SyncResult
 
-    services, _index = _services("web-sync")
-    result = SyncResult(
+    return SyncResult(
         accounts=(
             AccountSyncResult(
                 account_name="acct",
@@ -670,15 +686,21 @@ def test_syncing_from_the_browser_runs_the_same_engine() -> None:
         ),
     )
 
+
+def test_syncing_from_the_browser_runs_the_same_engine() -> None:
+    """`g` fetches mail here, as it does in the terminal."""
+    services, _index = _services("web-sync")
+
     with patch.object(services.sync, "service") as service:
-        service.sync.return_value = result
+        service.plan.return_value = _plan()
+        service.execute.return_value = _result()
         with _client(services) as client:
             response = client.post(
                 "/action/sync",
                 data={"account": "acct", "folder": "INBOX"},
             )
 
-    assert service.sync.called
+    assert service.execute.called
     assert response.json() == {
         "changed": 3,
         "notices": [
@@ -713,7 +735,7 @@ def test_a_failing_sync_is_reported_not_raised() -> None:
     services, _index = _services("web-sync-fails")
 
     with patch.object(services.sync, "service") as service:
-        service.sync.side_effect = RuntimeError("the server hung up")
+        service.plan.side_effect = RuntimeError("the server hung up")
         with _client(services) as client:
             response = client.post("/action/sync", data={})
 
@@ -731,12 +753,14 @@ def test_only_one_sync_runs_at_a_time_in_this_server() -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def _slow() -> None:
+    def _slow() -> object:
         started.set()
         release.wait(timeout=5)
+        return _plan()
 
     with patch.object(services.sync, "service") as service:
-        service.sync.side_effect = _slow
+        service.plan.side_effect = _slow
+        service.execute.return_value = _result()
         first = threading.Thread(target=services.sync.mail)
         first.start()
         assert started.wait(timeout=5)
@@ -744,7 +768,106 @@ def test_only_one_sync_runs_at_a_time_in_this_server() -> None:
         release.set()
         first.join(timeout=5)
 
-    assert second.notices[0].text == "Sync already running."
+    assert second.outcome.notices[0].text == "Sync already running."
+
+
+def test_a_halted_sync_asks_before_applying_anything() -> None:
+    """The engine's mass-deletion gate holds in the browser too."""
+    services, _index = _services("web-sync-halt")
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.return_value = _plan(halted=True)
+        with _client(services) as client:
+            response = client.post("/action/sync", data={})
+
+    assert not service.execute.called
+    body = response.json()
+    assert body["changed"] == 0
+    assert "would delete 9 of 10 (90%)" in body["notices"][0]["text"]
+    assert body["notices"][0]["severity"] == "warning"
+    assert body["confirm"]["fields"] == {"confirm": "1"}
+    assert "Apply the sync anyway?" in body["confirm"]["question"]
+
+
+def test_answering_the_halt_applies_it_to_the_halted_folders() -> None:
+    services, _index = _services("web-sync-confirmed")
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.return_value = _plan(halted=True)
+        service.execute.return_value = _result()
+        with _client(services) as client:
+            response = client.post("/action/sync", data={"confirm": "1"})
+
+    assert response.json()["changed"] == 3
+    _plan_arg, kwargs = service.execute.call_args
+    assert kwargs["confirmed_folders"] == frozenset({"INBOX"})
+
+
+def test_an_unhalted_sync_is_never_asked_about() -> None:
+    services, _index = _services("web-sync-quiet")
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.return_value = _plan()
+        service.execute.return_value = _result()
+        with _client(services) as client:
+            response = client.post("/action/sync", data={})
+
+    assert "confirm" not in response.json()
+
+
+# ----------------------------------------------------------------------
+# Notices
+# ----------------------------------------------------------------------
+
+
+def test_every_notice_survives_a_redirect() -> None:
+    """A per-message failure must not be swallowed by a later success."""
+    from starlette.requests import Request
+
+    from chronos.outcome import Outcome, failure, info, warn
+    from pony.web.app import _back_with, _notices
+
+    outcome = Outcome(
+        changed=2,
+        notices=(
+            failure("Could not archive <a@x>."),
+            warn("No Sent folder; the copy stayed in Drafts."),
+            info("Archived 2 message(s)."),
+        ),
+    )
+
+    location = _back_with("/mail?account=acct", outcome).headers["location"]
+    _path, _, query = location.partition("?")
+    carried = _notices(
+        Request({"type": "http", "query_string": query.encode(), "headers": []}),
+    )
+
+    assert [(notice.text, notice.severity) for notice in carried] == [
+        ("Could not archive <a@x>.", "error"),
+        ("No Sent folder; the copy stayed in Drafts.", "warning"),
+        ("Archived 2 message(s).", "information"),
+    ]
+
+
+def test_a_flood_of_notices_is_counted_rather_than_spelled_out() -> None:
+    from starlette.requests import Request
+
+    from chronos.outcome import Outcome, warn
+    from pony.web.app import NOTICE_COUNT_LIMIT, _back_with, _notices
+
+    outcome = Outcome(
+        changed=0,
+        notices=tuple(warn(f"row {n} failed") for n in range(NOTICE_COUNT_LIMIT + 4)),
+    )
+
+    location = _back_with("/mail", outcome).headers["location"]
+    _path, _, query = location.partition("?")
+    carried = _notices(
+        Request({"type": "http", "query_string": query.encode(), "headers": []}),
+    )
+
+    assert len(carried) == NOTICE_COUNT_LIMIT + 1
+    assert carried[-1].text == "...and 4 more."
 
 
 # ----------------------------------------------------------------------

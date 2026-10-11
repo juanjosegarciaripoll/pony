@@ -163,7 +163,7 @@ class RunSyncTestCase(unittest.TestCase):
             _seed_local_rows(cfg, 5)
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
         self.assertEqual(rc, 0)
-        self.assertIn("tripped a safety halt", out)
+        self.assertIn("would delete 5 of 5 (100%)", out)
         self.assertIn("Dry run: nothing was changed.", out)
 
     def test_sync_nothing_to_do_reports_up_to_date(self) -> None:
@@ -306,7 +306,7 @@ class RunSyncTestCase(unittest.TestCase):
             _seed_local_rows(cfg, 5)
             out, rc = run_cli_capture("--config", str(cfg), "sync")
         self.assertEqual(rc, 0)
-        self.assertIn("tripped a safety halt", out)
+        self.assertIn("would delete 5 of 5 (100%)", out)
         self.assertIn("[CONFIRM:", out)
         # The folder still ends up in the executed summary.
         self.assertIn("personal:", out)

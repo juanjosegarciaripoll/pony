@@ -71,6 +71,17 @@ class Outcome:
         """True when something went wrong, whatever else got done."""
         return any(notice.severity == "error" for notice in self.notices)
 
+    @property
+    def blocked(self) -> bool:
+        """True when the operation did not go through: refused or failed.
+
+        A front end holding a form open tests this rather than
+        :attr:`failed`, because a validation refusal is a *warning* and
+        not an error -- throwing away what the user typed over a
+        warning loses their work.
+        """
+        return self.failed or not self.acted
+
 
 @dataclass
 class NoticeLog:

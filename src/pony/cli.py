@@ -77,6 +77,7 @@ from .sync import (
     ServerDeleteOp,
     SyncPlan,
     build_sync_service,
+    describe_halt,
     format_plan_detail,
     format_plan_summary,
 )
@@ -1022,11 +1023,8 @@ def run_sync(
     confirm_folders = plan.folders_needing_confirmation()
     if confirm_folders:
         print(
-            "\nWARNING: one or more folders tripped a safety halt -- a large"
-            " share of the folder would be deleted locally, or uploaded to"
-            " the server. Server-side expunges of old mail look like this,"
-            " and so does a misconfigured account or an index that lost its"
-            " UIDs. Review the lines marked [CONFIRM: ...] above."
+            f"\nWARNING: {describe_halt(plan)}"
+            " Review the lines marked [CONFIRM: ...] above."
             ' Answering "y" applies them, those folders included.'
         )
 
