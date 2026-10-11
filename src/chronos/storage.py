@@ -12,6 +12,40 @@ from chronos.domain import ResourceRef
 
 _MAX_ENCODED_UID_LEN = 180
 
+# Windows refuses these as a filename stem, with or without an extension.
+_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+)
+
+
+def safe_component(name: str) -> str:
+    """Encode an untrusted name as exactly one path component.
+
+    Account and calendar names come from the server: a CalDAV
+    ``<D:displayname>`` of ``../../../etc/cron.d`` is a directory
+    traversal, ``C:\\Windows`` discards the mirror root when joined on
+    Windows, and ``\\\\host\\share`` makes the mkdir authenticate
+    outwards.  Percent-encoding removes every separator, drive letter
+    and reserved character, and is injective -- two different names
+    cannot collapse onto one directory.  ``decode_component`` inverts it.
+    """
+    encoded = urllib.parse.quote(name, safe="")
+    # quote() leaves '.' alone, so "." and ".." would survive intact.
+    if encoded.strip(".") == "" or encoded.endswith("."):
+        encoded = encoded.replace(".", "%2E")
+    if encoded.split(".", 1)[0].upper() in _RESERVED_STEMS:
+        encoded = f"%{ord(encoded[0]):02X}{encoded[1:]}"
+    if not encoded:
+        raise MirrorError("empty name cannot be stored")
+    return encoded
+
+
+def decode_component(component: str) -> str:
+    """Invert :func:`safe_component`."""
+    return urllib.parse.unquote(component)
+
 
 class MirrorError(OSError):
     pass
@@ -49,18 +83,25 @@ class VdirMirrorRepository:
         return self._root
 
     def _account_dir(self, account_name: str) -> Path:
-        return self._account_roots.get(account_name, self._root / account_name)
+        explicit = self._account_roots.get(account_name)
+        if explicit is not None:
+            return explicit
+        return self._root / safe_component(account_name)
 
     def list_calendars(self, account_name: str) -> tuple[str, ...]:
         account_dir = self._account_dir(account_name)
         if not account_dir.is_dir():
             return ()
-        return tuple(sorted(p.name for p in account_dir.iterdir() if p.is_dir()))
+        return tuple(
+            sorted(
+                decode_component(p.name) for p in account_dir.iterdir() if p.is_dir()
+            )
+        )
 
     def list_resources(
         self, account_name: str, calendar_name: str
     ) -> tuple[ResourceRef, ...]:
-        calendar_dir = self._account_dir(account_name) / calendar_name
+        calendar_dir = self._account_dir(account_name) / safe_component(calendar_name)
         if not calendar_dir.is_dir():
             return ()
         refs: list[ResourceRef] = []
@@ -124,7 +165,7 @@ class VdirMirrorRepository:
     def _path_for(self, ref: ResourceRef) -> Path:
         return (
             self._account_dir(ref.account_name)
-            / ref.calendar_name
+            / safe_component(ref.calendar_name)
             / _uid_to_filename(ref.uid)
         )
 

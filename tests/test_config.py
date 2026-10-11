@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 from pathlib import Path
 from uuid import uuid4
 
@@ -761,3 +762,63 @@ format = "maildir"
 trash_retention_days = 30
 """.strip()
     )
+
+
+class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
+    """A mirror path must be relative or complete, never half of each.
+
+    ``"/mail"`` on Windows has a root but no drive, so it is not
+    absolute; joining it against the data directory discarded the
+    directory and produced ``C:\\mail``. ``"/"`` did the same and left
+    ``pony reset`` pointing at the drive.
+    """
+
+    def _config(self, mirror_path: str) -> dict[str, object]:
+        data = sample_config()
+        accounts = data["accounts"]
+        assert isinstance(accounts, list)
+        account = accounts[0]
+        assert isinstance(account, dict)
+        mirror = account["mirror"]
+        assert isinstance(mirror, dict)
+        mirror["path"] = mirror_path
+        return data
+
+    def test_windows_shapes_that_are_half_qualified_are_refused(self) -> None:
+        """Only a PureWindowsPath can have a root without a drive."""
+        from pathlib import PureWindowsPath
+
+        from pony.config import is_half_qualified
+
+        for raw in ("/mail", "\\mail", "C:mail", "/"):
+            with self.subTest(raw=raw):
+                self.assertTrue(is_half_qualified(raw, flavour=PureWindowsPath))
+
+    def test_ordinary_shapes_are_not_half_qualified(self) -> None:
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        from pony.config import is_half_qualified
+
+        self.assertFalse(is_half_qualified("mirrors/x", flavour=PureWindowsPath))
+        self.assertFalse(is_half_qualified("C:/mail", flavour=PureWindowsPath))
+        self.assertFalse(is_half_qualified("/mail", flavour=PurePosixPath))
+        self.assertFalse(is_half_qualified("mirrors/x", flavour=PurePosixPath))
+
+    def test_a_refused_path_names_the_problem(self) -> None:
+        with (
+            unittest.mock.patch("pony.config.is_half_qualified", return_value=True),
+            self.assertRaises(ConfigError) as caught,
+        ):
+            parse_config(self._config("mirrors/personal"))
+        self.assertIn("neither relative nor fully qualified", str(caught.exception))
+
+    def test_a_plain_relative_path_still_resolves_under_data_dir(self) -> None:
+        config = parse_config(self._config("mirrors/personal"))
+        path = config.accounts[0].mirror.path
+        self.assertTrue(path.is_absolute())
+        self.assertEqual(path.name, "personal")
+        self.assertEqual(path.parent.name, "mirrors")
+
+    def test_an_absolute_path_is_normalised(self) -> None:
+        config = parse_config(self._config(str(TMP_ROOT / "a" / ".." / "b")))
+        self.assertEqual(config.accounts[0].mirror.path, (TMP_ROOT / "b").resolve())

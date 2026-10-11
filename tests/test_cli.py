@@ -3712,3 +3712,66 @@ class ProfileStampTestCase(unittest.TestCase):
                 os.environ.pop("PONY_DATA_DIR", None)
             else:
                 os.environ["PONY_DATA_DIR"] = previous
+
+
+class UnsafeDeleteTestCase(unittest.TestCase):
+    """``pony reset`` must not be able to delete the filesystem.
+
+    ``mirror.path`` is a configured string and nothing checked it, so
+    ``path = "/"`` plus ``pony reset --yes`` meant ``rmtree("/")``.
+    """
+
+    def setUp(self) -> None:
+        self.dir = TMP_ROOT / "unsafe-delete" / uuid4().hex
+        self.data = self.dir / "data"
+        self.data.mkdir(parents=True, exist_ok=True)
+
+    def _reason(self, target: Path) -> str | None:
+        from pony.cli import unsafe_to_delete
+
+        return unsafe_to_delete(target, data_dir=self.data)
+
+    def test_a_filesystem_root_is_refused(self) -> None:
+        reason = self._reason(Path(Path.cwd().anchor))
+        self.assertIsNotNone(reason)
+        assert reason is not None
+        self.assertIn("filesystem root", reason)
+
+    def test_the_home_directory_is_refused(self) -> None:
+        reason = self._reason(Path.home())
+        self.assertIsNotNone(reason)
+        assert reason is not None
+        self.assertIn("home directory", reason)
+
+    def test_a_parent_of_the_data_dir_is_refused(self) -> None:
+        reason = self._reason(self.dir)
+        self.assertIsNotNone(reason)
+        assert reason is not None
+        self.assertIn("contains the data directory", reason)
+
+    def test_an_ordinary_mirror_directory_is_allowed(self) -> None:
+        self.assertIsNone(self._reason(self.data / "mirrors" / "work"))
+
+    def test_the_data_dir_itself_is_allowed(self) -> None:
+        """A full reset deletes the index inside it; that is the point."""
+        self.assertIsNone(self._reason(self.data))
+
+
+class ConfigInitTomlQuotingTestCase(unittest.TestCase):
+    """A generated config must parse on the platform that wrote it.
+
+    A Windows data directory interpolated into a double-quoted TOML
+    string makes ``\\U`` and ``\\t`` escapes, so the file Pony had just
+    written failed its own validation.
+    """
+
+    def test_a_windows_path_in_the_header_still_parses(self) -> None:
+        import tomllib
+
+        for raw in (r"C:\Users\juan\AppData\Local\pony", r"C:\temp\x"):
+            with self.subTest(raw=raw):
+                header = (
+                    f"config_version = 3\ndata_dir = '{raw}'\nprofile = 'default'\n"
+                )
+                parsed = tomllib.loads(header)
+                self.assertEqual(parsed["data_dir"], raw)

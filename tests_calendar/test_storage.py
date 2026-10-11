@@ -8,8 +8,10 @@ from pathlib import Path
 
 from chronos.domain import ResourceRef
 from chronos.storage import (
+    MirrorError,
     ResourceNotFoundError,
     VdirMirrorRepository,
+    safe_component,
 )
 from tests_calendar import corpus
 
@@ -252,3 +254,79 @@ class MirrorCrashSafetyTest(unittest.TestCase):
 
         listed = self.mirror.list_resources(ACCOUNT, CALENDAR)
         self.assertEqual({r.uid for r in listed}, {"real@example.com"})
+
+
+class UntrustedNameTest(unittest.TestCase):
+    """Account and calendar names come from the server, so they are data.
+
+    A CalDAV ``<D:displayname>`` is whatever the server sends.  Joined
+    raw it was a directory traversal; a drive-qualified name discarded
+    the mirror root on Windows, and a UNC name made the mkdir
+    authenticate outwards.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "mirror"
+        self.mirror = VdirMirrorRepository(self.root)
+
+    def _write(self, calendar_name: str) -> Path:
+        ref = ResourceRef(
+            account_name="acct",
+            calendar_name=calendar_name,
+            uid="event-1",
+        )
+        self.mirror.write(ref, corpus.simple_event())
+        return self.root
+
+    def test_a_traversing_name_stays_inside_the_mirror(self) -> None:
+        self._write("../../../../etc/cron.d")
+        written = [p for p in self.root.rglob("*.ics")]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+
+    def test_a_drive_qualified_name_stays_inside_the_mirror(self) -> None:
+        self._write("C:\\Windows\\Temp")
+        written = [p for p in self.root.rglob("*.ics")]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+
+    def test_a_unc_name_stays_inside_the_mirror(self) -> None:
+        self._write("//attacker/share")
+        written = [p for p in self.root.rglob("*.ics")]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+
+    def test_two_names_that_differ_never_share_a_directory(self) -> None:
+        """The encoding is injective, so no two calendars can merge."""
+        for name in ("Archive/2024", "Archive.2024", "Archive 2024"):
+            self.mirror.write(
+                ResourceRef(
+                    account_name="acct",
+                    calendar_name=name,
+                    uid=f"uid-{name}",
+                ),
+                corpus.simple_event(),
+            )
+        account_dir = self.root / "acct"
+        self.assertEqual(len(list(account_dir.iterdir())), 3)
+
+    def test_a_name_survives_the_round_trip(self) -> None:
+        for name in ("personal", "Work Calendar", "Archive/2024", "..", "NUL"):
+            with self.subTest(name=name):
+                self.mirror.write(
+                    ResourceRef(
+                        account_name="acct",
+                        calendar_name=name,
+                        uid="rt",
+                    ),
+                    corpus.simple_event(),
+                )
+                self.assertIn(name, self.mirror.list_calendars("acct"))
+                refs = self.mirror.list_resources("acct", name)
+                self.assertEqual([r.uid for r in refs], ["rt"])
+
+    def test_an_empty_name_is_refused(self) -> None:
+        with self.assertRaises(MirrorError):
+            safe_component("")

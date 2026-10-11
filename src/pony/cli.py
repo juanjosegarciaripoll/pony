@@ -609,7 +609,9 @@ def _peek_profile(config_path: Path) -> tuple[Path | None, str]:
     instance = data.get("profile")
     path: Path | None = None
     if isinstance(declared, str) and declared.strip():
-        path = Path(os.path.expandvars(declared)).expanduser()
+        # os.path.expanduser, not Path.expanduser: the latter raises
+        # RuntimeError when there is no home directory to expand to.
+        path = Path(os.path.expanduser(os.path.expandvars(declared)))  # noqa: PTH111
     return path, instance if isinstance(instance, str) else ""
 
 
@@ -2435,6 +2437,24 @@ def _query_index(db_path: Path, account_name: str) -> dict[str, tuple[int, str |
     return result
 
 
+def unsafe_to_delete(target: Path, *, data_dir: Path) -> str | None:
+    """Reason *target* must not be deleted wholesale, or None.
+
+    ``mirror.path`` is a configured string.  Nothing stopped it naming
+    ``/``, the home directory, or a parent of the data directory, and
+    ``pony reset --yes`` would then hand that to ``shutil.rmtree``.
+    """
+    resolved = target.resolve()
+    if resolved.parent == resolved:
+        return "it is a filesystem root"
+    if resolved == Path.home().resolve():
+        return "it is your home directory"
+    data_resolved = data_dir.resolve()
+    if data_resolved != resolved and data_resolved.is_relative_to(resolved):
+        return "it contains the data directory"
+    return None
+
+
 def run_reset(
     *,
     paths: AppPaths,
@@ -2458,6 +2478,22 @@ def run_reset(
     if config is not None:
         for acc in config.accounts:
             targets.append(acc.mirror.path)
+
+    refused: list[tuple[Path, str]] = []
+    safe_targets: list[Path] = []
+    for t in targets:
+        reason = unsafe_to_delete(t, data_dir=paths.data_dir)
+        if reason is None:
+            safe_targets.append(t)
+        else:
+            refused.append((t, reason))
+    if refused:
+        print("Refusing to delete:")
+        for t, reason in refused:
+            print(f"  {t}  -- {reason}")
+        print("Fix the mirror.path in your config first.", file=sys.stderr)
+        return 2
+    targets = safe_targets
 
     print("The following will be permanently deleted:")
     for t in targets:
@@ -2519,6 +2555,13 @@ def _run_reset_account(
             print("Reset cancelled.")
             return 0
 
+    reason = unsafe_to_delete(mirror_path, data_dir=paths.data_dir)
+    if reason is not None:
+        print(
+            f"Refusing to delete {mirror_path} -- {reason}.",
+            file=sys.stderr,
+        )
+        return 2
     if mirror_path.exists():
         print(f"Deleting mirror directory {mirror_path} ...", end="", flush=True)
         shutil.rmtree(mirror_path)
@@ -3192,11 +3235,14 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
     # Bootstrap or append.  A new file declares the schema version, the
     # data directory and the profile that owns it; `profile` is what
     # stops a second config from running against this index.
+    # Single-quoted TOML: a literal string, no escapes.  A Windows path
+    # in a double-quoted string makes \U and \t escapes, so the file
+    # Pony had just written would not parse.
     header = (
         f"# Pony Express configuration\n"
         f"config_version = {CONFIG_VERSION}\n"
-        f'data_dir = "{paths.data_dir}"\n'
-        f'profile = "default"\n'
+        f"data_dir = '{paths.data_dir}'\n"
+        f"profile = 'default'\n"
     )
     if not config_file.exists():
         config_file.parent.mkdir(parents=True, exist_ok=True)

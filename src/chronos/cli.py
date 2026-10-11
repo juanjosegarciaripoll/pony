@@ -1952,6 +1952,18 @@ def _default_open_editor(path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _split_command(value: str, *, platform: str | None = None) -> list[str]:
+    """Split a command line the way the running platform quotes them.
+
+    ``shlex`` defaults to POSIX rules, where a backslash is an escape:
+    ``shlex.split(r"C:\\Windows\\notepad.exe")`` is
+    ``["C:Windowsnotepad.exe"]``, so every real Windows editor path
+    failed to launch.
+    """
+    real_platform = platform if platform is not None else sys.platform
+    return shlex.split(value, posix=not real_platform.startswith("win"))
+
+
 def pick_editor(
     *,
     env: Mapping[str, str] | None = None,
@@ -1973,7 +1985,7 @@ def pick_editor(
     for var in ("VISUAL", "EDITOR"):
         value = real_env.get(var)
         if value:
-            return shlex.split(value)
+            return _split_command(value, platform=real_platform)
     if real_platform.startswith("win"):
         return ["notepad"]
     if real_which("nano") is not None:
@@ -2008,7 +2020,7 @@ def _build_credential(
     if backend == "env":
         return EnvCredential(variable=value)
     if backend == "command":
-        return CommandCredential(command=tuple(shlex.split(value)))
+        return CommandCredential(command=tuple(_split_command(value)))
     raise ValueError(f"unknown credential backend: {backend}")
 
 
@@ -2128,7 +2140,7 @@ def _browser_env_allows_graphical(env: Mapping[str, str]) -> bool:
         return True
     for entry in entries:
         try:
-            parts = shlex.split(entry)
+            parts = _split_command(entry)
         except ValueError:
             parts = entry.split()
         if not parts:

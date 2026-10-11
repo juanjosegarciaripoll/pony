@@ -18,7 +18,7 @@ import json
 import os
 import re
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import cast
 
 from .domain import (
@@ -391,6 +391,20 @@ def _parse_folder_config(data: dict[str, object]) -> FolderConfig:
     )
 
 
+def is_half_qualified(raw: str, *, flavour: type[PurePath] = PurePath) -> bool:
+    """Is *raw* neither relative nor fully qualified?
+
+    On Windows ``"/mail"`` has a root but no drive and ``"C:mail"`` a
+    drive but no root; neither is absolute, so joining it against a base
+    silently drops the base -- ``data_dir / "/mail"`` is ``C:\\mail``.
+    POSIX has no such shape, which is why this takes the flavour: the
+    branch it guards is only reachable on Windows, and only a
+    ``PureWindowsPath`` can exercise it elsewhere.
+    """
+    path = flavour(raw)
+    return not path.is_absolute() and bool(path.drive or path.root)
+
+
 def _parse_mirror(
     data: dict[str, object],
     *,
@@ -399,7 +413,20 @@ def _parse_mirror(
     path_str = _require_string(data, "path")
     # Expand environment variables (e.g. $HOME, %USERPROFILE%).
     mirror_path = _expand_path(path_str)
-    if not mirror_path.is_absolute():
+    if mirror_path.is_absolute():
+        mirror_path = mirror_path.resolve()
+    elif is_half_qualified(str(mirror_path)):
+        # Half-qualified: "/mail" on Windows has a root but no drive, and
+        # "C:mail" a drive but no root.  Neither is absolute, so the old
+        # code joined it -- and a join against a half-qualified path
+        # discards the base, turning "/mail" into C:\mail instead of a
+        # directory inside data_dir.  Refuse rather than guess.
+        raise ConfigError(
+            f"mirror.path {path_str!r} is neither relative nor fully "
+            "qualified (a root without a drive, or a drive without a "
+            "root). Use a plain relative path, or a complete one."
+        )
+    else:
         # Relative paths resolve under this config's data_dir, not the
         # platform default.  Use an absolute path to store mirrors
         # elsewhere.

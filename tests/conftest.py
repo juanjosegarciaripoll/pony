@@ -80,5 +80,10 @@ def isolated_data_dir() -> Path:
 
 
 def resolve_fixture(toml: str) -> str:
-    """Substitute ``{DATA_DIR}`` in a config fixture."""
+    """Substitute ``{DATA_DIR}`` in a config fixture.
+
+    The placeholder must sit inside a single-quoted TOML literal: a
+    Windows path in a double-quoted string makes ``\\U``/``\\t``
+    escapes, which would make every fixture invalid TOML there.
+    """
     return toml.replace("{DATA_DIR}", str(isolated_data_dir()))
