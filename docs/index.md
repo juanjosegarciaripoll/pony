@@ -151,6 +151,10 @@ convention — `~/.local/share/pony/` on Linux and macOS,
 `%LOCALAPPDATA%\pony\` on Windows — and `config.toml` is looked for in
 `~/.config/pony/` or `%APPDATA%\pony\`.
 
+A local account (`account_type = "local"`) has no server to re-fetch
+from, so its mirror is the only copy of that mail: `pony reset` keeps
+it and says so. `pony reset --account <name>` removes one on purpose.
+
 ### Running somewhere else
 
 Two mechanisms, and no others:

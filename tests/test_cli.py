@@ -1917,6 +1917,67 @@ class ResetCommandTest(unittest.TestCase):
             )
         self.assertIn("Reset complete", output)
 
+    def test_reset_keeps_a_local_account_mirror(self) -> None:
+        """It is the only copy: there is no server to re-fetch it from."""
+        with isolated_app_env(), temporary_config() as config_path:
+            archive = isolated_data_dir() / "archive-mbox"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            config_path.write_text(
+                sample_config_toml()
+                + f"""
+
+[[accounts]]
+name = "Archive"
+account_type = "local"
+email_address = "archive@example.com"
+
+[accounts.mirror]
+path = '{archive}'
+format = "mbox"
+""",
+                encoding="utf-8",
+            )
+
+            output = run_cli("--config", str(config_path), "reset", "--yes")
+
+        self.assertIn("Kept", output)
+        self.assertIn("Archive", output)
+        self.assertTrue((archive / "INBOX").exists())
+
+    def test_reset_account_removes_a_local_mirror_when_named(self) -> None:
+        """Naming it is asking for it."""
+        with isolated_app_env(), temporary_config() as config_path:
+            archive = isolated_data_dir() / "archive-named"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            config_path.write_text(
+                sample_config_toml()
+                + f"""
+
+[[accounts]]
+name = "Archive"
+account_type = "local"
+email_address = "archive@example.com"
+
+[accounts.mirror]
+path = '{archive}'
+format = "mbox"
+""",
+                encoding="utf-8",
+            )
+
+            run_cli(
+                "--config",
+                str(config_path),
+                "reset",
+                "--account",
+                "Archive",
+                "--yes",
+            )
+
+        self.assertFalse(archive.exists())
+
     def test_reset_account_unknown_returns_2(self) -> None:
         """``pony reset --account ghost --yes`` exits 2 for unknown account."""
         with isolated_app_env(), temporary_config() as config_path:

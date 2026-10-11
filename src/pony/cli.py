@@ -2476,8 +2476,17 @@ def run_reset(
     config = try_load_config(config_path)
 
     targets: list[Path] = [paths.index_db_file]
+    kept_local: list[tuple[str, Path]] = []
     if config is not None:
         for acc in config.accounts:
+            if isinstance(acc, LocalAccountConfig):
+                # A local account has no server to re-fetch from: its
+                # mirror *is* the mail.  "Delete it all and re-sync"
+                # means nothing here, so a reset of the whole config
+                # leaves it alone.  `--account <name>` still removes it,
+                # because then it was asked for by name.
+                kept_local.append((acc.name, acc.mirror.path))
+                continue
             targets.append(acc.mirror.path)
 
     refused: list[tuple[Path, str]] = []
@@ -2500,6 +2509,14 @@ def run_reset(
     for t in targets:
         exists = "(exists)" if t.exists() else "(not found)"
         print(f"  {t}  {exists}")
+    if kept_local:
+        print(
+            "\nKept -- a local account has no server to re-fetch from, so its"
+            " mirror is the only copy of that mail:"
+        )
+        for name, path in kept_local:
+            print(f"  {name}: {path}")
+        print("  (pony reset --account <name> removes one on purpose.)")
 
     if not yes:
         answer = input("Proceed? [y/N] ").strip().lower()
