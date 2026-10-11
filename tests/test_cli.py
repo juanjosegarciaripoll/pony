@@ -3800,3 +3800,61 @@ class ConfigInitTomlQuotingTestCase(unittest.TestCase):
                 )
                 parsed = tomllib.loads(header)
                 self.assertEqual(parsed["data_dir"], raw)
+
+
+class ReindexCommandTest(unittest.TestCase):
+    """``pony reindex`` rebuilds rows from the mirror, with no server."""
+
+    def test_reindex_recovers_rows_and_watermarks_from_the_mirror(self) -> None:
+        from pony.config import load_config
+        from pony.domain import FolderRef
+        from pony.index_store import SqliteIndexRepository
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = isolated_paths()
+            paths.ensure_runtime_dirs()
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+            mirror = MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            )
+            for uid in (4, 9):
+                mirror.store_message(
+                    folder=folder,
+                    raw_message=corpus.plain_text(),
+                    uid=uid,
+                    uid_validity=77,
+                )
+
+            output = run_cli("--config", str(config_path), "reindex")
+
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(folder=folder)
+            state = index.get_folder_sync_state(
+                account_name=account.name,
+                folder_name="INBOX",
+            )
+
+        self.assertIn("2 row(s) added", output)
+        self.assertEqual(sorted(row.uid or 0 for row in rows), [4, 9])
+        assert state is not None
+        self.assertEqual(state.uid_validity, 77)
+        self.assertEqual(state.highest_uid, 9)
+
+    def test_reindex_of_an_unknown_account_says_so(self) -> None:
+        with (
+            isolated_app_env(),
+            temporary_config() as config_path,
+            self.assertRaises(SystemExit) as caught,
+        ):
+            run_cli_ret(
+                "--config",
+                str(config_path),
+                "reindex",
+                "--account",
+                "ghost",
+            )
+        self.assertIn("ghost", str(caught.exception))

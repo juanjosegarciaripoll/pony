@@ -133,6 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ingest deterministic local fixture messages into SQLite index.",
     )
 
+    reindex_parser = subparsers.add_parser(
+        "reindex",
+        help="Rebuild index rows from the mirror on disk, recovering each "
+        "message's server handle from its filename (no download).",
+    )
+    reindex_parser.add_argument(
+        "--account",
+        help="Only reindex one account.",
+    )
+
     rescan_parser = subparsers.add_parser(
         "rescan",
         help="Re-project indexed messages from the local mirror (refresh cached "
@@ -647,6 +657,12 @@ def _dispatch(
         )
     if args.command == "fixture-ingest":
         return run_fixture_ingest_command(paths=paths, config_path=args.config)
+    if args.command == "reindex":
+        return run_reindex(
+            paths=paths,
+            config_path=args.config,
+            account=args.account,
+        )
     if args.command == "rescan":
         return run_rescan(
             paths=paths,
@@ -1497,6 +1513,60 @@ def run_rescan(
     if total_removed:
         summary_parts.append(f"{total_removed} removed")
     print("Rescan complete: " + ", ".join(summary_parts) + ".")
+    return 0
+
+
+def run_reindex(
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,
+) -> int:
+    """Rebuild index rows from the mirrors, without asking a server.
+
+    A Maildir filename carries the handle it was fetched with, so a lost
+    or deleted index can be rebuilt from the files already on disk
+    instead of re-downloading the mailbox.
+    """
+    from .storage_indexing import reindex_account_from_mirror
+
+    paths.ensure_runtime_dirs()
+    config = require_config(config_path)
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize()
+
+    accounts = list(config.accounts)
+    if account:
+        accounts = [a for a in accounts if a.name == account]
+        if not accounts:
+            raise SystemExit(f"No account named {account!r} in config.")
+
+    added = with_uid = local_only = states = 0
+    for acc in accounts:
+        print(f"Reindexing {acc.name} from {acc.mirror.path}...")
+        result = reindex_account_from_mirror(
+            mirror_repository=build_mirror(acc),
+            index_repository=index,
+            account_name=acc.name,
+            progress=_rescan_progress,
+        )
+        added += result.added
+        with_uid += result.with_uid
+        local_only += result.local_only
+        states += result.states
+
+    print(
+        f"Reindex complete: {added} row(s) added "
+        f"({with_uid} with a server handle, {local_only} local-only), "
+        f"{states} folder watermark(s) recovered.",
+    )
+    if local_only and with_uid:
+        print(
+            "Messages indexed without a handle will be uploaded by the next"
+            " sync, which is what a local-only message is for. If that is"
+            " not what they are, run 'pony sync --dry-run' and look before"
+            " proceeding.",
+        )
     return 0
 
 

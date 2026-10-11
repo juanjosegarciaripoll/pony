@@ -151,6 +151,13 @@ convention — `~/.local/share/pony/` on Linux and macOS,
 `%LOCALAPPDATA%\pony\` on Windows — and `config.toml` is looked for in
 `~/.config/pony/` or `%APPDATA%\pony\`.
 
+The mirror is self-describing: a Maildir filename ends in
+`,V=<uidvalidity>,U=<uid>`, the handle the message was fetched with. So
+a lost index does not mean a lost mailbox — `pony reindex` rebuilds the
+rows, and each folder's watermark, from the files already on disk,
+without contacting a server. A file with no handle in its name is
+indexed as local-only, which is what makes the next sync upload it.
+
 A local account (`account_type = "local"`) has no server to re-fetch
 from, so its mirror is the only copy of that mail: `pony reset` keeps
 it and says so. `pony reset --account <name>` removes one on purpose.

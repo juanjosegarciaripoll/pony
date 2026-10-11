@@ -6,9 +6,9 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from chronos.outcome import ProgressGate
+from chronos.outcome import ProgressGate, progress_stride
 
-from .domain import FolderRef, IndexedMessage, MessageRef
+from .domain import FolderRef, FolderSyncState, IndexedMessage, MessageRef
 from .message_projection import project_rfc822_message
 from .protocols import IndexRepository, MirrorRepository
 
@@ -59,6 +59,7 @@ def _ingest_one(
     index_repository: IndexRepository,
     folder: FolderRef,
     storage_key: str,
+    uid: int | None = None,
 ) -> None:
     raw_message = mirror_repository.get_message_bytes(
         folder=folder,
@@ -74,6 +75,8 @@ def _ingest_one(
         raw_message=raw_message,
         storage_key=storage_key,
     )
+    if uid is not None:
+        projected = dataclasses.replace(projected, uid=uid)
     index_repository.insert_message(message=projected)
 
 
@@ -225,7 +228,7 @@ def rescan_local_account(
     total = planned.added + planned.removed + planned.reprojected_scanned
     done = 0
     reprojected = 0
-    gate = ProgressGate()
+    gate = ProgressGate(stride=progress_stride(total))
     with index_repository.connection():
         for plan in plans:
             for key in plan.new_keys:
@@ -236,12 +239,12 @@ def rescan_local_account(
                     storage_key=key,
                 )
                 done += 1
-                if progress is not None and gate.due(final=done == total):
+                if progress is not None and gate.due(done, final=done == total):
                     progress(plan.folder.folder_name, done, total)
             for _key, message_ref in plan.gone:
                 index_repository.delete_message(message_ref=message_ref)
                 done += 1
-                if progress is not None and gate.due(final=done == total):
+                if progress is not None and gate.due(done, final=done == total):
                     progress(plan.folder.folder_name, done, total)
             for stored in plan.existing:
                 raw = mirror_repository.get_message_bytes(
@@ -267,10 +270,112 @@ def rescan_local_account(
                     index_repository.update_message(message=merged)
                     reprojected += 1
                 done += 1
-                if progress is not None and gate.due(final=done == total):
+                if progress is not None and gate.due(done, final=done == total):
                     progress(plan.folder.folder_name, done, total)
 
     return dataclasses.replace(planned, reprojected=reprojected)
+
+
+@dataclass(frozen=True, slots=True)
+class ReindexResult:
+    """What a rebuild from the mirror recovered."""
+
+    folders: int
+    added: int
+    with_uid: int
+    local_only: int
+    states: int
+
+
+def reindex_account_from_mirror(
+    *,
+    mirror_repository: MirrorRepository,
+    index_repository: IndexRepository,
+    account_name: str,
+    progress: RescanProgress | None = None,
+) -> ReindexResult:
+    """Rebuild an account's index rows from what the mirror already holds.
+
+    The mirror is self-describing: a Maildir filename carries the server
+    handle it was fetched with (``,V=<uidvalidity>,U=<uid>`` — see
+    :func:`pony.storage.uid_of`), so an index can be rebuilt without
+    asking the server for a single byte.  That is the point of putting
+    the handle in the name: losing the index costs a local pass over the
+    files, not a re-download of the mailbox.
+
+    Rows already present are left alone, so this is safe to repeat.  A
+    file with no handle in its name is indexed with ``uid = NULL`` —
+    which is the correct state for a message that exists only locally
+    and that the next sync should upload.
+
+    Where a folder's files agree on a UIDVALIDITY, that epoch and the
+    highest UID in it are written back as the folder's sync watermark,
+    so the next sync reconciles rather than refetches.  Files from an
+    older epoch are indexed without a handle: their UIDs mean nothing
+    on the current one.
+
+    Nothing here touches the network.
+    """
+    from .storage import uid_of
+
+    folders = mirror_repository.list_folders(account_name=account_name)
+    added = with_uid = local_only = states = 0
+    with index_repository.connection():
+        for folder in folders:
+            keys = list(mirror_repository.list_messages(folder=folder))
+            gate = ProgressGate(stride=progress_stride(len(keys)))
+            known = {
+                row.storage_key
+                for row in index_repository.list_folder_messages(folder=folder)
+            }
+            epoch = max(
+                (handle[0] for key in keys if (handle := uid_of(key)) is not None),
+                default=0,
+            )
+            highest = 0
+            total = len(keys)
+            for done, key in enumerate(keys, start=1):
+                handle = uid_of(key)
+                # A handle from a superseded epoch is not a handle.
+                uid = handle[1] if handle is not None and handle[0] == epoch else None
+                if uid is not None:
+                    highest = max(highest, uid)
+                if key not in known:
+                    _ingest_one(
+                        mirror_repository=mirror_repository,
+                        index_repository=index_repository,
+                        folder=folder,
+                        storage_key=key,
+                        uid=uid,
+                    )
+                    added += 1
+                    if uid is None:
+                        local_only += 1
+                    else:
+                        with_uid += 1
+                if progress is not None and gate.due(done, final=done == total):
+                    progress(folder.folder_name, done, total)
+            if epoch:
+                index_repository.record_folder_sync_state(
+                    state=FolderSyncState(
+                        account_name=account_name,
+                        folder_name=folder.folder_name,
+                        uid_validity=epoch,
+                        highest_uid=highest,
+                        # UIDNEXT is the server's to report; leaving it
+                        # unknown keeps the next sync on the full
+                        # reconcile path rather than its fast path.
+                        uidnext=0,
+                    ),
+                )
+                states += 1
+    return ReindexResult(
+        folders=len(folders),
+        added=added,
+        with_uid=with_uid,
+        local_only=local_only,
+        states=states,
+    )
 
 
 def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
