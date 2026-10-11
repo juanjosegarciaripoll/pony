@@ -11,6 +11,10 @@ the [calendar](calendar.md).
 
 ![Pony Express main screen](assets/main-screen.png)
 
+The same reader is served over HTTP by `pony web`, with the same keys
+and the same operations, for the machine you are not sitting at — see
+[Browser Interface](web.md).
+
 ## Layout
 
 The TUI is a three-pane layout. All accounts are visible simultaneously; the

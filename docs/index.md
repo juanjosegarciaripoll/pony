@@ -46,6 +46,7 @@ from your contacts, and each half shows one line about the other.
 | **Storage** | Per-account local mirrors in Maildir or mbox format with batched SQLite transactions for fast indexing |
 | **Index** | SQLite-backed metadata: full-text search across sender, recipients, subject, and body; flags, pending operations, and sync checkpoints in a unified message table |
 | **TUI** | Three-pane terminal reader (Textual); browse, search, sync, flag mail without leaving the keyboard. Each screen shows only its own relevant keybindings |
+| **Browser** | `pony web` serves the same mail, contacts and calendar over HTTP — the same keys, a button for every one of them, and a layout that reflows for a phone |
 | **Composer** | Reply, forward, compose from scratch; Markdown mode produces `multipart/alternative` email; external editor support; attachment picker |
 | **Contacts** | Person-centric address book with multiple emails per contact, aliases, interactive browser/editor with mark/merge/delete, BBDB import/export for Emacs interop |
 | **Credentials** | Four backends: plaintext, environment variable, external command, OS-encrypted blob |
@@ -180,6 +181,7 @@ Two mechanisms, and no others:
 | [Configuration](configuration.md) | Full config reference, all fields, credential backends |
 | [CLI Reference](cli.md) | Every command, flag, and example |
 | [Terminal UI](tui.md) | Three-pane reader, keybindings, search, sync |
+| [Browser Interface](web.md) | `pony web`: the same mail and calendar in a browser, on a phone |
 | [Calendar](calendar.md) | CalDAV accounts, the views, events, reminders, invitations, keyboard reference |
 | [Composer](composer.md) | Compose, reply, forward, Markdown mode, attachments |
 | [Contacts](contacts.md) | Person-centric address book, browser/editor, BBDB import/export |

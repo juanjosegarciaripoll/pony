@@ -12,6 +12,9 @@ same cursor row and the same scroll position you left it on.
 
 ![The agenda](assets/calendar.png)
 
+The same four views are served in a browser by `pony web` — see
+[Browser Interface → The calendar](web.md#the-calendar).
+
 Events are synchronised with a CalDAV server, mirrored on disk as
 ordinary `.ics` files and indexed in SQLite. The local files are the
 authoritative copy: everything you can see in the views, search and

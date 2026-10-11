@@ -1,13 +1,17 @@
-"""Render documentation screenshots of the Pony Express TUI.
+"""Render documentation screenshots of Pony Express.
 
 Drives the real Textual screens headlessly over the synthetic store from
 ``scripts/demo_seed.py`` (no network, no real account, no real calendar),
 exports each screen as SVG via Textual, then rasterises to PNG with Inkscape.
-Output lands in ``docs/assets/``.
+The browser front end is photographed too, by
+``scripts/capture_web_screenshots.py``, which serves the same kind of
+synthetic store with the real ``pony.web`` application and shoots it with
+headless Chromium.  Output lands in ``docs/assets/``.
 
     uv run python scripts/capture_screenshots.py
 
-Requires ``inkscape`` on PATH for the SVG→PNG step.
+Requires ``inkscape`` on PATH for the SVG→PNG step and a Chromium for the
+browser captures.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+import capture_web_screenshots  # noqa: E402
 from demo_seed import NOW, build_demo  # noqa: E402
 
 from pony.tui.app import ComposeApp, ContactsApp, PonyApp  # noqa: E402
@@ -211,11 +216,22 @@ def main() -> int:
     if shutil.which("inkscape") is None:
         print("error: inkscape not found on PATH", file=sys.stderr)
         return 1
+    # Checked before any work: both halves of the run write into the
+    # same directory, and half a set of screenshots is worse than none.
+    if capture_web_screenshots.find_browser() is None:
+        print(
+            "error: no browser for the web captures; install one of "
+            + ", ".join(capture_web_screenshots.BROWSERS),
+            file=sys.stderr,
+        )
+        return 1
     ASSETS.mkdir(parents=True, exist_ok=True)
     svgs = asyncio.run(_run())
     print("Rasterising to PNG:")
     for name, svg_path in svgs:
         _to_png(svg_path, name)
+    print("Capturing the browser front end:")
+    capture_web_screenshots.capture(ASSETS)
     print("Done.")
     return 0
 

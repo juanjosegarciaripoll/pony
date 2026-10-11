@@ -86,6 +86,10 @@ longer works.
 There is deliberately no login form: one configuration file holds one
 user's credentials, so serving several people means an instance each.
 
+The [Browser Interface](web.md) page is the full reference: the pages,
+the keyboard, the buttons a phone needs, syncing, and what stands
+between the port and the mail.
+
 ---
 
 ## `pony calendar`

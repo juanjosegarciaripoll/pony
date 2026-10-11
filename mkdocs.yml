@@ -38,6 +38,7 @@ nav:
   - Configuration: configuration.md
   - CLI Reference: cli.md
   - Terminal UI: tui.md
+  - Browser Interface: web.md
   - Calendar: calendar.md
   - Composer: composer.md
   - Contacts: contacts.md

@@ -921,6 +921,19 @@ dialog h2 {
     --agenda-columns: 7rem 1fr;
   }
 
+  /* The title bar keeps the tabs and the Sync button, which is the
+   * only way to fetch mail on a screen with no keyboard. The name of
+   * the program is the one thing there that can be spared. */
+  #chrome .brand {
+    display: none;
+  }
+
+  /* A row puts its subject on a line of its own here, so the column
+   * headings have nothing left to head. */
+  .pane-head .columns {
+    display: none;
+  }
+
   #panes {
     grid-template-columns: minmax(0, 1fr);
   }
