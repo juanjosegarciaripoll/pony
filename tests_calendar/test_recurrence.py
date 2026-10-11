@@ -507,6 +507,26 @@ class PopulateOccurrencesTest(unittest.TestCase):
         self.assertEqual(len(expanded), 1)
 
 
+def _alarm_ics(uid: str) -> bytes:
+    """A VEVENT with one DISPLAY alarm, under the UID the caller names."""
+    return (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        "DTSTAMP:20260422T120000Z\r\n"
+        "DTSTART:20260501T090000Z\r\n"
+        "DTEND:20260501T100000Z\r\n"
+        "SUMMARY:Alarm event\r\n"
+        "BEGIN:VALARM\r\n"
+        "ACTION:DISPLAY\r\n"
+        "TRIGGER:-PT15M\r\n"
+        "DESCRIPTION:Soon\r\n"
+        "END:VALARM\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    ).encode()
+
+
 class PopulateAlarmsTest(unittest.TestCase):
     """Tests for ``populate_alarms``; requires a real SQLite index."""
 
@@ -568,6 +588,37 @@ class PopulateAlarmsTest(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].trigger_at, expected_trigger)
         self.assertEqual(pending[0].summary, uid)
+
+    def test_the_occurrence_window_is_read_once_for_every_master(self) -> None:
+        """Per-master queries made a big calendar quadratic and silent."""
+        for n in range(6):
+            uid = f"alarm-many-{n}@example.com"
+            self._insert_and_expand(
+                uid,
+                _alarm_ics(uid),
+                datetime(2026, 5, 1 + n, 9, 0, tzinfo=UTC),
+            )
+        queries = 0
+        real = self.index.query_occurrences
+
+        def _counting(*args: object, **kwargs: object) -> object:
+            nonlocal queries
+            queries += 1
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        self.index.query_occurrences = _counting  # type: ignore[method-assign]
+
+        count = populate_alarms(
+            index=self.index,
+            calendar=self.calendar,
+            window_start=self.window_start,
+            window_end=self.window_end,
+        )
+
+        self.index.query_occurrences = real  # type: ignore[method-assign]
+        # One alarm per master, and one query for all of them.
+        self.assertEqual(count, 6)
+        self.assertEqual(queries, 1)
 
     def test_email_alarm_not_stored(self) -> None:
         uid = "alarm-email-1@example.com"

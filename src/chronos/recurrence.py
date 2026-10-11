@@ -237,22 +237,42 @@ def populate_alarms(
         else all_masters
     )
 
+    # One query, grouped by UID.  Asking per master and filtering in
+    # Python meant every master with an alarm re-read the whole window:
+    # ten thousand masters against thirteen thousand occurrences is a
+    # hundred million rows built to use a handful each, with no output
+    # while it happened -- a sync that looked stalled for minutes.
+    occurrences_by_uid: dict[str, list[Occurrence]] = {}
+    for occ in index.query_occurrences(calendar, window_start, window_end):
+        occurrences_by_uid.setdefault(occ.ref.uid, []).append(occ)
+
     total = 0
+    n_masters = len(masters)
     with index.connection():
-        for master in masters:
+        for processed, master in enumerate(masters, start=1):
             if cancel_event is not None and cancel_event.is_set():
                 break
             parsed_alarms = extract_alarm_triggers(master.raw_ics, master.ref.uid)
-            if not parsed_alarms:
-                continue
-            occurrences = index.query_occurrences(calendar, window_start, window_end)
-            for occ in occurrences:
-                if occ.ref.uid != master.ref.uid:
-                    continue
-                records = _resolve_alarm_records(parsed_alarms, master.summary, occ)
-                if records:
-                    index.set_alarms(master.ref, occ.start, records)
-                    total += len(records)
+            if parsed_alarms:
+                for occ in occurrences_by_uid.get(master.ref.uid, ()):
+                    records = _resolve_alarm_records(
+                        parsed_alarms,
+                        master.summary,
+                        occ,
+                    )
+                    if records:
+                        index.set_alarms(master.ref, occ.start, records)
+                        total += len(records)
+            if (
+                processed % _POPULATE_PROGRESS_INTERVAL == 0
+                and n_masters >= _POPULATE_PROGRESS_INTERVAL
+            ):
+                logger.info(
+                    "  alarms: %d/%d masters, %d alarm(s) so far",
+                    processed,
+                    n_masters,
+                    total,
+                )
     return total
 
 
