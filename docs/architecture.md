@@ -408,8 +408,13 @@ calendar's screens come from — and `/keymap.json` serves the tables to a
 browser that matches `keydown` against them, one per page surface. Each
 entry carries `available`, so a key the terminal has and the browser has
 not (editing the body in `$EDITOR`) is listed in the help and marked,
-rather than appearing to work. `tests/test_web_app.py` fails if the
-server calls an action available that the dispatcher does not implement.
+rather than appearing to work. `tests/test_web_dispatch.py` fails if
+the server calls an action available that the dispatcher does not
+implement, if a key is spelled so that no press could ever match it, or
+if the keys served for a surface stop being the terminal's own table for
+it. With `PONY_BROWSER_UI=1` and a Chromium on the machine,
+`tests/test_web_browser.py` presses every one of them at the real page
+in a headless browser.
 
 ++shift+q++ stops Pony from either front end. A browser cannot end a
 process, so the page asks the server to end itself: `POST /action/quit`
@@ -426,8 +431,10 @@ list, Sync in the title bar, New event and the view switcher in the
 calendar's pane, and a search field in each list head. A tap on a row's
 mark column is what ++m++ is. The buttons carry `data-action`, so they
 go through the same dispatcher and the same `POST /action/<name>` as the
-keys; `tests/test_web_app.py` fails if one names an action the server
-does not have.
+keys; `tests/test_web_dispatch.py` fails if one names an action the
+server does not have, and names the operations that have no button yet,
+so that lengthening the list is a deliberate act rather than an
+oversight.
 
 **Addressing.** Account, folder and message travel as query parameters,
 not path segments: a folder may be called `INBOX/2024`, which no path

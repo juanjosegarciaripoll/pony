@@ -106,6 +106,8 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 10. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
 
+11. **Browser UX tests are opt-in.** `PONY_BROWSER_UI=1 uv run python -m pytest tests/test_web_browser.py` serves the real app on a loopback port, loads it in a headless Chromium (`--dump-dom`) with a driver page around it, and presses keys at it. It installs nothing — only a `chromium` / `google-chrome` on `PATH` — and without the variable, or without a browser, it skips, so the default run needs neither. Use it for anything in `static/pony.js` whose behaviour matters: the rest of that file is checked by *reading* it (`tests/test_web_dispatch.py`), which catches a name that does not exist but not a mistake in what the code does.
+
 ## Coverage requirements
 
 The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.2 %** across both packages, measured on the full suite after the browser front end landed — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
@@ -142,6 +144,10 @@ Key test infrastructure:
 | Browser calendar views | `tests/test_web_calendar.py` |
 | Browser invitations | `tests/test_web_invitations.py` |
 | The HTML builder's escaping | `tests/test_web_html.py` |
+| Browser flows, as a user walks them | `tests/test_web_flows.py` — links and forms read off the page itself |
+| `/keymap.json` ↔ `pony.js` ↔ the buttons | `tests/test_web_dispatch.py` |
+| The dispatcher executed in a real browser | `tests/test_web_browser.py` — **opt-in**, see rule 11 |
+| Reading a served page or `pony.js` | `tests/web_helpers.py` |
 | The shared keymap | `tests/test_keymap.py` — both tables, and that the screens bind exactly them |
 | Answering an invitation | `tests/test_invitation_actions.py` — no screen, no socket |
 | Calendar grid geometry | `tests_calendar/test_grid_projections.py` |
@@ -287,8 +293,9 @@ one entry per page surface. A key written straight into a screen's
 `BINDINGS` exists in the terminal and nowhere else, and
 `tests/test_keymap.py` fails when a screen stops matching its table.
 The browser marks a key it cannot do as unavailable rather than
-swallowing the press, and `tests/test_web_app.py` fails if the server
-calls an action available that `static/pony.js` does not implement.
+swallowing the press, and `tests/test_web_dispatch.py` fails if the
+server calls an action available that `static/pony.js` does not
+implement, or serves a key no press could produce.
 
 **A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
 and `chronos/views.py` decide what a row is *of* — and, for the
