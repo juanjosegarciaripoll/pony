@@ -229,6 +229,61 @@ class OneSanitiserForEveryRouteTest(unittest.TestCase):
 
         self.assertLessEqual(len(result), 255)
 
+    def test_a_windows_directory_component_is_dropped_on_every_platform(self) -> None:
+        """``Path`` only splits on the separator of the host platform."""
+        for hostile in (
+            r"..\..\etc\passwd",
+            r"C:\Windows\System32\passwd",
+            r"\\server\share\passwd",
+            "C:passwd",
+        ):
+            with self.subTest(name=hostile):
+                self.assertEqual(safe_attachment_filename(hostile), "passwd")
+
+    def test_a_reserved_device_name_is_escaped(self) -> None:
+        """``NUL`` and friends name a device on Windows, whatever the suffix."""
+        for reserved, expected in (
+            ("NUL", "_NUL"),
+            ("nul.txt", "_nul.txt"),
+            ("COM1.pdf", "_COM1.pdf"),
+            ("LPT9", "_LPT9"),
+            ("aux.tar.gz", "_aux.tar.gz"),
+        ):
+            with self.subTest(name=reserved):
+                self.assertEqual(safe_attachment_filename(reserved), expected)
+
+    def test_a_name_that_only_looks_reserved_is_left_alone(self) -> None:
+        for ordinary in ("CONTACT.txt", "nullify.py", "com10.txt", "report.nul"):
+            with self.subTest(name=ordinary):
+                self.assertEqual(safe_attachment_filename(ordinary), ordinary)
+
+    def test_trailing_dots_and_spaces_are_removed(self) -> None:
+        """Windows strips them when opening, so two names become one file."""
+        for hostile in ("report.pdf.", "report.pdf...", "report.pdf ", "report.pdf. "):
+            with self.subTest(name=hostile):
+                self.assertEqual(safe_attachment_filename(hostile), "report.pdf")
+
+    def test_a_trailing_dot_cannot_overwrite_the_name_it_collides_with(self) -> None:
+        (self.tmp / "report.pdf").write_bytes(b"original")
+
+        destination = unique_destination(self.tmp, "report.pdf.")
+
+        self.assertEqual(destination, self.tmp / "report-1.pdf")
+        self.assertEqual((self.tmp / "report.pdf").read_bytes(), b"original")
+
+    def test_the_cap_counts_bytes_and_keeps_the_extension(self) -> None:
+        """255 is a byte limit; a name in a non-Latin script hits it sooner."""
+        result = safe_attachment_filename("ñ" * 300 + ".pdf")
+
+        self.assertLessEqual(len(result.encode("utf-8")), 255)
+        self.assertTrue(result.endswith(".pdf"))
+        self.assertNotIn("\ufffd", result)
+
+    def test_a_suffix_longer_than_the_cap_is_truncated_whole(self) -> None:
+        result = safe_attachment_filename("report." + "x" * 400)
+
+        self.assertEqual(len(result.encode("utf-8")), 255)
+
     def test_control_characters_are_removed(self) -> None:
         result = safe_attachment_filename("re\x00po\x1frt.pdf")
 

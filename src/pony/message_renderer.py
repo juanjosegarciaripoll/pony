@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from email.message import EmailMessage
 from html.parser import HTMLParser
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 
 from .html_sanitize import strip_invisible_blocks
 
@@ -60,6 +60,14 @@ _INLINE_ATTACHMENT_FILENAMES: dict[str, str] = {
 
 # Most filesystems cap a single path component at 255 bytes.
 _FILENAME_MAX = 255
+
+# Names Windows resolves to a device rather than to a file, whatever the
+# extension: writing "NUL.txt" writes to the null device.
+_RESERVED_DEVICE_STEMS: frozenset[str] = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{digit}" for digit in "123456789"}
+    | {f"LPT{digit}" for digit in "123456789"}
+)
 
 
 def is_attachment_part(part: EmailMessage) -> bool:
@@ -121,20 +129,56 @@ def safe_attachment_filename(filename: str, *, fallback: str = "attachment") -> 
 
     ``Content-Disposition`` filenames are chosen by whoever sent the
     message, so they are untrusted input to every code path that writes
-    one to disk.  Three things have to happen and every caller needs all
-    three, which is why this lives in one place:
+    one to disk.  Every caller needs all of the following, which is why
+    this lives in one place:
 
-    - drop any directory component, so the name cannot steer a write out
-      of the directory the caller picked;
+    - drop any directory component, under either platform's convention,
+      so the name cannot steer a write out of the directory the caller
+      picked;
     - replace characters that are illegal or dangerous in a filename on
       some supported platform (Windows rejects ``<>:"|?*``);
     - refuse names that are empty or only dots, which would otherwise
-      resolve to the destination directory itself.
+      resolve to the destination directory itself;
+    - escape the names Windows resolves to a device rather than a file;
+    - strip the trailing dots and spaces Windows drops silently, so two
+      names cannot become one file;
+    - cap the length in bytes, which is what a filesystem counts, while
+      keeping the extension.
     """
-    name = _UNSAFE_FILENAME_CHARS_RE.sub("_", Path(filename).name).strip()
-    if not name.strip("."):
+    # PureWindowsPath, not Path: of the two conventions it is the
+    # stricter, so a directory separator or a drive is removed here no
+    # matter which platform is running.  ``Path("C:\\x").name`` on Linux
+    # is the whole string.
+    bare = PureWindowsPath(filename).name
+    name = _UNSAFE_FILENAME_CHARS_RE.sub("_", bare).strip()
+    # Windows discards trailing dots and spaces when it opens a file, so
+    # "report.pdf." and "report.pdf" are two names to us and one name to
+    # the filesystem -- which is how a save could overwrite a file that
+    # unique_destination had just checked for.
+    name = name.rstrip(". ")
+    if not name:
         return fallback
-    return name[:_FILENAME_MAX]
+    component = PureWindowsPath(name)
+    stem, suffix = component.stem, component.suffix
+    # Windows reads the device name up to the *first* dot, so "aux.tar.gz"
+    # is the AUX device even though its stem is "aux.tar".
+    if name.partition(".")[0].upper() in _RESERVED_DEVICE_STEMS:
+        name, stem = f"_{name}", f"_{stem}"
+    if len(name.encode("utf-8")) <= _FILENAME_MAX:
+        return name
+    # The cap is a byte count, not a character count, so a name in a
+    # non-Latin script hits it well before 255 characters.  Spend the
+    # budget on the stem and keep the extension, which is what tells the
+    # desktop how to open the file.
+    budget = _FILENAME_MAX - len(suffix.encode("utf-8"))
+    if budget <= 0:
+        return _truncate_utf8(name, _FILENAME_MAX)
+    return _truncate_utf8(stem, budget) + suffix
+
+
+def _truncate_utf8(text: str, limit: int) -> str:
+    """Longest prefix of *text* that fits in *limit* UTF-8 bytes."""
+    return text.encode("utf-8")[:limit].decode("utf-8", "ignore")
 
 
 def unique_destination(
@@ -154,8 +198,8 @@ def unique_destination(
     candidate = dest_dir / safe
     if not candidate.exists():
         return candidate
-    stem = Path(safe).stem
-    suffix = Path(safe).suffix
+    component = PurePath(safe)
+    stem, suffix = component.stem, component.suffix
     n = 1
     while True:
         candidate = dest_dir / f"{stem}-{n}{suffix}"
