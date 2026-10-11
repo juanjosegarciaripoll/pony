@@ -308,8 +308,14 @@ class IndexRepository(Protocol):
         """Return how many messages the folder holds."""
         ...
 
-    def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
-        """Return indexed messages from one folder."""
+    def list_folder_messages(
+        self, *, folder: FolderRef, limit: int | None = None
+    ) -> Sequence[IndexedMessage]:
+        """Return indexed messages from one folder, newest first.
+
+        *limit* caps the result in SQL rather than leaving the caller to
+        slice a whole folder it has already paid to build.
+        """
         ...
 
     def list_folder_storage_keys(
@@ -644,6 +650,16 @@ class ContactRepository(Protocol):
 
     def search_contacts(self, *, prefix: str, limit: int = 10) -> list[Contact]:
         """Search contacts by name, alias, or email address."""
+        ...
+
+    def get_contact(self, *, contact_id: int) -> Contact | None:
+        """Look up one contact by its id, or None if it is gone."""
+        ...
+
+    def find_address_less_contact_by_name(
+        self, *, first_name: str, last_name: str
+    ) -> Contact | None:
+        """An address-less contact with this (folded, trimmed) name."""
         ...
 
     def list_all_contacts(self) -> list[Contact]:

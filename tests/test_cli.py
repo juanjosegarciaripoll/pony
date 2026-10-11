@@ -2236,6 +2236,78 @@ class OpsDetailTableTest(unittest.TestCase):
         # No index rows exist, so each line falls back to the row id.
         self.assertIn("id=7", table)
 
+    def test_only_the_rows_the_ops_name_are_read(self) -> None:
+        """The table labels a handful of lines, not a whole account.
+
+        It used to pre-load `list_folder_messages` for every planned
+        folder and index the result by row id; on a 100,000-message
+        account that is the whole folder materialised to name one
+        operation.  Each line is a primary-key lookup now, remembered
+        so a repeated ref costs one.
+        """
+        from pony.cli import _build_ops_detail_table
+        from pony.domain import MessageRef
+        from pony.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            PushFlagsOp,
+            SyncPlan,
+        )
+
+        index = self._index()
+        self.addCleanup(index.close)
+        ref = MessageRef(account_name="personal", folder_name="INBOX", id=11)
+        plan = SyncPlan(
+            accounts=(
+                AccountSyncPlan(
+                    account_name="personal",
+                    folders=(
+                        FolderSyncPlan(
+                            folder_name="INBOX",
+                            uid_validity=1,
+                            highest_uid=1,
+                            ops=(
+                                PushFlagsOp(
+                                    uid=1,
+                                    message_ref=ref,
+                                    new_flags=frozenset({MessageFlag.SEEN}),
+                                ),
+                                PushFlagsOp(
+                                    uid=2,
+                                    message_ref=ref,
+                                    new_flags=frozenset({MessageFlag.FLAGGED}),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+        wide: list[object] = []
+        keyed: list[object] = []
+        real_wide = index.list_folder_messages
+        real_keyed = index.get_message
+
+        def _wide(**kwargs: object) -> object:
+            wide.append(kwargs)
+            return real_wide(**kwargs)  # type: ignore[arg-type]
+
+        def _keyed(**kwargs: object) -> object:
+            keyed.append(kwargs)
+            return real_keyed(**kwargs)  # type: ignore[arg-type]
+
+        index.list_folder_messages = _wide  # type: ignore[method-assign]
+        index.get_message = _keyed  # type: ignore[method-assign]
+        try:
+            table = _build_ops_detail_table(plan, index)
+        finally:
+            index.list_folder_messages = real_wide  # type: ignore[method-assign]
+            index.get_message = real_keyed  # type: ignore[method-assign]
+
+        self.assertIn("id=11", table)
+        self.assertEqual(wide, [], "read whole folders to label two lines")
+        self.assertEqual(len(keyed), 1, "looked the same row up twice")
+
     def test_empty_flag_sets_render_as_dash(self) -> None:
         from pony.cli import _build_ops_detail_table
         from pony.domain import MessageRef

@@ -348,10 +348,13 @@ def check_mirror_integrity(
             account_name=account.name,
             folder_name=fs.folder_name,
         )
-        rows = index.list_folder_messages(folder=folder)
-        indexed_keys[fs.folder_name] = {
-            row.storage_key for row in rows if row.storage_key
-        }
+        # Only the key set is wanted, and `list_folder_storage_keys`
+        # drops the empty ones (pending appends) in SQL.  Asking for the
+        # full rows materialised the whole account to throw 22 of 23
+        # columns away.
+        indexed_keys[fs.folder_name] = set(
+            index.list_folder_storage_keys(folder=folder)
+        )
 
     orphan_files: list[Path] = []
     stale_keys: list[str] = []

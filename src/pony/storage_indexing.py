@@ -324,10 +324,11 @@ def reindex_account_from_mirror(
         for folder in folders:
             keys = list(mirror_repository.list_messages(folder=folder))
             gate = ProgressGate(stride=progress_stride(len(keys)))
-            known = {
-                row.storage_key
-                for row in index_repository.list_folder_messages(folder=folder)
-            }
+            # The lean projection: this needs the key set and nothing
+            # else, and `list_folder_messages` would pull 23 columns
+            # (body preview included) and parse flags and three
+            # datetimes for every row in the folder to get it.
+            known = set(index_repository.list_folder_storage_keys(folder=folder))
             epoch = max(
                 (handle[0] for key in keys if (handle := uid_of(key)) is not None),
                 default=0,

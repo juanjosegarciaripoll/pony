@@ -1453,3 +1453,162 @@ class ContactHygieneTests(unittest.TestCase):
         addresses = {e for c in repo.list_all_contacts() for e in c.emails}
         self.assertNotIn("not", addresses)
         self.assertEqual(addresses, set())
+
+
+class ContactLookupCostTests(unittest.TestCase):
+    """What it costs to find one contact, and to import a book.
+
+    Opening a contact by id, labelling a merge prompt and matching an
+    address-less BBDB record all used to read every contact record --
+    three queries and a `Contact` object per row -- and then filter in
+    Python.  The import did it once per imported record, which made it
+    quadratic in the size of the address book.
+    """
+
+    def setUp(self) -> None:
+        self.repo = _make_repo()
+        self.addCleanup(self.repo.close)
+        self.calls = 0
+        real = self.repo.list_all_contacts
+
+        def _counting() -> list[Contact]:
+            self.calls += 1
+            return real()
+
+        self.repo.list_all_contacts = _counting  # type: ignore[method-assign]
+        self.addCleanup(setattr, self.repo, "list_all_contacts", real)
+
+    def test_get_contact_returns_the_record_without_listing_the_book(self) -> None:
+        stored = self.repo.upsert_contact(contact=_make_contact())
+        assert stored.id is not None
+        self.repo.upsert_contact(
+            contact=_make_contact(first_name="Bob", emails=("bob@example.com",))
+        )
+
+        found = self.repo.get_contact(contact_id=stored.id)
+
+        assert found is not None
+        self.assertEqual(found.id, stored.id)
+        self.assertEqual(found.emails, ("alice@example.com",))
+        self.assertIsNone(self.repo.get_contact(contact_id=stored.id + 9999))
+        self.assertEqual(self.calls, 0)
+
+    def test_opening_a_contact_by_id_does_not_list_the_book(self) -> None:
+        from pony.contact_actions import contact_by_id
+
+        stored = self.repo.upsert_contact(contact=_make_contact())
+        assert stored.id is not None
+
+        found = contact_by_id(self.repo, stored.id)
+
+        assert found is not None
+        self.assertEqual(found.id, stored.id)
+        self.assertIsNone(contact_by_id(self.repo, stored.id + 9999))
+        self.assertEqual(self.calls, 0)
+
+    def test_labelling_a_merge_does_not_list_the_book(self) -> None:
+        from pony.contact_actions import MergePlan, plan_merge
+
+        first = self.repo.upsert_contact(contact=_make_contact())
+        second = self.repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Alice", last_name="Smythe", emails=("a2@example.com",)
+            )
+        )
+        assert first.id is not None
+        assert second.id is not None
+
+        plan = plan_merge(self.repo, [second.id, first.id])
+
+        assert isinstance(plan, MergePlan)
+        self.assertEqual(plan.target, min(first.id, second.id))
+        self.assertEqual(plan.target_label, "Alice Smith")
+        self.assertEqual(self.calls, 0)
+
+    def test_an_address_less_match_is_a_query_not_a_scan_in_python(self) -> None:
+        self.repo.upsert_contact(
+            contact=_make_contact(first_name="Phone", last_name="Only", emails=())
+        )
+        # A namesake who *does* have mail must not be matched.
+        self.repo.upsert_contact(
+            contact=_make_contact(
+                first_name="Mail", last_name="Haver", emails=("m@example.com",)
+            )
+        )
+
+        found = self.repo.find_address_less_contact_by_name(
+            first_name=" phone ", last_name="ONLY"
+        )
+        assert found is not None
+        self.assertEqual(found.last_name, "Only")
+        self.assertIsNone(
+            self.repo.find_address_less_contact_by_name(
+                first_name="Mail", last_name="Haver"
+            )
+        )
+        self.assertIsNone(
+            self.repo.find_address_less_contact_by_name(first_name="", last_name=" ")
+        )
+        self.assertEqual(self.calls, 0)
+
+    def test_importing_address_less_records_never_lists_the_book(self) -> None:
+        from pony.cli import import_bbdb_contacts
+
+        tmp = TMP_ROOT / "contacts" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+        bbdb_file = tmp / "phones.bbdb"
+        write_bbdb(
+            [
+                _make_contact(first_name=f"P{n}", last_name="Phoneonly", emails=())
+                for n in range(5)
+            ],
+            bbdb_file,
+        )
+
+        created, updated, skipped = import_bbdb_contacts(
+            index=self.repo, bbdb_path=bbdb_file
+        )
+
+        self.assertEqual((created, updated, skipped), (5, 0, 0))
+        self.assertEqual(
+            self.calls, 0, "read the whole address book once per imported record"
+        )
+
+    def test_re_importing_the_same_address_less_record_still_merges(self) -> None:
+        from pony.cli import import_bbdb_contacts
+
+        tmp = TMP_ROOT / "contacts" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+        bbdb_file = tmp / "again.bbdb"
+        write_bbdb(
+            [_make_contact(first_name="Phone", last_name="Only", emails=())],
+            bbdb_file,
+        )
+
+        first = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
+        second = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
+
+        self.assertEqual(first, (1, 0, 0))
+        self.assertEqual(second, (0, 1, 0), "a re-import duplicated the record")
+
+    def test_a_book_longer_than_one_statement_s_parameters(self) -> None:
+        """`list_all_contacts` passes every id, and SQLite caps them.
+
+        The cap is a build option -- 999 before SQLite 3.32, 32,766 by
+        default since, higher on some distributions -- so the threshold
+        is read off a connection rather than assumed.  Beyond it every
+        whole-book listing and every export raised ``too many SQL
+        variables``; harvesting a large archive is what gets a book
+        there.  The ids need not exist for the statement to be built.
+        """
+        import sqlite3
+
+        probe = sqlite3.connect(":memory:")
+        try:
+            cap = probe.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+        finally:
+            probe.close()
+
+        found = self.repo._load_contacts_by_ids(list(range(1, cap + 2)))  # noqa: SLF001
+
+        self.assertEqual(found, [])

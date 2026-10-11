@@ -286,6 +286,59 @@ class McpToolListMessagesTest(unittest.TestCase):
         self.assertIn("subject", results[0])
 
 
+class McpToolListMessagesLimitTest(unittest.TestCase):
+    """The tool's `limit` is the query's, not a slice of the folder.
+
+    `list_messages` asked for the whole folder and kept the first
+    hundred, so an assistant browsing a 100,000-message INBOX paid for
+    every row: 23 columns, three datetime parses and four flag sets
+    each, to see a hundred.
+    """
+
+    def setUp(self) -> None:
+        self.paths, self.config, self.index, self.mirror, self.account = _make_mcp_env(
+            "list-msgs-limit"
+        )
+        for n in range(5):
+            _seed_mcp_message(
+                self.index, self.mirror, self.account, subject=f"Listed {n}"
+            )
+        self.mcp = _build_mcp_from_env(self.paths, self.config)
+
+    def test_only_the_asked_for_rows_are_built(self) -> None:
+        from unittest.mock import patch
+
+        import pony.index_store as index_store
+
+        built = 0
+        real = index_store._indexed_message_from_row  # noqa: SLF001
+
+        def _counting(row: object) -> object:
+            nonlocal built
+            built += 1
+            return real(row)  # type: ignore[arg-type]
+
+        with patch.object(index_store, "_indexed_message_from_row", _counting):
+            results = _call_tool(
+                self.mcp,
+                "list_messages",
+                account="personal",
+                folder="INBOX",
+                limit=2,
+            )
+
+        assert isinstance(results, list)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(built, 2, "built a row object for every message in the folder")
+
+    def test_an_unlimited_listing_still_returns_everything(self) -> None:
+        results = _call_tool(
+            self.mcp, "list_messages", account="personal", folder="INBOX", limit=100
+        )
+        assert isinstance(results, list)
+        self.assertEqual(len(results), 5)
+
+
 class McpToolGetMessageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.paths, self.config, self.index, self.mirror, self.account = _make_mcp_env(

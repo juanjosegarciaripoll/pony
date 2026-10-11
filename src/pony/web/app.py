@@ -51,7 +51,7 @@ from starlette.staticfiles import StaticFiles
 from chronos.keymap import web_key
 from chronos.outcome import Notice, Outcome, Severity, warn
 
-from .. import mailbox_actions
+from .. import contact_actions, mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef
 from ..message_renderer import build_browser_html, extract_attachment
 from . import calendar as calendar_view
@@ -471,10 +471,10 @@ async def _contact_form(services: WebServices, request: Request) -> Response:
     identifier = request.query_params.get("id", "")
     contact = contacts_view.blank_contact()
     if contacts is not None and identifier.isdigit():
-        found = [c for c in contacts.list_all_contacts() if c.id == int(identifier)]
-        if not found:
+        found = contact_actions.contact_by_id(contacts, int(identifier))
+        if found is None:
             return PlainTextResponse("No such contact.", status_code=404)
-        contact = found[0]
+        contact = found
     return HTMLResponse(
         contacts_view.contact_form_page(
             services,

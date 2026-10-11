@@ -7,7 +7,7 @@ import dataclasses
 import json
 import sqlite3
 import threading
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
@@ -45,6 +45,10 @@ _SCHEMA_VERSION = 3
 # cost disappears into the work.
 _BATCH_COMMIT_ROWS = 500
 _MIGRATABLE_FROM = 2
+# Host parameters per statement, kept well under SQLite's own limit
+# (999 before 3.32, 32,766 after) so an ``IN (…)`` built from a list as
+# long as the address book is never the thing that fails.
+_MAX_SQL_PARAMETERS = 400
 
 
 class ContactEmailConflictError(RuntimeError):
@@ -114,6 +118,16 @@ _FULL_SELECT = ", ".join(_FULL_COLS)
 _INSERT_COLS = ", ".join(_FULL_COLS[1:])  # skip id
 _INSERT_QS = ", ".join(["?"] * (len(_FULL_COLS) - 1))
 _UPDATE_ASSIGNS = ", ".join(f"{c} = ?" for c in _FULL_COLS[1:])
+
+
+def _chunked_ids(ids: Sequence[int]) -> Iterator[Sequence[int]]:
+    """Split *ids* into runs that fit in one statement's parameters.
+
+    The runs keep the caller's order, so a result assembled from several
+    of them is in the same order a single statement would have given.
+    """
+    for start in range(0, len(ids), _MAX_SQL_PARAMETERS):
+        yield ids[start : start + _MAX_SQL_PARAMETERS]
 
 
 def _row_params(message: IndexedMessage) -> tuple[object, ...]:
@@ -559,6 +573,25 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 )
                 """
             )
+            # ``contact_emails`` is keyed on the address, so without
+            # this every "which addresses does contact N have" -- the
+            # rewrite inside ``upsert_contact``, the per-contact load --
+            # scanned the whole table.
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_contact_emails_contact
+                ON contact_emails (contact_id)
+                """
+            )
+            # Serves find_address_less_contact_by_name: the BBDB import
+            # asks it once per address-less record, and it used to answer
+            # by reading the whole address book into Python objects.
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_contacts_name_folded
+                ON contacts (lower(trim(last_name)), lower(trim(first_name)))
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS contact_aliases (
@@ -881,15 +914,27 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             for r in rows
         }
 
-    def list_folder_messages(self, *, folder: FolderRef) -> Sequence[IndexedMessage]:
-        """Return indexed messages for a folder ordered by received date."""
+    def list_folder_messages(
+        self, *, folder: FolderRef, limit: int | None = None
+    ) -> Sequence[IndexedMessage]:
+        """Return indexed messages for a folder ordered by received date.
+
+        *limit* caps the result in SQL.  A caller that wants the newest
+        hundred and slices the answer in Python has already paid for
+        every row in the folder; ``ix_messages_folder_received`` serves
+        the order, so the capped query stops after the rows it returns.
+        """
+        sql = (
+            f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
+            "WHERE account_name = ? AND folder_name = ? "
+            "ORDER BY received_at DESC"
+        )
+        params: list[object] = [folder.account_name, folder.folder_name]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
         with self._use() as conn:
-            rows = conn.execute(
-                f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
-                "WHERE account_name = ? AND folder_name = ? "
-                "ORDER BY received_at DESC",
-                (folder.account_name, folder.folder_name),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
 
     def list_folder_message_summaries(
@@ -1454,6 +1499,55 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             ).fetchall()
         return self._load_contacts_by_ids([int(r[0]) for r in rows])
 
+    def get_contact(self, *, contact_id: int) -> Contact | None:
+        """One contact by id, or None.
+
+        A contact detail page, a contact form and the merge prompt each
+        want one record.  Reading the whole address book and filtering
+        on ``c.id`` in Python cost three queries and a ``Contact`` per
+        row to find it.
+        """
+        found = self._load_contacts_by_ids([contact_id])
+        return found[0] if found else None
+
+    def find_address_less_contact_by_name(
+        self, *, first_name: str, last_name: str
+    ) -> Contact | None:
+        """An address-less contact with this (folded) name, if any.
+
+        The BBDB import's fallback for a record that carries no email at
+        all: there is nothing else to match it on, and matching only
+        other address-less records keeps a namesake who does have mail
+        out of it.  In SQL because the import asks once per such record,
+        and reading the whole book each time made the import quadratic
+        in the size of the book.
+
+        Folding and trimming mirror the Python comparison this replaced,
+        and the order is ``list_all_contacts``'s, so the same candidate
+        wins when several match.
+        """
+        first = first_name.strip().lower()
+        last = last_name.strip().lower()
+        if not (first or last):
+            return None
+        with self._use() as conn:
+            row = conn.execute(
+                """
+                SELECT c.id FROM contacts c
+                WHERE lower(trim(c.last_name)) = ?
+                  AND lower(trim(c.first_name)) = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM contact_emails e WHERE e.contact_id = c.id
+                  )
+                ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE
+                LIMIT 1
+                """,
+                (last, first),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_contact(contact_id=int(str(row[0])))
+
     def list_all_contacts(self) -> list[Contact]:
         """Return every contact record (for export)."""
         with self._use() as conn:
@@ -1600,31 +1694,46 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         """
         if not ids:
             return []
-        placeholders = ",".join("?" * len(ids))
+        rows: list[tuple[object, ...]] = []
+        email_rows: list[tuple[object, ...]] = []
+        alias_rows: list[tuple[object, ...]] = []
         with self._use() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT id, first_name, last_name, affix, organization,
-                       notes, message_count, last_seen, created_at,
-                       updated_at
-                FROM contacts WHERE id IN ({placeholders})
-                """,  # noqa: S608
-                ids,
-            ).fetchall()
-            email_rows = conn.execute(
-                f"""
-                SELECT contact_id, email_address
-                FROM contact_emails WHERE contact_id IN ({placeholders})
-                """,  # noqa: S608
-                ids,
-            ).fetchall()
-            alias_rows = conn.execute(
-                f"""
-                SELECT contact_id, alias
-                FROM contact_aliases WHERE contact_id IN ({placeholders})
-                """,  # noqa: S608
-                ids,
-            ).fetchall()
+            # In runs, because SQLite caps host parameters per statement
+            # and the id list is as long as the address book.  The cap is
+            # a build option -- 999 before SQLite 3.32, 32,766 by default
+            # since -- and past it a whole-book listing or export raised
+            # instead of answering.
+            for chunk in _chunked_ids(ids):
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT id, first_name, last_name, affix, organization,
+                               notes, message_count, last_seen, created_at,
+                               updated_at
+                        FROM contacts WHERE id IN ({placeholders})
+                        """,  # noqa: S608
+                        chunk,
+                    ).fetchall()
+                )
+                email_rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT contact_id, email_address
+                        FROM contact_emails WHERE contact_id IN ({placeholders})
+                        """,  # noqa: S608
+                        chunk,
+                    ).fetchall()
+                )
+                alias_rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT contact_id, alias
+                        FROM contact_aliases WHERE contact_id IN ({placeholders})
+                        """,  # noqa: S608
+                        chunk,
+                    ).fetchall()
+                )
 
         emails_by_id: dict[int, list[str]] = {}
         for cid, addr in email_rows:

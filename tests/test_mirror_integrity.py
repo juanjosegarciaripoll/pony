@@ -213,3 +213,41 @@ class MboxIntegrityTests(unittest.TestCase):
 
         result = check_mirror_integrity(account=account, index=index)
         self.assertEqual(result.status, CheckStatus.OK)
+
+
+class IntegrityQueryWidthTests(unittest.TestCase):
+    """The scan diffs key sets, so it reads keys, not whole rows.
+
+    `list_folder_messages` materialises every column of every row in
+    every synced folder; the scan then keeps one field.  On a
+    100,000-message account that is the whole index read into Python
+    objects to compare two sets of strings.
+    """
+
+    def test_the_wide_row_query_is_not_used(self) -> None:
+        account, index = _make_env()
+        self.addCleanup(index.close)
+        mirror = account.mirror.path
+        inbox_cur = mirror / "cur"
+        inbox_cur.mkdir(parents=True)
+        (mirror / "new").mkdir()
+        (mirror / "tmp").mkdir()
+        key = "1234567890.1.host"
+        (inbox_cur / f"{key}!2,S").write_bytes(b"test")
+        _index_message(index, "INBOX", key)
+
+        calls: list[object] = []
+        real = index.list_folder_messages
+
+        def _record(**kwargs: object) -> object:
+            calls.append(kwargs)
+            return real(**kwargs)  # type: ignore[arg-type]
+
+        index.list_folder_messages = _record  # type: ignore[method-assign]
+        self.addCleanup(setattr, index, "list_folder_messages", real)
+
+        result = check_mirror_integrity(account=account, index=index)
+
+        self.assertEqual(result.status, CheckStatus.OK)
+        self.assertIn("1 message", result.detail)
+        self.assertEqual(calls, [], "read full message rows to diff key sets")

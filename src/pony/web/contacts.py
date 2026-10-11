@@ -16,6 +16,7 @@ from chronos.outcome import Outcome, warn
 
 from ..contact_actions import (
     ContactEdit,
+    contact_by_id,
     delete_contacts,
     label_for,
     list_contacts,
@@ -280,10 +281,10 @@ def store_contact(
     """Save *edit* over the contact *contact_id* names, or a new one."""
     existing = blank_contact()
     if contact_id is not None:
-        found = [c for c in contacts.list_all_contacts() if c.id == contact_id]
-        if not found:
+        found = contact_by_id(contacts, contact_id)
+        if found is None:
             return None, Outcome.refused(warn("That contact is no longer here."))
-        existing = found[0]
+        existing = found
     return save_contact(contacts, existing, edit)
 
 

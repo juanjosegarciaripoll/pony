@@ -35,11 +35,11 @@ from .domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
-    Contact,
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
     MessageFlag,
+    MessageRef,
     MessageStatus,
 )
 from .fixture_flow import run_fixture_ingest
@@ -1287,21 +1287,22 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
     # columns: op, account, folder, from, subject
     rows: list[tuple[str, str, str, str, str]] = []
 
-    for acc in plan.accounts:
-        # Build a cache of row id → IndexedMessage for this account.
-        id_to_row: dict[int, IndexedMessage] = {}
-        for folder_plan in acc.folders:
-            folder_ref = FolderRef(
-                account_name=acc.account_name,
-                folder_name=folder_plan.folder_name,
-            )
-            for msg in index.list_folder_messages(folder=folder_ref):
-                id_to_row[msg.message_ref.id] = msg
+    # Only the rows the listed operations name, looked up by primary
+    # key and remembered.  Reading every message in every planned folder
+    # to index it by id meant a 100,000-message account was materialised
+    # to label a handful of lines in a dry run.
+    id_to_row: dict[int, IndexedMessage | None] = {}
 
+    def row_for(ref: MessageRef) -> IndexedMessage | None:
+        if ref.id not in id_to_row:
+            id_to_row[ref.id] = index.get_message(message_ref=ref)
+        return id_to_row[ref.id]
+
+    for acc in plan.accounts:
         for folder_plan in acc.folders:
             for op in folder_plan.ops:
                 if isinstance(op, ServerDeleteOp):
-                    hit = id_to_row.get(op.message_ref.id)
+                    hit = row_for(op.message_ref)
                     rows.append(
                         (
                             "server→trash",
@@ -1312,7 +1313,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                         )
                     )
                 elif isinstance(op, PushDeleteOp):
-                    hit = id_to_row.get(op.message_ref.id)
+                    hit = row_for(op.message_ref)
                     rows.append(
                         (
                             "expunge",
@@ -1323,7 +1324,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                         )
                     )
                 elif isinstance(op, RestoreOp):
-                    hit = id_to_row.get(op.message_ref.id)
+                    hit = row_for(op.message_ref)
                     rows.append(
                         (
                             "restore",
@@ -1335,7 +1336,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                     )
                 elif isinstance(op, MergeFlagsOp):
                     flag_str = ",".join(sorted(f.value for f in op.merged_flags)) or "—"
-                    hit = id_to_row.get(op.message_ref.id)
+                    hit = row_for(op.message_ref)
                     rows.append(
                         (
                             f"merge({flag_str})",
@@ -1347,7 +1348,7 @@ def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str
                     )
                 elif isinstance(op, PushFlagsOp):
                     flag_str = ",".join(sorted(f.value for f in op.new_flags)) or "—"
-                    hit = id_to_row.get(op.message_ref.id)
+                    hit = row_for(op.message_ref)
                     rows.append(
                         (
                             f"push({flag_str})",
@@ -3659,28 +3660,6 @@ def run_contacts_export(
     return 0
 
 
-def _contact_by_name(index: SqliteIndexRepository, contact: Contact) -> Contact | None:
-    """An existing contact with the same name and no email, if any.
-
-    Only used for imported records that carry no address at all — a
-    phone-only entry in someone's address book.  Restricting the match
-    to other address-less contacts keeps it from silently merging a
-    namesake who does have mail.
-    """
-    name = (contact.first_name.strip().lower(), contact.last_name.strip().lower())
-    if not any(name):
-        return None
-    for candidate in index.list_all_contacts():
-        if candidate.emails:
-            continue
-        if (
-            candidate.first_name.strip().lower(),
-            candidate.last_name.strip().lower(),
-        ) == name:
-            return candidate
-    return None
-
-
 def import_bbdb_contacts(
     *,
     index: SqliteIndexRepository,
@@ -3719,7 +3698,15 @@ def import_bbdb_contacts(
                 # every re-import created another copy of it — and the
                 # importer re-runs whenever the file is newer.  Fall back
                 # to the name, which is all such a record has.
-                existing = _contact_by_name(index, contact)
+                # Only the address-less records are candidates: a
+                # namesake who does have mail must not be merged into.
+                # Asking the index rather than reading the whole address
+                # book per record is what keeps the import from being
+                # quadratic in the size of the book.
+                existing = index.find_address_less_contact_by_name(
+                    first_name=contact.first_name,
+                    last_name=contact.last_name,
+                )
 
             try:
                 if existing is not None:

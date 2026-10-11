@@ -174,3 +174,69 @@ class ReindexFromMirrorTest(unittest.TestCase):
         self.assertEqual(result.added, 2)
         self.assertGreaterEqual(result.folders, 2)
         self.assertEqual(len(self.index.list_folder_messages(folder=other)), 1)
+
+
+class ReindexQueryWidthTest(unittest.TestCase):
+    """A reindex compares key sets; it has no use for the rows themselves.
+
+    `list_folder_messages` selects all 23 columns -- body preview
+    included -- and parses three datetimes and four flag sets per row.
+    Building a set of storage keys out of that read a 100,000-message
+    folder in full to answer a question `list_folder_storage_keys`
+    answers in two columns.
+    """
+
+    def setUp(self) -> None:
+        root = TMP_ROOT / "reindex-width" / uuid4().hex
+        self.mirror = MaildirMirrorRepository(
+            account_name="personal",
+            root_dir=root / "mirror",
+        )
+        self.index = SqliteIndexRepository(database_path=root / "index.sqlite3")
+        self.index.initialize()
+        self.addCleanup(self.index.close)
+
+    def test_the_wide_row_query_is_not_used(self) -> None:
+        for n in range(3):
+            self.mirror.store_message(
+                folder=INBOX,
+                raw_message=_raw(f"m{n}"),
+                uid=n + 1,
+                uid_validity=7,
+            )
+        calls: list[object] = []
+        real = self.index.list_folder_messages
+
+        def _record(**kwargs: object) -> object:
+            calls.append(kwargs)
+            return real(**kwargs)  # type: ignore[arg-type]
+
+        self.index.list_folder_messages = _record  # type: ignore[method-assign]
+        self.addCleanup(setattr, self.index, "list_folder_messages", real)
+
+        result = reindex_account_from_mirror(
+            mirror_repository=self.mirror,
+            index_repository=self.index,
+            account_name="personal",
+        )
+
+        self.assertEqual(result.added, 3)
+        self.assertEqual(calls, [], "read full message rows to diff key sets")
+
+    def test_a_second_pass_still_skips_what_it_already_has(self) -> None:
+        """The lean query filters empty keys in SQL; nothing is re-added."""
+        self.mirror.store_message(
+            folder=INBOX, raw_message=_raw("once"), uid=1, uid_validity=7
+        )
+        first = reindex_account_from_mirror(
+            mirror_repository=self.mirror,
+            index_repository=self.index,
+            account_name="personal",
+        )
+        second = reindex_account_from_mirror(
+            mirror_repository=self.mirror,
+            index_repository=self.index,
+            account_name="personal",
+        )
+        self.assertEqual(first.added, 1)
+        self.assertEqual(second.added, 0)

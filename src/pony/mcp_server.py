@@ -272,8 +272,10 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
         from .domain import FolderRef
 
         folder_ref = FolderRef(account_name=account, folder_name=folder)
-        msgs = index.list_folder_messages(folder=folder_ref)
-        return [_msg_to_dict(m) for m in msgs[:limit]]
+        # The cap belongs in the query: slicing afterwards built an
+        # IndexedMessage for every row in the folder to keep a hundred.
+        msgs = index.list_folder_messages(folder=folder_ref, limit=limit)
+        return [_msg_to_dict(m) for m in msgs]
 
     # ------------------------------------------------------------------
     # Tool: get_message

@@ -160,10 +160,12 @@ def plan_merge(
         return warn("Mark at least 2 contacts to merge.")
     ordered = sorted(contact_ids)
     target, *sources = ordered
-    by_id = {contact.id: contact for contact in contacts.list_all_contacts()}
 
     def label(contact_id: int) -> str:
-        contact = by_id.get(contact_id)
+        # One keyed lookup each.  Reading the whole address book to name
+        # two or three marked records cost three queries and a `Contact`
+        # per row in it.
+        contact = contacts.get_contact(contact_id=contact_id)
         return f"contact {contact_id}" if contact is None else label_for(contact)
 
     return MergePlan(
@@ -181,6 +183,20 @@ def merge_contacts(contacts: ContactRepository, plan: MergePlan) -> Outcome:
         changed=plan.total,
         notices=(info(f"Merged {plan.total} contacts."),),
     )
+
+
+def contact_by_id(
+    contacts: ContactRepository,
+    contact_id: int,
+) -> Contact | None:
+    """The contact *contact_id* names, or None if it is no longer there.
+
+    Both front ends open a contact by id -- a detail page, an edit form
+    -- and both used to do it by listing every contact and filtering on
+    `c.id`, which is three queries and a `Contact` object per record in
+    the book to find one.
+    """
+    return contacts.get_contact(contact_id=contact_id)
 
 
 def list_contacts(
