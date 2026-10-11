@@ -21,6 +21,12 @@ from pathlib import Path
 from .domain import FolderRef, MessageFlag
 from .protocols import MirrorRepository
 
+# How many mirror writes may be in flight before a caller has to wait.
+# The queue holds message bodies, so this is a memory bound, not a
+# throughput knob: four writer threads are never short of work at this
+# depth, and a folder of any size costs the same resident memory.
+_MAX_PENDING_WRITES = 32
+
 # ---------------------------------------------------------------------------
 # Maildir backend
 # ---------------------------------------------------------------------------
@@ -129,7 +135,19 @@ class MaildirMirrorRepository(MirrorRepository):
             )
         future = self._write_pool.submit(new_path.write_bytes, raw_message)
         self._write_futures.append(future)
+        # A submitted task holds its message body until a worker runs it,
+        # and the executor's queue is unbounded: a caller that stores
+        # faster than four threads can write would otherwise pile a whole
+        # folder's mail into memory.  Waiting here is what keeps the cost
+        # of a 50,000-message folder the same as a 50-message one.
+        if len(self._write_futures) >= _MAX_PENDING_WRITES:
+            self._drain_pending(keep=_MAX_PENDING_WRITES // 2)
         return filename
+
+    def _drain_pending(self, *, keep: int) -> None:
+        """Wait, oldest first, until at most *keep* writes are in flight."""
+        while len(self._write_futures) > keep:
+            self._write_futures.pop(0).result()
 
     def flush_writes(self) -> None:
         """Wait for all pending async writes to complete.

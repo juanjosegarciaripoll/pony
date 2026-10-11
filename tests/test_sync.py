@@ -3694,18 +3694,38 @@ class ProgressCadenceTestCase(unittest.TestCase):
 
         gate = ProgressGate(interval=60.0)
 
-        allowed = [gate.due() for _ in range(1000)]
+        allowed = [gate.due(done) for done in range(1, 1001)]
 
         self.assertEqual(allowed.count(True), 1)
+
+    def test_a_slow_loop_still_reports_only_once_per_stride(self) -> None:
+        """The time cap alone lets a slow loop report on every item."""
+        from chronos.outcome import ProgressGate
+
+        gate = ProgressGate(interval=0.0, stride=100)
+
+        allowed = [gate.due(done) for done in range(1, 1001)]
+
+        self.assertEqual(allowed.count(True), 10)
 
     def test_the_last_item_always_reports(self) -> None:
         from chronos.outcome import ProgressGate
 
         gate = ProgressGate(interval=60.0)
-        gate.due()
+        gate.due(1)
 
-        self.assertFalse(gate.due())
-        self.assertTrue(gate.due(final=True))
+        self.assertFalse(gate.due(2))
+        self.assertTrue(gate.due(2, final=True))
+
+    def test_the_stride_is_derived_from_the_work(self) -> None:
+        from chronos.outcome import PROGRESS_REPORTS_PER_UNIT, progress_stride
+
+        self.assertEqual(progress_stride(0), 1)
+        self.assertEqual(progress_stride(10), 1)
+        self.assertEqual(
+            progress_stride(140_000),
+            140_000 // PROGRESS_REPORTS_PER_UNIT,
+        )
 
     def test_a_long_sync_does_not_report_once_per_message(self) -> None:
         """What the engine emits, not what a front end chooses to print."""
@@ -3741,3 +3761,62 @@ class ProgressCadenceTestCase(unittest.TestCase):
         # of them, so a finished folder shows its true total.
         self.assertLess(len(reports), 60)
         self.assertTrue(any("60/60" in message for message in reports))
+
+
+class FetchBackpressureTestCase(unittest.TestCase):
+    """The fetch must not outrun the local work.
+
+    The producer thread hands whole message bodies to the consumer.  With
+    an unbounded queue a large folder pulled thousands of them into
+    memory while the consumer was still writing the first hundred, and
+    the kernel killed the sync part-way through the folder.
+    """
+
+    def test_the_queue_between_fetch_and_ingest_is_bounded(self) -> None:
+        from pony.sync import _FETCH_QUEUE_DEPTH
+
+        self.assertGreater(_FETCH_QUEUE_DEPTH, 0)
+
+    def test_a_slow_consumer_holds_the_fetch_back(self) -> None:
+        """What the producer has read, minus what the consumer has taken."""
+        from pony.sync import _FETCH_QUEUE_DEPTH
+
+        count = _FETCH_QUEUE_DEPTH * 6
+        service, index, _mirror, session = _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<m{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"Message {uid}", f"<m{uid}@example.com>"),
+                    )
+                    for uid in range(1, count + 1)
+                },
+            },
+        )
+        fetched: list[int] = []
+        original = session.fetch_messages_batch
+
+        def _counting(folder_name: str, uids: list[int]) -> dict[int, bytes]:
+            fetched.extend(uids)
+            return original(folder_name, uids)
+
+        session.fetch_messages_batch = _counting  # type: ignore[method-assign]
+
+        ingested: list[int] = []
+        real_insert = index.insert_message
+
+        def _slow_insert(*, message: object) -> object:
+            # Every insert checks how far ahead the fetch has run.
+            ingested.append(len(fetched))
+            return real_insert(message=message)  # type: ignore[arg-type]
+
+        index.insert_message = _slow_insert  # type: ignore[method-assign]
+        plan = service.plan()
+        service.execute(plan, confirmed_folders=frozenset())
+
+        # At no point had the fetch read more than the queue depth (plus
+        # the batch in flight) beyond what had been ingested.
+        worst = max(ahead - done for done, ahead in enumerate(ingested))
+        self.assertLessEqual(worst, _FETCH_QUEUE_DEPTH + 2 * 25)
+        self.assertEqual(len(ingested), count)

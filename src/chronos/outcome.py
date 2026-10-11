@@ -92,12 +92,30 @@ class Outcome:
 PROGRESS_INTERVAL_SECONDS = 0.1
 
 
+# At most this many reports for one unit of work, however many items
+# it holds.  The time cap alone is not enough: when each item takes
+# longer than the interval -- a slow server, a cold index -- every item
+# reports again, which is what "it still counts every message" means.
+PROGRESS_REPORTS_PER_UNIT = 200
+
+
+def progress_stride(total: int) -> int:
+    """Report at most :data:`PROGRESS_REPORTS_PER_UNIT` times over *total*."""
+    return max(1, total // PROGRESS_REPORTS_PER_UNIT)
+
+
 class ProgressGate:
     """Decides when a per-item loop may report progress.
 
-    Asking costs one ``monotonic()`` call, so the message itself is only
-    built when it will actually be shown.  The last item always reports,
-    so a finished unit of work never leaves a stale count on screen.
+    Two caps, because either alone leaves a hole: no more than ten
+    reports a second (a fast loop would otherwise pay for a terminal
+    write per item), and no more than one per *stride* items (a slow
+    loop passes the time cap on every single item).  The last item
+    always reports, so a finished unit of work never leaves a stale
+    count on screen.
+
+    Asking costs a comparison and one ``monotonic()`` call, so the
+    message itself is only built when it will be shown.
 
     It lives beside :class:`Notice` because it answers the same kind of
     question -- how an operation talks to whoever asked for it -- and
@@ -105,17 +123,30 @@ class ProgressGate:
     throttles for itself (``if done % 20``) fixes it only for itself.
     """
 
-    __slots__ = ("_interval", "_last")
+    __slots__ = ("_interval", "_last", "_last_item", "_stride")
 
-    def __init__(self, interval: float = PROGRESS_INTERVAL_SECONDS) -> None:
+    def __init__(
+        self,
+        interval: float = PROGRESS_INTERVAL_SECONDS,
+        stride: int = 1,
+    ) -> None:
         self._interval = interval
+        self._stride = max(1, stride)
         self._last = 0.0
+        self._last_item = 0
 
-    def due(self, *, final: bool = False) -> bool:
+    def due(self, done: int = 0, *, final: bool = False) -> bool:
+        if final:
+            self._last = time.monotonic()
+            self._last_item = done
+            return True
+        if done - self._last_item < self._stride:
+            return False
         now = time.monotonic()
-        if not final and now - self._last < self._interval:
+        if now - self._last < self._interval:
             return False
         self._last = now
+        self._last_item = done
         return True
 
 
@@ -146,12 +177,14 @@ class NoticeLog:
 
 __all__ = [
     "PROGRESS_INTERVAL_SECONDS",
+    "PROGRESS_REPORTS_PER_UNIT",
     "Notice",
     "NoticeLog",
     "Outcome",
     "ProgressGate",
     "Severity",
     "failure",
+    "progress_stride",
     "info",
     "warn",
 ]

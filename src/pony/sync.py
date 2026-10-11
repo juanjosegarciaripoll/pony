@@ -29,9 +29,9 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from queue import Empty, SimpleQueue
+from queue import Empty, Full, Queue
 
-from chronos.outcome import ProgressGate
+from chronos.outcome import ProgressGate, progress_stride
 from chronos.scheduler import PeriodicSync, SyncOutcome
 
 from .accounts import find_imap_account, select_imap_accounts
@@ -82,6 +82,15 @@ ProgressCallback = collections.abc.Callable[[ProgressInfo], None]
 # the producer thread is still alive.  Purely a liveness poll: while items
 # are flowing it behaves like a blocking get.
 _PRODUCER_POLL_SECONDS = 1.0
+
+# How many messages the server-side fetch may run ahead of the local
+# work, and how many it asks for at a time.  The queue between them
+# holds whole message bodies, so its depth is the sync's memory
+# footprint: at these numbers a folder of fifty thousand messages costs
+# the same as a folder of fifty.  Raising them buys throughput only if
+# the consumer is the slower side, and pays for it in resident memory.
+_FETCH_BATCH = 25
+_FETCH_QUEUE_DEPTH = 50
 
 
 class _ProducerLostError(Exception):
@@ -1695,7 +1704,7 @@ class ImapSyncService:
 
     @staticmethod
     def _next_produced(
-        q: SimpleQueue[tuple[SyncOp, bytes | None] | None],
+        q: Queue[tuple[SyncOp, bytes | None] | None],
         producer: threading.Thread | None,
     ) -> tuple[SyncOp, bytes | None] | None:
         """Pop the next produced item, or raise :class:`_ProducerLostError`.
@@ -1773,26 +1782,53 @@ class ImapSyncService:
             else:
                 phase1.append(op)
 
-        q: SimpleQueue[tuple[SyncOp, bytes | None] | None] = SimpleQueue()
+        # Bounded, because the producer is faster than the consumer and
+        # what it hands over is whole message bodies.  An unbounded queue
+        # let a big folder pull thousands of messages into memory while
+        # the consumer was still projecting and writing the first
+        # hundred: on a small machine the kernel killed the sync
+        # part-way through the folder, every time.  A full queue blocks
+        # the producer instead, which is what backpressure is.
+        q: Queue[tuple[SyncOp, bytes | None] | None] = Queue(
+            maxsize=_FETCH_QUEUE_DEPTH,
+        )
         fetch_ns: list[int] = []
         ingest_ns: list[int] = []
+
+        consumer_gone = threading.Event()
+
+        def _offer(item: tuple[SyncOp, bytes | None] | None) -> bool:
+            """Hand *item* over, waiting for room; False if nobody is left.
+
+            The wait is what bounds memory.  It is polled rather than
+            indefinite so that a consumer which raised does not leave
+            this thread parked on a queue nobody will drain -- it holds
+            the IMAP socket, and the session has to be released.
+            """
+            while not consumer_gone.is_set():
+                try:
+                    q.put(item, timeout=_PRODUCER_POLL_SECONDS)
+                except Full:
+                    continue
+                return True
+            return False
 
         def _producer() -> None:
             batch: list[FetchNewOp] = []
             for op in phase1:
                 if isinstance(op, FetchNewOp):
                     batch.append(op)
-                    if len(batch) >= 25:
-                        _flush(batch)
+                    if len(batch) >= _FETCH_BATCH and not _flush(batch):
+                        return
                 else:
-                    _flush(batch)
-                    q.put((op, None))
-            _flush(batch)
-            q.put(None)
+                    if not _flush(batch) or not _offer((op, None)):
+                        return
+            if _flush(batch):
+                _offer(None)
 
-        def _flush(batch: list[FetchNewOp]) -> None:
+        def _flush(batch: list[FetchNewOp]) -> bool:
             if not batch:
-                return
+                return True
             try:
                 _t = time.perf_counter()
                 raw_map = session.fetch_messages_batch(
@@ -1804,8 +1840,11 @@ class ImapSyncService:
                 logger.exception("Batch fetch failed for %s", folder_name)
                 raw_map = {}
             for op in batch:
-                q.put((op, raw_map.get(op.uid)))
+                if not _offer((op, raw_map.get(op.uid))):
+                    batch.clear()
+                    return False
             batch.clear()
+            return True
 
         producer: threading.Thread | None = None
         if phase1:
@@ -1815,7 +1854,7 @@ class ImapSyncService:
         total_ops = len(plan.ops)
         completed = 0
         had_failure = False
-        gate = ProgressGate()
+        gate = ProgressGate(stride=progress_stride(len(plan.ops)))
         with self._index.connection():
             try:
                 if phase1:
@@ -1850,6 +1889,7 @@ class ImapSyncService:
                             )
                         completed += 1
                         if progress is not None and gate.due(
+                            completed,
                             final=completed == total_ops,
                         ):
                             progress(
@@ -1870,6 +1910,11 @@ class ImapSyncService:
                     completed,
                     total_ops,
                 )
+            finally:
+                # Whatever happened above, nobody is draining the queue
+                # any more.  Say so, or a producer waiting for room sits
+                # there holding the IMAP socket until the read timeout.
+                consumer_gone.set()
             if producer is not None:
                 producer.join()
 
@@ -1897,7 +1942,10 @@ class ImapSyncService:
                         folder_name,
                     )
                 completed += 1
-                if progress is not None and gate.due(final=completed == total_ops):
+                if progress is not None and gate.due(
+                    completed,
+                    final=completed == total_ops,
+                ):
                     progress(
                         ProgressInfo(
                             f"{account.name}/{folder_name}: {completed}/{total_ops}",

@@ -1220,3 +1220,38 @@ class MboxUidNamingTestCase(unittest.TestCase):
             ),
             key,
         )
+
+
+class PendingWriteBoundTestCase(unittest.TestCase):
+    """Async mirror writes must not pile a folder's mail into memory.
+
+    ``store_message_async`` hands back a key before the bytes are on
+    disk, which is what lets the sync keep fetching.  The executor's
+    queue is unbounded, though, and every queued task holds its message
+    body — so without a bound the memory cost of a folder grew with the
+    folder.
+    """
+
+    def test_a_caller_waits_once_the_queue_is_full(self) -> None:
+        from pony.storage import _MAX_PENDING_WRITES
+
+        root = TMP_ROOT / "pending-bound" / uuid4().hex
+        mirror = MaildirMirrorRepository(account_name="acct", root_dir=root)
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        mirror.create_folder(account_name="acct", folder_name="INBOX")
+
+        for n in range(_MAX_PENDING_WRITES * 4):
+            mirror.store_message_async(
+                folder=folder,
+                raw_message=f"Subject: m{n}\r\n\r\nbody\r\n".encode(),
+            )
+            self.assertLessEqual(
+                len(mirror._write_futures),  # noqa: SLF001
+                _MAX_PENDING_WRITES,
+            )
+
+        mirror.flush_writes()
+        self.assertEqual(
+            len(mirror.list_messages(folder=folder)),
+            _MAX_PENDING_WRITES * 4,
+        )
