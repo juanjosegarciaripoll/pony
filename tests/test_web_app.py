@@ -1094,3 +1094,15 @@ def test_the_page_closes_itself_after_the_server_stops() -> None:
     # And a page whose server has gone stops answering keys.
     assert "state.quitting = true;" in source
     assert "state.quitting" in source.split("function onKeyDown")[1]
+
+
+def test_the_footer_lists_each_key_once() -> None:
+    """A surface can inherit the application keys and declare them again."""
+    from chronos.keymap import web_key
+    from pony.web.layout import PageSurface, _footer, bindings_for
+
+    for surface in PageSurface:
+        bindings = bindings_for(surface)
+        rendered = str(_footer(bindings))
+        shown = [web_key(b.key) for b in bindings if b.show]
+        assert rendered.count('class="key"') == len(set(shown)), surface

@@ -204,7 +204,20 @@ def _footer(bindings: tuple[KeyBinding, ...]) -> Raw:
     """The keys worth advertising, in the table's own order."""
     from chronos.keymap import web_key
 
-    shown = [binding for binding in bindings if binding.show]
+    # One row per key the browser can see.  A surface can inherit the
+    # application keys and declare them again (the calendar's view
+    # surface does), and a bare capital and its ``shift+`` spelling are
+    # one key here -- either way the footer listed "Q Quit" twice.
+    shown: list[KeyBinding] = []
+    seen: set[str] = set()
+    for binding in bindings:
+        if not binding.show:
+            continue
+        key = web_key(binding.key)
+        if key in seen:
+            continue
+        seen.add(key)
+        shown.append(binding)
     return element(
         "footer",
         join(
