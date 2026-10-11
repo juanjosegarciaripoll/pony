@@ -181,7 +181,7 @@ type AnyAccount = AccountConfig | LocalAccountConfig
 # the schema changes in a way that requires user intervention.  The
 # parser rejects configs that do not declare exactly this value — a
 # missing or mismatched version is a loud error, not a silent migration.
-CONFIG_VERSION: int = 2
+CONFIG_VERSION: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +201,12 @@ class AppConfig:
     """Top-level Pony Express configuration."""
 
     accounts: tuple[AnyAccount, ...]
+    # ``data_dir`` holds the index and anchors relative mirror paths;
+    # ``profile`` names that directory and is stamped into it, so a
+    # config declaring a different profile is refused.  Required in a
+    # config file, optional here so tests need not invent a directory.
+    data_dir: Path | None = None
+    profile: str = ""
     use_utf8: bool = False
     # Composer: path to external editor executable (None = use inline editor)
     editor: str | None = None

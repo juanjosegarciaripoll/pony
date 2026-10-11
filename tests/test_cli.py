@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 import corpus
-from conftest import TMP_ROOT
+from conftest import ISOLATED_DATA_DIR, TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.cli import main
 from pony.domain import MessageFlag
@@ -916,9 +916,13 @@ def isolated_app_env() -> Iterator[Path]:
     os.environ["PONY_DATA_DIR"] = str(data_dir)
     os.environ["PONY_STATE_DIR"] = str(state_dir)
     os.environ["PONY_CACHE_DIR"] = str(cache_dir)
+    # Config fixtures declare this as their ``data_dir`` too, so they
+    # look like a real config rather than relying on the override alone.
+    ISOLATED_DATA_DIR.append(data_dir)
     try:
         yield env_root
     finally:
+        ISOLATED_DATA_DIR.pop()
         for key, value in previous.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -1864,7 +1868,9 @@ class LocalSummaryMboxTest(unittest.TestCase):
             config_path = env_root / "config" / "config.toml"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
-                "config_version = 2\n"
+                "config_version = 3\n"
+                f'data_dir = "{isolated_data_dir()}"\n'
+                'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "mbox-test"\n'
                 'email_address = "user@example.com"\n'
@@ -2029,8 +2035,11 @@ class MessageGetCcTest(unittest.TestCase):
 
 def sample_config_toml() -> str:
     """Return a minimal valid TOML app configuration."""
-    return """
-config_version = 2
+    return resolve_fixture(
+        """
+config_version = 3
+data_dir = "{DATA_DIR}"
+profile = "test"
 
 [[accounts]]
 name = "personal"
@@ -2048,6 +2057,7 @@ path = "mirrors/personal"
 format = "maildir"
 trash_retention_days = 30
 """.strip()
+    )
 
 
 class ResetAccountBranchesTest(unittest.TestCase):
@@ -3157,7 +3167,12 @@ class RemainingCommandArmTests(unittest.TestCase):
         with isolated_app_env() as env_root:
             config_path = env_root / "config" / "empty.toml"
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text("config_version = 2\n", encoding="utf-8")
+            config_path.write_text(
+                "config_version = 3\n"
+                f'data_dir = "{isolated_data_dir()}"\n'
+                'profile = "test"\n',
+                encoding="utf-8",
+            )
 
             with self.assertRaises(SystemExit) as ctx:
                 run_cli("--config", str(config_path), "compose")
@@ -3396,7 +3411,9 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
         mirror_dir.mkdir(parents=True, exist_ok=True)
         config_path = TMP_ROOT / f"config-local-{uuid4().hex}.toml"
         config_path.write_text(
-            "config_version = 2\n"
+            "config_version = 3\n"
+            f'data_dir = "{isolated_data_dir()}"\n'
+            'profile = "test"\n'
             "\n[[accounts]]\n"
             'account_type = "local"\n'
             'name = "archive"\n'
@@ -3579,3 +3596,119 @@ class BareFilenameShortcutTests(unittest.TestCase):
             main([])
         self.assertFalse(viewer.called)
         self.assertTrue(tui.called)
+
+
+class ProfileStampTestCase(unittest.TestCase):
+    """A data directory is owned by the profile that stamped it.
+
+    ``--config`` names accounts and mirrors; the index lives in the data
+    directory. The ``profile`` key pairs the two, and a mismatch is
+    refused before anything opens the index.
+    """
+
+    def setUp(self) -> None:
+        self.dir = TMP_ROOT / "instance" / uuid4().hex
+        self.data = self.dir / "data"
+        self.data.mkdir(parents=True, exist_ok=True)
+
+    def _config(self, *, profile: str, data_dir: Path | None = None) -> Path:
+        path = self.dir / f"{profile}.toml"
+        target = self.data if data_dir is None else data_dir
+        path.write_text(
+            "config_version = 3\n"
+            f'data_dir = "{target}"\n'
+            f'profile = "{profile}"\n'
+            "accounts = []\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_fresh_data_dir_is_adopted(self) -> None:
+        from pony.paths import claim_profile, read_profile
+
+        self.assertIsNone(read_profile(self.data))
+        claim_profile(self.data, "mine")
+        self.assertEqual(read_profile(self.data), "mine")
+
+    def test_claiming_twice_with_the_same_name_is_fine(self) -> None:
+        from pony.paths import claim_profile
+
+        claim_profile(self.data, "mine")
+        claim_profile(self.data, "mine")  # must not raise
+
+    def test_another_instance_is_refused(self) -> None:
+        from pony.paths import ProfileMismatchError, claim_profile
+
+        claim_profile(self.data, "mine")
+        with self.assertRaises(ProfileMismatchError) as caught:
+            claim_profile(self.data, "scratch")
+        self.assertEqual(caught.exception.found, "mine")
+        self.assertEqual(caught.exception.declared, "scratch")
+
+    def test_a_second_config_cannot_run_against_a_claimed_dir(self) -> None:
+        """A second config may not run against a claimed directory."""
+        from unittest.mock import patch
+
+        previous = os.environ.pop("PONY_DATA_DIR", None)
+        try:
+            mine = self._config(profile="mine")
+            errors = io.StringIO()
+            with (
+                patch("pony.cli.run_sync", return_value=0) as handler,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(main(["--config", str(mine), "doctor"]), 0)
+                scratch = self._config(profile="scratch")
+                with contextlib.redirect_stderr(errors):
+                    rc = main(["--config", str(scratch), "sync"])
+            self.assertEqual(rc, 2)
+            self.assertFalse(handler.called)
+            self.assertIn("belongs to profile 'mine'", errors.getvalue())
+            self.assertIn("declares 'scratch'", errors.getvalue())
+        finally:
+            if previous is not None:
+                os.environ["PONY_DATA_DIR"] = previous
+
+    def test_the_declared_data_dir_is_where_the_index_goes(self) -> None:
+        previous = os.environ.pop("PONY_DATA_DIR", None)
+        try:
+            config = self._config(profile="mine")
+            out, rc = run_cli_capture("--config", str(config), "doctor")
+            self.assertEqual(rc, 0)
+            self.assertIn(str(self.data / "index.sqlite3"), out)
+        finally:
+            if previous is not None:
+                os.environ["PONY_DATA_DIR"] = previous
+
+    def test_a_scratch_config_isolates_by_declaring_its_own_dir(self) -> None:
+        """Isolation is a config with another data_dir, nothing more."""
+        previous = os.environ.pop("PONY_DATA_DIR", None)
+        try:
+            elsewhere = self.dir / "elsewhere"
+            config = self._config(profile="scratch", data_dir=elsewhere)
+            out, rc = run_cli_capture("--config", str(config), "doctor")
+            self.assertEqual(rc, 0)
+            self.assertIn(str(elsewhere / "index.sqlite3"), out)
+
+            from pony.paths import read_profile
+
+            self.assertEqual(read_profile(elsewhere), "scratch")
+            self.assertIsNone(read_profile(self.data))
+        finally:
+            if previous is not None:
+                os.environ["PONY_DATA_DIR"] = previous
+
+    def test_the_env_override_beats_the_config(self) -> None:
+        """PONY_DATA_DIR stays the override the test suite runs on."""
+        from pony.paths import resolve_data_dir
+
+        declared = self.data
+        previous = os.environ.get("PONY_DATA_DIR")
+        os.environ["PONY_DATA_DIR"] = str(self.dir / "env")
+        try:
+            self.assertEqual(resolve_data_dir(declared), self.dir / "env")
+        finally:
+            if previous is None:
+                os.environ.pop("PONY_DATA_DIR", None)
+            else:
+                os.environ["PONY_DATA_DIR"] = previous

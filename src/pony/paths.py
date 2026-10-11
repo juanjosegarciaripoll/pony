@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys as _sys
 from dataclasses import dataclass
@@ -67,6 +68,15 @@ class AppPaths:
             index_db_file=data_dir / "index.sqlite3",
         )
 
+    def with_data_dir(self, data_dir: Path) -> AppPaths:
+        """Return a copy whose data directory (and index) is *data_dir*."""
+        resolved = data_dir.expanduser()
+        return dataclasses.replace(
+            self,
+            data_dir=resolved,
+            index_db_file=resolved / "index.sqlite3",
+        )
+
     @property
     def mcp_state_file(self) -> Path:
         return self.state_dir / "mcp.json"
@@ -78,6 +88,72 @@ class AppPaths:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+
+
+PROFILE_STAMP = "profile.toml"
+
+
+class ProfileMismatchError(Exception):
+    """The data directory is stamped with a different profile name."""
+
+    def __init__(self, *, data_dir: Path, found: str, declared: str) -> None:
+        self.data_dir = data_dir
+        self.found = found
+        self.declared = declared
+        super().__init__(
+            f"data directory {data_dir} belongs to profile {found!r}, "
+            f"but this config declares profile {declared!r}"
+        )
+
+
+def read_profile(data_dir: Path) -> str | None:
+    """Return the profile name stamped on *data_dir*, or None."""
+    try:
+        text = (data_dir / PROFILE_STAMP).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "profile":
+            return value.strip().strip('"').strip("'") or None
+    return None
+
+
+def claim_profile(data_dir: Path, profile: str) -> None:
+    """Stamp *profile* on *data_dir*, or raise if another owns it.
+
+    An unstamped directory is adopted: that covers first run and any
+    directory predating the stamp.
+    """
+    found = read_profile(data_dir)
+    if found is None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / PROFILE_STAMP).write_text(
+            f'profile = "{profile}"\n',
+            encoding="utf-8",
+        )
+        return
+    if found != profile:
+        raise ProfileMismatchError(
+            data_dir=data_dir,
+            found=found,
+            declared=profile,
+        )
+
+
+def resolve_data_dir(declared: Path | None) -> Path | None:
+    """Effective data directory: ``PONY_DATA_DIR`` wins, else *declared*.
+
+    The config's ``data_dir`` is how a user says where data lives.  The
+    environment variable relocates the *default* -- something no config
+    can do, because it has to apply before and without one.  The test
+    suite sets it for the whole session so no test can reach the real
+    directory, and packagers use it for sandboxed installs.
+    """
+    override = os.environ.get("PONY_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    return declared
 
 
 def bundled_docs_path() -> Path | None:

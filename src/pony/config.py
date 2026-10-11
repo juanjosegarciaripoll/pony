@@ -36,7 +36,7 @@ from .domain import (
 from .domain import (
     AppConfig as AppConfig,  # explicit re-export
 )
-from .paths import AppPaths
+from .paths import AppPaths, resolve_data_dir
 
 
 class ConfigError(ValueError):
@@ -106,13 +106,16 @@ def _parse_app_config(raw: object) -> AppConfig:
     data = cast("dict[str, object]", raw)
 
     _require_config_version(data)
+    profile = _require_profile(data)
+    data_dir = resolve_data_dir(_require_data_dir(data))
 
     accounts_raw = data.get("accounts", [])
     if not isinstance(accounts_raw, list):
         raise ConfigError("'accounts' must be a list of tables")
     # isinstance narrows to list[Unknown]; cast to list[object] for element access.
     accounts: tuple[AnyAccount, ...] = tuple(
-        _parse_any_account(item) for item in cast("list[object]", accounts_raw)
+        _parse_any_account(item, data_dir=data_dir)
+        for item in cast("list[object]", accounts_raw)
     )
     use_utf8 = _require_bool(data, "use_utf8", default=False)
     editor = _optional_string(data, "editor")
@@ -143,6 +146,8 @@ def _parse_app_config(raw: object) -> AppConfig:
     viewers = _parse_viewers(data)
     return AppConfig(
         accounts=accounts,
+        data_dir=data_dir,
+        profile=profile,
         use_utf8=use_utf8,
         editor=editor,
         markdown_compose=markdown_compose,
@@ -196,20 +201,24 @@ def _parse_viewers(data: dict[str, object]) -> tuple[ViewerRule, ...]:
     return tuple(rules)
 
 
-def _parse_any_account(raw: object) -> AnyAccount:
+def _parse_any_account(raw: object, *, data_dir: Path | None = None) -> AnyAccount:
     """Dispatch to the correct account parser based on ``account_type``."""
     if not isinstance(raw, dict):
         raise ConfigError("each account must be an object")
     data = cast("dict[str, object]", raw)
     account_type = data.get("account_type", "imap")
     if account_type == "local":
-        return _parse_local_account(data)
+        return _parse_local_account(data, data_dir=data_dir)
     if account_type == "imap":
-        return _parse_imap_account(data)
+        return _parse_imap_account(data, data_dir=data_dir)
     raise ConfigError(f"account_type must be 'imap' or 'local', got {account_type!r}")
 
 
-def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
+def _parse_local_account(
+    data: dict[str, object],
+    *,
+    data_dir: Path | None = None,
+) -> LocalAccountConfig:
     smtp_raw = data.get("smtp")
     if smtp_raw is None:
         smtp: SmtpConfig | None = None
@@ -229,7 +238,7 @@ def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
     return LocalAccountConfig(
         name=_require_string(data, "name"),
         email_address=_require_string(data, "email_address"),
-        mirror=_parse_mirror(_require_mapping(data, "mirror")),
+        mirror=_parse_mirror(_require_mapping(data, "mirror"), data_dir=data_dir),
         sent_folder=_optional_string(data, "sent_folder"),
         drafts_folder=_optional_string(data, "drafts_folder"),
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
@@ -243,7 +252,11 @@ def _parse_local_account(data: dict[str, object]) -> LocalAccountConfig:
     )
 
 
-def _parse_imap_account(raw: object) -> AccountConfig:
+def _parse_imap_account(
+    raw: object,
+    *,
+    data_dir: Path | None = None,
+) -> AccountConfig:
     if not isinstance(raw, dict):
         raise ConfigError("each account must be an object")
     data = cast("dict[str, object]", raw)
@@ -264,7 +277,7 @@ def _parse_imap_account(raw: object) -> AccountConfig:
         smtp=_parse_smtp(_require_mapping(data, "smtp")),
         username=_require_string(data, "username"),
         credentials_source=_require_credentials_source(data),
-        mirror=_parse_mirror(_require_mapping(data, "mirror")),
+        mirror=_parse_mirror(_require_mapping(data, "mirror"), data_dir=data_dir),
         imap_port=_require_int(data, "imap_port", default=993 if imap_ssl else 143),
         imap_ssl=imap_ssl,
         password=_optional_password(data),
@@ -303,6 +316,47 @@ def _optional_password_command(data: dict[str, object]) -> tuple[str, ...] | Non
     return tuple(cast("list[str]", raw))
 
 
+_PROFILE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def _require_profile(data: dict[str, object]) -> str:
+    """Require the profile name pairing this config with its data_dir."""
+    raw = data.get("profile")
+    if raw is None:
+        raise ConfigError(
+            "missing 'profile' at the top of config.toml.\n"
+            'Add a line, e.g.:  profile = "default"\n'
+            "Pony stamps it on data_dir and refuses any config that "
+            "declares a different profile for that directory."
+        )
+    if not isinstance(raw, str) or not _PROFILE_RE.match(raw):
+        raise ConfigError(
+            "'profile' must be 1-64 characters of letters, digits, "
+            "'.', '_' or '-', starting with a letter or digit"
+        )
+    return raw
+
+
+def _require_data_dir(data: dict[str, object]) -> Path:
+    """Require an explicit home for the index and relative mirrors."""
+    raw = data.get("data_dir")
+    if raw is None:
+        raise ConfigError(
+            "missing 'data_dir' at the top of config.toml.\n"
+            'Add a line, e.g.:  data_dir = "~/.local/share/pony"\n'
+            "It holds the index, and relative mirror paths resolve under it."
+        )
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError("'data_dir' must be a non-empty string")
+    expanded = _expand_path(raw)
+    if not expanded.is_absolute():
+        raise ConfigError(
+            f"'data_dir' must be an absolute path (got {raw!r}); a relative "
+            "data directory would depend on the working directory"
+        )
+    return expanded
+
+
 def _require_config_version(data: dict[str, object]) -> None:
     """Require the top-level ``config_version`` to match ``CONFIG_VERSION``.
 
@@ -337,15 +391,20 @@ def _parse_folder_config(data: dict[str, object]) -> FolderConfig:
     )
 
 
-def _parse_mirror(data: dict[str, object]) -> MirrorConfig:
+def _parse_mirror(
+    data: dict[str, object],
+    *,
+    data_dir: Path | None,
+) -> MirrorConfig:
     path_str = _require_string(data, "path")
     # Expand environment variables (e.g. $HOME, %USERPROFILE%).
     mirror_path = _expand_path(path_str)
     if not mirror_path.is_absolute():
-        # Relative paths are resolved against Pony's standard data
-        # directory, not the config file's location.  Use an absolute
-        # path to store mirrors elsewhere.
-        mirror_path = (AppPaths.default().data_dir / mirror_path).resolve()
+        # Relative paths resolve under this config's data_dir, not the
+        # platform default.  Use an absolute path to store mirrors
+        # elsewhere.
+        base = data_dir if data_dir is not None else AppPaths.default().data_dir
+        mirror_path = (base / mirror_path).resolve()
 
     trash_retention_days = _require_int(data, "trash_retention_days", default=30)
     if trash_retention_days < 0:

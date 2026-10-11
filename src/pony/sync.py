@@ -56,6 +56,7 @@ from .protocols import (
     IndexRepository,
     MirrorRepository,
 )
+from .storage import encode_folder_name
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,7 @@ class FolderSyncPlan:
     needs_confirmation: bool = False
     pending_delete_count: int = 0
     pending_delete_total: int = 0
+    pending_push_count: int = 0
     is_new: bool = False
     scan_ms: int = 0
     highest_modseq: int = 0
@@ -308,6 +310,7 @@ class AccountSyncPlan:
     folders: tuple[FolderSyncPlan, ...]
     skipped_folders: tuple[str, ...] = ()
     creates: tuple[str, ...] = ()
+    all_server_folders: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +437,11 @@ def format_plan_detail(plan: SyncPlan) -> str:
                     f" [CONFIRM: would delete {folder.pending_delete_count}"
                     f" of {folder.pending_delete_total} ({pct:.0f}%)]"
                 )
+            elif folder.needs_confirmation and folder.pending_push_count:
+                confirm = (
+                    f" [CONFIRM: would upload {folder.pending_push_count}"
+                    f" message(s) to the server]"
+                )
             elif folder.needs_confirmation:
                 confirm = " [needs confirmation]"
             else:
@@ -466,6 +474,42 @@ def _merge_flags(
 # requires explicit confirmation before the deletes are applied.
 _MASS_DELETE_THRESHOLD = 0.20
 _MASS_DELETE_MIN = 5
+
+
+# C-7 mass-push safety halt.  A pass that would APPEND a large share of
+# a folder is an index that lost its UIDs, not a user who composed that
+# much: ``uid IS NULL`` cannot tell "composed here" from "on the server,
+# handle lost".  The absolute ceiling catches the big case, the ratio
+# catches small folders.
+_MASS_PUSH_THRESHOLD = 0.20
+_MASS_PUSH_MIN = 5
+_MASS_PUSH_ABSOLUTE = 50
+
+
+def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
+    """Flag a folder plan whose uploads would rewrite much of the folder."""
+    push_count = sum(1 for op in plan.ops if isinstance(op, (PushAppendOp, ReUploadOp)))
+    if push_count < _MASS_PUSH_MIN:
+        return plan
+    # What the folder is known to hold: rows already carrying a UID
+    # (the slow path counts them) plus whatever this pass will fetch.
+    fetches = sum(1 for op in plan.ops if isinstance(op, FetchNewOp))
+    known = plan.pending_delete_total + fetches
+    over_ratio = bool(known) and push_count > known * _MASS_PUSH_THRESHOLD
+    if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
+        return plan
+    logger.warning(
+        "Mass upload in %s: %d message(s) would be APPENDed against %d"
+        " known -- needs confirmation",
+        plan.folder_name,
+        push_count,
+        known,
+    )
+    return dataclasses.replace(
+        plan,
+        needs_confirmation=True,
+        pending_push_count=push_count,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -609,9 +653,18 @@ class ImapSyncService:
         return SyncResult(accounts=tuple(results))
 
     def sync(self, *, account_name: str | None = None) -> SyncResult:
+        """Plan and execute in one call, confirming only what is safe.
+
+        Callers here have nobody to ask (background sync, the browser's
+        sync button), so a folder that tripped a safety halt is skipped
+        and reported rather than waived.
+        """
         plan = self.plan(account_name=account_name)
-        all_folders = frozenset(f.folder_name for a in plan.accounts for f in a.folders)
-        return self.execute(plan, confirmed_folders=all_folders)
+        halted = plan.folders_needing_confirmation()
+        safe = (
+            frozenset(f.folder_name for a in plan.accounts for f in a.folders) - halted
+        )
+        return self.execute(plan, confirmed_folders=safe)
 
     # ------------------------------------------------------------------
     # Planning
@@ -673,11 +726,18 @@ class ImapSyncService:
             )
             mirror_folder_names = set()
         server_folder_set = set(all_server_folders)
+        # A mirror directory whose name is the *encoded* spelling of a
+        # folder the server already has is a storage artifact, not a
+        # folder the user created here: encode_folder_name collapses
+        # '/', ':' and friends to '.', so a server "Archive/2024" is
+        # mirrored as "Archive.2024" and would otherwise be CREATEd on
+        # the server on every single sync.
+        encoded_server = {encode_folder_name(name) for name in all_server_folders}
         creates = tuple(
             sorted(
                 name
                 for name in mirror_folder_names - server_folder_set
-                if folder_policy.should_sync(name)
+                if folder_policy.should_sync(name) and name not in encoded_server
             )
         )
 
@@ -718,17 +778,8 @@ class ImapSyncService:
                 ", ".join(sorted(synced_aggregate)),
             )
 
-        stale = self._index.purge_stale_folders(
-            account_name=account.name,
-            active_folders=frozenset(all_server_folders),
-        )
-        if stale:
-            logger.info(
-                "Cleanup: purged state for %d stale folder(s) in %r: %s",
-                len(stale),
-                account.name,
-                ", ".join(stale),
-            )
+        # Planning must not mutate: the folder list rides out on the
+        # plan and stale watermarks are dropped in execute().
 
         # Per-folder STATUS gate.  Outputs:
         #   - fast_path[folder] = stored FolderSyncState  (no FETCH at all)
@@ -961,9 +1012,10 @@ class ImapSyncService:
 
         return AccountSyncPlan(
             account_name=account.name,
-            folders=tuple(folder_plans),
+            folders=tuple(_with_push_guard(fp) for fp in folder_plans),
             skipped_folders=tuple(skipped),
             creates=creates,
+            all_server_folders=tuple(all_server_folders),
         )
 
     def _safe_status(
@@ -1486,6 +1538,18 @@ class ImapSyncService:
 
         folder_results: list[FolderSyncResult] = []
         skipped = list(plan.skipped_folders)
+        if plan.all_server_folders:
+            stale = self._index.purge_stale_folders(
+                account_name=account.name,
+                active_folders=frozenset(plan.all_server_folders),
+            )
+            if stale:
+                logger.info(
+                    "Dropped sync watermarks for %d folder(s) gone from %r: %s",
+                    len(stale),
+                    account.name,
+                    ", ".join(stale),
+                )
         try:
             for folder_name in plan.creates:
                 try:
@@ -1729,6 +1793,7 @@ class ImapSyncService:
                                 session=session,
                                 mirror=mirror,
                                 counters=counters,
+                                uid_validity=plan.uid_validity,
                             )
                             if not success:
                                 had_failure = True
@@ -1778,6 +1843,7 @@ class ImapSyncService:
                         session=session,
                         mirror=mirror,
                         counters=counters,
+                        uid_validity=plan.uid_validity,
                     )
                     if not success:
                         had_failure = True
@@ -1882,6 +1948,7 @@ class ImapSyncService:
         session: ImapClientSession,
         mirror: MirrorRepository,
         counters: dict[str, int],
+        uid_validity: int = 0,
     ) -> bool:
         now = datetime.now(tz=UTC)
 
@@ -1896,6 +1963,7 @@ class ImapSyncService:
                     server_flags=op.server_flags,
                     extra_imap_flags=op.extra_imap_flags,
                     raw=raw,
+                    uid_validity=uid_validity,
                 )
                 if success:
                     counters["fetched"] += 1
@@ -1992,7 +2060,10 @@ class ImapSyncService:
 
             case PushDeleteOp():
                 session.mark_deleted(folder_name, op.server_uid)
-                session.expunge(folder_name)
+                # UID-scoped (RFC 4315).  A bare EXPUNGE removes every
+                # message any other client has flagged \Deleted in this
+                # folder -- mail this plan never mentioned.
+                session.expunge(folder_name, uids=(op.server_uid,))
                 self._index.delete_message(message_ref=op.message_ref)
                 mirror.delete_message(folder=folder_ref, storage_key=op.storage_key)
                 counters["expunged_on_server"] += 1
@@ -2016,6 +2087,7 @@ class ImapSyncService:
                     session=session,
                     mirror=mirror,
                     now=now,
+                    uid_validity=uid_validity,
                 )
                 if success:
                     counters["moved_to_server"] += 1
@@ -2029,6 +2101,7 @@ class ImapSyncService:
                     session=session,
                     mirror=mirror,
                     now=now,
+                    uid_validity=uid_validity,
                 )
                 if success:
                     counters["appended_to_server"] += 1
@@ -2113,17 +2186,39 @@ class ImapSyncService:
         return True
 
     def _finalize_after_new_uid(
-        self, row: IndexedMessage, *, new_uid: int, now: datetime
+        self,
+        row: IndexedMessage,
+        *,
+        new_uid: int,
+        now: datetime,
+        mirror: MirrorRepository | None = None,
+        uid_validity: int = 0,
     ) -> None:
         """Re-key a successfully pushed row to its new server UID.
 
         Used after APPEND/MOVE return a UID: clears the pending-move source
         fields, promotes the row to ACTIVE, and marks base/server flags as
-        synced from the local flags.
+        synced from the local flags.  The handle is also stamped onto the
+        mirror file, so the message stops looking local-only on disk.
         """
+        storage_key = row.storage_key
+        if mirror is not None and storage_key:
+            try:
+                storage_key = mirror.stamp_uid(
+                    folder=FolderRef(
+                        account_name=row.message_ref.account_name,
+                        folder_name=row.message_ref.folder_name,
+                    ),
+                    storage_key=storage_key,
+                    uid=new_uid,
+                    uid_validity=uid_validity,
+                )
+            except Exception:
+                logger.exception("Could not stamp uid=%d onto %s", new_uid, storage_key)
         self._index.update_message(
             message=dataclasses.replace(
                 row,
+                storage_key=storage_key,
                 uid=new_uid,
                 local_status=MessageStatus.ACTIVE,
                 source_folder=None,
@@ -2143,10 +2238,22 @@ class ImapSyncService:
         session: ImapClientSession,
         mirror: MirrorRepository,
         now: datetime,
+        uid_validity: int = 0,
     ) -> bool:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
             return False
+        if row.uid is not None:
+            # Phase 1 adopted this row by Message-ID after the plan was
+            # frozen; it is on the server, so APPEND would duplicate it.
+            logger.info(
+                "Skipping APPEND for id=%d in %s/%s -- row now carries uid=%d",
+                op.message_ref.id,
+                account.name,
+                folder_name,
+                row.uid,
+            )
+            return True
         try:
             raw = mirror.get_message_bytes(
                 folder=FolderRef(
@@ -2175,7 +2282,13 @@ class ImapSyncService:
             new_uid,
         )
         if new_uid is not None:
-            self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
+            self._finalize_after_new_uid(
+                row,
+                new_uid=new_uid,
+                now=now,
+                mirror=mirror,
+                uid_validity=uid_validity,
+            )
         elif row.local_status == MessageStatus.PENDING_MOVE:
             # Server didn't return APPENDUID but the APPEND succeeded.
             # Clear PENDING_MOVE so the row isn't re-uploaded every sync.
@@ -2201,12 +2314,21 @@ class ImapSyncService:
         *,
         account: AccountConfig,  # noqa: ARG002
         session: ImapClientSession,
-        mirror: MirrorRepository,  # noqa: ARG002
+        mirror: MirrorRepository,
         now: datetime,
+        uid_validity: int = 0,
     ) -> bool:
         row = self._index.get_message(message_ref=op.message_ref)
         if row is None:
             return False
+        if row.uid is not None:
+            # Already landed in the target folder on the server.
+            logger.info(
+                "Skipping MOVE for id=%d -- row now carries uid=%d",
+                op.message_ref.id,
+                row.uid,
+            )
+            return True
         try:
             new_uid = session.move_message(
                 op.source_folder,
@@ -2231,7 +2353,13 @@ class ImapSyncService:
             new_uid,
         )
         if new_uid is not None:
-            self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
+            self._finalize_after_new_uid(
+                row,
+                new_uid=new_uid,
+                now=now,
+                mirror=mirror,
+                uid_validity=uid_validity,
+            )
         else:
             # Server omitted COPYUID; we know the move executed but
             # not the new UID.  Mark ACTIVE so the row is visible;
@@ -2279,6 +2407,7 @@ class ImapSyncService:
         server_flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str],
         raw: bytes,
+        uid_validity: int = 0,
     ) -> bool:
         if not raw:
             logger.warning(
@@ -2313,6 +2442,8 @@ class ImapSyncService:
             storage_key = mirror.store_message_async(
                 folder=folder_ref,
                 raw_message=raw,
+                uid=uid,
+                uid_validity=uid_validity,
             )
         except Exception:
             logger.exception("Failed to store UID %d to mirror", uid)
@@ -2512,8 +2643,16 @@ class ImapSyncService:
         with self._index.connection():
             for name in self._index.list_indexed_accounts():
                 if name not in configured:
-                    self._index.purge_account(account_name=name)
-                    logger.info("Cleanup: purged stale account %r", name)
+                    # An account absent from the config means the
+                    # config changed, not that its mail should go.
+                    # Removal is deliberate only.
+                    logger.warning(
+                        "Index holds account %r, which the loaded config does"
+                        " not declare; leaving its rows untouched. Run"
+                        " 'pony reset --account %s' to remove them.",
+                        name,
+                        name,
+                    )
             for account in self._config.accounts:
                 if not isinstance(account, AccountConfig):
                     continue

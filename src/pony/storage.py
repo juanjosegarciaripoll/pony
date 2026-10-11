@@ -5,11 +5,11 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 import contextlib
+import itertools
 import mailbox
 import mmap
 import os
 import re
-import socket
 import sys
 import time
 import weakref
@@ -36,6 +36,7 @@ class MaildirMirrorRepository(MirrorRepository):
         for subdir in ("cur", "new", "tmp"):
             (self._root_dir / subdir).mkdir(parents=True, exist_ok=True)
         self._ensured_dirs: set[str] = set()
+        self._sequence = itertools.count()
         self._write_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._write_futures: list[concurrent.futures.Future[int]] = []
         atexit.register(self._shutdown)
@@ -67,17 +68,39 @@ class MaildirMirrorRepository(MirrorRepository):
             return folder_path
         return self._maildir_folder_path(folder_name)
 
-    def _make_filename(self) -> str:
-        """Generate a unique Maildir filename."""
-        hostname = socket.gethostname()
-        pid = os.getpid()
-        timestamp = time.time()
-        return f"{timestamp:.6f}.{pid}.{hostname}"
+    def _make_filename(self, *, uid: int | None, uid_validity: int) -> str:
+        """Generate a Maildir filename, carrying the server handle if known.
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
+        ``{time}.{counter}.{pid}`` is the unique part.  The counter is
+        what makes it unique: two calls can land in the same microsecond,
+        and the pid is constant within a process, so the timestamp alone
+        collided and one write silently overwrote the other.  The pid
+        still separates two Pony processes (a TUI and a browser server)
+        that start inside the same microsecond.
+
+        ``,V=<uidvalidity>,U=<uid>`` is appended once the server handle
+        is known -- the mbsync/Dovecot convention, legal on NTFS, APFS
+        and ext4.  It makes the mirror self-describing: the index can be
+        rebuilt from it offline, a re-download of the same UID writes
+        the same name instead of a duplicate, and *absence* of ``,U=``
+        means the message exists only here and has yet to be APPENDed.
+        """
+        name = f"{time.time():.6f}.{next(self._sequence)}.{os.getpid()}"
+        if uid is None:
+            return name
+        return f"{name},V={uid_validity},U={uid}"
+
+    def store_message(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        uid: int | None = None,
+        uid_validity: int = 0,
+    ) -> str:
         self._require_folder(folder)
         folder_path = self._ensure_folder_dirs(folder.folder_name)
-        filename = self._make_filename()
+        filename = self._make_filename(uid=uid, uid_validity=uid_validity)
         new_path = folder_path / "new" / filename
         new_path.write_bytes(raw_message)
         return filename
@@ -87,6 +110,8 @@ class MaildirMirrorRepository(MirrorRepository):
         *,
         folder: FolderRef,
         raw_message: bytes,
+        uid: int | None = None,
+        uid_validity: int = 0,
     ) -> str:
         """Generate the filename and return immediately; write in background.
 
@@ -95,7 +120,7 @@ class MaildirMirrorRepository(MirrorRepository):
         """
         self._require_folder(folder)
         folder_path = self._ensure_folder_dirs(folder.folder_name)
-        filename = self._make_filename()
+        filename = self._make_filename(uid=uid, uid_validity=uid_validity)
         new_path = folder_path / "new" / filename
         if self._write_pool is None:
             self._write_pool = concurrent.futures.ThreadPoolExecutor(
@@ -184,6 +209,35 @@ class MaildirMirrorRepository(MirrorRepository):
                 if matches:
                     return matches[0]
         return None
+
+    def stamp_uid(
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        uid: int,
+        uid_validity: int,
+    ) -> str:
+        """Rename the file to carry *uid*, returning the new storage_key.
+
+        A message composed here is stored before the server has given it
+        a UID; APPEND supplies one afterwards (RFC 4315 APPENDUID), and
+        this is what records it on disk.  Returns *storage_key*
+        unchanged when the file is missing or already carries a handle.
+        """
+        self._require_folder(folder)
+        if uid_of(storage_key) is not None:
+            return storage_key
+        current = self._find_message_file(
+            folder_name=folder.folder_name,
+            storage_key=storage_key,
+        )
+        if current is None:
+            return storage_key
+        suffix = current.name[len(storage_key) :]
+        new_key = f"{storage_key},V={uid_validity},U={uid}"
+        current.rename(current.with_name(new_key + suffix))
+        return new_key
 
     def compact_folder(self, *, folder: FolderRef) -> dict[str, str]:
         """Nothing to reclaim: a Maildir delete removes the file at once."""
@@ -376,7 +430,19 @@ class MboxMirrorRepository(MirrorRepository):
             for name in sorted(set(folder_names))
         )
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
+    def store_message(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        uid: int | None = None,  # noqa: ARG002
+        uid_validity: int = 0,  # noqa: ARG002
+    ) -> str:
+        """Store a message.  An mbox key is a position, so no UID fits.
+
+        Local accounts are the mbox users and sync skips them, so they
+        never have a server handle to record.
+        """
         self._require_folder(folder)
         parsed = BytesParser(policy=policy.default).parsebytes(raw_message)
         message = mailbox.mboxMessage(parsed)
@@ -385,13 +451,25 @@ class MboxMirrorRepository(MirrorRepository):
             mbox.flush()
         return key
 
-    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
+    def store_message_async(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        uid: int | None = None,
+        uid_validity: int = 0,
+    ) -> str:
         """Store synchronously — an mbox key is the message's position.
 
         There is nothing to defer: the key only exists once the message
         has been appended, so there is no way to hand one back early.
         """
-        return self.store_message(folder=folder, raw_message=raw_message)
+        return self.store_message(
+            folder=folder,
+            raw_message=raw_message,
+            uid=uid,
+            uid_validity=uid_validity,
+        )
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
@@ -473,6 +551,18 @@ class MboxMirrorRepository(MirrorRepository):
             self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
         # Flush is deferred: call flush_writes() to commit pending marks.
         # _close_all() also flushes all handles on process exit.
+
+    def stamp_uid(
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        uid: int,  # noqa: ARG002
+        uid_validity: int,  # noqa: ARG002
+    ) -> str:
+        """No-op: an mbox key is a position and cannot carry a handle."""
+        self._require_folder(folder)
+        return storage_key
 
     def compact_folder(self, *, folder: FolderRef) -> dict[str, str]:
         """Drop deleted messages from the file and report how keys moved.
@@ -675,7 +765,7 @@ class MboxMirrorRepository(MirrorRepository):
         return self._open_handles[folder_name]
 
     def _folder_file(self, folder_name: str) -> Path:
-        encoded = _encode_folder_name(folder_name)
+        encoded = encode_folder_name(folder_name)
         return self._root_dir / f"{encoded}.mbox"
 
     def _require_account(self, account_name: str) -> None:
@@ -1024,7 +1114,29 @@ def _sanitize_for_path(name: str) -> str:
     return _UNSAFE_PATH_RE.sub(".", name)
 
 
-def _encode_folder_name(folder_name: str) -> str:
+_UID_SUFFIX_RE = re.compile(r",V=(\d+),U=(\d+)\Z")
+
+
+def uid_of(storage_key: str) -> tuple[int, int] | None:
+    """Return ``(uid_validity, uid)`` encoded in *storage_key*, or None.
+
+    None means the message has no server handle on disk: either it was
+    stored before UIDs were recorded in the name, or it exists only
+    locally and has never been APPENDed.
+    """
+    match = _UID_SUFFIX_RE.search(storage_key)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def encode_folder_name(folder_name: str) -> str:
+    """Spell *folder_name* the way the mirror stores it on disk.
+
+    Public because the sync planner has to recognise its own encoding:
+    a mirror directory may be the sanitized form of a folder the server
+    already has, which is not a folder to create.
+    """
     return _sanitize_for_path(folder_name)
 
 

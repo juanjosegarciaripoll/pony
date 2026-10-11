@@ -22,14 +22,16 @@ from pony.domain import (
     FolderQuickStatus,
     FolderRef,
     MessageFlag,
+    MessageRef,
     MessageStatus,
     MirrorConfig,
     SmtpConfig,
 )
 from pony.index_store import SqliteIndexRepository
+from pony.message_projection import project_rfc822_message
 from pony.protocols import ImapClientSession, MirrorRepository
 from pony.storage import MaildirMirrorRepository
-from pony.sync import ImapSyncService
+from pony.sync import ImapSyncService, format_plan_detail
 
 # ---------------------------------------------------------------------------
 # FakeImapSession
@@ -61,6 +63,8 @@ class FakeImapSession:
         self.stored_extra: list[tuple[int, frozenset[str]]] = []
         self.extra_flags: dict[tuple[str, int], frozenset[str]] = {}
         self.deleted_uids: list[int] = []
+        # None = folder-wide EXPUNGE, a frozenset = UID-scoped.
+        self.expunged_scopes: list[frozenset[int] | None] = []
         self.moves: list[tuple[str, int, str]] = []
         self.created_folders: list[str] = []
         # Ordered log of side-effecting calls (create, move, append, ...)
@@ -211,9 +215,18 @@ class FakeImapSession:
         self.deleted_uids.append(uid)
         self._bump_modseq(folder_name, uid)
 
-    def expunge(self, folder_name: str) -> None:
+    def expunge(
+        self,
+        folder_name: str,
+        *,
+        uids: Sequence[int] | None = None,
+    ) -> None:
         folder = self.folders.get(folder_name, {})
+        scope = set(uids) if uids else None
+        self.expunged_scopes.append(None if scope is None else frozenset(scope))
         for uid in list(self.deleted_uids):
+            if scope is not None and uid not in scope:
+                continue
             if folder.pop(uid, None) is not None:
                 self._bump_modseq(folder_name, uid)
 
@@ -1666,8 +1679,8 @@ class MessageIdChangeTestCase(unittest.TestCase):
 class CleanupTestCase(unittest.TestCase):
     """DB cleanup: stale accounts, stale folders."""
 
-    def test_stale_account_purged_on_sync(self) -> None:
-        """Rows for an account not in config are purged during sync."""
+    def test_an_account_missing_from_the_config_is_left_alone(self) -> None:
+        """Rows of an account the config does not declare survive a sync."""
         raw = _make_raw_message("Stale", "<stale-acct@example.com>")
         service, index, _, _ = _setup(
             server_folders={
@@ -1704,9 +1717,17 @@ class CleanupTestCase(unittest.TestCase):
         )
         self.assertIn("removed-account", index.list_indexed_accounts())
 
-        # Next sync should purge it.
-        service.sync()
-        self.assertNotIn("removed-account", index.list_indexed_accounts())
+        # A second sync must leave it alone, and say how to remove it.
+        with self.assertLogs("pony.sync", level="WARNING") as captured:
+            service.sync()
+        self.assertIn("removed-account", index.list_indexed_accounts())
+        self.assertTrue(
+            any(
+                "pony reset --account removed-account" in line
+                for line in captured.output
+            ),
+            captured.output,
+        )
 
     def test_stale_folder_state_purged_on_plan(self) -> None:
         """Sync state for folders no longer on the server is purged."""
@@ -1732,6 +1753,23 @@ class CleanupTestCase(unittest.TestCase):
         states = index.list_folder_sync_states(account_name="personal")
         folder_names = {s.folder_name for s in states}
         self.assertNotIn("OldFolder", folder_names)
+
+    def test_planning_alone_does_not_drop_stale_folder_state(self) -> None:
+        """A plan that is never executed leaves the index untouched."""
+        raw = _make_raw_message("Active", "<active2@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<active2@example.com>", frozenset(), raw)},
+                "Doomed": {2: ("<doomed@example.com>", frozenset(), raw)},
+            }
+        )
+        service.sync()
+        del session.folders["Doomed"]
+
+        service.plan()  # planned, never executed
+
+        states = index.list_folder_sync_states(account_name="personal")
+        self.assertIn("Doomed", {s.folder_name for s in states})
 
     # UTF-7 encoding/decoding tests removed — handled by imapclient.
 
@@ -3468,3 +3506,175 @@ class UidValidityAdoptionFallbackTestCase(unittest.TestCase):
         service.sync()
         rows = index.list_folder_messages(folder=self.folder)
         self.assertTrue(all(r.uid is not None for r in rows), "row left without a UID")
+
+
+class MassPushGuardTestCase(unittest.TestCase):
+    """C-7: a pass that would upload a whole folder back halts first.
+
+    An index that lost its UIDs looks like a folder full of outgoing
+    mail, because ``uid IS NULL`` cannot tell "composed here" from "on
+    the server, handle lost".
+    """
+
+    def _folder_of(
+        self, count: int
+    ) -> tuple[
+        ImapSyncService,
+        SqliteIndexRepository,
+        MaildirMirrorRepository,
+        FakeImapSession,
+    ]:
+        return _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<bulk-{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"Bulk {uid}", f"<bulk-{uid}@example.com>"),
+                    )
+                    for uid in range(1, count + 1)
+                }
+            }
+        )
+
+    def test_a_folder_that_lost_its_uids_is_not_uploaded(self) -> None:
+        service, index, _, session = self._folder_of(6)
+        service.sync()
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+        session.call_log.clear()
+
+        plan = service.plan()
+        (folder_plan,) = plan.accounts[0].folders
+        self.assertTrue(folder_plan.needs_confirmation)
+        self.assertEqual(folder_plan.pending_push_count, 6)
+        self.assertEqual(plan.folders_needing_confirmation(), frozenset({"INBOX"}))
+
+        # Unattended callers must not waive the halt for themselves.
+        service.sync()
+        self.assertNotIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 6)
+
+    def test_the_halt_is_described_in_the_plan_summary(self) -> None:
+        service, index, _, _ = self._folder_of(6)
+        service.sync()
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+
+        summary = format_plan_detail(service.plan())
+        self.assertIn("would upload 6 message(s)", summary)
+
+    def test_confirming_adopts_the_rows_instead_of_appending_them(self) -> None:
+        """Even confirmed, the rows are re-adopted, not duplicated.
+
+        Phase 1 re-attaches each UID by Message-ID; the APPEND left in
+        the frozen plan is then skipped because the row has a UID.
+        """
+        service, index, _, session = self._folder_of(6)
+        service.sync()
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+        session.call_log.clear()
+
+        plan = service.plan()
+        service.execute(plan, confirmed_folders=frozenset({"INBOX"}))
+
+        self.assertNotIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 6)
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = index.list_folder_messages(folder=folder)
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(row.uid is not None for row in rows))
+
+    def test_a_single_local_draft_still_goes_out(self) -> None:
+        """The guard must not stand in the way of ordinary composing."""
+        service, index, mirror, session = self._folder_of(6)
+        service.sync()
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        raw = _make_raw_message("Mine", "<mine@example.com>")
+        key = mirror.store_message(folder=folder, raw_message=raw)
+        index.insert_message(
+            message=project_rfc822_message(
+                message_ref=MessageRef(
+                    account_name="personal", folder_name="INBOX", id=0
+                ),
+                raw_message=raw,
+                storage_key=key,
+            )
+        )
+        session.call_log.clear()
+
+        service.sync()
+
+        self.assertIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 7)
+
+
+class ScopedExpungeTestCase(unittest.TestCase):
+    """F4: deleting one message must not expunge another client's work."""
+
+    def test_pushing_one_delete_expunges_only_that_uid(self) -> None:
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: (
+                        "<keep@example.com>",
+                        frozenset(),
+                        _make_raw_message("Keep", "<keep@example.com>"),
+                    ),
+                    2: (
+                        "<go@example.com>",
+                        frozenset(),
+                        _make_raw_message("Go", "<go@example.com>"),
+                    ),
+                }
+            }
+        )
+        service.sync()
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = {r.message_id: r for r in index.list_folder_messages(folder=folder)}
+        index.upsert_message(
+            message=dataclasses.replace(
+                rows["<go@example.com>"],
+                local_status=MessageStatus.TRASHED,
+            )
+        )
+        # Another client has flagged the *other* message \Deleted and
+        # not expunged it yet.  A folder-wide EXPUNGE would destroy it.
+        session.deleted_uids.append(1)
+
+        service.sync()
+
+        self.assertIn(frozenset({2}), session.expunged_scopes)
+        self.assertNotIn(None, session.expunged_scopes)
+        self.assertIn(1, session.folders["INBOX"])
+
+
+class EncodedFolderNameTestCase(unittest.TestCase):
+    """F6: the mirror's own name encoding is not a folder to create."""
+
+    def test_a_mirror_dir_that_is_our_encoding_is_not_created(self) -> None:
+        service, _index, _mirror, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: (
+                        "<a@example.com>",
+                        frozenset(),
+                        _make_raw_message("A", "<a@example.com>"),
+                    )
+                },
+                "Archive/2024": {
+                    5: (
+                        "<nested@example.com>",
+                        frozenset(),
+                        _make_raw_message("Nested", "<nested@example.com>"),
+                    )
+                },
+            }
+        )
+        service.sync()
+        session.created_folders.clear()
+
+        plan = service.plan()
+        self.assertEqual(plan.accounts[0].creates, ())
+
+        service.sync()
+        self.assertEqual(session.created_folders, [])

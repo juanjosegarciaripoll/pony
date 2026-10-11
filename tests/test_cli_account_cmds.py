@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from conftest import resolve_fixture
 from test_cli import (
     isolated_app_env,
     run_cli_capture,
@@ -58,8 +59,11 @@ def _run_capturing_stderr(argv: Sequence[str]) -> tuple[str, str, int]:
 
 def _encrypted_config_toml() -> str:
     """Config whose single account uses the ``encrypted`` credentials source."""
-    return """
-config_version = 2
+    return resolve_fixture(
+        """
+config_version = 3
+data_dir = "{DATA_DIR}"
+profile = "test"
 
 [[accounts]]
 name = "personal"
@@ -76,6 +80,7 @@ path = "mirrors/personal"
 format = "maildir"
 trash_retention_days = 30
 """.strip()
+    )
 
 
 def _prompt_inputs(values: list[str]) -> Iterator[str]:
@@ -315,7 +320,7 @@ class ConfigShowTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             out, rc = run_cli_capture("--config", str(config_path), "config", "show")
         self.assertEqual(rc, 0)
-        self.assertIn("config_version = 2", out)
+        self.assertIn("config_version = 3", out)
 
     def test_missing_config_returns_error(self) -> None:
         with isolated_app_env():

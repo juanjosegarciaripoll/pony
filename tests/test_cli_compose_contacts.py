@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 from uuid import uuid4
 
-from conftest import TMP_ROOT
+from conftest import TMP_ROOT, isolated_data_dir
 from test_cli import (
     isolated_app_env,
     run_cli,
@@ -43,7 +43,9 @@ def _write_bbdb_file(contacts: list[Contact]) -> Path:
 def _local_only_config_toml() -> str:
     """Return a config with one local account that cannot send (no SMTP)."""
     return (
-        "config_version = 2\n\n"
+        "config_version = 3\n"
+        f'data_dir = "{isolated_data_dir()}"\n'
+        'profile = "test"\n\n'
         "[[accounts]]\n"
         'account_type = "local"\n'
         'name = "localbox"\n'

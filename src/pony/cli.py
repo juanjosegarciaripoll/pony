@@ -6,13 +6,14 @@ import argparse
 import contextlib
 import dataclasses
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .calendar import CalendarRuntime
@@ -24,7 +25,7 @@ from .accounts import (
     find_account,
     find_imap_account,
 )
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, read_raw_config
 from .contact_merge import merged_contact
 from .credentials import build_credentials_provider, encrypt_password
 from .domain import (
@@ -48,7 +49,12 @@ from .index_store import (
     load_contacts_for_backup,
 )
 from .mailbox_ops import landed_in_folder
-from .paths import AppPaths
+from .paths import (
+    AppPaths,
+    ProfileMismatchError,
+    claim_profile,
+    resolve_data_dir,
+)
 from .protocols import (
     CredentialsProvider,
     ImapClientSession,
@@ -147,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="Skip confirmation prompt and execute immediately.",
+    )
+    sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the plan and exit without touching the index, the "
+        "mirrors or the server.",
     )
 
     search_parser = subparsers.add_parser("search", help="Search indexed mail.")
@@ -548,6 +560,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.calendar_args = calendar_argv
     _configure_logging(debug=args.debug)
     paths = AppPaths.default()
+    declared_data_dir, profile = _peek_profile(args.config or paths.config_file)
+    effective_data_dir = resolve_data_dir(declared_data_dir)
+    if effective_data_dir is not None:
+        paths = paths.with_data_dir(effective_data_dir)
+    if profile:
+        try:
+            claim_profile(paths.data_dir, profile)
+        except ProfileMismatchError as exc:
+            print(
+                f"Refusing to run: this data directory belongs to profile"
+                f" {exc.found!r}, but the config declares"
+                f" {exc.declared!r}.\n"
+                f"\n"
+                f"  config:   {args.config or paths.config_file}\n"
+                f"  data dir: {paths.data_dir}\n"
+                f"\n"
+                f"Point this config at its own data_dir. To share this"
+                f" one on purpose, declare profile {exc.found!r} in both"
+                f" configs.",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         return _dispatch(args=args, paths=paths, parser=parser)
@@ -557,6 +591,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path=args.config,
             error=err,
         )
+
+
+def _peek_profile(config_path: Path) -> tuple[Path | None, str]:
+    """Read ``data_dir`` and ``profile`` without validating the rest.
+
+    Runs before the index is opened, so it cannot wait for a full parse.
+    """
+    try:
+        raw = read_raw_config(config_path)
+    except (ConfigError, OSError):
+        return None, ""
+    if not isinstance(raw, dict):
+        return None, ""
+    data = cast("dict[str, object]", raw)
+    declared = data.get("data_dir")
+    instance = data.get("profile")
+    path: Path | None = None
+    if isinstance(declared, str) and declared.strip():
+        path = Path(os.path.expandvars(declared)).expanduser()
+    return path, instance if isinstance(instance, str) else ""
 
 
 def _dispatch(
@@ -582,6 +636,7 @@ def _dispatch(
             config_path=args.config,
             account=args.account,
             yes=args.yes,
+            dry_run=args.dry_run,
         )
     if args.command == "fixture-ingest":
         return run_fixture_ingest_command(paths=paths, config_path=args.config)
@@ -885,7 +940,12 @@ def run_doctor(*, paths: AppPaths, config_path: Path | None) -> int:
 
 
 def run_sync(
-    *, paths: AppPaths, config_path: Path | None, account: str | None, yes: bool
+    *,
+    paths: AppPaths,
+    config_path: Path | None,
+    account: str | None,
+    yes: bool,
+    dry_run: bool = False,
 ) -> int:
     """Synchronise one or all accounts with their IMAP servers."""
     paths.ensure_runtime_dirs()
@@ -956,13 +1016,17 @@ def run_sync(
     confirm_folders = plan.folders_needing_confirmation()
     if confirm_folders:
         print(
-            "\nWARNING: one or more folders show large server-side deletions"
-            " (>20% of known messages). This usually means the server"
-            " expunged old mail, but it can also indicate a misconfigured"
-            " account. Review the lines marked [CONFIRM: ...] above."
-            ' Answering "y" will apply ALL deletions, including those'
-            " folders."
+            "\nWARNING: one or more folders tripped a safety halt -- a large"
+            " share of the folder would be deleted locally, or uploaded to"
+            " the server. Server-side expunges of old mail look like this,"
+            " and so does a misconfigured account or an index that lost its"
+            " UIDs. Review the lines marked [CONFIRM: ...] above."
+            ' Answering "y" applies them, those folders included.'
         )
+
+    if dry_run:
+        print("\nDry run: nothing was changed.")
+        return 0
 
     if not yes:
         if not sys.stdin.isatty():
@@ -3125,8 +3189,15 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
         f'format = "{mirror_format}"\n'
     )
 
-    # Bootstrap or append.  Every file must start with config_version = 2.
-    header = f"# Pony Express configuration\nconfig_version = {CONFIG_VERSION}\n"
+    # Bootstrap or append.  A new file declares the schema version, the
+    # data directory and the profile that owns it; `profile` is what
+    # stops a second config from running against this index.
+    header = (
+        f"# Pony Express configuration\n"
+        f"config_version = {CONFIG_VERSION}\n"
+        f'data_dir = "{paths.data_dir}"\n'
+        f'profile = "default"\n'
+    )
     if not config_file.exists():
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(header + block, encoding="utf-8")

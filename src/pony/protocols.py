@@ -41,11 +41,45 @@ class MirrorRepository(Protocol):
         """Return all folders for one account."""
         ...
 
-    def store_message(self, *, folder: FolderRef, raw_message: bytes) -> str:
-        """Store one RFC 5322 message and return its storage_key."""
+    def store_message(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        uid: int | None = None,
+        uid_validity: int = 0,
+    ) -> str:
+        """Store one RFC 5322 message and return its storage_key.
+
+        *uid* / *uid_validity* are the server handle, when it is already
+        known.  A backend that can record them in the storage_key should
+        — it is what lets the index be rebuilt from the mirror alone.
+        """
         ...
 
-    def store_message_async(self, *, folder: FolderRef, raw_message: bytes) -> str:
+    def stamp_uid(
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        uid: int,
+        uid_validity: int,
+    ) -> str:
+        """Record a server handle learned after the message was stored.
+
+        Returns the storage_key to use from now on, which may differ.
+        Backends that cannot record it return *storage_key* unchanged.
+        """
+        ...
+
+    def store_message_async(
+        self,
+        *,
+        folder: FolderRef,
+        raw_message: bytes,
+        uid: int | None = None,
+        uid_validity: int = 0,
+    ) -> str:
         """Reserve a storage_key now; the bytes may be written later.
 
         The sync engine's ingest loop uses this so a folder's writes
@@ -526,8 +560,18 @@ class ImapClientSession(Protocol):
         """Set the \\Deleted flag on one message."""
         ...
 
-    def expunge(self, folder_name: str) -> None:
-        """Expunge all \\Deleted messages in the given folder."""
+    def expunge(
+        self,
+        folder_name: str,
+        *,
+        uids: Sequence[int] | None = None,
+    ) -> None:
+        """Expunge \\Deleted messages, limited to *uids* when given.
+
+        An implementation that cannot scope the expunge (no UIDPLUS)
+        may fall back to the whole folder, but must not pretend the
+        request was scoped.
+        """
         ...
 
     def move_message(

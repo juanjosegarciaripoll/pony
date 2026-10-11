@@ -585,14 +585,48 @@ class ImapSession:
 
         self._retry(_do, f"DELETE {folder_name}")
 
-    def expunge(self, folder_name: str) -> None:
-        """Expunge all \\Deleted messages in the given folder."""
+    def _expunge_now(
+        self,
+        folder_name: str,
+        uids: Sequence[int] | None,
+    ) -> None:
+        """Expunge, scoped to *uids* when the server allows it.
+
+        A bare EXPUNGE removes every message in the folder that carries
+        \\Deleted -- including ones another client flagged and has not
+        expunged yet, which this caller never asked about.  RFC 4315 UID
+        EXPUNGE scopes it to our own UIDs.  Without UIDPLUS there is no
+        scoped form, so the caller's intent is carried out and the
+        collateral risk is logged rather than hidden.
+
+        Assumes *folder_name* is already selected; no retry of its own.
+        """
+        if uids and b"UIDPLUS" in self._conn.capabilities():
+            logger.debug("UID EXPUNGE %s on %s", list(uids), folder_name)
+            with _imap_errors(f"UID EXPUNGE on {folder_name!r}"):
+                self._conn.uid_expunge(list(uids))
+            return
+        if uids:
+            logger.warning(
+                "%s has no UIDPLUS: expunging the whole folder, which also"
+                " removes any message another client has flagged \\Deleted",
+                folder_name,
+            )
+        logger.debug("EXPUNGE on %s", folder_name)
+        with _imap_errors(f"EXPUNGE on {folder_name!r}"):
+            self._conn.expunge()
+
+    def expunge(
+        self,
+        folder_name: str,
+        *,
+        uids: Sequence[int] | None = None,
+    ) -> None:
+        """Expunge \\Deleted messages, limited to *uids* when given."""
 
         def _do() -> None:
             self._ensure_selected(folder_name)
-            logger.debug("EXPUNGE on %s", folder_name)
-            with _imap_errors(f"EXPUNGE on {folder_name!r}"):
-                self._conn.expunge()
+            self._expunge_now(folder_name, uids)
 
         self._retry(_do, f"EXPUNGE {folder_name}")
 
@@ -655,8 +689,7 @@ class ImapSession:
             new_uid = _parse_copyuid(copy_response)
             with _imap_errors(f"DELETE on {source_folder!r}"):
                 self._conn.delete_messages([uid])
-            with _imap_errors(f"EXPUNGE on {source_folder!r}"):
-                self._conn.expunge()
+            self._expunge_now(source_folder, (uid,))
             return new_uid
 
         return self._retry(_do, f"MOVE {source_folder}->{target_folder}")

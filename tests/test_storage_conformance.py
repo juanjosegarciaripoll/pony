@@ -16,6 +16,7 @@ from pony.storage import (
     MaildirMirrorRepository,
     MboxMirrorRepository,
     _build_mbox_toc,
+    uid_of,
 )
 
 
@@ -1079,3 +1080,143 @@ class MboxConcurrentWriterTest(unittest.TestCase):
         first.flush_writes()
 
         self.assertEqual(self._subjects(root), {"own 0", "from the other"})
+
+
+class MaildirUidNamingTestCase(unittest.TestCase):
+    """The Maildir filename records the server handle.
+
+    ``,V=<uidvalidity>,U=<uid>`` makes the mirror self-describing: the
+    index can be rebuilt from it without the server, a re-download of
+    the same UID reuses the same name instead of adding a duplicate,
+    and *absence* of ``,U=`` marks a message that exists only here.
+    """
+
+    def setUp(self) -> None:
+        self.root = TMP_ROOT / "uid-names" / uuid4().hex
+        self.mirror = MaildirMirrorRepository(
+            account_name="acct",
+            root_dir=self.root,
+        )
+        self.folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+    def _store(self, subject: str, **kwargs: object) -> str:
+        return self.mirror.store_message(
+            folder=self.folder,
+            raw_message=_rfc5322_message_bytes(subject, f"<{subject}@x>"),
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_a_downloaded_message_carries_its_handle(self) -> None:
+        key = self._store("fetched", uid=42, uid_validity=7)
+        self.assertEqual(uid_of(key), (7, 42))
+
+    def test_a_locally_composed_message_carries_none(self) -> None:
+        self.assertIsNone(uid_of(self._store("mine")))
+
+    def test_the_handle_survives_a_flag_change(self) -> None:
+        key = self._store("flagged", uid=5, uid_validity=1)
+        self.mirror.set_flags(
+            folder=self.folder,
+            storage_key=key,
+            flags=frozenset({MessageFlag.SEEN}),
+        )
+        self.assertIn(
+            b"Subject: flagged",
+            self.mirror.get_message_bytes(
+                folder=self.folder,
+                storage_key=key,
+            ),
+        )
+        self.assertEqual(uid_of(key), (1, 5))
+
+    def test_a_handle_learned_later_is_stamped_on(self) -> None:
+        """APPEND supplies the UID after the message is already stored."""
+        key = self._store("appended")
+        new_key = self.mirror.stamp_uid(
+            folder=self.folder,
+            storage_key=key,
+            uid=99,
+            uid_validity=7,
+        )
+        self.assertEqual(uid_of(new_key), (7, 99))
+        self.assertIn(
+            b"Subject: appended",
+            self.mirror.get_message_bytes(
+                folder=self.folder,
+                storage_key=new_key,
+            ),
+        )
+        self.assertEqual(self.mirror.list_messages(folder=self.folder), (new_key,))
+
+    def test_stamping_a_message_that_already_has_one_is_a_no_op(self) -> None:
+        key = self._store("already", uid=1, uid_validity=1)
+        self.assertEqual(
+            self.mirror.stamp_uid(
+                folder=self.folder,
+                storage_key=key,
+                uid=2,
+                uid_validity=1,
+            ),
+            key,
+        )
+
+    def test_stamping_a_file_that_is_gone_returns_the_key(self) -> None:
+        self.assertEqual(
+            self.mirror.stamp_uid(
+                folder=self.folder,
+                storage_key="1791559062.0.1.absent",
+                uid=3,
+                uid_validity=1,
+            ),
+            "1791559062.0.1.absent",
+        )
+
+    def test_names_do_not_collide_under_a_burst(self) -> None:
+        """The old recipe repeated within a microsecond and overwrote.
+
+        ``{time}.{pid}`` is constant inside one process apart from the
+        microsecond, which two consecutive calls can share: 20,000 names
+        yielded 9,172 distinct ones, so a write silently replaced an
+        earlier message.  The counter is what makes the name unique.
+        """
+        keys = {self._store("burst") for _ in range(2000)}
+        self.assertEqual(len(keys), 2000)
+        self.assertEqual(len(self.mirror.list_messages(folder=self.folder)), 2000)
+
+    def test_a_key_without_a_handle_parses_as_none(self) -> None:
+        for key in (
+            "1791559062.871266.4.914244",
+            "1791559062.871266.4.914244,V=1",
+            "1791559062.871266.4.914244,U=5",
+            "",
+        ):
+            with self.subTest(key=key):
+                self.assertIsNone(uid_of(key))
+
+
+class MboxUidNamingTestCase(unittest.TestCase):
+    """An mbox key is a position, so it cannot carry a handle."""
+
+    def setUp(self) -> None:
+        self.root = TMP_ROOT / "uid-names-mbox" / uuid4().hex
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.mirror = MboxMirrorRepository(account_name="acct", root_dir=self.root)
+        self.folder = FolderRef(account_name="acct", folder_name="INBOX")
+
+    def test_storing_with_a_handle_is_accepted_and_ignored(self) -> None:
+        key = self.mirror.store_message(
+            folder=self.folder,
+            raw_message=_rfc5322_message_bytes("m", "<m@x>"),
+            uid=42,
+            uid_validity=7,
+        )
+        self.assertIsNone(uid_of(key))
+        self.assertEqual(
+            self.mirror.stamp_uid(
+                folder=self.folder,
+                storage_key=key,
+                uid=42,
+                uid_validity=7,
+            ),
+            key,
+        )

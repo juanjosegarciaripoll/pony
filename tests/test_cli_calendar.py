@@ -7,12 +7,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from conftest import TMP_ROOT
+from conftest import TMP_ROOT, resolve_fixture
 
 from pony.cli import _split_calendar_argv, main, run_calendar
 
 _CONFIG = """
-config_version = 2
+config_version = 3
+data_dir = "{DATA_DIR}"
+profile = "test"
 accounts = []
 
 [calendar]
@@ -25,7 +27,9 @@ credential = { backend = "env", variable = "CAL_PASSWORD" }
 """
 
 _MAIL_ONLY = """
-config_version = 2
+config_version = 3
+data_dir = "{DATA_DIR}"
+profile = "test"
 accounts = []
 """
 
@@ -105,6 +109,7 @@ class RunCalendarTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _config(self, text: str = _CONFIG) -> Path:
+        text = resolve_fixture(text)
         path = self.root / "config.toml"
         path.write_text(text, encoding="utf-8")
         return path

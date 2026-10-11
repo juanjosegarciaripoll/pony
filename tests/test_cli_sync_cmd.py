@@ -132,6 +132,40 @@ class RunSyncTestCase(unittest.TestCase):
         self.assertIn("personal:", out)
         self.assertIn("1 folder(s) with changes", out)
 
+    def test_dry_run_prints_the_plan_and_changes_nothing(self) -> None:
+        """``--dry-run`` inspects a sync without running it."""
+        with (
+            isolated_app_env(),
+            temporary_config() as cfg,
+            patch("pony.cli.ImapSession", _fake_factory(_seeded_inbox())),
+        ):
+            out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX"),
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Sync plan", out)
+        self.assertIn("Dry run: nothing was changed.", out)
+        self.assertNotIn("folder(s) with changes", out)
+        self.assertEqual(len(rows), 0)
+
+    def test_dry_run_still_shows_a_safety_halt(self) -> None:
+        """The halt has to be visible in the one mode that is safe to run."""
+        with (
+            isolated_app_env(),
+            temporary_config() as cfg,
+            patch("pony.cli.ImapSession", _fake_factory({"INBOX": {}})),
+        ):
+            _seed_local_rows(cfg, 5)
+            out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
+        self.assertEqual(rc, 0)
+        self.assertIn("tripped a safety halt", out)
+        self.assertIn("Dry run: nothing was changed.", out)
+
     def test_sync_nothing_to_do_reports_up_to_date(self) -> None:
         """An empty server folder yields the up-to-date short-circuit."""
         with (
@@ -272,7 +306,7 @@ class RunSyncTestCase(unittest.TestCase):
             _seed_local_rows(cfg, 5)
             out, rc = run_cli_capture("--config", str(cfg), "sync")
         self.assertEqual(rc, 0)
-        self.assertIn("large server-side deletions", out)
+        self.assertIn("tripped a safety halt", out)
         self.assertIn("[CONFIRM:", out)
         # The folder still ends up in the executed summary.
         self.assertIn("personal:", out)

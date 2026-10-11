@@ -51,12 +51,37 @@ so `tests_calendar/` still exercises the calendar standalone.
    or `src/chronos` has unit tests that finish in seconds
    (`tests/test_mailbox_actions.py`, `tests_calendar/test_event_actions.py`);
    reach for those before the Pilot-driven ones.
-3. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
-4. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval. The browser front end's `starlette` + `uvicorn` are an **extra** (`[project.optional-dependencies] web`), not required deps; keep it that way, and add nothing to it without asking. `pony.web` must never import Textual and nothing outside it may import Starlette — `tests/test_layering.py` enforces both.
-5. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
-6. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
-7. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
-8. **CI runs in UTC; your machine probably does not.** The calendar's
+3. **Never run a mutating command against the live environment.** Not
+   `pony sync`, `reset`, `rescan`, a `POST /action/*` on a running server,
+   or `pony web`/`tui` against the real data directory. Verify in the test
+   suite, or with `--dry-run`, or in an isolated environment.
+
+   **A `--config` alone is not isolation.** A config declares `data_dir`
+   (where the index lives, and what relative `mirror.path` resolves
+   under) and `profile` (which data directory it owns). An isolated run
+   needs a config whose `data_dir` points somewhere scratch:
+
+   ```toml
+   config_version = 3
+   data_dir = "/tmp/scratch-data"
+   profile = "scratch"
+   ```
+
+   ```bash
+   pony --config /tmp/scratch.toml sync --dry-run
+   ```
+
+   Pony stamps `profile` into `<data_dir>/profile.toml` and refuses any
+   config declaring a different profile for that directory. Keep both
+   keys required and the stamp check ahead of anything that opens the
+   index. `pony --config X doctor` prints the paths a run will use.
+
+4. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
+5. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval. The browser front end's `starlette` + `uvicorn` are an **extra** (`[project.optional-dependencies] web`), not required deps; keep it that way, and add nothing to it without asking. `pony.web` must never import Textual and nothing outside it may import Starlette — `tests/test_layering.py` enforces both.
+6. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.
+7. **Never touch version strings.** Release workflow stamps `pyproject.toml` + `version.py` from `CHANGELOG.md`.
+8. **Tests:** `unittest` run via `pytest`. Sync: `FakeImapSession`. Storage: shared conformance suite. TUI: `build_pony_app` / `build_compose_app` in `tests/tui_helpers.py` + Textual `Pilot`.
+9. **CI runs in UTC; your machine probably does not.** The calendar's
    screens render times in the local zone, so a test that leaves a form
    field at a clock-derived default passes or fails depending on where it
    runs. Two of them were green in CEST and red on every runner for exactly
@@ -74,7 +99,7 @@ so `tests_calendar/` still exercises the calendar standalone.
    the calendar's own repository too; the day-boundary arithmetic in the
    grid is what needs fixing, not the tests.
 
-9. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
+10. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
 
 ## Coverage requirements
 

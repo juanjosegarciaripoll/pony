@@ -6,7 +6,17 @@
 # config_version (REQUIRED):
 # Pony Express refuses to open a config that omits or mismatches this
 # value.  Bumped when the schema changes in a way that requires user
-# intervention.  The current supported version is 2.
+# intervention.  The current supported version is 3.
+#
+# data_dir (REQUIRED, absolute):
+# Where the index lives.  Relative mirror paths resolve under it.
+#
+# profile (REQUIRED):
+# Which data directory this config owns.  On first use Pony writes
+# <data_dir>/profile.toml with this name; afterwards it refuses to run
+# any config whose profile differs from the one stamped there.  Two
+# configs may share a data directory only by declaring the same
+# profile, so sharing is a choice and not an accident.
 #
 # Top-level options:
 # - use_utf8:          Enable Unicode characters in the TUI (e.g. 📎 for attachments).
@@ -119,7 +129,9 @@
 # match exactly, while patterns like "Archive/.*" match subfolders and ".*" matches
 # everything.
 
-config_version = 2
+config_version = 3
+data_dir = "~/.local/share/pony"
+profile = "default"
 use_utf8 = true
 
 # Background synchronization (optional).

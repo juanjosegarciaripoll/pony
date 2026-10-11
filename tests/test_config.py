@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from conftest import TMP_ROOT
+from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
 from pony.domain import FolderConfig, LocalAccountConfig, ViewerRule
@@ -30,7 +30,9 @@ class ConfigParsingTestCase(unittest.TestCase):
         # have type dict[Unknown, Unknown] in strict mode, which prevents
         # further typed access.
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "name": "personal",
@@ -102,7 +104,9 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_parse_local_account(self) -> None:
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "local",
@@ -129,7 +133,9 @@ class ConfigParsingTestCase(unittest.TestCase):
     def test_parse_local_account_no_imap_fields_required(self) -> None:
         """A local account must not require imap_host, smtp block, or credentials."""
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "local",
@@ -173,7 +179,9 @@ class ConfigParsingTestCase(unittest.TestCase):
         from pony.domain import LocalAccountConfig
 
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "local",
@@ -198,7 +206,9 @@ class ConfigParsingTestCase(unittest.TestCase):
         from pony.domain import LocalAccountConfig
 
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "local",
@@ -219,7 +229,9 @@ class ConfigParsingTestCase(unittest.TestCase):
         """If ``smtp`` is set on a local account, credentials become
         mandatory — otherwise sending would fail at runtime."""
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "local",
@@ -247,7 +259,9 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_parse_unknown_account_type_raises(self) -> None:
         data: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [
                 {
                     "account_type": "ftp",
@@ -455,13 +469,22 @@ class ConfigValidationErrorsTestCase(unittest.TestCase):
 
     def test_accounts_not_list_raises(self) -> None:
         with self.assertRaises(ConfigError):
-            parse_config({"config_version": 2, "accounts": "not-a-list"})
+            parse_config(
+                {
+                    "config_version": 3,
+                    "data_dir": str(isolated_data_dir()),
+                    "profile": "test",
+                    "accounts": "not-a-list",
+                }
+            )
 
     def test_account_not_object_raises(self) -> None:
         with self.assertRaises(ConfigError):
             parse_config(
                 {
-                    "config_version": 2,
+                    "config_version": 3,
+                    "data_dir": str(isolated_data_dir()),
+                    "profile": "test",
                     "accounts": ["not-a-dict"],
                 }
             )
@@ -470,7 +493,9 @@ class ConfigValidationErrorsTestCase(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_config(
                 {
-                    "config_version": 2,
+                    "config_version": 3,
+                    "data_dir": str(isolated_data_dir()),
+                    "profile": "test",
                     "accounts": ["not-a-dict"],
                 }
             )
@@ -691,7 +716,9 @@ class ViewersConfigTestCase(unittest.TestCase):
 def sample_config() -> dict[str, object]:
     """Return a minimal valid application config."""
     return {
-        "config_version": 2,
+        "config_version": 3,
+        "data_dir": str(isolated_data_dir()),
+        "profile": "test",
         "accounts": [
             {
                 "name": "personal",
@@ -712,8 +739,11 @@ def sample_config() -> dict[str, object]:
 
 def sample_toml_config() -> str:
     """Return a minimal valid TOML app configuration."""
-    return """
-config_version = 2
+    return resolve_fixture(
+        """
+config_version = 3
+data_dir = "{DATA_DIR}"
+profile = "test"
 
 [[accounts]]
 name = "personal"
@@ -730,3 +760,4 @@ path = "mirrors/personal"
 format = "maildir"
 trash_retention_days = 30
 """.strip()
+    )

@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from conftest import isolated_data_dir, resolve_fixture
+
 from pony.calendar import (
     load_calendar_config,
     open_calendar_runtime,
@@ -15,7 +17,9 @@ from pony.calendar import (
 from pony.config import ConfigError
 
 _MAIL_ONLY: dict[str, object] = {
-    "config_version": 2,
+    "config_version": 3,
+    "data_dir": str(isolated_data_dir()),
+    "profile": "test",
     "accounts": [],
 }
 
@@ -86,7 +90,9 @@ class ParseCalendarConfigTest(unittest.TestCase):
         # The mail accounts are a different shape entirely; inheriting
         # them would make the calendar reject the whole file.
         raw: dict[str, object] = {
-            "config_version": 2,
+            "config_version": 3,
+            "data_dir": str(isolated_data_dir()),
+            "profile": "test",
             "accounts": [{"name": "work", "account_type": "local"}],
             "markdown_compose": True,
             "calendar": {"accounts": [_ACCOUNT]},
@@ -129,13 +135,15 @@ class LoadCalendarConfigTest(unittest.TestCase):
 
     def _write(self, text: str) -> Path:
         path = self.root / "config.toml"
-        path.write_text(text, encoding="utf-8")
+        path.write_text(resolve_fixture(text), encoding="utf-8")
         return path
 
     def test_reads_the_calendar_table_from_the_file(self) -> None:
         path = self._write(
             """
-            config_version = 2
+            config_version = 3
+            data_dir = "{DATA_DIR}"
+            profile = "test"
             use_utf8 = true
             accounts = []
 
@@ -156,7 +164,12 @@ class LoadCalendarConfigTest(unittest.TestCase):
         self.assertEqual(("work",), tuple(a.name for a in config.accounts))
 
     def test_mail_only_file_has_no_calendar(self) -> None:
-        path = self._write("config_version = 2\naccounts = []\n")
+        path = self._write(
+            "config_version = 3\n"
+            f'data_dir = "{isolated_data_dir()}"\n'
+            'profile = "test"\n'
+            "accounts = []\n"
+        )
         self.assertIsNone(load_calendar_config(path))
 
     def test_missing_file_is_a_config_error(self) -> None:
@@ -185,17 +198,24 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
 
     def _write(self, text: str) -> Path:
         path = self.root / "config.toml"
-        path.write_text(text, encoding="utf-8")
+        path.write_text(resolve_fixture(text), encoding="utf-8")
         return path
 
     def test_unconfigured_calendar_opens_nothing(self) -> None:
-        path = self._write("config_version = 2\naccounts = []\n")
+        path = self._write(
+            "config_version = 3\n"
+            f'data_dir = "{isolated_data_dir()}"\n'
+            'profile = "test"\n'
+            "accounts = []\n"
+        )
         self.assertIsNone(open_calendar_runtime(path))
 
     def test_opens_the_mirror_and_index(self) -> None:
         path = self._write(
             """
-            config_version = 2
+            config_version = 3
+            data_dir = "{DATA_DIR}"
+            profile = "test"
             accounts = []
 
             [calendar]

@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest import mock
 
-from conftest import TMP_ROOT
+from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
 from pony.paths import AppPaths
@@ -264,7 +264,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _write_config(self, text: str) -> None:
-        self.paths.config_file.write_text(text, encoding="utf-8")
+        self.paths.config_file.write_text(resolve_fixture(text), encoding="utf-8")
 
     def _checks(self) -> dict[str, tuple[CheckStatus, str]]:
         status = build_service_status(
@@ -275,7 +275,12 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         return {c.name: (c.status, c.detail) for c in status.checks}
 
     def test_a_mail_only_config_reports_no_calendar(self) -> None:
-        self._write_config("config_version = 2\naccounts = []\n")
+        self._write_config(
+            "config_version = 3\n"
+            f'data_dir = "{isolated_data_dir()}"\n'
+            'profile = "test"\n'
+            "accounts = []\n"
+        )
         checks = self._checks()
         self.assertEqual(CheckStatus.OK, checks["Calendar"][0])
         self.assertIn("Not configured", checks["Calendar"][1])
@@ -283,7 +288,9 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def test_a_configured_calendar_names_its_accounts(self) -> None:
         self._write_config(
             """
-            config_version = 2
+            config_version = 3
+            data_dir = "{DATA_DIR}"
+            profile = "test"
             accounts = []
 
             [calendar]
@@ -302,7 +309,9 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def test_an_unsynced_calendar_warns_about_its_index_and_mirror(self) -> None:
         self._write_config(
             """
-            config_version = 2
+            config_version = 3
+            data_dir = "{DATA_DIR}"
+            profile = "test"
             accounts = []
 
             [calendar]
@@ -314,7 +323,12 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self.assertEqual(CheckStatus.WARN, checks["Calendar mirror"][0])
 
     def test_a_synced_calendar_counts_its_calendars(self) -> None:
-        self._write_config("config_version = 2\naccounts = []\n\n[calendar]\n")
+        self._write_config(
+            "config_version = 3\n"
+            f'data_dir = "{isolated_data_dir()}"\n'
+            'profile = "test"\n'
+            "accounts = []\n\n[calendar]\n"
+        )
         (self.calendar_home / "mirror" / "work" / "personal").mkdir(parents=True)
         (self.calendar_home / "mirror" / "work" / "shared").mkdir(parents=True)
         self.calendar_home.mkdir(parents=True, exist_ok=True)
@@ -327,7 +341,9 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def test_a_broken_calendar_table_is_an_error_not_a_crash(self) -> None:
         self._write_config(
             """
-            config_version = 2
+            config_version = 3
+            data_dir = "{DATA_DIR}"
+            profile = "test"
             accounts = []
 
             [calendar]

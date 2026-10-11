@@ -40,9 +40,45 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+
+def _sandbox_app_dirs(root: Path) -> None:
+    """Point every Pony directory inside *root*, for the whole session.
+
+    Without this the default data directory is the one the user keeps
+    mail in, and a test that builds ``AppPaths.default()`` writes there.
+    Set before any test imports, so no test has to remember.
+    """
+    for key, name in (
+        ("PONY_CONFIG_DIR", "config"),
+        ("PONY_DATA_DIR", "data"),
+        ("PONY_STATE_DIR", "state"),
+        ("PONY_CACHE_DIR", "cache"),
+    ):
+        path = root / name
+        path.mkdir(parents=True, exist_ok=True)
+        os.environ[key] = str(path)
+
+
 _tmp_dir = tempfile.TemporaryDirectory(prefix="pony-tests-", ignore_cleanup_errors=True)
 
 #: Import this in test files instead of constructing a .tmp-tests path.
 TMP_ROOT = Path(_tmp_dir.name)
 
 atexit.register(_tmp_dir.cleanup)
+
+_sandbox_app_dirs(TMP_ROOT / "session-dirs")
+
+#: Data directory the innermost ``isolated_app_env()`` is using.  Config
+#: fixtures interpolate it so tests declare ``data_dir`` the way a real
+#: config does, instead of relying on an override that only tests have.
+ISOLATED_DATA_DIR: list[Path] = []
+
+
+def isolated_data_dir() -> Path:
+    """Data directory for config fixtures to declare."""
+    return ISOLATED_DATA_DIR[-1] if ISOLATED_DATA_DIR else TMP_ROOT / "data"
+
+
+def resolve_fixture(toml: str) -> str:
+    """Substitute ``{DATA_DIR}`` in a config fixture."""
+    return toml.replace("{DATA_DIR}", str(isolated_data_dir()))

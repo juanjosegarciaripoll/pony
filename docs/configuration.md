@@ -25,12 +25,30 @@ any command to use a specific file.
 ## Schema version
 
 ```toml
-config_version = 2
+config_version = 3
+data_dir = "~/.local/share/pony"
+profile = "default"
 ```
+
+`data_dir` and `profile` are **required** alongside it.
+
+`data_dir` is where the index lives, and what relative `mirror.path`
+values resolve under. It must be absolute.
+
+`profile` says which data directory this config owns. On first use Pony
+writes `<data_dir>/profile.toml` containing the name; from then on it
+refuses — before opening the index — to run any config whose `profile`
+differs from the stamped one. Two configs may share a data directory only
+by declaring the same profile.
+
+To work against a scratch index, write a config with its own `data_dir`
+and `profile`; that is the whole mechanism. (The `PONY_DATA_DIR`
+environment variable also overrides `data_dir`, as `PONY_CONFIG_DIR` and
+friends override their directories; the test suite runs on it.)
 
 `config_version` is **required** at the top of the file. Pony refuses to
 load a config that omits it or carries a different value, rather than
-silently migrating. The current supported version is `2`. The bump from v1
+silently migrating. The current supported version is `3`. The bump from v1
 moved the SMTP keys out of the flat namespace and into a per-account
 `[accounts.<name>.smtp]` subtable.
 
@@ -42,7 +60,9 @@ The following config defines two IMAP accounts and two local accounts
 (one read-only, one with SMTP).
 
 ```toml
-config_version = 2
+config_version = 3
+data_dir = "~/.local/share/pony"
+profile = "default"
 
 # -- Global options --------------------------------------------------------
 
@@ -169,7 +189,9 @@ trash_retention_days = 30
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | int | — | **Required.** Must be `2`. |
+| `config_version` | int | — | **Required.** Must be `3`. |
+| `data_dir` | path | — | **Required, absolute.** Where the index lives; relative mirror paths resolve under it. |
+| `profile` | string | — | **Required.** Which data directory this config owns. Stamped into `<data_dir>/profile.toml`; a config with a different profile is refused. |
 | `use_utf8` | bool | `false` | Enable Unicode symbols in the TUI. |
 | `editor` | string | *(none)* | External editor for the composer (`ctrl+x e`). |
 | `markdown_compose` | bool | `false` | Global default for Markdown composition mode. |
@@ -186,7 +208,9 @@ keys stay at the top level; the calendar's own settings live under
 `[calendar]`, with `[[calendar.accounts]]` holding its CalDAV accounts.
 
 ```toml
-config_version = 2
+config_version = 3
+data_dir = "~/.local/share/pony"
+profile = "default"
 use_utf8 = true
 
 [[accounts]]            # mail
