@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
@@ -95,6 +95,17 @@ class IndexRepository(Protocol):
         self, calendar: CalendarRef
     ) -> Sequence[StoredComponent]: ...
 
+    def list_components_for_uids(
+        self, calendar: CalendarRef, uids: Collection[str]
+    ) -> Sequence[StoredComponent]: ...
+
+    def list_todos(
+        self,
+        calendar: CalendarRef,
+        *,
+        window: tuple[datetime, datetime] | None = None,
+    ) -> Sequence[StoredComponent]: ...
+
     def list_calendars(self) -> Sequence[CalendarRef]: ...
 
     def search(
@@ -118,6 +129,8 @@ class IndexRepository(Protocol):
         calendar: CalendarRef,
         window_start: datetime,
         window_end: datetime,
+        *,
+        uids: Collection[str] | None = None,
     ) -> Sequence[Occurrence]: ...
 
     def set_alarms(

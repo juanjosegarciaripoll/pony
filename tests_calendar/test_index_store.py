@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 import unittest
+import unittest.mock
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -645,4 +647,175 @@ class AlarmRepositoryTest(unittest.TestCase):
             missing_ref,
             datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
             [self._make_alarm(datetime(2026, 5, 1, 8, 45, tzinfo=UTC))],
+        )
+
+
+class ComponentLookupPlanTest(unittest.TestCase):
+    """Every component lookup is keyed on (account, calendar, uid).
+
+    `upsert_component` does two of them -- one to find the row, one to
+    invalidate the master's occurrences -- so an unindexed lookup makes
+    writing a calendar quadratic in its size: 5,400 upserts/second at
+    1,000 rows, 550/second at 4,000.  `get_component`,
+    `delete_component` and `set_occurrences` ask the same question.
+    """
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.repo = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.repo.close)
+
+    def _plan(self, sql: str, params: tuple[object, ...]) -> str:
+        with self.repo.connection() as conn:
+            rows = conn.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+        return "\n".join(str(r[3]) for r in rows)
+
+    def test_lookup_by_account_calendar_uid_searches_rather_than_scans(self) -> None:
+        plan = self._plan(
+            "SELECT id FROM components "
+            "WHERE account_name = ? AND calendar_name = ? AND uid = ? "
+            "AND COALESCE(recurrence_id, '') = COALESCE(?, '')",
+            ("personal", "work", "e1@example.com", None),
+        )
+        self.assertIn("ix_components_calendar_uid", plan, plan)
+        self.assertNotIn("SCAN", plan, plan)
+
+    def test_the_todo_listing_uses_its_own_partial_index(self) -> None:
+        """Otherwise the agenda scans the calendar's events to find tasks.
+
+        The kind is a literal in that statement rather than a bound
+        parameter, because SQLite only matches a partial index when the
+        query proves the index's ``WHERE``.
+        """
+        plan = self._plan(
+            "SELECT uid FROM components "
+            "WHERE account_name = ? AND calendar_name = ? "
+            "AND component_kind = 'VTODO' AND local_status = ? "
+            "AND COALESCE(due, dtstart) >= ? AND COALESCE(due, dtstart) < ?",
+            ("personal", "work", "active", "x", "y"),
+        )
+        self.assertIn("ix_components_todo", plan, plan)
+        self.assertNotIn("SCAN", plan, plan)
+
+    def test_master_invalidation_lookup_searches_rather_than_scans(self) -> None:
+        plan = self._plan(
+            "SELECT id FROM components "
+            "WHERE account_name = ? AND calendar_name = ? AND uid = ? "
+            "AND recurrence_id IS NULL",
+            ("personal", "work", "e1@example.com"),
+        )
+        self.assertIn("ix_components_calendar_uid", plan, plan)
+        self.assertNotIn("SCAN", plan, plan)
+
+
+class NarrowComponentQueryTest(unittest.TestCase):
+    """`list_components_for_uids` and `list_todos`, which exist so that a
+    render or a cache rebuild does not read the whole calendar."""
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.repo = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.repo.close)
+        self.calendar = CalendarRef("personal", "work")
+
+    def test_returns_the_named_uids_with_their_overrides(self) -> None:
+        for uid in ("a@example.com", "b@example.com", "c@example.com"):
+            self.repo.upsert_component(_event(_ref(uid), href=f"/dav/{uid}.ics"))
+        self.repo.upsert_component(
+            _event(
+                _ref("a@example.com", "2026-05-08T09:00:00+00:00"),
+                href="/dav/a-override.ics",
+            )
+        )
+        found = self.repo.list_components_for_uids(
+            self.calendar, ["a@example.com", "c@example.com"]
+        )
+        self.assertEqual(
+            [(c.ref.uid, c.ref.recurrence_id) for c in found],
+            [
+                ("a@example.com", None),
+                ("a@example.com", "2026-05-08T09:00:00+00:00"),
+                ("c@example.com", None),
+            ],
+        )
+
+    def test_empty_uid_set_asks_nothing(self) -> None:
+        self.repo.upsert_component(_event(_ref("a@example.com"), href="/dav/a.ics"))
+        self.assertEqual(self.repo.list_components_for_uids(self.calendar, []), ())
+
+    def test_a_uid_list_longer_than_one_statement_holds(self) -> None:
+        """Chunked `IN (…)` keeps its order and misses nothing.
+
+        SQLite caps host parameters per statement, so a caller's list is
+        issued in runs; the runs are sorted, so concatenating them is
+        still sorted.
+        """
+        from chronos import index_store
+
+        uids = [f"u{n:04d}@example.com" for n in range(25)]
+        for uid in uids:
+            self.repo.upsert_component(_event(_ref(uid), href=f"/dav/{uid}.ics"))
+        with unittest.mock.patch.object(index_store, "_MAX_SQL_PARAMETERS", 4):
+            found = self.repo.list_components_for_uids(self.calendar, uids)
+        self.assertEqual([c.ref.uid for c in found], uids)
+
+    def test_list_todos_skips_events_and_inactive_tasks(self) -> None:
+        self.repo.upsert_component(_event(_ref("e@example.com"), href="/dav/e.ics"))
+        self.repo.upsert_component(_todo(_ref("t1@example.com")))
+        self.repo.upsert_component(
+            dataclasses.replace(
+                _todo(_ref("t2@example.com")),
+                local_status=LocalStatus.TRASHED,
+            )
+        )
+        found = self.repo.list_todos(self.calendar)
+        self.assertEqual([c.ref.uid for c in found], ["t1@example.com"])
+
+    def test_list_todos_window_filters_on_the_anchor(self) -> None:
+        self.repo.upsert_component(
+            _todo(_ref("in@example.com"), due=datetime(2026, 6, 1, 12, 0, tzinfo=UTC))
+        )
+        self.repo.upsert_component(
+            _todo(_ref("out@example.com"), due=datetime(2026, 7, 1, 12, 0, tzinfo=UTC))
+        )
+        found = self.repo.list_todos(
+            self.calendar,
+            window=(
+                datetime(2026, 6, 1, tzinfo=UTC),
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        )
+        self.assertEqual([c.ref.uid for c in found], ["in@example.com"])
+
+    def test_query_occurrences_can_be_restricted_to_uids(self) -> None:
+        from chronos.domain import Occurrence
+
+        start = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+        for uid in ("a@example.com", "b@example.com"):
+            ref = _ref(uid)
+            self.repo.upsert_component(_event(ref, href=f"/dav/{uid}.ics"))
+            self.repo.set_occurrences(
+                ref,
+                [
+                    Occurrence(
+                        ref=ref,
+                        start=start,
+                        end=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+                        recurrence_id=None,
+                        is_override=False,
+                    )
+                ],
+            )
+        window = (
+            datetime(2026, 5, 1, tzinfo=UTC),
+            datetime(2026, 5, 2, tzinfo=UTC),
+        )
+        everything = self.repo.query_occurrences(self.calendar, *window)
+        restricted = self.repo.query_occurrences(
+            self.calendar, *window, uids=["a@example.com"]
+        )
+        self.assertEqual(len(everything), 2)
+        self.assertEqual([o.ref.uid for o in restricted], ["a@example.com"])
+        self.assertEqual(
+            self.repo.query_occurrences(self.calendar, *window, uids=[]), ()
         )

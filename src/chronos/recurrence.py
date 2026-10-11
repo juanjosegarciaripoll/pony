@@ -119,6 +119,25 @@ def expand(
     return out
 
 
+def _components_to_expand(
+    index: IndexRepository,
+    calendar: CalendarRef,
+    uids: frozenset[str] | None,
+) -> Sequence[StoredComponent]:
+    """Masters and overrides a (re-)expansion has to look at.
+
+    A restricted rebuild asks the query for its UIDs rather than
+    reading the calendar and dropping all but a few rows: an override
+    shares its master's UID, so the UID filter keeps each recurrence
+    family whole. Saving one event in a 3,000-event calendar read every
+    row twice — once here, once for the alarms — which is 95 ms of
+    SQLite per edit that grows with the calendar.
+    """
+    if uids is None:
+        return index.list_calendar_components(calendar)
+    return index.list_components_for_uids(calendar, uids)
+
+
 def populate_occurrences(
     *,
     index: IndexRepository,
@@ -146,13 +165,8 @@ def populate_occurrences(
     """
     if uids is not None and not uids:
         return 0  # empty uid set: caller confirmed nothing needs re-expansion
-    components = index.list_calendar_components(calendar)
-    all_masters = [c for c in components if c.ref.recurrence_id is None]
-    masters = (
-        [m for m in all_masters if m.ref.uid in uids]
-        if uids is not None
-        else all_masters
-    )
+    components = _components_to_expand(index, calendar, uids)
+    masters = [c for c in components if c.ref.recurrence_id is None]
     overrides_by_uid: dict[str, list[StoredComponent]] = {}
     for component in components:
         if component.ref.recurrence_id is not None:
@@ -229,13 +243,8 @@ def populate_alarms(
     """
     if uids is not None and not uids:
         return 0
-    components = index.list_calendar_components(calendar)
-    all_masters = [c for c in components if c.ref.recurrence_id is None]
-    masters = (
-        [m for m in all_masters if m.ref.uid in uids]
-        if uids is not None
-        else all_masters
-    )
+    components = _components_to_expand(index, calendar, uids)
+    masters = [c for c in components if c.ref.recurrence_id is None]
 
     # One query, grouped by UID.  Asking per master and filtering in
     # Python meant every master with an alarm re-read the whole window:
@@ -243,7 +252,7 @@ def populate_alarms(
     # hundred million rows built to use a handful each, with no output
     # while it happened -- a sync that looked stalled for minutes.
     occurrences_by_uid: dict[str, list[Occurrence]] = {}
-    for occ in index.query_occurrences(calendar, window_start, window_end):
+    for occ in index.query_occurrences(calendar, window_start, window_end, uids=uids):
         occurrences_by_uid.setdefault(occ.ref.uid, []).append(occ)
 
     total = 0

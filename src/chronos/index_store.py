@@ -4,7 +4,7 @@ import contextlib
 import json
 import sqlite3
 import threading
-from collections.abc import Generator, Sequence
+from collections.abc import Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,9 +67,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_components_identity
 CREATE INDEX IF NOT EXISTS ix_components_calendar
     ON components(account_name, calendar_name);
 
+-- Every component lookup -- `get_component`, `delete_component`,
+-- `set_occurrences`, and the two that `upsert_component` makes -- asks
+-- for one (account, calendar, uid).  On the two-column index above
+-- that is a scan of the whole calendar per lookup, which makes writing
+-- a calendar quadratic in its size: 5,400 upserts/second at 1,000 rows,
+-- 550/second at 4,000.  It also serves `list_components_for_uids`.
+CREATE INDEX IF NOT EXISTS ix_components_calendar_uid
+    ON components(account_name, calendar_name, uid);
+
 CREATE INDEX IF NOT EXISTS ix_components_pending
     ON components(account_name, calendar_name)
     WHERE href IS NULL AND local_status = 'active';
+
+-- Serves `list_todos`: the agenda asks for the window's tasks on
+-- every render, and on the indexes above that is a scan of the whole
+-- calendar -- 11.5 ms of it at 10,000 events, to find fifty tasks.
+-- Partial, so it holds only the tasks and the planner cannot reach for
+-- it when joining the events; the kind is written into that query as a
+-- literal because SQLite only matches a partial index when the query
+-- proves its WHERE, which a bound parameter does not.
+CREATE INDEX IF NOT EXISTS ix_components_todo
+    ON components(account_name, calendar_name, local_status, uid)
+    WHERE component_kind = 'VTODO';
 
 CREATE TABLE IF NOT EXISTS occurrences(
     component_id      INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
@@ -126,6 +146,11 @@ AFTER UPDATE ON components BEGIN
     VALUES (new.id, new.summary, new.description, new.location);
 END;
 """
+
+# Host parameters per statement, kept well under SQLite's own limit
+# (999 before 3.32, 32,766 after) so an ``IN (…)`` built from a caller's
+# list is never the thing that fails.
+_MAX_SQL_PARAMETERS = 400
 
 _COMPONENT_COLUMNS = (
     "account_name",
@@ -324,8 +349,14 @@ class SqliteIndexRepository:
         calendar: CalendarRef,
         window_start: datetime,
         window_end: datetime,
+        *,
+        uids: Collection[str] | None = None,
     ) -> tuple[Occurrence, ...]:
         """Every occurrence that *overlaps* [window_start, window_end).
+
+        With *uids*, only the occurrences of those components -- the
+        alarm pass rebuilding one edited event has no use for the other
+        thirteen thousand rows in the window.
 
         Overlap, not containment of the start: a trip from the 17th to
         the 25th has one occurrence row, anchored on the 17th, and it
@@ -342,30 +373,48 @@ class SqliteIndexRepository:
         """
         start_sql = _datetime_to_sql(window_start)
         end_sql = _datetime_to_sql(window_end)
+        if uids is not None:
+            wanted = sorted(set(uids))
+            if not wanted:
+                return ()
+            uid_filters = [
+                (f"AND c.uid IN ({', '.join('?' * len(chunk))}) ", tuple(chunk))
+                for chunk in _chunked(wanted)
+            ]
+        else:
+            uid_filters = [("", ())]
+        base = (
+            "SELECT c.account_name, c.calendar_name, c.uid, c.recurrence_id, "
+            "o.occurrence_start, o.occurrence_end, o.is_override "
+            "FROM occurrences o "
+            "JOIN components c ON c.id = o.component_id "
+            "WHERE c.account_name = ? AND c.calendar_name = ? "
+            "AND o.occurrence_start < ? "
+            "AND CASE "
+            "WHEN o.occurrence_end IS NULL "
+            "OR o.occurrence_end <= o.occurrence_start "
+            "THEN o.occurrence_start >= ? "
+            "ELSE o.occurrence_end > ? END "
+        )
+        head = (
+            calendar.account_name,
+            calendar.calendar_name,
+            end_sql,
+            start_sql,
+            start_sql,
+        )
+        found: list[Occurrence] = []
         with self.connection() as conn:
-            cursor = conn.execute(
-                "SELECT c.account_name, c.calendar_name, c.uid, c.recurrence_id, "
-                "o.occurrence_start, o.occurrence_end, o.is_override "
-                "FROM occurrences o "
-                "JOIN components c ON c.id = o.component_id "
-                "WHERE c.account_name = ? AND c.calendar_name = ? "
-                "AND o.occurrence_start < ? "
-                "AND CASE "
-                "WHEN o.occurrence_end IS NULL "
-                "OR o.occurrence_end <= o.occurrence_start "
-                "THEN o.occurrence_start >= ? "
-                "ELSE o.occurrence_end > ? END "
-                "ORDER BY o.occurrence_start",
-                (
-                    calendar.account_name,
-                    calendar.calendar_name,
-                    end_sql,
-                    start_sql,
-                    start_sql,
-                ),
-            )
-            rows = cursor.fetchall()
-        return tuple(_row_to_occurrence(r) for r in rows)
+            for clause, uid_params in uid_filters:
+                cursor = conn.execute(
+                    base + clause + "ORDER BY o.occurrence_start",
+                    (*head, *uid_params),
+                )
+                found.extend(_row_to_occurrence(r) for r in cursor.fetchall())
+        # Each chunk comes back sorted; the concatenation of several is
+        # not, and callers are promised occurrence order.
+        found.sort(key=lambda occ: occ.start)
+        return tuple(found)
 
     def list_pending_pushes(self, calendar: CalendarRef) -> tuple[StoredComponent, ...]:
         with self.connection() as conn:
@@ -425,6 +474,75 @@ class SqliteIndexRepository:
                 (calendar.account_name, calendar.calendar_name),
             )
             rows = cursor.fetchall()
+        return tuple(_row_to_component(r) for r in rows)
+
+    def list_components_for_uids(
+        self, calendar: CalendarRef, uids: Collection[str]
+    ) -> tuple[StoredComponent, ...]:
+        """Components in *calendar* whose UID is one of *uids*.
+
+        An override carries its master's UID, so a UID filter brings a
+        whole recurrence family back -- which is what the occurrence
+        expander and the views need.
+
+        This exists so that work proportional to a handful of events
+        stays proportional to them. ``list_calendar_components`` reads
+        every row in the calendar, raw ICS included; asking for that and
+        then discarding all but a few rows in Python cost 44 ms on every
+        day-view render of a 3,000-event calendar, and 95 ms on every
+        event edit.
+        """
+        wanted = sorted(set(uids))
+        if not wanted:
+            return ()
+        columns = ", ".join(_COMPONENT_COLUMNS)
+        out: list[StoredComponent] = []
+        with self.connection() as conn:
+            for chunk in _chunked(wanted):
+                placeholders = ", ".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT {columns} FROM components "  # noqa: S608
+                    "WHERE account_name = ? AND calendar_name = ? "
+                    f"AND uid IN ({placeholders}) "
+                    "ORDER BY uid, COALESCE(recurrence_id, '')",
+                    (calendar.account_name, calendar.calendar_name, *chunk),
+                )
+                out.extend(_row_to_component(r) for r in cursor.fetchall())
+        return tuple(out)
+
+    def list_todos(
+        self,
+        calendar: CalendarRef,
+        *,
+        window: tuple[datetime, datetime] | None = None,
+    ) -> tuple[StoredComponent, ...]:
+        """Active VTODOs in *calendar*, optionally anchored inside *window*.
+
+        The anchor is ``due``, falling back to ``dtstart`` -- the choice
+        the agenda makes when it shows a task as a full-day row. Both
+        the kind filter and the window are applied in SQL so that
+        listing tasks does not read every event in the calendar first.
+        Comparisons are lexical on the stored UTC ISO strings, as in
+        :meth:`query_occurrences`.
+        """
+        columns = ", ".join(_COMPONENT_COLUMNS)
+        sql = (
+            f"SELECT {columns} FROM components "  # noqa: S608
+            "WHERE account_name = ? AND calendar_name = ? "
+            f"AND component_kind = '{ComponentKind.VTODO.value}' "
+            "AND local_status = ? "
+        )
+        params: list[object] = [
+            calendar.account_name,
+            calendar.calendar_name,
+            LocalStatus.ACTIVE.value,
+        ]
+        if window is not None:
+            sql += "AND COALESCE(due, dtstart) >= ? AND COALESCE(due, dtstart) < ? "
+            params.extend([_datetime_to_sql(window[0]), _datetime_to_sql(window[1])])
+        sql += "ORDER BY uid, COALESCE(recurrence_id, '')"
+        with self.connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return tuple(_row_to_component(r) for r in rows)
 
     def list_calendars(self) -> tuple[CalendarRef, ...]:
@@ -815,6 +933,18 @@ def _decode_flags(value: object) -> Sequence[str]:
         if isinstance(item, str):
             out.append(item)
     return tuple(out)
+
+
+def _chunked(values: Sequence[str]) -> Iterator[Sequence[str]]:
+    """Split *values* into runs that fit in one statement's parameters.
+
+    SQLite caps the number of host parameters per statement, so an
+    ``IN (…)`` over an arbitrarily long list has to be issued in pieces.
+    The runs stay in the order given, so concatenating their results
+    keeps a sorted input sorted.
+    """
+    for start in range(0, len(values), _MAX_SQL_PARAMETERS):
+        yield values[start : start + _MAX_SQL_PARAMETERS]
 
 
 def _datetime_to_sql(dt: datetime | None) -> str | None:

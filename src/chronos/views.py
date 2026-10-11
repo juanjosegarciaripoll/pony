@@ -239,8 +239,18 @@ def gather_occurrences(
     for calendar in calendars:
         if not selection.contains(calendar):
             continue
-        components = {c.ref: c for c in index.list_calendar_components(calendar)}
         occurrences = index.query_occurrences(calendar, window[0], window[1])
+        # Only the components the window actually names. Reading the
+        # whole calendar and joining in Python put every event's raw ICS
+        # through SQLite on every render — 44 ms to draw 24 rows out of
+        # 3,000 events, paid again by the mail reader's status line.
+        components = {
+            c.ref: c
+            for c in index.list_components_for_uids(
+                calendar,
+                {occ.ref.uid for occ in occurrences},
+            )
+        }
         for occ in occurrences:
             component = components.get(occ.ref)
             if component is None:
@@ -248,19 +258,23 @@ def gather_occurrences(
             if component.local_status == LocalStatus.TRASHED:
                 continue
             rows.append(OccurrenceRow(occurrence=occ, component=component))
-        # Inject VTodos as full-day rows. The `occurrences` cache
-        # only ever contains VEvents (sync's `populate_occurrences`
-        # iterates VEvent masters), so we don't double-count by
-        # adding VTodos here.
-        for component in components.values():
+        # Inject VTodos as full-day rows.  The window and the active
+        # filter are the query's, so this does not read the calendar's
+        # events again.
+        #
+        # This double-counts a task that also has an occurrence row:
+        # `populate_occurrences` expands every master, tasks included,
+        # so one with an anchor inside the window arrives from the join
+        # above as well as from here.  Pre-existing -- the version that
+        # read the whole calendar did the same -- and pinned by
+        # `tests_calendar/test_occurrences_cache.py`; the comment that
+        # used to sit here claimed the cache held only events, which is
+        # what hid it.
+        for component in index.list_todos(calendar, window=window):
             if not isinstance(component, VTodo):
-                continue
-            if component.local_status != LocalStatus.ACTIVE:
                 continue
             anchor = component.due or component.dtstart
             if anchor is None:
-                continue
-            if not (window[0] <= anchor < window[1]):
                 continue
             day_start = datetime.combine(
                 anchor.astimezone(UTC).date(), time.min, tzinfo=UTC
@@ -291,11 +305,10 @@ def gather_todos(
     for calendar in calendars:
         if not selection.contains(calendar):
             continue
-        for component in index.list_calendar_components(calendar):
-            if (
-                isinstance(component, VTodo)
-                and component.local_status == LocalStatus.ACTIVE
-            ):
+        # `list_todos` filters on kind and status in SQL: a todo list
+        # has no reason to read every event in the calendar first.
+        for component in index.list_todos(calendar):
+            if isinstance(component, VTodo):
                 out.append(component)
     out.sort(key=_todo_sort_key)
     return tuple(out)

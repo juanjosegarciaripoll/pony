@@ -19,6 +19,7 @@ from chronos.recurrence import (
     expand,
     populate_alarms,
     populate_occurrences,
+    rebuild_caches,
 )
 from tests_calendar import corpus
 
@@ -724,3 +725,99 @@ class PopulateAlarmsTest(unittest.TestCase):
             cancel_event=cancel,
         )
         self.assertEqual(count, 0)
+
+
+class RestrictedRebuildCostTest(unittest.TestCase):
+    """A rebuild of one event must not read the whole calendar.
+
+    `rebuild_caches` runs on every local create, edit and delete, and
+    both of its passes used to read every component row in the calendar
+    -- raw ICS included -- and then drop all but the one UID they were
+    given.  The alarm pass read the whole occurrence window the same
+    way.  On a 3,000-event calendar that was 95 ms of SQLite per edit,
+    growing with the calendar.
+    """
+
+    def setUp(self) -> None:
+        from chronos.index_store import SqliteIndexRepository
+
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.index = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.index.close)
+        self.calendar = CalendarRef(account_name=ACCOUNT, calendar_name=CALENDAR)
+        self.now = datetime(2026, 5, 1, tzinfo=UTC)
+        for n in range(6):
+            uid = f"rebuild-cost-{n}@example.com"
+            self.index.upsert_component(
+                _event(
+                    uid,
+                    _alarm_ics(uid),
+                    dtstart=datetime(2026, 5, 1 + n, 9, 0, tzinfo=UTC),
+                    dtend=datetime(2026, 5, 1 + n, 10, 0, tzinfo=UTC),
+                    summary=uid,
+                )
+            )
+        rebuild_caches(
+            index=self.index, calendar=self.calendar, now=self.now, uids=None
+        )
+
+    def test_one_uid_reads_one_component_and_its_occurrences(self) -> None:
+        whole_calendar_rows = 0
+        keyed_rows = 0
+        occurrence_rows = 0
+        real_all = self.index.list_calendar_components
+        real_keyed = self.index.list_components_for_uids
+        real_occ = self.index.query_occurrences
+
+        def _all(*args: object, **kwargs: object) -> object:
+            nonlocal whole_calendar_rows
+            rows = real_all(*args, **kwargs)  # type: ignore[arg-type]
+            whole_calendar_rows += len(rows)
+            return rows
+
+        def _keyed(*args: object, **kwargs: object) -> object:
+            nonlocal keyed_rows
+            rows = real_keyed(*args, **kwargs)  # type: ignore[arg-type]
+            keyed_rows += len(rows)
+            return rows
+
+        def _occ(*args: object, **kwargs: object) -> object:
+            nonlocal occurrence_rows
+            rows = real_occ(*args, **kwargs)  # type: ignore[arg-type]
+            occurrence_rows += len(rows)
+            return rows
+
+        self.index.list_calendar_components = _all  # type: ignore[method-assign]
+        self.index.list_components_for_uids = _keyed  # type: ignore[method-assign]
+        self.index.query_occurrences = _occ  # type: ignore[method-assign]
+        try:
+            rebuild_caches(
+                index=self.index,
+                calendar=self.calendar,
+                now=self.now,
+                uids=frozenset({"rebuild-cost-2@example.com"}),
+            )
+        finally:
+            self.index.list_calendar_components = real_all  # type: ignore[method-assign]
+            self.index.list_components_for_uids = real_keyed  # type: ignore[method-assign]
+            self.index.query_occurrences = real_occ  # type: ignore[method-assign]
+
+        # Six masters in the calendar; the rebuild named one of them.
+        self.assertEqual(whole_calendar_rows, 0, "read the whole calendar")
+        self.assertEqual(keyed_rows, 2, "one component, read once per pass")
+        self.assertEqual(occurrence_rows, 1, "read the whole occurrence window")
+
+    def test_restricted_rebuild_still_writes_the_alarm(self) -> None:
+        self.index.set_alarms(
+            ComponentRef(ACCOUNT, CALENDAR, "rebuild-cost-2@example.com"),
+            datetime(2026, 5, 3, 9, 0, tzinfo=UTC),
+            [],
+        )
+        count = populate_alarms(
+            index=self.index,
+            calendar=self.calendar,
+            window_start=self.now - timedelta(days=1),
+            window_end=self.now + timedelta(days=30),
+            uids=frozenset({"rebuild-cost-2@example.com"}),
+        )
+        self.assertEqual(count, 1)

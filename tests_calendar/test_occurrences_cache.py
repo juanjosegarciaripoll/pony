@@ -11,6 +11,7 @@ from chronos.domain import (
     LocalStatus,
     Occurrence,
     VEvent,
+    VTodo,
 )
 from chronos.index_store import SqliteIndexRepository
 from chronos.recurrence import populate_occurrences
@@ -302,3 +303,145 @@ class InvalidationOnWriteTest(unittest.TestCase):
         self.assertGreater(self._count(), 0)
         self.index.delete_component(self.master.ref)
         self.assertEqual(self._count(), 0)
+
+
+class RenderCostTest(unittest.TestCase):
+    """What a view render is allowed to read out of the index.
+
+    `gather_occurrences` joined the window's occurrences against
+    `list_calendar_components` -- every row in the calendar, raw ICS
+    included -- and `gather_todos` read the same thing to pick out the
+    tasks.  A one-day render of a 3,000-event calendar cost 44 ms, and
+    the mail reader's status line pays it too (`next_event_status`).
+    """
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.index = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.index.close)
+        self.window_start = datetime(2026, 5, 1, tzinfo=UTC)
+        self.window_end = datetime(2026, 6, 1, tzinfo=UTC)
+        for day in range(1, 21):
+            uid = f"render-cost-{day}@example.com"
+            start = datetime(2026, 5, day, 9, 0, tzinfo=UTC)
+            self.index.upsert_component(
+                _event(
+                    uid,
+                    corpus.simple_event(),
+                    dtstart=start,
+                    dtend=start.replace(hour=10),
+                    summary=uid,
+                )
+            )
+        for day in (2, 3):
+            uid = f"render-cost-todo-{day}@example.com"
+            self.index.upsert_component(
+                VTodo(
+                    ref=_ref(uid),
+                    href="/dav/t.ics",
+                    etag="v1",
+                    raw_ics=corpus.simple_todo(),
+                    summary=uid,
+                    description=None,
+                    location=None,
+                    dtstart=None,
+                    due=datetime(2026, 5, day, 12, 0, tzinfo=UTC),
+                    status=None,
+                    local_flags=frozenset(),
+                    server_flags=frozenset(),
+                    local_status=LocalStatus.ACTIVE,
+                    trashed_at=None,
+                    synced_at=None,
+                )
+            )
+        populate_occurrences(
+            index=self.index,
+            calendar=CAL,
+            window_start=self.window_start,
+            window_end=self.window_end,
+        )
+
+    def _count_component_reads(self) -> list[int]:
+        """Record how many component rows each read returns."""
+        seen: list[int] = []
+        real_all = self.index.list_calendar_components
+        real_keyed = self.index.list_components_for_uids
+
+        def _all(*args: object, **kwargs: object) -> object:
+            rows = real_all(*args, **kwargs)  # type: ignore[arg-type]
+            seen.append(len(rows))
+            return rows
+
+        def _keyed(*args: object, **kwargs: object) -> object:
+            rows = real_keyed(*args, **kwargs)  # type: ignore[arg-type]
+            seen.append(len(rows))
+            return rows
+
+        self.index.list_calendar_components = _all  # type: ignore[method-assign]
+        self.index.list_components_for_uids = _keyed  # type: ignore[method-assign]
+        self.addCleanup(setattr, self.index, "list_calendar_components", real_all)
+        self.addCleanup(setattr, self.index, "list_components_for_uids", real_keyed)
+        return seen
+
+    def test_one_day_render_reads_one_component(self) -> None:
+        from chronos.views import CalendarSelection, gather_occurrences
+
+        seen = self._count_component_reads()
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=[CAL],
+            selection=CalendarSelection(refs=frozenset()),
+            window=(
+                datetime(2026, 5, 7, tzinfo=UTC),
+                datetime(2026, 5, 8, tzinfo=UTC),
+            ),
+        )
+        self.assertEqual(
+            [r.component.ref.uid for r in rows], ["render-cost-7@example.com"]
+        )
+        # Twenty events in the calendar; the window names one.
+        self.assertEqual(sum(seen), 1, f"component rows read: {seen}")
+
+    def test_a_render_still_injects_the_window_s_todos(self) -> None:
+        """The same rows as before the narrow queries, duplicate included.
+
+        A VTODO with an anchor in the window arrives twice: once from
+        the occurrence cache, which `populate_occurrences` fills for
+        every master including tasks, and once from the full-day
+        injection.  That is pre-existing -- `gather_occurrences`
+        double-counted it when it read the whole calendar too -- and
+        this test pins it so the narrow queries can be shown not to
+        have changed what a render shows.  The duplicate itself is a
+        separate bug.
+        """
+        from chronos.views import CalendarSelection, gather_occurrences
+
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=[CAL],
+            selection=CalendarSelection(refs=frozenset()),
+            window=(
+                datetime(2026, 5, 2, tzinfo=UTC),
+                datetime(2026, 5, 3, tzinfo=UTC),
+            ),
+        )
+        self.assertEqual(
+            sorted(r.component.ref.uid for r in rows),
+            [
+                "render-cost-2@example.com",
+                "render-cost-todo-2@example.com",
+                "render-cost-todo-2@example.com",
+            ],
+        )
+
+    def test_listing_todos_does_not_read_the_events(self) -> None:
+        from chronos.views import CalendarSelection, gather_todos
+
+        seen = self._count_component_reads()
+        todos = gather_todos(
+            index=self.index,
+            calendars=[CAL],
+            selection=CalendarSelection(refs=frozenset()),
+        )
+        self.assertEqual(len(todos), 2)
+        self.assertEqual(sum(seen), 0, f"component rows read: {seen}")
