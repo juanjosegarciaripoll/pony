@@ -3820,3 +3820,78 @@ class FetchBackpressureTestCase(unittest.TestCase):
         worst = max(ahead - done for done, ahead in enumerate(ingested))
         self.assertLessEqual(worst, _FETCH_QUEUE_DEPTH + 2 * 25)
         self.assertEqual(len(ingested), count)
+
+
+class AdoptionCostTestCase(unittest.TestCase):
+    """Matching a fetched message against pending rows must not scan.
+
+    The lookup runs for every fetched message whose Message-ID matched
+    no pending row -- in a freshly rebuilt index, that is all of them.
+    It used to list the whole folder and filter in Python, so a first
+    sync cost one full materialisation of a growing folder per message.
+    """
+
+    def test_a_first_sync_does_not_read_the_folder_per_message(self) -> None:
+        service, index, _mirror, _session = _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<m{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"Message {uid}", f"<m{uid}@example.com>"),
+                    )
+                    for uid in range(1, 41)
+                },
+            },
+        )
+        listings = 0
+        real = index.list_folder_messages
+
+        def _counting(*, folder: FolderRef) -> object:
+            nonlocal listings
+            listings += 1
+            return real(folder=folder)
+
+        index.list_folder_messages = _counting  # type: ignore[method-assign]
+
+        plan = service.plan()
+        service.execute(plan, confirmed_folders=frozenset())
+
+        index.list_folder_messages = real  # type: ignore[method-assign]
+        rows = index.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX"),
+        )
+        self.assertEqual(len(rows), 40)
+        self.assertEqual(listings, 0)
+
+    def test_each_message_is_parsed_once(self) -> None:
+        """Adoption and the row want the same projection, not two."""
+        from unittest.mock import patch
+
+        from pony import sync as sync_module
+
+        service, index, _mirror, _session = _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<m{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"Message {uid}", f"<m{uid}@example.com>"),
+                    )
+                    for uid in range(1, 21)
+                },
+            },
+        )
+        calls = 0
+        real_project = sync_module.project_rfc822_message
+
+        def _counting(**kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            return real_project(**kwargs)  # type: ignore[arg-type]
+
+        with patch.object(sync_module, "project_rfc822_message", _counting):
+            plan = service.plan()
+            service.execute(plan, confirmed_folders=frozenset())
+
+        self.assertEqual(calls, 20)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from datetime import datetime
 from typing import Protocol
 
 from .domain import (
@@ -284,6 +285,22 @@ class IndexRepository(Protocol):
         Callers (CLI, MCP) disambiguate by row id, folder, or
         timestamp.  ``folder_name`` narrows the search; ``None``
         searches the whole account.  Empty Message-IDs never match.
+        """
+        ...
+
+    def find_pending_matches(
+        self,
+        *,
+        folder: FolderRef,
+        sender: str,
+        subject: str,
+        received_at: datetime,
+    ) -> Sequence[IndexedMessage]:
+        """UID-less rows in *folder* matching what a message says of itself.
+
+        The sync engine asks this once per fetched message whose
+        Message-ID matched nothing, so it has to be answerable from an
+        index rather than by reading the folder.
         """
         ...
 

@@ -506,6 +506,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             # cutting the scan time on large accounts (100k+ rows) by ~30×.
             conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS ix_messages_pending
+                    ON messages (
+                        account_name, folder_name, sender, subject, received_at
+                    )
+                    WHERE uid IS NULL
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS ix_messages_unseen
                 ON messages (account_name, local_status, folder_name, local_flags)
                 """
@@ -765,6 +774,46 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         sql += " ORDER BY received_at DESC, id ASC"
         with self._use() as conn:
             rows = conn.execute(sql, params).fetchall()
+        return tuple(_indexed_message_from_row(row) for row in rows)
+
+    def find_pending_matches(
+        self,
+        *,
+        folder: FolderRef,
+        sender: str,
+        subject: str,
+        received_at: datetime,
+    ) -> Sequence[IndexedMessage]:
+        """UID-less rows in *folder* that describe the same message.
+
+        What a message says about itself — sender, subject and date — is
+        how a fetched message is matched against a row that is still
+        waiting for a UID, when the Message-ID cannot settle it.
+
+        The comparison is SQL, and a partial index covers it, because
+        the caller runs once per fetched message: listing the folder and
+        filtering in Python cost one full materialisation of the folder
+        per message, which made a first sync quadratic in the folder's
+        size -- 15,000 messages meant 15,000 scans of a growing table.
+        In a freshly rebuilt index there are no UID-less rows at all, so
+        this now answers from an empty index.
+        """
+        with self._use() as conn:
+            rows = conn.execute(
+                f"SELECT {_FULL_SELECT} FROM messages "  # noqa: S608
+                "WHERE account_name = ? AND folder_name = ? AND uid IS NULL "
+                "AND local_status IN (?, ?) "
+                "AND sender = ? AND subject = ? AND received_at = ?",
+                (
+                    folder.account_name,
+                    folder.folder_name,
+                    MessageStatus.ACTIVE.value,
+                    MessageStatus.TRASHED.value,
+                    sender,
+                    subject,
+                    received_at.isoformat(),
+                ),
+            ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
 
     def count_folder_messages(self, *, folder: FolderRef) -> int:

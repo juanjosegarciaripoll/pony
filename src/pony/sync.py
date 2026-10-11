@@ -2515,6 +2515,23 @@ class ImapSyncService:
         # user's pending deletion — where re-inserting would resurrect a
         # deleted message and duplicate everything else.  It also covers
         # an APPEND whose APPENDUID never came back.
+        # Parsed once.  Adoption needs what the message says about
+        # itself, and so does the row, so projecting separately for each
+        # meant every message was parsed twice -- a second pass over the
+        # whole body, which for an archive folder is most of the work.
+        # The projection's MessageRef carries id=0, which insert_message
+        # replaces with the autoincrement value; the storage key is
+        # filled in below, once the mirror has given one.
+        projected = project_rfc822_message(
+            message_ref=MessageRef(
+                account_name=account.name,
+                folder_name=folder_ref.folder_name,
+                id=0,
+            ),
+            raw_message=raw,
+            storage_key="",
+        )
+
         adopted = self._adopt_existing_row(
             account=account,
             folder_ref=folder_ref,
@@ -2522,7 +2539,7 @@ class ImapSyncService:
             message_id=message_id,
             server_flags=server_flags,
             extra_imap_flags=extra_imap_flags,
-            raw=raw,
+            projected=projected,
         )
         if adopted:
             return True
@@ -2538,19 +2555,9 @@ class ImapSyncService:
             logger.exception("Failed to store UID %d to mirror", uid)
             return False
 
-        # Project — the projection's MessageRef carries id=0, which
-        # insert_message replaces with the autoincrement value.
-        projected = project_rfc822_message(
-            message_ref=MessageRef(
-                account_name=account.name,
-                folder_name=folder_ref.folder_name,
-                id=0,
-            ),
-            raw_message=raw,
-            storage_key=storage_key,
-        )
         indexed = dataclasses.replace(
             projected,
+            storage_key=storage_key,
             message_id=message_id,
             uid=uid,
             local_flags=server_flags,
@@ -2602,7 +2609,7 @@ class ImapSyncService:
         message_id: str,
         server_flags: frozenset[MessageFlag],
         extra_imap_flags: frozenset[str],
-        raw: bytes,
+        projected: IndexedMessage,
     ) -> bool:
         """Give *uid* to a UID-less row for the same message, if there is one.
 
@@ -2630,7 +2637,8 @@ class ImapSyncService:
             # duplicated every such message locally and then appended the
             # orphaned row to the server on the next pass.
             candidates = self._rows_matching_projection(
-                account=account, folder_ref=folder_ref, raw=raw
+                folder_ref=folder_ref,
+                projected=projected,
             )
         if not candidates:
             return self._adopt_move_source(
@@ -2658,36 +2666,30 @@ class ImapSyncService:
     def _rows_matching_projection(
         self,
         *,
-        account: AccountConfig,
         folder_ref: FolderRef,
-        raw: bytes,
+        projected: IndexedMessage,
     ) -> list[IndexedMessage]:
         """UID-less rows in this folder that describe the same message.
 
         Compares what the message says about itself — sender, subject
-        and date — against the rows still waiting for a UID.  Used only
-        when the Message-ID cannot settle it, which is why it does not
-        need to be cheap.  Two genuinely indistinguishable messages stay
-        indistinguishable, and the caller inserts rather than guessing.
+        and date — against the rows still waiting for a UID.  Two
+        genuinely indistinguishable messages stay indistinguishable, and
+        the caller inserts rather than guessing.
+
+        This runs for *every* fetched message whose Message-ID matched no
+        pending row — which in a freshly rebuilt index is all of them,
+        because there are no pending rows — so the matching happens in
+        the database (see ``find_pending_matches``) rather than over a
+        materialised copy of the folder.
         """
-        probe = project_rfc822_message(
-            message_ref=MessageRef(
-                account_name=account.name,
-                folder_name=folder_ref.folder_name,
-                id=0,
+        return list(
+            self._index.find_pending_matches(
+                folder=folder_ref,
+                sender=projected.sender,
+                subject=projected.subject,
+                received_at=projected.received_at,
             ),
-            raw_message=raw,
-            storage_key="",
         )
-        return [
-            row
-            for row in self._index.list_folder_messages(folder=folder_ref)
-            if row.uid is None
-            and row.local_status in (MessageStatus.ACTIVE, MessageStatus.TRASHED)
-            and row.sender == probe.sender
-            and row.subject == probe.subject
-            and row.received_at == probe.received_at
-        ]
 
     def _adopt_move_source(
         self,
