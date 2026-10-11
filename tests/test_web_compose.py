@@ -462,3 +462,103 @@ def test_an_account_the_form_names_but_cannot_send_from_is_refused() -> None:
         )
 
     assert "That account cannot send mail." in response.text
+
+
+def test_a_reply_sent_from_the_browser_marks_the_original_answered() -> None:
+    from pony.domain import MessageFlag
+
+    services, index = _services("compose-reply-answered")
+    (original,) = index.list_folder_messages(folder=INBOX)
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **_kwargs: None),
+        _client(services) as client,
+    ):
+        page = client.get(
+            f"/compose?mode=reply&account={original.message_ref.account_name}"
+            f"&folder={original.message_ref.folder_name}"
+            f"&id={original.message_ref.id}",
+        ).text
+        assert "answering" in page
+        client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "them@example.test",
+                "subject": "Re: hello",
+                "body": "Yes",
+                "answering": (
+                    f"{original.message_ref.account_name}\x1f"
+                    f"{original.message_ref.folder_name}\x1f"
+                    f"{original.message_ref.id}"
+                ),
+            },
+        )
+
+    answered = index.get_message(message_ref=original.message_ref)
+    assert answered is not None
+    assert MessageFlag.ANSWERED in answered.local_flags
+
+
+def test_saving_a_resumed_draft_leaves_one_copy() -> None:
+    from pony.domain import MessageStatus
+
+    services, index = _services("compose-save-resumed")
+    (original,) = index.list_folder_messages(folder=INBOX)
+
+    with _client(services) as client:
+        client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "Still a draft",
+                "body": "Later.",
+                "save_draft": "1",
+                "source": (
+                    f"{original.message_ref.account_name}\x1f"
+                    f"{original.message_ref.folder_name}\x1f"
+                    f"{original.message_ref.id}"
+                ),
+            },
+        )
+
+    retired = index.get_message(message_ref=original.message_ref)
+    assert retired is None or retired.local_status is MessageStatus.TRASHED
+
+
+def test_only_a_draft_can_be_edited_as_one() -> None:
+    """The terminal gates the key on the folder; a URL has to be gated too."""
+    paths = make_tmp_paths("compose-draft-gate")
+    account = dataclasses.replace(
+        make_test_account(paths),
+        sent_folder="Sent",
+        drafts_folder="Drafts",
+    )
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=INBOX,
+        raw=plain_text(),
+        message_id="<received@example.com>",
+    )
+    services = WebServices(
+        config=config,
+        index=index,
+        mirrors=mirrors,
+        contacts=index,
+    )
+    received = index.list_folder_message_summaries(folder=INBOX)[0]
+
+    with _client(services) as client:
+        response = client.get(
+            "/compose?mode=draft&account=acct&folder=INBOX"
+            f"&id={received.message_ref.id}",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert "Drafts" in response.headers["location"]

@@ -505,13 +505,23 @@ async def _calendar_page(services: WebServices, request: Request) -> Response:
 async def _event_form(services: WebServices, request: Request) -> Response:
     uid = request.query_params.get("uid", "")
     if uid:
+        from chronos.domain import CalendarRef
+        from chronos.event_actions import find_component
+
         runtime = services.calendar
+        account = request.query_params.get("account", "")
+        calendar = request.query_params.get("calendar", "")
+        # The link that opened this form names the calendar, and a UID
+        # only identifies a component inside one.
+        within = CalendarRef(account, calendar) if account and calendar else None
         found = (
-            [] if runtime is None else list(runtime.index.list_components_by_uid(uid))
+            None
+            if runtime is None
+            else find_component(runtime.index, uid, within=within)
         )
-        if not found:
+        if found is None:
             return PlainTextResponse("No such event.", status_code=404)
-        form = calendar_view.EventForm.of(found[0])
+        form = calendar_view.EventForm.of(found)
     else:
         day = request.query_params.get("date", "")
         try:
@@ -523,7 +533,7 @@ async def _event_form(services: WebServices, request: Request) -> Response:
         except ValueError:
             viewed = datetime.now(UTC).astimezone().date()
         form = calendar_view.EventForm.blank(
-            target=_first_calendar(services),
+            target=_first_calendar(services, request),
             day=viewed,
         )
     return HTMLResponse(
@@ -542,16 +552,26 @@ async def _event_save(services: WebServices, request: Request) -> Response:
     return _back_with(urls.calendar_url(), outcome)
 
 
-def _first_calendar(services: WebServices) -> str:
+def _first_calendar(services: WebServices, request: Request) -> str:
+    """Which calendar a new event defaults to.
+
+    The first one in view, as it is in the terminal: creating an event
+    while looking at one calendar files it there.
+    """
     from chronos.views import all_calendar_refs
 
     runtime = services.calendar
     if runtime is None:
         return ""
     refs = all_calendar_refs(runtime.config, runtime.mirror)
-    if not refs:
+    view = calendar_view.read_view(
+        _multi(request),
+        today=datetime.now(UTC).astimezone().date(),
+    )
+    chosen = view.selection.first_of(refs)
+    if chosen is None:
         return ""
-    return f"{refs[0].account_name}/{refs[0].calendar_name}"
+    return f"{chosen.account_name}/{chosen.calendar_name}"
 
 
 # ----------------------------------------------------------------------
@@ -572,6 +592,10 @@ CLIENT_ACTIONS = frozenset(
         "mark_down",
         "mark_up",
         "show_help",
+        # The page answers it ("close the tab"), which is the honest
+        # browser answer; leaving it out of this set had the help
+        # striking it through while the key worked.
+        "quit",
         "toggle_calendar",
         "search",
         "goto_folder",
@@ -639,21 +663,35 @@ async def _keymap(services: WebServices, request: Request) -> Response:
     """
     del services, request
     return JSONResponse(
-        {
-            surface.value: [
-                {
-                    "key": web_key(binding.key),
-                    "action": binding.action,
-                    "description": binding.description,
-                    "surface": binding.surface,
-                    "show": binding.show,
-                    "available": _is_available(binding.action),
-                }
-                for binding in bindings_for(surface)
-            ]
-            for surface in PageSurface
-        },
+        {surface.value: _surface_keymap(surface) for surface in PageSurface},
     )
+
+
+def _surface_keymap(surface: PageSurface) -> list[dict[str, object]]:
+    """One surface's bindings, one row per key the browser can see.
+
+    Two spellings of one key in the table -- a bare capital and its
+    ``shift+`` alias -- are one key to a browser, so the second is
+    dropped rather than listed twice in the help and never matched.
+    """
+    seen: set[str] = set()
+    rows: list[dict[str, object]] = []
+    for binding in bindings_for(surface):
+        key = web_key(binding.key)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "key": key,
+                "action": binding.action,
+                "description": binding.description,
+                "surface": binding.surface,
+                "show": binding.show,
+                "available": _is_available(binding.action),
+            },
+        )
+    return rows
 
 
 def _is_available(action: str) -> bool:

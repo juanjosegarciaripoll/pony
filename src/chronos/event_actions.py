@@ -23,7 +23,7 @@ caller does the posting.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 from chronos.domain import (
@@ -50,9 +50,9 @@ from chronos.recurrence import rebuild_caches
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import datetime
     from pathlib import Path
 
+    from chronos.ingest import OnConflict
     from chronos.protocols import IndexRepository, MirrorRepository
 
 
@@ -156,6 +156,102 @@ def parse_reminders(raw: str) -> tuple[ParsedAlarm, ...]:
             ),
         )
     return tuple(alarms)
+
+
+def find_component(
+    index: IndexRepository,
+    uid: str,
+    *,
+    within: CalendarRef | None = None,
+) -> StoredComponent | None:
+    """The component *uid* names, in *within* when one is given.
+
+    A UID identifies a component within a calendar, not across a
+    server: the same invitation mirrored into two calendars is two
+    components with one UID.  Resolving by UID alone therefore picks an
+    arbitrary one, which is how an edit opened from one calendar could
+    be saved against another.  With *within*, only that calendar's copy
+    matches.
+    """
+    found = list(index.list_components_by_uid(uid))
+    if within is not None:
+        for component in found:
+            if component.ref.calendar == within:
+                return component
+        return None
+    return found[0] if found else None
+
+
+def default_event_start(day: date, now: datetime) -> datetime:
+    """Where a new event starts when nothing else decides it.
+
+    On today, the next local half hour: an event being created now is
+    usually about to happen.  On any other day, the usual start of a
+    working day.  One rule, so a new event does not begin at a
+    different time depending on which front end opened the form.
+    """
+    local_now = now.astimezone()
+    if day != local_now.date():
+        return datetime.combine(day, time(9, 0)).astimezone()
+    rounded = local_now.replace(second=0, microsecond=0)
+    remainder = rounded.minute % 30
+    if remainder:
+        return rounded + timedelta(minutes=30 - remainder)
+    if local_now.second or local_now.microsecond:
+        return rounded + timedelta(minutes=30)
+    return rounded
+
+
+def parse_attendees(raw: str) -> tuple[str, ...]:
+    """A comma-separated attendee field, as bare email addresses.
+
+    Both front ends collect attendees as one line of text, and both
+    need the same reading of it: ``Name <addr>`` and ``mailto:`` are
+    unwrapped, duplicates collapse, and an address that cannot be
+    serialised into an ``ATTENDEE`` property raises ``ValueError`` with
+    the offending value named.  A caller reports that its own way --
+    inline in the terminal, as a refusal notice in the browser.
+    """
+    from chronos.mutations import normalize_attendee_emails
+
+    values = tuple(token.strip() for token in raw.split(",") if token.strip())
+    if not values:
+        return ()
+    return normalize_attendee_emails(values)
+
+
+def all_day_form_bounds(first: date, last: date | None) -> tuple[datetime, datetime]:
+    """Stored bounds for the dates an all-day form holds.
+
+    *last* is the **inclusive** last day as the user typed it, or None
+    for a single-day event; the pair that comes back is what
+    :class:`EditDraft` requires for ``all_day`` -- UTC midnight, end
+    exclusive.  Both front ends read their form through this, because
+    handing ``save_event`` the raw local values instead stores the
+    previous day east of UTC.
+    """
+    from chronos.mutations import all_day_bounds
+
+    return all_day_bounds(first, max(first, last) if last is not None else first)
+
+
+def all_day_form_dates(
+    dtstart: datetime | None,
+    dtend: datetime | None,
+) -> tuple[str, str]:
+    """A stored all-day span as the ``YYYY-MM-DD`` pair a form shows.
+
+    The inverse of :func:`all_day_form_bounds`: the second value is the
+    *inclusive* last day, so re-opening an event and saving it
+    unchanged leaves it where it was.
+    """
+    if dtstart is None:
+        return "", ""
+    first = dtstart.astimezone(UTC).date()
+    if dtend is None:
+        return first.isoformat(), ""
+    last = dtend.astimezone(UTC).date() - timedelta(days=1)
+    return first.isoformat(), max(first, last).isoformat()
 
 
 def existing_alarms(component: StoredComponent | None) -> tuple[ParsedAlarm, ...]:
@@ -313,22 +409,28 @@ def trash_event(
     )
 
 
-def import_ics_file(
+def import_ics_bytes(
     calendars: Calendars,
     target: CalendarRef,
-    path: Path,
+    payload: bytes,
+    *,
+    on_conflict: OnConflict = "skip",
 ) -> Outcome:
-    """Read *path* and file everything in it into *target*."""
-    from chronos.ingest import ingest_ics_bytes
+    """File everything in *payload* into *target*.
+
+    ``skip`` by default, as ``chronos import`` and the MCP tool default:
+    an import that silently overwrote the local copy of an event would
+    mean something different depending on which front end ran it.
+    """
+    from chronos.ingest import ingest_ics_bytes as ingest
 
     try:
-        payload = path.read_bytes()
-        report = ingest_ics_bytes(
+        report = ingest(
             payload,
             target=target,
             mirror=calendars.mirror,
             index=calendars.index,
-            on_conflict="skip",
+            on_conflict=on_conflict,
         )
     except Exception as exc:  # noqa: BLE001 — a bad file is the user's news
         return Outcome.refused(failure(f"Import failed: {exc}"))
@@ -341,6 +443,19 @@ def import_ics_file(
             ),
         ),
     )
+
+
+def import_ics_file(
+    calendars: Calendars,
+    target: CalendarRef,
+    path: Path,
+) -> Outcome:
+    """Read *path* and file everything in it into *target*."""
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        return Outcome.refused(failure(f"Import failed: {exc}"))
+    return import_ics_bytes(calendars, target, payload)
 
 
 def organizer_for(calendar: CalendarRef, config: AppConfig) -> str | None:

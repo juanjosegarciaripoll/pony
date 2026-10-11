@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
@@ -15,13 +15,16 @@ from chronos.domain import (
     StoredComponent,
     VEvent,
 )
-from chronos.event_actions import EditDraft, parse_reminders, reminders_text
-from chronos.ical_parser import extract_alarm_triggers, extract_attendees
-from chronos.mutations import (
-    all_day_bounds,
-    is_all_day_span,
-    normalize_attendee_emails,
+from chronos.event_actions import (
+    EditDraft,
+    all_day_form_bounds,
+    all_day_form_dates,
+    parse_attendees,
+    parse_reminders,
+    reminders_text,
 )
+from chronos.ical_parser import extract_alarm_triggers, extract_attendees
+from chronos.mutations import is_all_day_span
 from chronos.tui.bindings import edit_bindings
 from chronos.tui.widgets.date_picker import DatePicker, InvalidDateError
 
@@ -96,7 +99,7 @@ class EventEditScreen(Screen[None]):
         )
         if all_day:
             # Dates only; the Ends field holds the last day (inclusive).
-            start_date, end_date = _all_day_parts(initial_start, initial_end)
+            start_date, end_date = all_day_form_dates(initial_start, initial_end)
             start_time = end_time = ""
         else:
             start_date, start_time = _local_parts(initial_start)
@@ -283,7 +286,7 @@ class EventEditScreen(Screen[None]):
             )
             if last_day < start_date:
                 raise ValueError("end must not be before start")
-            first, end = all_day_bounds(start_date, last_day)
+            first, end = all_day_form_bounds(start_date, last_day)
             return self._draft(target, summary, first, end, all_day=True)
         start_time_select = self.query_one("#edit-start-time", Select)
         start_time = _selected_time(start_time_select, "start time")
@@ -318,7 +321,7 @@ class EventEditScreen(Screen[None]):
         description_input: Input = self.query_one("#edit-description", Input)
         attendees_input: Input = self.query_one("#edit-attendees", Input)
         reminders_input: Input = self.query_one("#edit-reminders", Input)
-        attendees = _parse_attendees_input(attendees_input.value)
+        attendees = parse_attendees(attendees_input.value)
         alarms = parse_reminders(reminders_input.value)
         return EditDraft(
             target=target,
@@ -346,29 +349,11 @@ class EventEditScreen(Screen[None]):
         return f"{ref.account_name} / {ref.calendar_name}"
 
 
-def _parse_attendees_input(raw: str) -> tuple[str, ...]:
-    values = tuple(token.strip() for token in raw.split(",") if token.strip())
-    if not values:
-        return ()
-    return normalize_attendee_emails(values)
-
-
 def _local_parts(dt: datetime | None) -> tuple[str, str]:
     if dt is None:
         return "", ""
     local = dt.astimezone()
     return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
-
-
-def _all_day_parts(start: datetime | None, end: datetime | None) -> tuple[str, str]:
-    """Start date and inclusive last date of a stored all-day span."""
-    if start is None:
-        return "", ""
-    first = start.astimezone(UTC).date()
-    if end is None:
-        return first.isoformat(), ""
-    last = end.astimezone(UTC).date() - timedelta(days=1)
-    return first.isoformat(), max(first, last).isoformat()
 
 
 def _time_options(value: str) -> tuple[tuple[str, str], ...]:

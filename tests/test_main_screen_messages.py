@@ -359,30 +359,54 @@ async def test_setting_a_flag_that_is_already_present_changes_nothing() -> None:
     assert first.local_flags == second.local_flags
 
 
-async def test_marking_an_already_answered_message_is_a_noop() -> None:
-    folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, index, _mirrors = build_pony_app(
-        label="main-answered-noop",
-        seed=[(folder, plain_text())],
+def test_marking_an_already_answered_message_is_a_noop() -> None:
+    """``add_flag`` says whether the row changed, so a caller can tell."""
+    from tui_helpers import make_index, make_test_account, make_tmp_paths
+
+    from pony import mailbox_actions
+    from pony.domain import AppConfig
+    from pony.storage import MaildirMirrorRepository
+
+    paths = make_tmp_paths("answered-noop")
+    account = make_test_account(paths)
+    index = make_index(paths)
+    mailboxes = mailbox_actions.Mailboxes(
+        config=AppConfig(accounts=(account,)),
+        index=index,
+        mirrors={
+            account.name: MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            ),
+        },
+    )
+    folder = FolderRef(account_name=account.name, folder_name="INBOX")
+    stored = mailboxes.mirrors[account.name].store_message(
+        folder=folder,
+        raw_message=plain_text(),
+    )
+    from pony.domain import MessageRef
+    from pony.message_projection import project_rfc822_message
+
+    row = index.insert_message(
+        message=project_rfc822_message(
+            message_ref=MessageRef(
+                account_name=account.name,
+                folder_name="INBOX",
+                id=0,
+            ),
+            raw_message=plain_text(),
+            storage_key=stored,
+        ),
     )
 
-    async with app.run_test() as pilot:
-        await _select_inbox(pilot)
-        screen = _main(app)
-        msg = screen.get_current_message()
-        assert msg is not None
+    changed = mailbox_actions.add_flag(mailboxes, row, MessageFlag.ANSWERED)
+    assert changed is not None
+    assert MessageFlag.ANSWERED in changed.local_flags
 
-        screen._mark_answered(msg)
-        await pilot.pause()
-        answered = index.get_message(message_ref=msg.message_ref)
-        assert answered is not None
-        assert MessageFlag.ANSWERED in answered.local_flags
-
-        # Second call sees the flag already set and returns early.
-        screen._mark_answered(answered)
-        await pilot.pause()
-
-    still = index.get_message(message_ref=msg.message_ref)
+    # Already set: nothing to write, and nothing to repaint.
+    assert mailbox_actions.add_flag(mailboxes, changed, MessageFlag.ANSWERED) is None
+    still = index.get_message(message_ref=row.message_ref)
     assert still is not None
     assert MessageFlag.ANSWERED in still.local_flags
 

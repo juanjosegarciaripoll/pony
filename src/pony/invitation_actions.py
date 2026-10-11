@@ -179,7 +179,7 @@ def respond_to_invitation(
     log = NoticeLog()
     filed = file_invitation(invitation, calendar=calendar, target=choice.calendar)
     log.notices.extend(filed.notices)
-    if filed.failed or choice.partstat is None or invitation.is_cancellation:
+    if filed.failed or choice.partstat is None or not invitation.can_reply:
         return Outcome(changed=filed.changed, notices=tuple(log.notices))
     if account is None:
         log.warn("No account configured for sending — nothing was answered.")

@@ -86,7 +86,10 @@ class ContactBrowserScreen(Screen[None]):
         for contact in self._displayed:
             row = contact_row(contact, marked=contact.id in self._marked)
             table.add_row(
-                "●" if row.marked else " ",
+                # The projection already decided the mark; inventing a
+                # second one here is how the two front ends came to show
+                # different glyphs for the same row.
+                row.mark,
                 row.last_name,
                 row.first_name,
                 row.emails,

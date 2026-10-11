@@ -346,3 +346,27 @@ def test_no_sendable_account_is_reported_rather_than_guessed() -> None:
 
     assert isinstance(refused, Notice)
     assert refused.text == "No account configured for sending."
+
+
+def test_an_invitation_with_nobody_to_answer_is_only_filed() -> None:
+    """`can_reply` is checked by the action, not only by the buttons."""
+    import dataclasses
+
+    from pony.invitation_actions import InvitationChoice, respond_to_invitation
+
+    runtime = _calendar("inv-no-organizer")
+    invitation = dataclasses.replace(_invitation(), organizer=None)
+    assert not invitation.can_reply
+
+    outcome = respond_to_invitation(
+        invitation,
+        InvitationChoice(calendar=TARGET, partstat="ACCEPTED"),
+        calendar=runtime,
+        account=None,
+        config=make_test_config(accounts=()),
+        credentials=None,
+    )
+
+    # Filed, and nothing said about an answer that cannot be sent.
+    assert outcome.changed == 1
+    assert not any("answered" in notice.text for notice in outcome.notices)

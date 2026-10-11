@@ -31,12 +31,14 @@ from ..composer import (
     DraftSpec,
     forward_attachment_name,
     forward_draft,
+    from_header,
     new_draft,
     reply_draft,
     resumed_draft,
 )
-from ..delivery import deliver_message, file_message
+from ..delivery import deliver_message, file_draft
 from ..domain import FolderRef, MessageRef
+from ..folder_utils import holds_drafts
 from ..message_renderer import render_message, safe_attachment_filename
 from . import urls
 from .html import Raw, element, fragment, join
@@ -103,10 +105,13 @@ class Form:
     markdown: bool = False
     in_reply_to: str = ""
     references: str = ""
-    # The draft this message was opened from, retired when it is sent.
+    # The draft this message was opened from, retired when it is sent
+    # or saved again.
     source: MessageRef | None = None
     # The message a forward carries, attached at send time.
     forward_of: MessageRef | None = None
+    # The message being replied to, marked \Answered once this is sent.
+    answering: MessageRef | None = None
     attachments: tuple[tuple[str, str], ...] = ()
 
     @staticmethod
@@ -115,6 +120,7 @@ class Form:
         *,
         source: MessageRef | None = None,
         forward_of: MessageRef | None = None,
+        answering: MessageRef | None = None,
     ) -> Form:
         return Form(
             account_name=spec.account_name,
@@ -128,6 +134,7 @@ class Form:
             references=spec.references,
             source=source,
             forward_of=forward_of,
+            answering=answering,
         )
 
 
@@ -174,6 +181,7 @@ def build_form(
                     prefer_name=prefer,
                     reply_all=mode == "reply_all",
                 ),
+                answering=ref,
             )
         case "forward":
             rendered = render_message(raw)
@@ -190,6 +198,17 @@ def build_form(
                 forward_of=ref,
             )
         case "draft":
+            # Only a draft is editable as one.  The terminal gates the
+            # key on the folder (`check_action`); a URL cannot be
+            # gated, so the same question is asked here.
+            if not holds_drafts(
+                services.config,
+                FolderRef(
+                    account_name=ref.account_name,
+                    folder_name=ref.folder_name,
+                ),
+            ):
+                return warn("Only a message in Drafts can be edited as one.")
             return Form.of(
                 resumed_draft(
                     accounts=sendable,
@@ -266,6 +285,7 @@ def _form(form: Form, sendable: Sequence[AnyAccount]) -> Raw:
                 _hidden("references", form.references),
                 _hidden("source", _ref_value(form.source)),
                 _hidden("forward_of", _ref_value(form.forward_of)),
+                _hidden("answering", _ref_value(form.answering)),
                 _field(
                     "From",
                     element(
@@ -427,6 +447,7 @@ def form_from_fields(fields: Mapping[str, list[str]]) -> Form:
         references=one("references"),
         source=parse_ref(one("source")),
         forward_of=parse_ref(one("forward_of")),
+        answering=parse_ref(one("answering")),
         attachments=tuple(
             (token, _staged_name(token)) for token in tokens if staged_path(token)
         ),
@@ -460,7 +481,7 @@ def send(services: WebServices, form: Form) -> Outcome:
         return Outcome.refused(extra)
     try:
         message = build_email_message(
-            from_address=_from_address(account),
+            from_address=_from_address(services, account),
             to=form.to,
             cc=form.cc,
             bcc=form.bcc,
@@ -473,13 +494,6 @@ def send(services: WebServices, form: Form) -> Outcome:
         )
     except FileNotFoundError as missing:
         return Outcome.refused(warn(f"Attachment is gone: {missing}"))
-    source = (
-        None
-        if form.source is None
-        else services.index.get_message(
-            message_ref=form.source,
-        )
-    )
     return deliver_message(
         services.mailboxes,
         message,
@@ -489,7 +503,9 @@ def send(services: WebServices, form: Form) -> Outcome:
         to=form.to,
         cc=form.cc,
         connect_timeout=services.config.smtp_connect_timeout_seconds,
-        source_draft=source,
+        source_draft=_resolve(services, form.source),
+        # Replying marks what was replied to, here as in the terminal.
+        answering=_resolve(services, form.answering),
     )
 
 
@@ -502,7 +518,7 @@ def save_draft(services: WebServices, form: Form) -> Outcome:
     if extra is not None:
         return Outcome.refused(extra)
     message = build_email_message(
-        from_address=_from_address(account),
+        from_address=_from_address(services, account),
         to=form.to,
         cc=form.cc,
         bcc=form.bcc,
@@ -513,19 +529,20 @@ def save_draft(services: WebServices, form: Form) -> Outcome:
         in_reply_to=form.in_reply_to,
         references=form.references,
     )
-    filed = file_message(
+    return file_draft(
         services.mailboxes,
         message.as_bytes(),
         account,
-        folder_hint="Drafts",
-        override=account.drafts_folder,
+        # The draft this form was resumed from is replaced, not joined.
+        source_draft=_resolve(services, form.source),
     )
-    if filed.message is None:
-        return filed.outcome
-    return Outcome(
-        changed=filed.outcome.changed,
-        notices=(*filed.outcome.notices, warn("Saved in Drafts.")),
-    )
+
+
+def _resolve(services: WebServices, ref: MessageRef | None) -> IndexedMessage | None:
+    """The row *ref* names, or None — the form only carries the ref."""
+    if ref is None:
+        return None
+    return services.index.get_message(message_ref=ref)
 
 
 def _account(services: WebServices, name: str) -> AnyAccount | None:
@@ -535,8 +552,8 @@ def _account(services: WebServices, name: str) -> AnyAccount | None:
     return None
 
 
-def _from_address(account: AnyAccount) -> str:
-    return account.email_address or (account.username or account.name)
+def _from_address(services: WebServices, account: AnyAccount) -> str:
+    return from_header(account, contacts=services.contacts)
 
 
 def _attachment_paths(

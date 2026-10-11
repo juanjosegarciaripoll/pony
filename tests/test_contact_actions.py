@@ -100,7 +100,12 @@ def test_harvest_folder_counts_the_messages_it_read() -> None:
     assert [notice.text for notice in outcome.notices] == [
         "Harvested contacts from 0 message(s) in INBOX.",
     ]
-    assert contact_actions.harvest_folder(None, [], "INBOX").notices == ()
+    # With no store there is nothing to harvest into, and saying so is
+    # better than a key that appears to do nothing.
+    refused = contact_actions.harvest_folder(None, [], "INBOX")
+    assert [notice.text for notice in refused.notices] == [
+        "No contact store is open.",
+    ]
 
 
 # ----------------------------------------------------------------------
@@ -594,6 +599,112 @@ def test_deliver_message_retires_the_draft_it_was_composed_from() -> None:
     remaining = list(mailboxes.index.list_folder_messages(folder=INBOX))
     assert [row.message_ref.id for row in remaining] != [source.message_ref.id]
     assert len(remaining) == 1
+
+
+def test_deliver_message_marks_what_it_answered() -> None:
+    """A sent reply flags the original, whichever front end sent it."""
+    from pony.domain import MessageFlag
+
+    mailboxes, account = _sendable("deliver-answering")
+    original = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="INBOX",
+        override="INBOX",
+    ).message
+    assert original is not None
+
+    with patch.object(delivery, "smtp_send", lambda **_kwargs: None):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="you@example.test",
+            connect_timeout=1.0,
+            answering=original,
+        )
+
+    assert not outcome.failed
+    answered = mailboxes.index.get_message(message_ref=original.message_ref)
+    assert answered is not None
+    assert MessageFlag.ANSWERED in answered.local_flags
+
+
+def test_a_failed_send_does_not_mark_anything_answered() -> None:
+    from pony.domain import MessageFlag
+    from pony.smtp_sender import SMTPError
+
+    mailboxes, account = _sendable("deliver-answering-fails")
+    original = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="INBOX",
+        override="INBOX",
+    ).message
+    assert original is not None
+
+    def _refuse(**_kwargs: object) -> None:
+        raise SMTPError("no answer")
+
+    with patch.object(delivery, "smtp_send", _refuse):
+        delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="you@example.test",
+            connect_timeout=1.0,
+            answering=original,
+        )
+
+    unchanged = mailboxes.index.get_message(message_ref=original.message_ref)
+    assert unchanged is not None
+    assert MessageFlag.ANSWERED not in unchanged.local_flags
+
+
+def test_file_draft_replaces_the_draft_it_was_resumed_from() -> None:
+    """Saving an edited draft must leave one copy, not two."""
+    from pony.domain import MessageStatus
+
+    mailboxes, account = _sendable("file-draft-replaces")
+    first = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="Drafts",
+        override="INBOX",
+    ).message
+    assert first is not None
+
+    outcome = delivery.file_draft(
+        mailboxes,
+        plain_text(),
+        account,
+        source_draft=first,
+    )
+
+    assert outcome.notices[-1].text == "Saved in Drafts."
+    remaining = [
+        row
+        for row in mailboxes.index.list_folder_messages(folder=INBOX)
+        if row.local_status is not MessageStatus.TRASHED
+    ]
+    assert len(remaining) == 1
+    assert remaining[0].message_ref.id != first.message_ref.id
+
+
+def test_file_draft_without_a_source_just_files_it() -> None:
+    mailboxes, account = _sendable("file-draft-plain")
+
+    outcome = delivery.file_draft(mailboxes, plain_text(), account)
+
+    assert outcome.changed == 1
+    assert len(list(mailboxes.index.list_folder_messages(folder=INBOX))) == 1
 
 
 def test_deliver_message_refuses_an_account_that_cannot_send() -> None:

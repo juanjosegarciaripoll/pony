@@ -358,12 +358,15 @@ function shiftedDate(days) {
   return base.toISOString().slice(0, 10);
 }
 
-function selectedEventUid() {
+function selectedEvent() {
   const row = selectedRow();
   if (!row || !row.dataset.id) return null;
   // "account/calendar/uid", and a UID may itself contain slashes.
   const parts = row.dataset.id.split("/");
-  return parts.length > 2 ? parts.slice(2).join("/") : null;
+  if (parts.length < 3) return null;
+  // The calendar travels with the UID: the same UID can be mirrored
+  // into two calendars, and the server must act on the one on screen.
+  return { cal: `${parts[0]}/${parts[1]}`, uid: parts.slice(2).join("/") };
 }
 
 function submitForm() {
@@ -513,12 +516,12 @@ const clientActions = {
   edit_event: () => openSelected(),
   open_event: () => openSelected(),
   delete_event: () => {
-    const uid = selectedEventUid();
-    if (!uid) {
+    const event = selectedEvent();
+    if (!event) {
       say("Select an event first.", "warning");
       return;
     }
-    void runServerAction("delete_event", { uid });
+    void runServerAction("delete_event", event);
   },
   toggle_calendars: () => {
     const first = document.querySelector("#folders .tree .folder");
@@ -666,6 +669,7 @@ function wireEventDelete() {
   button.addEventListener("click", async () => {
     const outcome = await runServerAction("delete_event", {
       uid: button.dataset.uid,
+      cal: button.dataset.target || "",
     });
     if (outcome && outcome.changed > 0) go("/calendar");
   });

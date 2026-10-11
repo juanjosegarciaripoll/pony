@@ -403,7 +403,16 @@ async def test_a_reply_without_a_sendable_account_is_reported() -> None:
         import dataclasses
 
         screen._config = dataclasses.replace(config, accounts=())  # noqa: SLF001
-        screen._send_invitation_reply(invitation, "ACCEPTED")  # noqa: SLF001
-        await pilot.pause()
-        messages = [n.message for n in app._notifications]  # noqa: SLF001
-        assert any("No account configured for sending" in m for m in messages), messages
+        screen._apply_invitation(  # noqa: SLF001
+            invitation,
+            InvitationChoice(
+                calendar=CalendarRef(_ACCOUNT, _CALENDAR),
+                partstat="ACCEPTED",
+            ),
+        )
+        for _ in range(20):
+            await pilot.pause()
+            messages = [n.message for n in app._notifications]  # noqa: SLF001
+            if any("nothing was answered" in m for m in messages):
+                break
+        assert any("nothing was answered" in m for m in messages), messages

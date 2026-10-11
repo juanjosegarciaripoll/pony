@@ -87,9 +87,19 @@ def web_key(key: str) -> str:
     separately.  This produces the normalised form
     ``[ctrl+][shift+]<event.key>`` that the browser dispatcher builds for
     each press, so the two can be compared without either side guessing.
+
+    ``shift`` disappears in front of a single character, because that is
+    what the browser does: pressing shift+m reports ``"M"`` with the
+    shift flag set, and a dispatcher that added ``shift+`` to every
+    capital letter could never match a plain ``"M"``.  Spelling it
+    ``"shift+m"`` on this side and ``"M"`` on the other is how every
+    shift-letter alias came to be served, listed in the help, and dead.
     """
     *modifiers, base = key.split("+")
-    return "+".join([*modifiers, _WEB_KEY_NAMES.get(base, base)])
+    name = _WEB_KEY_NAMES.get(base, base)
+    if len(name) == 1 and "shift" in modifiers:
+        return "+".join([*(m for m in modifiers if m != "shift"), name.upper()])
+    return "+".join([*modifiers, name])
 
 
 # Only the keys whose DOM name differs from Textual's. A bare character

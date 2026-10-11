@@ -555,6 +555,39 @@ def create_folder(
 # ----------------------------------------------------------------------
 
 
+def folder_unread_counts(
+    mailboxes: Mailboxes,
+    account_name: str,
+) -> dict[str, int]:
+    """``{folder_name: unread}`` for one account's whole folder tree.
+
+    Folders come from three places and the tree needs all of them:
+
+    - the account's mirror, the only source that covers a local account,
+      where the mirror *is* the account;
+    - the index's folder sync state, which holds a folder the server has
+      but this host has not materialised yet;
+    - the index's unread counts, which hold a folder that has messages
+      without a directory on disk.
+
+    Each of those was a bug once, in the terminal, and a front end that
+    asks the mirror alone reintroduces them.  Counts come from one
+    ``GROUP BY`` rather than from materialising every row.
+    """
+    counts: dict[str, int] = {}
+    mirror = mailboxes.mirror(account_name)
+    if mirror is not None:
+        for ref in mirror.list_folders(account_name=account_name):
+            counts.setdefault(ref.folder_name, 0)
+    for state in mailboxes.index.list_folder_sync_states(account_name=account_name):
+        counts.setdefault(state.folder_name, 0)
+    for folder_name, unread in mailboxes.index.unread_counts_by_folder(
+        account_name=account_name,
+    ).items():
+        counts[folder_name] = unread
+    return counts
+
+
 def resolve_messages(
     mailboxes: Mailboxes,
     refs: Sequence[MessageRef],

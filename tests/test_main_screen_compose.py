@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import dataclasses
-from collections.abc import Callable
 from email.message import EmailMessage
 from unittest.mock import Mock
 
 from corpus import mid_thread_message, plain_text, unthreaded_message
 from tui_helpers import build_pony_app
 
-from pony.domain import Contact, FolderRef, MessageFlag, MessageStatus
+from pony.domain import Contact, FolderRef, MessageFlag
 from pony.tui.screens.contact_edit_screen import ContactEditScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
@@ -158,9 +156,10 @@ async def test_harvest_existing_nameless_contact_uses_display_name() -> None:
         assert contact.last_name == "del Río"
 
 
-async def test_local_draft_completion_deletes_original() -> None:
+async def test_resuming_a_draft_hands_the_composer_the_row_to_retire() -> None:
+    """Retiring it is `delivery`'s job; naming it is the screen's."""
     folder = FolderRef(account_name="acct", folder_name="Drafts")
-    app, _cfg, _paths, index, _mirrors = build_pony_app(
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="main-draft-local",
         seed=[(folder, _draft_bytes())],
     )
@@ -173,43 +172,15 @@ async def test_local_draft_completion_deletes_original() -> None:
         panel.load_folder(folder)
         await panel.wait_for_load_complete()
         current = screen.get_current_message()
-        assert current is not None and current.uid is None
-
-        app.push_screen = Mock()
-        screen.compose_from_draft()
-        callback = app.push_screen.call_args.args[1]
-        callback(None)
-        assert index.get_message(message_ref=current.message_ref) is not None
-        callback(False)
-        assert index.get_message(message_ref=current.message_ref) is None
-
-
-async def test_remote_draft_completion_marks_original_trashed() -> None:
-    folder = FolderRef(account_name="acct", folder_name="Drafts")
-    app, _cfg, _paths, index, _mirrors = build_pony_app(
-        label="main-draft-remote",
-        seed=[(folder, _draft_bytes())],
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = _main(app)
-        screen._current_folder_ref = folder
-        panel = screen.query_one(MessageListPanel)
-        panel.load_folder(folder)
-        await panel.wait_for_load_complete()
-        current = screen.get_current_message()
         assert current is not None
-        remote = dataclasses.replace(current, uid=42)
-        index.update_message(message=remote)
 
         app.push_screen = Mock()
         screen.compose_from_draft()
-        callback = app.push_screen.call_args.args[1]
-        callback(True)
-        updated = index.get_message(message_ref=current.message_ref)
-        assert updated is not None
-        assert updated.local_status == MessageStatus.TRASHED
+
+    composer = app.push_screen.call_args.args[0]
+    assert composer._source_draft is not None
+    assert composer._source_draft.message_ref == current.message_ref
+    assert composer._answering is None
 
 
 def _local_account(paths: object, name: str = "local"):  # type: ignore[no-untyped-def]
@@ -357,8 +328,8 @@ async def test_editing_a_draft_without_a_mirror_is_a_noop() -> None:
         app.push_screen.assert_not_called()
 
 
-async def test_a_sent_reply_all_marks_the_original_answered() -> None:
-    """Completing the reply-all composer flags the source message."""
+async def test_reply_all_hands_over_the_same_message_as_reply() -> None:
+    """Both entry points name what they answer; neither flags it itself."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, index, _mirrors = build_pony_app(
         label="main-reply-all-answered",
@@ -368,32 +339,16 @@ async def test_a_sent_reply_all_marks_the_original_answered() -> None:
     async with app.run_test() as pilot:
         await _select_message(pilot)
         screen = _main(app)
-        captured: list[Callable[[bool | None], None]] = []
-
-        def _capture(
-            _screen: object,
-            callback: Callable[[bool | None], None] | None = None,
-            **_kw: object,
-        ) -> None:
-            if callback is not None:
-                captured.append(callback)
-
-        app.push_screen = Mock(side_effect=_capture)
+        app.push_screen = Mock()
 
         screen.compose_reply_all()
-        on_sent = captured[0]
 
-        # Dismissing without sending leaves the flags alone.
-        on_sent(None)
-        msg = screen.get_current_message()
-        assert msg is not None
-        assert MessageFlag.ANSWERED not in msg.local_flags
-
-        on_sent(True)
+        composer = app.push_screen.call_args.args[0]
+        assert composer._answering is not None
+        # Nothing is flagged until the send itself succeeds.
+        reloaded = list(index.list_folder_messages(folder=folder))[0]
+        assert MessageFlag.ANSWERED not in reloaded.local_flags
         await pilot.pause()
-
-    reloaded = list(index.list_folder_messages(folder=folder))[0]
-    assert MessageFlag.ANSWERED in reloaded.local_flags
 
 
 async def test_every_compose_entry_point_refuses_without_a_sendable_account() -> None:
@@ -430,10 +385,10 @@ async def test_every_compose_entry_point_refuses_without_a_sendable_account() ->
     assert any("Forwarding requires" in n for n in notifications)
 
 
-async def test_a_sent_reply_marks_the_original_answered() -> None:
-    """The single-recipient reply shares reply-all's completion callback."""
+async def test_a_reply_hands_the_composer_the_message_it_answers() -> None:
+    """Flagging it is `delivery`'s job; naming it is the screen's."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, index, _mirrors = build_pony_app(
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="main-reply-answered",
         seed=[(folder, plain_text())],
     )
@@ -441,31 +396,15 @@ async def test_a_sent_reply_marks_the_original_answered() -> None:
     async with app.run_test() as pilot:
         await _select_message(pilot)
         screen = _main(app)
-        captured: list[Callable[[bool | None], None]] = []
-
-        def _capture(
-            _screen: object,
-            callback: Callable[[bool | None], None] | None = None,
-            **_kw: object,
-        ) -> None:
-            if callback is not None:
-                captured.append(callback)
-
-        app.push_screen = Mock(side_effect=_capture)
+        current = screen.get_current_message()
+        assert current is not None
+        app.push_screen = Mock()
 
         screen.compose_reply()
-        on_sent = captured[0]
 
-        on_sent(None)
-        msg = screen.get_current_message()
-        assert msg is not None
-        assert MessageFlag.ANSWERED not in msg.local_flags
-
-        on_sent(True)
-        await pilot.pause()
-
-    reloaded = list(index.list_folder_messages(folder=folder))[0]
-    assert MessageFlag.ANSWERED in reloaded.local_flags
+    composer = app.push_screen.call_args.args[0]
+    assert composer._answering is not None
+    assert composer._answering.message_ref == current.message_ref
 
 
 async def test_link_actions_ignore_the_wrong_link_kind() -> None:

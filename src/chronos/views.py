@@ -87,6 +87,18 @@ class CalendarSelection:
     def contains(self, ref: CalendarRef) -> bool:
         return not self.refs or ref in self.refs
 
+    def first_of(self, calendars: Sequence[CalendarRef]) -> CalendarRef | None:
+        """The calendar a new event should default to.
+
+        The first one in view, so creating an event while looking at one
+        calendar files it there rather than in whichever happens to come
+        first alphabetically.
+        """
+        for ref in calendars:
+            if self.contains(ref):
+                return ref
+        return calendars[0] if calendars else None
+
 
 class RowEmphasis(StrEnum):
     """How much of the user's attention a row has earned.
@@ -143,6 +155,52 @@ def month_window(viewed: date) -> tuple[datetime, datetime]:
     else:
         nxt = first.replace(month=first.month + 1)
     return _local_midnight(first), _local_midnight(nxt)
+
+
+def day_column_label(day: date, today: date) -> str:
+    """A timeline column's heading: "Today Sat", "Mon 27 Apr".
+
+    Which day a column is showing is the same question in a terminal
+    and in a browser, so it has the same answer: the relative name
+    where there is one, the date otherwise.  The year comes from the
+    view title and never repeats here.
+    """
+    delta = (day - today).days
+    weekday = day.strftime("%a")
+    if delta == 0:
+        return f"Today {weekday}"
+    if delta == 1:
+        return f"Tomorrow {weekday}"
+    if delta == -1:
+        return f"Yesterday {weekday}"
+    return day.strftime("%a %d %b")
+
+
+def step_viewed(
+    viewed: date,
+    *,
+    kind: ViewKind,
+    window: AgendaWindow,
+    direction: int,
+) -> date:
+    """The date Prev / Next lands on: the view's own natural unit.
+
+    Day, Grid and the agenda's day window move by a day; the agenda's
+    week window by seven; Month and the agenda's month window by one
+    calendar month, which ``relativedelta`` clamps to the end of a
+    shorter one (31 Jan -> 28 Feb).  Adding 31 days instead lands on
+    3 March and skips February altogether, which is why this is one
+    function and not one per front end.
+    """
+    from dateutil.relativedelta import relativedelta
+
+    if kind is ViewKind.MONTH or (
+        kind is ViewKind.AGENDA and window is AgendaWindow.MONTH
+    ):
+        return viewed + relativedelta(months=direction)
+    if kind is ViewKind.AGENDA and window is AgendaWindow.WEEK:
+        return viewed + timedelta(days=7 * direction)
+    return viewed + timedelta(days=direction)
 
 
 def agenda_window(
@@ -774,6 +832,7 @@ __all__ = [
     "agenda_window",
     "all_calendar_refs",
     "compute_hour_range",
+    "day_column_label",
     "day_columns",
     "day_window",
     "format_duration",
@@ -793,6 +852,7 @@ __all__ = [
     "month_window",
     "render_event_detail",
     "search_components",
+    "step_viewed",
     "timed_day_minutes",
     "week_window",
 ]

@@ -30,12 +30,11 @@ from chronos.outcome import Outcome
 
 from ...compose_utils import (
     build_email_message,
-    format_display_address,
     split_address_list,
 )
-from ...composer import DraftSpec
+from ...composer import DraftSpec, from_header
 from ...contact_actions import contact_for_address
-from ...delivery import deliver_message, file_message
+from ...delivery import deliver_message, file_draft
 from ...domain import (
     AnyAccount,
     AppConfig,
@@ -372,6 +371,7 @@ class ComposeScreen(Screen[bool]):
         initial: DraftSpec,
         contacts: ContactRepository | None = None,
         source_draft: IndexedMessage | None = None,
+        answering: IndexedMessage | None = None,
         credentials: CredentialsProvider | None = None,
         **kwargs: object,
     ) -> None:
@@ -387,6 +387,7 @@ class ComposeScreen(Screen[bool]):
         self._initial = initial
         self._contacts = contacts
         self._source_draft = source_draft
+        self._answering = answering
         self._credentials = credentials
         self._attachment_paths: list[Path] = list(initial.attachment_paths)
         self._markdown_mode: bool = initial.markdown_mode
@@ -638,6 +639,8 @@ class ComposeScreen(Screen[bool]):
                 connect_timeout=self._config.smtp_connect_timeout_seconds,
                 connect_attempts=SMTP_CONNECT_ATTEMPTS,
                 on_attempt=_progress,
+                source_draft=self._source_draft,
+                answering=self._answering,
             )
         finally:
             self._sending = False
@@ -663,13 +666,12 @@ class ComposeScreen(Screen[bool]):
                 account = self._get_account()
                 if account is not None:
                     self._report(
-                        file_message(
+                        file_draft(
                             self._mailboxes,
                             self._build_message(account).as_bytes(),
                             account,
-                            folder_hint="Drafts",
-                            override=account.drafts_folder,
-                        ).outcome,
+                            source_draft=self._source_draft,
+                        ),
                     )
             self.dismiss(False)
 
@@ -875,17 +877,7 @@ class ComposeScreen(Screen[bool]):
         self._refresh_add_buttons(container)
 
     def _account_from_address(self, account: AnyAccount) -> str:
-        if account.full_name:
-            return format_display_address(account.full_name, account.email_address)
-        if self._contacts is not None:
-            contact = self._contacts.find_contact_by_email(
-                email_address=account.email_address
-            )
-            if contact is not None and contact.display_name:
-                return format_display_address(
-                    contact.display_name, account.email_address
-                )
-        return account.email_address
+        return from_header(account, contacts=self._contacts)
 
     def _account_from_label(self, account: AnyAccount) -> str:
         from_addr = self._account_from_address(account)

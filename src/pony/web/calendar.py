@@ -27,6 +27,7 @@ from chronos.views import (
     agenda_window,
     all_calendar_refs,
     compute_hour_range,
+    day_column_label,
     day_columns,
     day_window,
     format_event_row,
@@ -36,6 +37,7 @@ from chronos.views import (
     is_full_day,
     month_buckets,
     month_window,
+    step_viewed,
     timed_day_minutes,
     week_window,
 )
@@ -176,7 +178,7 @@ def calendar_page(
         index=calendar.index,
         calendars=calendars,
         selection=view.selection,
-        window=_window(view),
+        window=_search_window(now) if view.query else _window(view),
     )
     if view.query:
         rows = _matching(rows, view.query)
@@ -219,6 +221,19 @@ def _matching(
         )
     }
     return tuple(row for row in rows if row.component.ref in matched)
+
+
+def _search_window(now: datetime) -> tuple[datetime, datetime]:
+    """Everything a search can see: the whole occurrence cache.
+
+    Narrowing a search to the window on screen means it cannot find
+    next month's event, which the terminal's search dialog can -- it
+    reads every component of every calendar.  The bounds here are the
+    cache's own, so this asks for exactly what has been expanded.
+    """
+    from chronos.recurrence import OCCURRENCE_WINDOW_FUTURE, OCCURRENCE_WINDOW_PAST
+
+    return now - OCCURRENCE_WINDOW_PAST, now + OCCURRENCE_WINDOW_FUTURE
 
 
 def _window(view: View) -> tuple[datetime, datetime]:
@@ -268,7 +283,6 @@ def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
         ),
         ("Month", view.at(kind=ViewKind.MONTH), view.kind is ViewKind.MONTH),
     )
-    step = _step(view)
     return pane(
         name="folders",
         heading=columns(("folder-name", "Calendar")),
@@ -291,7 +305,7 @@ def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
                 element(
                     "a",
                     "‹ Prev",
-                    href=view.at(viewed=view.viewed - step),
+                    href=view.at(viewed=_stepped(view, -1)),
                     class_="date-step",
                     id="prev-date",
                 ),
@@ -305,7 +319,7 @@ def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
                 element(
                     "a",
                     "Next ›",
-                    href=view.at(viewed=view.viewed + step),
+                    href=view.at(viewed=_stepped(view, 1)),
                     class_="date-step",
                     id="next-date",
                 ),
@@ -349,20 +363,14 @@ def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
     )
 
 
-def _step(view: View) -> timedelta:
-    """What Prev and Next move by: the view's own natural unit."""
-    match view.kind:
-        case ViewKind.DAY:
-            return timedelta(days=1)
-        case ViewKind.GRID:
-            return timedelta(days=view.span)
-        case ViewKind.MONTH:
-            return timedelta(days=31)
-    return {
-        AgendaWindow.DAY: timedelta(days=1),
-        AgendaWindow.WEEK: timedelta(days=7),
-        AgendaWindow.MONTH: timedelta(days=31),
-    }[view.window]
+def _stepped(view: View, direction: int) -> date:
+    """Where Prev / Next lands, by the shared rule."""
+    return step_viewed(
+        view.viewed,
+        kind=view.kind,
+        window=view.window,
+        direction=direction,
+    )
 
 
 def _calendar_toggle(view: View, ref: CalendarRef) -> Raw:
@@ -403,6 +411,10 @@ def _view_pane(
     today: date,
     now: datetime,
 ) -> Raw:
+    if view.query:
+        # Results are a list wherever the search was launched from: a
+        # timeline has nowhere to put a match from another month.
+        return _agenda_pane(view, rows, today=today, now=now)
     match view.kind:
         case ViewKind.MONTH:
             return _month_pane(view, rows, today=today, now=now)
@@ -490,7 +502,7 @@ def _timeline_pane(
             join(
                 element(
                     "span",
-                    f"{day:%a %d}",
+                    day_column_label(day, today),
                     class_="day-head today" if day == today else "day-head",
                 )
                 for day, _events in buckets
@@ -753,18 +765,43 @@ class EventForm:
 
     @staticmethod
     def of(component: StoredComponent) -> EventForm:
-        from chronos.event_actions import existing_alarms, reminders_text
+        from chronos.event_actions import (
+            all_day_form_dates,
+            existing_alarms,
+            reminders_text,
+        )
         from chronos.ical_parser import extract_attendees
+        from chronos.mutations import is_all_day_span
 
         ref = component.ref
+        dtend = getattr(component, "dtend", None)
+        all_day = is_all_day_span(component.dtstart, dtend)
+        if all_day:
+            # The dates, with the *inclusive* last day, so saving an
+            # event again without touching it leaves it where it was.
+            # Both fields stay ``datetime-local``, so the dates carry a
+            # midnight the all-day flag tells everything to ignore.
+            first, last = all_day_form_dates(component.dtstart, dtend)
+            return EventForm(
+                target=f"{ref.account_name}/{ref.calendar_name}",
+                summary=component.summary or "",
+                starts=f"{first}T00:00" if first else "",
+                ends=f"{last}T00:00" if last else "",
+                all_day=True,
+                location=component.location or "",
+                description=component.description or "",
+                attendees=", ".join(extract_attendees(component.raw_ics, ref.uid)),
+                reminders=reminders_text(existing_alarms(component)),
+                uid=ref.uid,
+            )
         return EventForm(
             target=f"{ref.account_name}/{ref.calendar_name}",
             summary=component.summary or "",
             starts=_local_field(component.dtstart),
             # A VTodo has a due date rather than an end; the form only
             # edits events, so there is nothing to show for one.
-            ends=_local_field(getattr(component, "dtend", None)),
-            all_day=_looks_all_day(component),
+            ends=_local_field(dtend),
+            all_day=False,
             location=component.location or "",
             description=component.description or "",
             attendees=", ".join(extract_attendees(component.raw_ics, ref.uid)),
@@ -774,7 +811,9 @@ class EventForm:
 
     @staticmethod
     def blank(*, target: str, day: date) -> EventForm:
-        start = datetime.combine(day, time(hour=9)).astimezone()
+        from chronos.event_actions import default_event_start
+
+        start = default_event_start(day, datetime.now(UTC))
         return EventForm(
             target=target,
             starts=_local_field(start),
@@ -786,16 +825,6 @@ def _local_field(moment: datetime | None) -> str:
     if moment is None:
         return ""
     return moment.astimezone().strftime("%Y-%m-%dT%H:%M")
-
-
-def _looks_all_day(component: StoredComponent) -> bool:
-    start = component.dtstart
-    end = getattr(component, "dtend", None)
-    if start is None or end is None:
-        return False
-    return start.astimezone(UTC).time() == time.min and (end - start) >= timedelta(
-        hours=23,
-    )
 
 
 def event_form_page(
@@ -977,7 +1006,13 @@ def calendars_of(runtime: CalendarRuntime) -> Calendars:
 def save(services: WebServices, form: EventForm) -> Outcome:
     """Store *form* as a new event or an edit of an existing one."""
     from chronos.domain import CalendarRef
-    from chronos.event_actions import EditDraft, parse_reminders, save_event
+    from chronos.event_actions import (
+        EditDraft,
+        all_day_form_bounds,
+        parse_attendees,
+        parse_reminders,
+        save_event,
+    )
 
     runtime = services.calendar
     if runtime is None:
@@ -991,9 +1026,24 @@ def save(services: WebServices, form: EventForm) -> Outcome:
     if starts is None:
         return Outcome.refused(warn("The start is not a date and time."))
     ends = _parse_moment(form.ends)
-    if ends is not None and ends < starts:
+    if form.all_day:
+        # An all-day event is stored as UTC-midnight bounds with an
+        # exclusive end, and the form's end date is the inclusive last
+        # day.  Handing over the raw local values instead stores the
+        # previous day east of UTC.
+        starts, ends = all_day_form_bounds(
+            starts.date(),
+            ends.date() if ends is not None else None,
+        )
+    elif ends is not None and ends <= starts:
         return Outcome.refused(warn("The event ends before it starts."))
-    existing = _existing(services, uid=form.uid) if form.uid else None
+    try:
+        attendees = parse_attendees(form.attendees)
+    except ValueError as bad:
+        return Outcome.refused(warn(str(bad)))
+    existing = (
+        _existing(services, uid=form.uid, target=form.target) if form.uid else None
+    )
     draft = EditDraft(
         target=CalendarRef(account, name),
         summary=form.summary.strip(),
@@ -1001,9 +1051,7 @@ def save(services: WebServices, form: EventForm) -> Outcome:
         dtend=ends,
         location=form.location.strip(),
         description=form.description.strip(),
-        attendees=tuple(
-            part.strip() for part in form.attendees.split(",") if part.strip()
-        ),
+        attendees=attendees,
         alarms=parse_reminders(form.reminders),
         existing=existing,
         all_day=form.all_day,
@@ -1019,12 +1067,27 @@ def _parse_moment(value: str) -> datetime | None:
         return None
 
 
-def _existing(services: WebServices, *, uid: str) -> StoredComponent | None:
+def _existing(
+    services: WebServices,
+    *,
+    uid: str,
+    target: str = "",
+) -> StoredComponent | None:
+    """The component *uid* names, in the calendar *target* names.
+
+    *target* is ``account/calendar`` as a form or a row spells it.  A
+    UID is unique within a calendar and not beyond it, so without it
+    the lookup would pick an arbitrary copy.
+    """
+    from chronos.domain import CalendarRef
+    from chronos.event_actions import find_component
+
     runtime = services.calendar
     if runtime is None:
         return None
-    found = list(runtime.index.list_components_by_uid(uid))
-    return found[0] if found else None
+    account, _, name = target.partition("/")
+    within = CalendarRef(account, name) if account and name else None
+    return find_component(runtime.index, uid, within=within)
 
 
 # ----------------------------------------------------------------------
@@ -1038,7 +1101,11 @@ def _delete_event(context: ActionContext) -> Outcome:
     runtime = context.services.calendar
     if runtime is None:
         return Outcome.refused(warn("No calendar configured."))
-    component = _existing(context.services, uid=context.first("uid"))
+    component = _existing(
+        context.services,
+        uid=context.first("uid"),
+        target=context.first("cal"),
+    )
     if component is None:
         return Outcome.refused(warn("That event is no longer here."))
     return trash_event(calendars_of(runtime), component, now=context.now)
@@ -1051,7 +1118,7 @@ def _import_ics(context: ActionContext) -> Outcome:
     uploading a file to be parsed is the same thing with an extra step.
     """
     from chronos.domain import CalendarRef
-    from chronos.ingest import IngestError, ingest_ics_bytes
+    from chronos.event_actions import import_ics_bytes
 
     runtime = context.services.calendar
     if runtime is None:
@@ -1062,22 +1129,10 @@ def _import_ics(context: ActionContext) -> Outcome:
     text = context.first("ics").strip()
     if not text:
         return Outcome.refused(warn("Paste the iCalendar text to import."))
-    try:
-        report = ingest_ics_bytes(
-            text.encode(),
-            target=CalendarRef(account, name),
-            mirror=runtime.mirror,
-            index=runtime.index,
-            on_conflict="replace",
-        )
-    except IngestError as exc:
-        return Outcome.refused(warn(f"Could not import: {exc}"))
-    from chronos.outcome import info
-
-    total = report.imported + report.updated + report.replaced
-    return Outcome(
-        changed=total,
-        notices=(info(f"Imported {total} component(s)."),),
+    return import_ics_bytes(
+        calendars_of(runtime),
+        CalendarRef(account, name),
+        text.encode(),
     )
 
 

@@ -165,3 +165,14 @@ def holds_drafts(config: AppConfig, folder: FolderRef) -> bool:
     if configured:
         return folder.folder_name == configured
     return find_folder([folder.folder_name], "Drafts") is not None
+
+
+def shows_recipient(config: AppConfig, folder: FolderRef) -> bool:
+    """True when a row in *folder* should name who it is *to*.
+
+    Sent mail and drafts are both the user's own outgoing mail, so the
+    sender is always themselves and the useful column is the recipient.
+    Every list of messages asks this -- the reader's, the browser's and
+    a search's -- so it is asked in one place.
+    """
+    return holds_sent_mail(config, folder) or holds_drafts(config, folder)

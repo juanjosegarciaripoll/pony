@@ -21,9 +21,9 @@ from typing import TYPE_CHECKING
 
 from chronos.outcome import Notice, Outcome, failure, info, warn
 
-from .domain import FolderRef, IndexedMessage, MessageRef
+from .domain import FolderRef, IndexedMessage, MessageFlag, MessageRef
 from .folder_utils import find_folder
-from .mailbox_actions import Mailboxes, retire_message
+from .mailbox_actions import Mailboxes, add_flag, retire_message
 from .message_projection import project_rfc822_message
 from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
 from .smtp_sender import send_message as smtp_send
@@ -124,6 +124,47 @@ def file_message(
     return FiledMessage(stored, Outcome(changed=1))
 
 
+def file_draft(
+    mailboxes: Mailboxes,
+    raw: bytes,
+    account: AnyAccount,
+    *,
+    source_draft: IndexedMessage | None = None,
+) -> Outcome:
+    """Put *raw* in Drafts, retiring the draft it was resumed from.
+
+    Saving an edited draft is a replacement, not an addition: without
+    retiring *source_draft* the folder ends up holding both the old
+    version and the new one, which is what the browser used to do and
+    the terminal did not.
+    """
+    filed = file_message(
+        mailboxes,
+        raw,
+        account,
+        folder_hint="Drafts",
+        override=account.drafts_folder,
+    )
+    if filed.message is None:
+        return filed.outcome
+    if source_draft is not None:
+        retire_message(
+            mailboxes,
+            source_draft,
+            FolderRef(
+                account_name=source_draft.message_ref.account_name,
+                folder_name=source_draft.message_ref.folder_name,
+            ),
+            # A draft that reached the server has to go there too, or
+            # the next sync brings the old version back.
+            expunge_on_server=source_draft.uid is not None,
+        )
+    return Outcome(
+        changed=filed.outcome.changed,
+        notices=(*filed.outcome.notices, info("Saved in Drafts.")),
+    )
+
+
 def record_sent(
     mailboxes: Mailboxes,
     raw: bytes,
@@ -184,15 +225,19 @@ def deliver_message(
     connect_attempts: int = DEFAULT_CONNECT_ATTEMPTS,
     on_attempt: Callable[[int, int], None] | None = None,
     source_draft: IndexedMessage | None = None,
+    answering: IndexedMessage | None = None,
 ) -> Outcome:
     """Send *msg* and do the bookkeeping either outcome calls for.
 
     The whole sequence, in the order that survives a failure: resolve
     the password, put the bytes in Drafts, talk to the server, and only
-    then retire the draft, file the Sent copy and harvest the addresses.
-    *source_draft* is the draft the message was composed *from*, which a
-    successful send also retires — the pre-send copy this function files
-    is a different row.
+    then retire the draft, flag what was answered, file the Sent copy
+    and harvest the addresses.  *source_draft* is the draft the message
+    was composed *from*, which a successful send also retires — the
+    pre-send copy this function files is a different row.  *answering*
+    is the message being replied to, which a successful send marks
+    answered; doing it here is what keeps the mark from depending on
+    which front end sent the reply.
 
     This call blocks for as long as SMTP does, which is why both front
     ends run it off their own loop: the terminal hands it to a worker
@@ -250,6 +295,8 @@ def deliver_message(
         contacts=contacts,
         recipients=(to, cc),
     )
+    if answering is not None:
+        add_flag(mailboxes, answering, MessageFlag.ANSWERED)
     if source_draft is not None:
         retire_message(
             mailboxes,

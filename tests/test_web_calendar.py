@@ -22,6 +22,8 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
+from chronos.domain import CalendarRef
+from chronos.mutations import is_all_day_span
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
@@ -279,6 +281,22 @@ def test_searching_the_calendar_narrows_what_is_on_screen() -> None:
     assert "Standup" not in body
 
 
+def test_a_search_looks_past_the_window_on_screen() -> None:
+    """A search that can only find this week is not a search."""
+    from datetime import timedelta
+
+    far = _tomorrow_at(10) + timedelta(days=200)
+    services, _runtime = _services(
+        "cal-search-far",
+        events=(("far@example.com", _ics("far@example.com", far, summary="Offsite")),),
+    )
+
+    with _client(services) as client:
+        body = client.get("/calendar?window=day&q=offsite").text
+
+    assert "Offsite" in body
+
+
 def test_a_front_end_without_a_calendar_says_so() -> None:
     services, _runtime = _services("cal-none")
     bare = dataclasses.replace(services, calendar=None)
@@ -447,6 +465,28 @@ def test_pasted_icalendar_text_can_be_imported() -> None:
     assert list(runtime.index.list_components_by_uid("imported@example.com"))
 
 
+def test_importing_the_same_event_twice_keeps_the_local_copy() -> None:
+    """`skip` is what every other entry point means by an import."""
+    services, runtime = _services("cal-import-twice")
+    start = _tomorrow_at(9)
+    first = _ics("dup@example.com", start, summary="As imported").decode()
+    second = _ics("dup@example.com", start, summary="Overwritten").decode()
+
+    with _client(services) as client:
+        client.post(
+            "/action/import_ics",
+            data={"target": f"{ACCOUNT}/{CALENDAR}", "ics": first},
+        )
+        response = client.post(
+            "/action/import_ics",
+            data={"target": f"{ACCOUNT}/{CALENDAR}", "ics": second},
+        )
+
+    assert "skipped 1" in response.json()["notices"][0]["text"]
+    (component,) = runtime.index.list_components_by_uid("dup@example.com")
+    assert component.summary == "As imported"
+
+
 def test_importing_nothing_says_what_to_paste() -> None:
     services, _runtime = _services("cal-import-empty")
 
@@ -607,3 +647,85 @@ def test_each_agenda_window_asks_the_index_for_its_own_range() -> None:
         assert "Planning review" in body
     assert "Planning review" not in elsewhere
     assert "Nothing in this window." in elsewhere
+
+
+def test_an_all_day_event_from_the_browser_is_stored_as_dates() -> None:
+    """The flag alone is not enough: the bounds have to be the day's."""
+    services, runtime = _services("cal-all-day")
+
+    with _client(services) as client:
+        client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Public holiday",
+                "starts": "2026-05-17T00:00",
+                "all_day": "1",
+            },
+        )
+
+    (component,) = [
+        found
+        for found in runtime.index.list_calendar_components(
+            CalendarRef(ACCOUNT, CALENDAR),
+        )
+        if found.summary == "Public holiday"
+    ]
+    assert b"DTSTART;VALUE=DATE:20260517" in component.raw_ics
+    assert b"DTEND;VALUE=DATE:20260518" in component.raw_ics
+    assert is_all_day_span(component.dtstart, component.dtend)
+
+
+def test_an_all_day_event_survives_being_opened_and_saved_again() -> None:
+    services, runtime = _services("cal-all-day-round-trip")
+
+    with _client(services) as client:
+        client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Conference",
+                "starts": "2026-05-17T00:00",
+                "ends": "2026-05-19T00:00",
+                "all_day": "1",
+            },
+        )
+        (stored,) = [
+            found
+            for found in runtime.index.list_calendar_components(
+                CalendarRef(ACCOUNT, CALENDAR),
+            )
+            if found.summary == "Conference"
+        ]
+        # Re-open it, and save what the form was handed, unchanged.
+        page = client.get(
+            f"/calendar/event?uid={stored.ref.uid}"
+            f"&account={ACCOUNT}&calendar={CALENDAR}",
+        ).text
+        assert 'value="2026-05-17T00:00"' in page
+        # The last day the form shows is inclusive: the 19th, not the
+        # exclusive 20th that is stored.
+        assert 'value="2026-05-19T00:00"' in page
+        client.post(
+            "/calendar/event",
+            data={
+                "uid": stored.ref.uid,
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Conference",
+                "starts": "2026-05-17T00:00",
+                "ends": "2026-05-19T00:00",
+                "all_day": "1",
+            },
+        )
+
+    (again,) = [
+        found
+        for found in runtime.index.list_calendar_components(
+            CalendarRef(ACCOUNT, CALENDAR),
+        )
+        if found.summary == "Conference"
+    ]
+    assert again.dtstart == stored.dtstart
+    assert again.dtend == stored.dtend

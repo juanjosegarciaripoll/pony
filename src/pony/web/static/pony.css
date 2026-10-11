@@ -359,6 +359,12 @@ body {
   color: var(--fg-dim);
 }
 
+/* Nothing unread in this folder or anywhere below it: the terminal
+   dims the same node. */
+.folder.quiet .folder-name {
+  color: var(--fg-dim);
+}
+
 .folder-name {
   overflow: hidden;
   text-overflow: ellipsis;

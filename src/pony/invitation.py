@@ -80,6 +80,17 @@ class Invitation:
         return self.method == "CANCEL"
 
     @property
+    def can_reply(self) -> bool:
+        """True when there is somebody to answer, and a question asked.
+
+        Both front ends decide whether to offer Accept / Decline /
+        Tentative, and the action behind those buttons checks it again:
+        a request that arrives without an organizer has no reply
+        address, and nothing but a request wants an answer.
+        """
+        return self.is_request and bool(self.organizer)
+
+    @property
     def is_reply(self) -> bool:
         """True for an attendee's answer to an invitation we sent."""
         return self.method == "REPLY"

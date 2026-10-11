@@ -28,6 +28,7 @@ from .compose_utils import (
     build_forward_body,
     build_reply_all_recipients,
     build_reply_body,
+    format_display_address,
     forward_subject,
     new_compose_body,
     parse_draft_fields,
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
 
     from .domain import AnyAccount, AppConfig
     from .message_renderer import RenderedMessage
+    from .protocols import ContactRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +85,32 @@ def preferred_account(
             if account.name == prefer_name:
                 return account
     return accounts[0]
+
+
+def from_header(
+    account: AnyAccount,
+    *,
+    contacts: ContactRepository | None = None,
+) -> str:
+    """The ``From:`` value for mail sent from *account*.
+
+    The display name comes from the account's ``full_name``, or failing
+    that from the contact card for its own address, so a message reads
+    as "Ada Lovelace <ada@x>" rather than as a bare address.  Both
+    front ends send from the same header; an account with no address at
+    all falls back to its username, and only then to its name, which is
+    all a misconfigured account can offer.
+    """
+    address = account.email_address
+    if not address:
+        return account.username or account.name
+    if account.full_name:
+        return format_display_address(account.full_name, address)
+    if contacts is not None:
+        contact = contacts.find_contact_by_email(email_address=address)
+        if contact is not None and contact.display_name:
+            return format_display_address(contact.display_name, address)
+    return address
 
 
 def markdown_default(account: AnyAccount, config: AppConfig) -> bool:

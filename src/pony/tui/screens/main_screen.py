@@ -37,13 +37,12 @@ from ...domain import (
     IndexedMessage,
     MessageFlag,
 )
-from ...folder_utils import holds_drafts, holds_sent_mail
+from ...folder_utils import holds_drafts, shows_recipient
 from ...invitation import Invitation
 from ...invitation_actions import (
     InvitationChoice,
-    file_invitation,
-    reply_to_invitation,
     replying_account,
+    respond_to_invitation,
 )
 from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
@@ -786,58 +785,35 @@ class MainScreen(Screen[None]):
             InvitationScreen(
                 invitation,
                 calendars,
-                can_reply=bool(invitation.organizer) and invitation.is_request,
+                can_reply=invitation.can_reply,
             ),
             _chosen,
         )
 
-    def _apply_invitation(
+    @work(exclusive=True, group="invitation-reply")
+    async def _apply_invitation(
         self, invitation: Invitation, choice: InvitationChoice
     ) -> None:
-        """File *invitation* in the chosen calendar, then answer the organizer.
+        """File *invitation* as *choice* says and answer the organizer.
 
-        Filing comes first and is reported on its own: an accepted
-        invitation that reached the calendar but whose reply bounced is a
-        very different situation from one that never landed, and saying
-        "accepted" for both would hide it.  Both halves are
-        :mod:`pony.invitation_actions`; what is left here is the toast.
+        One call: :func:`pony.invitation_actions.respond_to_invitation`
+        owns the order (file first, answer second, report each) and the
+        rule about when there is anything to answer.  What is left here
+        is running it off the event loop, because it talks to SMTP, and
+        showing what it said.
         """
         assert self._calendar is not None
-        outcome = file_invitation(
-            invitation,
-            calendar=self._calendar,
-            target=choice.calendar,
-        )
-        self._report(outcome)
-        if outcome.failed or invitation.is_cancellation or choice.partstat is None:
-            return
-        self._send_invitation_reply(invitation, choice.partstat)
-
-    def _send_invitation_reply(self, invitation: Invitation, partstat: str) -> None:
-        """Answer the organizer from the account the invitation arrived on."""
         summary = self.get_current_message()
         found = replying_account(
             self._config,
             arrived_on=(None if summary is None else summary.message_ref.account_name),
         )
-        if isinstance(found, Notice):
-            self.app.notify(found.text, severity=found.severity)  # pyright: ignore[reportUnknownMemberType]
-            return
-        self._deliver_invitation_reply(found, invitation, partstat)
-
-    @work(exclusive=True, group="invitation-reply")
-    async def _deliver_invitation_reply(
-        self,
-        account: AnyAccount,
-        invitation: Invitation,
-        partstat: str,
-    ) -> None:
-        """Run the reply's SMTP conversation off the event loop."""
         outcome = await asyncio.to_thread(
-            reply_to_invitation,
+            respond_to_invitation,
             invitation,
-            partstat=partstat,
-            account=account,
+            choice,
+            calendar=self._calendar,
+            account=None if isinstance(found, Notice) else found,
             config=self._config,
             credentials=self._credentials,
         )
@@ -919,7 +895,13 @@ class MainScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def _in_sent_folder(self, folder_ref: FolderRef) -> bool:
-        return holds_sent_mail(self._config, folder_ref)
+        """True when this folder's rows should name the recipient.
+
+        Drafts count: they are the user's own outgoing mail too, and
+        showing their own address as the correspondent tells them
+        nothing.
+        """
+        return shows_recipient(self._config, folder_ref)
 
     def _in_drafts_folder(self) -> bool:
         ref = self._current_folder_ref
@@ -1064,16 +1046,6 @@ class MainScreen(Screen[None]):
                 messages,
                 flag,
                 present=present,
-            ),
-        )
-
-    def _mark_answered(self, msg: IndexedMessage) -> None:
-        if mailbox_actions.add_flag(self._mailboxes, msg, MessageFlag.ANSWERED) is None:
-            return
-        self._reload_folder(
-            FolderRef(
-                account_name=msg.message_ref.account_name,
-                folder_name=msg.message_ref.folder_name,
             ),
         )
 
@@ -1369,11 +1341,17 @@ class MainScreen(Screen[None]):
         spec: DraftSpec,
         accounts: list[AnyAccount],
         on_done: collections.abc.Callable[[bool | None], None] | None = None,
+        *,
+        source_draft: IndexedMessage | None = None,
+        answering: IndexedMessage | None = None,
     ) -> None:
         """Push a ComposeScreen for *spec*.
 
         Every compose entry point ends here, so the wiring the composer
         needs — index, mirrors, contacts, credentials — is stated once.
+        *source_draft* is retired when the message is sent or saved, and
+        *answering* is marked answered when it is sent; both are the
+        model's business, not this screen's.
         """
         from .compose_screen import ComposeScreen
 
@@ -1385,6 +1363,8 @@ class MainScreen(Screen[None]):
             spec,
             contacts=self._contacts,
             credentials=self._credentials,
+            source_draft=source_draft,
+            answering=answering,
         )
         if on_done is None:
             self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
@@ -1442,8 +1422,15 @@ class MainScreen(Screen[None]):
         msg, rendered, accounts = context
 
         def _on_sent(result: bool | None) -> None:
+            # The reply itself marked the original answered; this is
+            # only the repaint that makes the mark visible.
             if result:
-                self._mark_answered(msg)
+                self._reload_folder(
+                    FolderRef(
+                        account_name=msg.message_ref.account_name,
+                        folder_name=msg.message_ref.folder_name,
+                    ),
+                )
 
         self._open_composer(
             reply_draft(
@@ -1455,6 +1442,7 @@ class MainScreen(Screen[None]):
             ),
             accounts,
             _on_sent,
+            answering=msg,
         )
 
     def compose_forward(self) -> None:
@@ -1507,41 +1495,23 @@ class MainScreen(Screen[None]):
             return
 
         def _on_draft_done(result: bool | None) -> None:
+            # Sending or saving retires the original itself (see
+            # `delivery.deliver_message` / `file_draft`); what is left
+            # here is the repaint.
             if result is None:
                 return
-            # The draft was either saved (False) or sent (True) — retire the
-            # original.  IMAP messages are marked TRASHED so the sync planner
-            # expunges them on the server; local-only messages are deleted
-            # outright since there is nothing to relay to the server.
-            mailbox_actions.retire_message(
-                self._mailboxes,
-                msg,
-                folder_ref,
-                # A row with no server UID was never on the server, so
-                # there is no expunge to relay: it goes outright.
-                expunge_on_server=msg.uid is not None,
-            )
             self._reload_folder(folder_ref)
 
-        from .compose_screen import ComposeScreen
-
-        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            ComposeScreen(
-                self._config,
-                accounts,
-                self._index,
-                self._mirrors,
-                resumed_draft(
-                    accounts=accounts,
-                    config=self._config,
-                    raw=raw,
-                    prefer_name=msg.message_ref.account_name,
-                ),
-                contacts=self._contacts,
-                credentials=self._credentials,
-                source_draft=msg,
+        self._open_composer(
+            resumed_draft(
+                accounts=accounts,
+                config=self._config,
+                raw=raw,
+                prefer_name=msg.message_ref.account_name,
             ),
+            accounts,
             _on_draft_done,
+            source_draft=msg,
         )
 
     # ------------------------------------------------------------------

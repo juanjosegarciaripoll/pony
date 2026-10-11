@@ -62,17 +62,47 @@ _BACKEND_MODULES = (
     "pony.bbdb",
     "pony.mcp_server",
     "pony.cli",
+    # Added after an audit found the list hand-kept and these missing:
+    # the browser reaches every one of them, directly or through
+    # `pony.web.syncing`, which imports `chronos.cli` at call time.
+    "chronos.sync",
+    "chronos.cli",
+    "chronos.ingest",
+    "chronos.mutations",
+    "chronos.ical_parser",
+    "chronos.recurrence",
+    "chronos.storage",
+    "chronos.index_store",
+    "chronos.config",
+    "chronos.credentials",
+    "chronos.locking",
+    "chronos.paths",
+    "pony.calendar",
+    "pony.notifications",
+    "pony.invitation",
+    "pony.domain",
+    "pony.paths",
+    "pony.web",
+)
+
+# Nothing outside `pony.web` may import Starlette: it is an extra, so a
+# terminal-only install does not have it, and `pony tui` has to start
+# without it.  `ai/AGENTS.md` rule 5 says this test enforces both
+# directions; until now it only checked Textual.
+_STARLETTE_FREE_MODULES = (
+    *(module for module in _BACKEND_MODULES if not module.startswith("pony.web")),
+    "pony.tui",
 )
 
 
-def _imports_textual(module: str) -> bool:
-    """True when importing *module* in a fresh interpreter loads Textual."""
+def _imports(module: str, package: str) -> bool:
+    """True when importing *module* in a fresh interpreter loads *package*."""
     result = subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-c",
             f"import sys, {module}; "
-            "raise SystemExit(1 if 'textual' in sys.modules else 0)",
+            f"raise SystemExit(1 if {package!r} in sys.modules else 0)",
         ],
         capture_output=True,
         check=False,
@@ -82,6 +112,14 @@ def _imports_textual(module: str) -> bool:
             f"importing {module} failed:\n{result.stderr.decode(errors='replace')}"
         )
     return result.returncode == 1
+
+
+def _imports_textual(module: str) -> bool:
+    return _imports(module, "textual")
+
+
+def _imports_starlette(module: str) -> bool:
+    return _imports(module, "starlette")
 
 
 class BackendIsHeadlessTest(unittest.TestCase):
@@ -110,6 +148,21 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
 
     def test_the_web_package_does_not_load_textual(self) -> None:
         self.assertFalse(_imports_textual("pony.web"))
+
+    def test_nothing_outside_the_web_package_loads_starlette(self) -> None:
+        """The other half of the rule, which was never actually checked."""
+        offenders = [m for m in _STARLETTE_FREE_MODULES if _imports_starlette(m)]
+
+        self.assertEqual(
+            offenders,
+            [],
+            "these modules pull in Starlette, which is an optional extra: "
+            + ", ".join(offenders),
+        )
+
+    def test_the_probe_can_see_starlette(self) -> None:
+        """Guards the test itself, as the Textual probe is guarded."""
+        self.assertTrue(_imports_starlette("pony.web.app"))
 
     def test_the_web_package_renders_without_textual(self) -> None:
         """Not just the import: the pages themselves must come out."""

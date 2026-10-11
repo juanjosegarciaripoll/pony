@@ -115,7 +115,9 @@ def harvest_folder(
 ) -> Outcome:
     """Harvest every To/Cc address in *messages*."""
     if contacts is None:
-        return Outcome()
+        # Said, not swallowed: without this the key appears to do
+        # nothing at all in the terminal.
+        return Outcome.refused(warn("No contact store is open."))
     contacts.harvest_contacts(messages)
     return Outcome(
         changed=len(messages),

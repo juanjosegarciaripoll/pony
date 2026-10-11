@@ -18,7 +18,6 @@ no reach into anything else.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -26,8 +25,9 @@ from chronos.outcome import Notice, Outcome, failure, info, warn
 
 from .. import mailbox_actions
 from ..domain import FolderRef, MessageFlag
-from ..folder_utils import holds_drafts, holds_sent_mail
-from ..message_renderer import fmt_size, render_message
+from ..folder_utils import shows_recipient
+from ..mailbox_actions import folder_unread_counts
+from ..message_renderer import fmt_size, parse_styled_body, render_message
 from ..views import build_folder_tree, message_row, summary_of
 from . import urls
 from .actions import Action, ActionContext, parse_target
@@ -136,12 +136,12 @@ def folder_pane(services: WebServices, selected: FolderRef | None) -> Raw:
         mirror = services.mirrors.get(account.name)
         if mirror is None:
             continue
-        names = [
-            ref.folder_name for ref in mirror.list_folders(account_name=account.name)
-        ]
-        counts = services.index.unread_counts_by_folder(account_name=account.name)
+        # Every folder the account has, from all three places that
+        # know about one -- the same question the reader's folder panel
+        # asks, answered in the same place.
+        counts = folder_unread_counts(services.mailboxes, account.name)
         tree = build_folder_tree(
-            folder_names=names,
+            folder_names=list(counts),
             unread_counts=counts,
             account_name=account.name,
         )
@@ -164,15 +164,32 @@ def folder_pane(services: WebServices, selected: FolderRef | None) -> Raw:
     )
 
 
+def _folder_classes(*, current: bool, quiet: bool) -> str:
+    classes = ["folder"]
+    if current:
+        classes.append("current")
+    if quiet:
+        # Nothing unread anywhere below: the terminal dims these.
+        classes.append("quiet")
+    return " ".join(classes)
+
+
 def _folder_nodes(
     nodes: tuple[FolderTreeNode, ...],
     selected: FolderRef | None,
 ) -> list[Raw]:
     items: list[Raw] = []
     for node in nodes:
-        unread = node.descendant_unread()
+        # The folder's own unread count, as the reader's tree shows it;
+        # whether anything below it is unread is a separate signal, dim
+        # in the terminal and a class here.
         label = element("span", node.label, class_="folder-name")
-        count = element("span", str(unread), class_="unread") if unread else None
+        count = (
+            element("span", str(node.own_unread), class_="unread")
+            if node.own_unread
+            else None
+        )
+        quiet = node.descendant_unread() == 0
         # A synthetic level — one that exists only because a folder name
         # was hierarchical — has nothing to open.
         body = (
@@ -181,12 +198,20 @@ def _folder_nodes(
                 label,
                 count,
                 href=urls.mail_url(node.folder_ref),
-                class_="folder" + (" current" if node.folder_ref == selected else ""),
+                class_=_folder_classes(
+                    current=node.folder_ref == selected,
+                    quiet=quiet,
+                ),
                 data_folder=node.folder_ref.folder_name,
                 data_account=node.folder_ref.account_name,
             )
             if node.folder_ref is not None
-            else element("span", label, count, class_="folder synthetic")
+            else element(
+                "span",
+                label,
+                count,
+                class_="folder synthetic" + ("" if not quiet else " quiet"),
+            )
         )
         children = (
             element("ul", join(_folder_nodes(node.children, selected)), class_="tree")
@@ -210,10 +235,7 @@ def list_pane(
     query: str = "",
 ) -> Raw:
     """The list, with the column headings the terminal shows above it."""
-    show_recipients = holds_sent_mail(services.config, folder) or holds_drafts(
-        services.config,
-        folder,
-    )
+    show_recipients = shows_recipient(services.config, folder)
     return pane(
         name="list",
         heading=fragment(
@@ -283,10 +305,7 @@ def rows(
 ) -> Raw:
     """The rows themselves, which is all an action needs to refresh."""
     if show_recipients is None:
-        show_recipients = holds_sent_mail(
-            services.config,
-            folder,
-        ) or holds_drafts(services.config, folder)
+        show_recipients = shows_recipient(services.config, folder)
     summaries = (
         _search(services, folder, query) if query else _folder_rows(services, folder)
     )
@@ -444,7 +463,7 @@ def reader_pane(services: WebServices, message: IndexedMessage) -> Raw:
             _headers(rendered),
             _invitation_block(services, invitation),
             _attachments(ref, rendered),
-            element("pre", _linkified(rendered.body), class_="text"),
+            element("pre", _body(rendered), class_="text"),
         ),
     )
 
@@ -485,38 +504,47 @@ def _headers(rendered: RenderedMessage) -> Raw:
     )
 
 
-# Enough to make a link tappable without turning the body into a
-# document: a bare URL, or an address.  Everything else stays text.
-_LINK = re.compile(
-    r"(?P<url>(?:https?|ftp)://[^\s<>\"']+)"
-    r"|(?P<mail>[\w.+-]+@[\w-]+(?:\.[\w-]+)+)",
-)
+# The HTML an emphasis sentinel opens and closes.  The renderer decides
+# *where* emphasis begins; this is the only part that is markup.
+_FORMAT_TAGS = {
+    "B1": "<strong>",
+    "B0": "</strong>",
+    "I1": "<em>",
+    "I0": "</em>",
+    "U1": "<u>",
+    "U0": "</u>",
+    "S1": "<s>",
+    "S0": "</s>",
+}
 
 
-def _linkified(text: str) -> Raw:
-    """*text*, escaped, with its URLs and addresses made clickable.
+def _body(rendered: RenderedMessage) -> Raw:
+    """The message body, escaped, with its links and emphasis.
 
-    The escaping is done by the element builder on each piece, so a
-    subject or a body that contains markup cannot become markup — the
-    only thing added here is an anchor around a match.
+    Read from the renderer's styled body, the same projection the
+    reader's panel renders: the links are the ones it found, the
+    emphasis is the one it marked, and the anchor text an HTML message
+    chose survives.  Finding links again with a regex of our own gave
+    the browser a different set from the terminal's.
     """
+    styled = rendered.styled_body or rendered.body
     pieces: list[str | Raw] = []
-    position = 0
-    for match in _LINK.finditer(text):
-        pieces.append(text[position : match.start()])
-        found = match.group("url")
-        href = found if found else f"mailto:{match.group('mail')}"
-        pieces.append(
-            element(
-                "a",
-                match.group(0),
-                href=href,
-                rel="noopener noreferrer nofollow",
-                target="_blank" if found else None,
-            ),
-        )
-        position = match.end()
-    pieces.append(text[position:])
+    for segment in parse_styled_body(styled, rendered.links):
+        if segment.kind == "text":
+            pieces.append(segment.text)
+        elif segment.kind == "format":
+            pieces.append(Raw(_FORMAT_TAGS.get(segment.format_id, "")))
+        else:
+            web = segment.link_kind == "web"
+            pieces.append(
+                element(
+                    "a",
+                    segment.target,
+                    href=segment.target if web else f"mailto:{segment.target}",
+                    rel="noopener noreferrer nofollow",
+                    target="_blank" if web else None,
+                ),
+            )
     return fragment(*pieces)
 
 
@@ -584,7 +612,7 @@ def _invitation_block(
         )
     choices = (
         (("accept", "Accept"), ("decline", "Decline"), ("tentative", "Tentative"))
-        if invitation.is_request and invitation.organizer
+        if invitation.can_reply
         else ()
     )
     return element(
@@ -739,12 +767,9 @@ def _new_folder(context: ActionContext) -> Outcome:
 def _harvest_contacts(context: ActionContext) -> Outcome:
     from ..contact_actions import harvest_folder
 
-    contacts = context.services.contacts
-    if contacts is None:
-        return Outcome.refused(warn("No contact store is open."))
     folder = context.folder
     return harvest_folder(
-        contacts,
+        context.services.contacts,
         context.services.index.list_folder_messages(folder=folder),
         folder.folder_name,
     )

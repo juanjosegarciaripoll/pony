@@ -245,37 +245,22 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
         return node
 
     def _get_unread_counts(self, account_name: str) -> dict[str, int]:
-        """Return ``{folder_name: unread_count}`` for one account.
+        """``{folder_name: unread_count}`` for one account.
 
-        Folders come from the account's mirror — the single source of
-        truth that covers both IMAP accounts (where the mirror tracks
-        the server) and local accounts (where the mirror *is* the
-        account).  Discovering folders from ``folder_sync_state`` alone
-        used to hide local accounts entirely from the tree, since sync
-        never writes a state row for them.
-
-        Unread counts come from a single ``GROUP BY`` against the
-        ``messages`` table — previously we materialised every
-        ``IndexedMessage`` for every folder just to count, which for a
-        big account (tens of thousands of rows across dozens of
-        folders) dominated tree-rebuild time.
+        Which folders exist is a question about the stores, not about
+        this widget: see :func:`pony.mailbox_actions.folder_unread_counts`,
+        which the browser's folder pane asks as well.
         """
-        counts: dict[str, int] = {}
-        mirror = self._mirrors.get(account_name)
-        if mirror is not None:
-            for ref in mirror.list_folders(account_name=account_name):
-                counts.setdefault(ref.folder_name, 0)
-        # Also honour any sync-state folder entry that isn't on disk yet
-        # (e.g. empty remote folders the sync engine has recorded but
-        # the mirror hasn't materialised on this host).
-        for state in self._index.list_folder_sync_states(account_name=account_name):
-            counts.setdefault(state.folder_name, 0)
-        unread = self._index.unread_counts_by_folder(account_name=account_name)
-        for folder_name, n in unread.items():
-            # Folders from the index that aren't on disk still belong
-            # in the tree — they might be hidden remote folders.
-            counts[folder_name] = n
-        return counts
+        from ...mailbox_actions import Mailboxes, folder_unread_counts
+
+        return folder_unread_counts(
+            Mailboxes(
+                config=self._config,
+                index=self._index,
+                mirrors=self._mirrors,
+            ),
+            account_name,
+        )
 
     def action_next_inbox(self) -> None:
         self._jump_inbox(delta=1)

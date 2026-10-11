@@ -29,6 +29,7 @@ from chronos.mutations import all_day_bounds
 from chronos.views import (
     IN_PROGRESS_MARK,
     OccurrenceRow,
+    day_column_label,
     in_progress_keys,
     is_full_day,
 )
@@ -580,18 +581,8 @@ class TimelineGrid(DataTable[str | Text]):
 
 
 def _day_header(day: date, today: date) -> str:
-    """Column header for a day: 'Today Sat', 'Tomorrow Sun',
-    'Yesterday Fri', or 'Mon 27 Apr' for everything else.
-    Year is supplied by the view title and never repeats here."""
-    delta = (day - today).days
-    weekday = day.strftime("%a")
-    if delta == 0:
-        return f"Today {weekday}"
-    if delta == 1:
-        return f"Tomorrow {weekday}"
-    if delta == -1:
-        return f"Yesterday {weekday}"
-    return day.strftime("%a %d %b")
+    """Column header for a day; the browser shows the same one."""
+    return day_column_label(day, today)
 
 
 def _locate_now(

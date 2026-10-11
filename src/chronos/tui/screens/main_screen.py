@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from dateutil.relativedelta import relativedelta
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
@@ -20,6 +19,7 @@ from chronos.domain import (
 from chronos.event_actions import (
     Calendars,
     EditDraft,
+    default_event_start,
     import_ics_file,
     reschedule_event,
     save_event,
@@ -79,6 +79,7 @@ from chronos.views import (
     ViewKind,
     all_calendar_refs,
     in_progress_keys,
+    step_viewed,
 )
 
 if TYPE_CHECKING:
@@ -296,19 +297,12 @@ class MainScreen(Screen[None]):
         - Agenda Month window: 1 calendar month (`relativedelta`
           handles month-end clamps — Jan 31 → Feb 28, etc.).
         """
-        if self._view == ViewKind.AGENDA:
-            if self._agenda_window == AgendaWindow.DAY:
-                self._viewed_date = self._viewed_date + timedelta(days=direction)
-            elif self._agenda_window == AgendaWindow.WEEK:
-                self._viewed_date = self._viewed_date + timedelta(days=7 * direction)
-            else:  # MONTH
-                self._viewed_date = self._viewed_date + relativedelta(months=direction)
-        elif self._view in (ViewKind.DAY, ViewKind.GRID):
-            self._viewed_date = self._viewed_date + timedelta(days=direction)
-        elif self._view == ViewKind.MONTH:
-            self._viewed_date = self._viewed_date + relativedelta(months=direction)
-        else:
-            return
+        self._viewed_date = step_viewed(
+            self._viewed_date,
+            kind=self._view,
+            window=self._agenda_window,
+            direction=direction,
+        )
         self.refresh_view()
 
     def action_quit(self) -> None:
@@ -341,13 +335,11 @@ class MainScreen(Screen[None]):
                     # Cursor on the "all day" banner: an all-day event.
                     initial_start, initial_end = all_day_bounds(banner_day, banner_day)
                     all_day = True
-            elif self._view == ViewKind.MONTH:
-                # The cursor day, at the usual start of a working day.
-                initial_start = datetime.combine(
-                    self._viewed_date, time(9, 0)
-                ).astimezone()
             if initial_start is None:
-                initial_start = _round_up_to_half_hour(services.now())
+                initial_start = default_event_start(
+                    self._viewed_date,
+                    services.now(),
+                )
         if initial_end is None:
             initial_end = initial_start + timedelta(hours=1)
         calendars = all_calendar_refs(services.config, services.mirror)
@@ -356,7 +348,7 @@ class MainScreen(Screen[None]):
                 "No calendars available. Add an account first."
             )
             return
-        default = self._first_selected(calendars)
+        default = self._selection.first_of(calendars) or calendars[0]
         screen = EventEditScreen(
             calendars=calendars,
             existing=None,
@@ -916,24 +908,6 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Sync complete: +{added} ~{updated} -{removed}"
             )
-
-    def _first_selected(self, calendars: tuple[CalendarRef, ...]) -> CalendarRef:
-        for ref in calendars:
-            if self._selection.contains(ref):
-                return ref
-        return calendars[0]
-
-
-def _round_up_to_half_hour(value: datetime) -> datetime:
-    """Return the nearest local half-hour at or after ``value``."""
-    local = value.astimezone()
-    rounded = local.replace(second=0, microsecond=0)
-    remainder = rounded.minute % 30
-    if remainder:
-        rounded += timedelta(minutes=30 - remainder)
-    elif local.second or local.microsecond:
-        rounded += timedelta(minutes=30)
-    return rounded
 
 
 def _save_last_view(view: ViewKind) -> None:

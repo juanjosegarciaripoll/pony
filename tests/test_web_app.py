@@ -203,7 +203,11 @@ def test_a_link_in_a_message_body_is_clickable_but_still_text() -> None:
         body = client.get(_message(_only_message(index))).text
 
     assert 'href="https://example.test/a?b=1"' in body
-    assert 'href="mailto:ada@example.test"' in body
+    # A bare address is text in both front ends: the renderer links a
+    # `mailto:` and an anchor, and deliberately not every address in a
+    # quoted header.
+    assert 'href="mailto:ada@example.test"' not in body
+    assert "ada@example.test" in body
 
 
 def test_a_message_body_is_served_with_everything_switched_off() -> None:
@@ -398,12 +402,12 @@ def test_the_keymap_is_served_per_surface() -> None:
     compose = {entry["action"]: entry for entry in keymaps["compose"]}
     assert compose["edit_external"]["available"] is False
     # The calendar's own table, in the same shape. Several keys share
-    # an action there — a bare capital and its modifier spelling — so
-    # the lookup is by action to a list of keys.
+    # an action there, and a bare capital and its `shift+` spelling are
+    # one key to a browser, so the served table carries it once.
     calendar: dict[str, list[str]] = {}
     for entry in keymaps["calendar"]:
         calendar.setdefault(entry["action"], []).append(entry["key"])
-    assert calendar["view_month"] == ["M", "shift+m"]
+    assert calendar["view_month"] == ["M"]
     assert "t" in calendar["today"]
     by_action = {entry["action"]: entry for entry in keymaps["calendar"]}
     assert by_action["today"]["available"] is True
@@ -983,3 +987,66 @@ def test_every_button_that_names_an_action_names_a_real_one() -> None:
     }
     assert named
     assert named <= set(SERVER_ACTIONS)
+
+
+def test_the_folder_pane_shows_folders_the_mirror_has_not_materialised() -> None:
+    """A synced-but-absent folder is in the reader's tree; it belongs here too."""
+    from pony.domain import FolderSyncState
+
+    services, index = _services("web-folder-tree-sync-state")
+    index.record_folder_sync_state(
+        state=FolderSyncState(
+            account_name="acct",
+            folder_name="Archive/2019",
+            uid_validity=1,
+            highest_uid=0,
+        ),
+    )
+
+    with _client(services) as client:
+        body = client.get(_mail()).text
+
+    assert "Archive" in body
+    assert "2019" in body
+
+
+def test_the_body_keeps_the_anchor_text_an_html_message_chose() -> None:
+    """The renderer's links, not a second regex: `click here` survives."""
+    html = (
+        b"From: them@example.test\r\n"
+        b"To: you@example.test\r\n"
+        b"Subject: Invitation\r\n"
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b"\r\n"
+        b'<p>Please <a href="https://example.test/rsvp">click here</a> '
+        b"and <b>hurry</b>.</p>\r\n"
+    )
+    services, index = _services("web-anchor-text", seed=(html,))
+
+    with _client(services) as client:
+        body = client.get(_message(_only_message(index))).text
+
+    assert "click here" in body
+    assert 'href="https://example.test/rsvp"' in body
+    # The emphasis the renderer marked is emphasis here too.
+    assert "<strong>hurry</strong>" in body
+
+
+def test_a_shift_letter_key_is_served_as_the_browser_reports_it() -> None:
+    """Every `shift+<letter>` alias used to be served and never match."""
+    from chronos.keymap import web_key
+
+    services, _index = _services("web-shift-keys")
+
+    with _client(services) as client:
+        keymaps = client.get("/keymap.json").json()
+
+    calendar = {entry["key"] for entry in keymaps["calendar"]}
+    # The browser reports shift+g as "G" with the shift flag set, and
+    # `pony.js` builds "G" for it.
+    assert web_key("shift+g") == "G"
+    assert "shift+g" not in calendar
+    assert "G" in calendar
+    # A named key keeps its modifier, because the DOM reports it there.
+    reader = {entry["key"] for entry in keymaps["reader"]}
+    assert "shift+ArrowUp" in reader

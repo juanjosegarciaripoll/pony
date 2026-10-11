@@ -12,6 +12,7 @@ import email
 import email.policy
 import html as _html
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from email.message import EmailMessage
 from html.parser import HTMLParser
@@ -318,6 +319,59 @@ def render_message_markdown(rendered: RenderedMessage) -> str:
 def _header(msg: EmailMessage, name: str) -> str:
     value = msg.get(name, "")
     return str(value).strip()
+
+
+@dataclass(frozen=True, slots=True)
+class BodySegment:
+    """One run of a styled body.
+
+    ``kind`` is ``"text"`` (``text`` is what to show), ``"link"``
+    (``index``, ``link_kind`` and ``target`` say where it goes) or
+    ``"format"`` (``format_id`` is one of ``B1``/``B0``/``I1``/``I0``/
+    ``U1``/``U0``/``S1``/``S0``: bold, italic, underline, strike, on
+    and off).
+
+    The sentinel grammar is the renderer's, so reading it is too: a
+    front end decides what a link or a bold run *looks* like, not where
+    one begins.  Both of them used to split on NUL themselves, and the
+    browser skipped the format sentinels and re-found the links with a
+    regex of its own.
+    """
+
+    kind: str
+    text: str = ""
+    index: int = -1
+    link_kind: str = ""
+    target: str = ""
+    format_id: str = ""
+
+
+def parse_styled_body(
+    body: str,
+    links: Sequence[tuple[str, str]],
+) -> tuple[BodySegment, ...]:
+    """*body* as a sequence of text, link and format runs."""
+    segments: list[BodySegment] = []
+    for piece in body.split("\x00"):
+        if piece.startswith("LINK:"):
+            try:
+                index = int(piece[5:])
+                kind, target = links[index]
+            except (ValueError, IndexError):
+                continue
+            segments.append(
+                BodySegment(
+                    kind="link",
+                    index=index,
+                    link_kind=kind,
+                    target=target,
+                ),
+            )
+        elif piece in _FORMAT_IDS:
+            segments.append(BodySegment(kind="format", format_id=piece))
+        elif piece:
+            segments.append(BodySegment(kind="text", text=piece))
+    return tuple(segments)
 
 
 def _sentinels_to_plain(text: str, links: list[tuple[str, str]]) -> str:
