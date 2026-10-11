@@ -441,6 +441,25 @@ pre.text a {
   font-size: 0.75rem;
 }
 
+/* A calendar file belongs in the calendar rather than on the disk, so
+   it carries a chooser and a button on its own line. */
+.import-ics-control {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-left: 0.6rem;
+}
+
+.import-ics-control select {
+  padding: 0.1rem 0.3rem;
+  font-size: 0.8rem;
+}
+
+.import-ics {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}
+
 .invitation {
   margin: 0 0 0.7rem;
   padding: 0.6rem 0.75rem;

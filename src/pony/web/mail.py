@@ -37,11 +37,12 @@ from .layout import PageSurface, Tab, columns, page, pane
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from chronos.domain import CalendarRef
     from chronos.outcome import Notice
 
     from ..domain import FolderMessageSummary, IndexedMessage, MessageRef
     from ..invitation import Invitation
-    from ..message_renderer import RenderedMessage
+    from ..message_renderer import AttachmentInfo, RenderedMessage
     from ..views import FolderTreeNode
     from .app import WebServices
 
@@ -462,7 +463,7 @@ def reader_pane(services: WebServices, message: IndexedMessage) -> Raw:
         body=fragment(
             _headers(rendered),
             _invitation_block(services, invitation),
-            _attachments(ref, rendered),
+            _attachments(services, ref, rendered),
             element("pre", _body(rendered), class_="text"),
         ),
     )
@@ -548,9 +549,27 @@ def _body(rendered: RenderedMessage) -> Raw:
     return fragment(*pieces)
 
 
-def _attachments(ref: MessageRef, rendered: RenderedMessage) -> Raw | None:
+# Attachments a calendar can read.  A `.ics` arrives with whichever of
+# these the sender's client felt like using.
+_CALENDAR_TYPES = frozenset(
+    {"text/calendar", "application/ics", "text/x-vcalendar", "application/x-ics"},
+)
+
+
+def _is_calendar_file(attachment: AttachmentInfo) -> bool:
+    return attachment.content_type.split(";")[
+        0
+    ].strip().lower() in _CALENDAR_TYPES or attachment.filename.lower().endswith(".ics")
+
+
+def _attachments(
+    services: WebServices,
+    ref: MessageRef,
+    rendered: RenderedMessage,
+) -> Raw | None:
     if not rendered.attachments:
         return None
+    targets = _calendar_targets(services)
     return element(
         "ul",
         join(
@@ -567,10 +586,67 @@ def _attachments(ref: MessageRef, rendered: RenderedMessage) -> Raw | None:
                     f"{attachment.content_type}, {fmt_size(attachment.size_bytes)}",
                     class_="about",
                 ),
+                _import_control(attachment, targets)
+                if _is_calendar_file(attachment)
+                else None,
             )
             for attachment in rendered.attachments
         ),
         class_="attachments",
+    )
+
+
+def _calendar_targets(services: WebServices) -> tuple[CalendarRef, ...]:
+    """The calendars an attachment could be filed into."""
+    from chronos.views import all_calendar_refs
+
+    runtime = services.calendar
+    if runtime is None:
+        return ()
+    return tuple(all_calendar_refs(runtime.config, runtime.mirror))
+
+
+def _import_control(
+    attachment: AttachmentInfo,
+    targets: Sequence[CalendarRef],
+) -> Raw | None:
+    """Put a calendar file into the calendar, rather than onto the disk.
+
+    Downloading an `.ics` and then pasting it back is the long way round
+    for the thing a calendar file is for.  An invitation keeps its own
+    block with Accept and Decline -- this is for everything else a
+    calendar file can be: a shared agenda, an export, a single event
+    someone sent to be filed.
+    """
+    if not targets:
+        return None
+    chooser_id = f"import-calendar-{attachment.index}"
+    return element(
+        "span",
+        element(
+            "select",
+            join(
+                element(
+                    "option",
+                    f"{ref.account_name}/{ref.calendar_name}",
+                    value=f"{ref.account_name}/{ref.calendar_name}",
+                )
+                for ref in targets
+            ),
+            name="calendar",
+            id=chooser_id,
+            aria_label="Calendar to import into",
+        ),
+        element(
+            "button",
+            "Import",
+            type="button",
+            class_="action import-ics",
+            data_action="import_ics",
+            data_attachment=str(attachment.index),
+            data_calendar_from=chooser_id,
+        ),
+        class_="import-ics-control",
     )
 
 

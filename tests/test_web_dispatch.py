@@ -501,7 +501,11 @@ def test_every_button_that_names_an_action_goes_through_the_dispatcher() -> None
     # Every one of them is clicked into the same `server()` call a key is.
     wiring = _function(source, "wireActionButtons")
     assert "[data-action]" in wiring
-    assert "server(button.dataset.action)" in wiring
+    assert "server(button.dataset.action, buttonFields(button))" in wiring
+    # And what a button adds to the post is read off the button itself.
+    fields = _function(source, "buttonFields")
+    for name in ("attachment", "uid", "target", "calendarFrom"):
+        assert f"dataset.{name}" in fields
 
 
 def test_the_operations_a_phone_needs_are_all_reachable_by_tapping() -> None:
@@ -607,12 +611,12 @@ def test_the_operations_with_no_button_are_the_ones_that_need_typing() -> None:
 
 
 def test_the_actions_with_neither_a_key_nor_a_button_are_known() -> None:
-    """Two operations the browser can only be asked for by hand.
+    """One operation the browser can only be asked for by hand.
 
     ``mark_read`` is the other half of ``u``, which the reader does by
-    opening a message, and ``import_ics`` is the calendar's paste-an-ics
-    import, which has no form on any page yet.  Both are real actions
-    with tests of their own; neither is reachable from the interface.
+    opening a message: a real action with tests of its own, reachable
+    from no key and no button.  ``import_ics`` used to be here too and
+    is now the Import button on a calendar attachment.
     """
     services, _runtime, plain, invited = _services("dispatch-unreachable")
 
@@ -627,7 +631,7 @@ def test_the_actions_with_neither_a_key_nor_a_button_are_known() -> None:
     reachable |= {ALIASES[name] for name in ALIASES if name in reachable}
     reachable |= {"sync_calendar", "delete_event"}
 
-    assert set(SERVER_ACTIONS) - reachable == {"mark_read", "import_ics"}
+    assert set(SERVER_ACTIONS) - reachable == {"mark_read"}
 
 
 # ----------------------------------------------------------------------
@@ -695,3 +699,12 @@ def _web_sources() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py"))
     )
+
+
+def test_the_event_form_syncs_the_calendar_not_the_mail() -> None:
+    """Its Sync button and `g` are on a calendar page, whatever the surface."""
+    source = script()
+    rewrite = _function(source, "server")
+
+    assert 'state.surface === "calendar" || state.surface === "event"' in rewrite
+    assert 'name = "sync_calendar";' in rewrite

@@ -497,7 +497,7 @@ def test_importing_nothing_says_what_to_paste() -> None:
         )
 
     assert response.json()["notices"][0]["text"] == (
-        "Paste the iCalendar text to import."
+        "Paste the iCalendar text, or open a message that carries one."
     )
 
 
@@ -729,3 +729,100 @@ def test_an_all_day_event_survives_being_opened_and_saved_again() -> None:
     ]
     assert again.dtstart == stored.dtstart
     assert again.dtend == stored.dtend
+
+
+def _message_with_ics(ics: bytes) -> bytes:
+    """A message carrying a calendar file as an ordinary attachment."""
+    return (
+        b"From: them@example.test\r\n"
+        b"To: you@example.test\r\n"
+        b"Subject: Our schedule\r\n"
+        b'Content-Type: multipart/mixed; boundary="b1"\r\n'
+        b"\r\n"
+        b"--b1\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Here it is.\r\n"
+        b"--b1\r\n"
+        b'Content-Type: text/calendar; charset="utf-8"\r\n'
+        b'Content-Disposition: attachment; filename="schedule.ics"\r\n'
+        b"\r\n" + ics + b"\r\n"
+        b"--b1--\r\n"
+    )
+
+
+def test_a_calendar_attachment_offers_to_be_imported() -> None:
+    """Downloading an .ics to paste it back is the long way round."""
+    from tui_helpers import seed_message
+
+    from pony.domain import FolderRef
+
+    services, _runtime = _services("cal-attachment-offer")
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=services.index,
+        mirror=services.mirrors["acct"],
+        folder=folder,
+        raw=_message_with_ics(_ics("sched@example.com", _tomorrow_at(9))),
+        message_id="<carrier@example.com>",
+    )
+    (row,) = services.index.list_folder_message_summaries(folder=folder)
+
+    with _client(services) as client:
+        body = client.get(
+            f"/message?account=acct&folder=INBOX&id={row.message_ref.id}",
+        ).text
+
+    assert 'data-action="import_ics"' in body
+    assert "schedule.ics" in body
+    # And it names the attachment it belongs to, and where to file it.
+    assert 'data-attachment="1"' in body
+    assert f"{ACCOUNT}/{CALENDAR}" in body
+
+
+def test_importing_a_calendar_attachment_files_its_events() -> None:
+    from tui_helpers import seed_message
+
+    from pony.domain import FolderRef
+
+    services, runtime = _services("cal-attachment-import")
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=services.index,
+        mirror=services.mirrors["acct"],
+        folder=folder,
+        raw=_message_with_ics(
+            _ics("from-attachment@example.com", _tomorrow_at(11), summary="Offsite"),
+        ),
+        message_id="<carrier2@example.com>",
+    )
+    (row,) = services.index.list_folder_message_summaries(folder=folder)
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/import_ics",
+            data={
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(row.message_ref.id),
+                "attachment": "1",
+            },
+        )
+
+    assert response.json()["changed"] == 1
+    (stored,) = runtime.index.list_components_by_uid("from-attachment@example.com")
+    assert stored.summary == "Offsite"
+
+
+def test_importing_an_attachment_that_is_not_there_says_so() -> None:
+    services, _runtime = _services("cal-attachment-missing")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/import_ics",
+            data={"target": f"{ACCOUNT}/{CALENDAR}", "attachment": "7"},
+        )
+
+    assert response.json()["changed"] == 0
+    assert "Paste the iCalendar text" in response.json()["notices"][0]["text"]

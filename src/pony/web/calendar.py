@@ -1126,14 +1126,42 @@ def _import_ics(context: ActionContext) -> Outcome:
     account, _, name = context.first("target").partition("/")
     if not account or not name:
         return Outcome.refused(warn("Choose a calendar to import into."))
-    text = context.first("ics").strip()
-    if not text:
-        return Outcome.refused(warn("Paste the iCalendar text to import."))
+    payload = _ics_payload(context)
+    if payload is None:
+        return Outcome.refused(
+            warn("Paste the iCalendar text, or open a message that carries one."),
+        )
     return import_ics_bytes(
         calendars_of(runtime),
         CalendarRef(account, name),
-        text.encode(),
+        payload,
     )
+
+
+def _ics_payload(context: ActionContext) -> bytes | None:
+    """The iCalendar bytes to import: pasted text, or an attachment.
+
+    A `.ics` someone sent is the common case and nobody should have to
+    copy it out of a message by hand, so an attachment is named by the
+    message it is on and its index -- the same pair the download link
+    carries -- and read back here rather than travelling through the
+    browser twice.
+    """
+    text = context.first("ics").strip()
+    if text:
+        return text.encode()
+    index = context.integer("attachment")
+    messages = context.messages
+    if index is None or not messages:
+        return None
+    from ..message_renderer import extract_attachment
+    from .mail import raw_bytes
+
+    raw = raw_bytes(context.services, messages[0])
+    if raw is None:
+        return None
+    payload = extract_attachment(raw, index)
+    return None if payload is None else payload.data
 
 
 CALENDAR_ACTIONS: dict[str, Action] = {

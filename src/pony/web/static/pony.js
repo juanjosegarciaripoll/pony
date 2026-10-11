@@ -196,7 +196,10 @@ async function server(name, extra = {}) {
   // `g` and ctrl+g mean "sync what I am looking at", and on the
   // calendar that is the calendar. The two tables spell the action the
   // same way, so the surface is what tells them apart.
-  if (state.surface === "calendar" && (name === "sync" || name === "background_sync")) {
+  // The event form is a calendar page too: its Sync button used to
+  // fetch mail, because the surface it declares is `event`.
+  const onCalendar = state.surface === "calendar" || state.surface === "event";
+  if (onCalendar && (name === "sync" || name === "background_sync")) {
     name = "sync_calendar";
   }
   // URLSearchParams, not FormData: the server reads a urlencoded body
@@ -656,9 +659,25 @@ clientActions.select_span = (name) => {
 function wireActionButtons() {
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => {
-      void server(button.dataset.action);
+      void server(button.dataset.action, buttonFields(button));
     });
   }
+}
+
+// What a button carries beyond its name. An Import button names the
+// attachment it belongs to and the chooser that says where it goes, so
+// one page can hold several and each sends its own.
+function buttonFields(button) {
+  const fields = {};
+  if (button.dataset.attachment) fields.attachment = button.dataset.attachment;
+  if (button.dataset.uid) fields.uid = button.dataset.uid;
+  if (button.dataset.target) fields.cal = button.dataset.target;
+  const chooserId = button.dataset.calendarFrom;
+  if (chooserId) {
+    const chooser = document.getElementById(chooserId);
+    if (chooser) fields.target = chooser.value;
+  }
+  return fields;
 }
 
 function wireMarkTaps() {
