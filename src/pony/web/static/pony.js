@@ -191,7 +191,7 @@ function ask(question, { value = "", list = null, placeholder = "" } = {}) {
 
 // ── Server actions ─────────────────────────────────────────────
 
-async function runServerAction(name, extra = {}) {
+async function server(name, extra = {}) {
   const data = here();
   // `g` and ctrl+g mean "sync what I am looking at", and on the
   // calendar that is the calendar. The two tables spell the action the
@@ -472,17 +472,17 @@ const clientActions = {
   move: async () => {
     const target = await ask("Move to (account/folder)", { list: "folder-names" });
     if (!target) return;
-    void runServerAction("move", { target });
+    void server("move", { target });
   },
   copy: async () => {
     const target = await ask("Copy to (account/folder)", { list: "folder-names" });
     if (!target) return;
-    void runServerAction("copy", { target });
+    void server("copy", { target });
   },
   new_folder: async () => {
     const name = await ask("New folder name");
     if (!name) return;
-    void runServerAction("new_folder", { name });
+    void server("new_folder", { name });
   },
   respond_invitation: () => {
     const block = document.querySelector(".invitation-answers button");
@@ -524,14 +524,14 @@ const clientActions = {
       say("Select an event first.", "warning");
       return;
     }
-    void runServerAction("delete_event", event);
+    void server("delete_event", event);
   },
   toggle_calendars: () => {
     const first = document.querySelector("#folders .tree .folder");
     if (first) first.focus();
   },
   sync_dialog: () => {
-    void runServerAction("sync");
+    void server("sync");
   },
 
   // Contacts
@@ -636,7 +636,7 @@ function onKeyDown(event) {
     return;
   }
   if (binding.available) {
-    void runServerAction(name);
+    void server(name);
     return;
   }
   say(`${binding.description} is only in the terminal.`, "warning");
@@ -656,7 +656,7 @@ clientActions.select_span = (name) => {
 function wireActionButtons() {
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => {
-      void runServerAction(button.dataset.action);
+      void server(button.dataset.action);
     });
   }
 }
@@ -677,7 +677,7 @@ function wireInvitation() {
   for (const button of document.querySelectorAll(".invitation-answer")) {
     button.addEventListener("click", () => {
       const chooser = document.getElementById("invitation-calendar");
-      void runServerAction("respond_invitation", {
+      void server("respond_invitation", {
         answer: button.dataset.answer,
         calendar: chooser ? chooser.value : "",
       });
@@ -689,7 +689,7 @@ function wireEventDelete() {
   const button = document.getElementById("delete-event");
   if (!button) return;
   button.addEventListener("click", async () => {
-    const outcome = await runServerAction("delete_event", {
+    const outcome = await server("delete_event", {
       uid: button.dataset.uid,
       cal: button.dataset.target || "",
     });
