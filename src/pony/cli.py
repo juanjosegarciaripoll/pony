@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from .calendar import CalendarRuntime
     from .message_renderer import AttachmentInfo
 
+from chronos.paths import activate as activate_calendar
+
 from .accounts import (
     build_mirror,
     build_mirrors,
@@ -53,7 +55,7 @@ from .paths import (
     AppPaths,
     ProfileMismatchError,
     claim_profile,
-    resolve_data_dir,
+    resolve,
 )
 from .protocols import (
     CredentialsProvider,
@@ -559,11 +561,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if calendar_argv is not None:
         args.calendar_args = calendar_argv
     _configure_logging(debug=args.debug)
-    paths = AppPaths.default()
-    declared_data_dir, profile = _peek_profile(args.config or paths.config_file)
-    effective_data_dir = resolve_data_dir(declared_data_dir)
-    if effective_data_dir is not None:
-        paths = paths.with_data_dir(effective_data_dir)
+    paths = resolve(args.config)
+    declared_data_dir, profile = _peek_profile(paths.config_file)
+    if declared_data_dir is not None:
+        paths = resolve(args.config, data_dir=declared_data_dir)
+    # The calendar keeps its files inside the same data directory; it is
+    # hosted, so it is told where rather than resolving one of its own.
+    activate_calendar(paths.calendar_dir)
     if profile:
         try:
             claim_profile(paths.data_dir, profile)
@@ -573,7 +577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f" {exc.found!r}, but the config declares"
                 f" {exc.declared!r}.\n"
                 f"\n"
-                f"  config:   {args.config or paths.config_file}\n"
+                f"  config:   {paths.config_file}\n"
                 f"  data dir: {paths.data_dir}\n"
                 f"\n"
                 f"Point this config at its own data_dir. To share this"
@@ -1459,7 +1463,7 @@ def run_rescan(
         if not accounts:
             raise SystemExit(f"No account named {account!r} in config.")
 
-    scan_state_path = paths.data_dir / "local_scan_state.json"
+    scan_state_path = paths.scan_state_file
     scan_state_by_account = _load_scan_state(scan_state_path)
 
     total_scanned = 0
@@ -2292,8 +2296,7 @@ def run_local_summary(
     print("Files")
     _print_path_row("Config", config_path or paths.config_file)
     _print_path_row("Index DB", paths.index_db_file)
-    _print_path_row("State dir", paths.state_dir, is_dir=True)
-    _print_path_row("Cache dir", paths.cache_dir, is_dir=True)
+    _print_path_row("Calendar dir", paths.calendar_dir, is_dir=True)
     log_files = list(paths.log_dir.glob("*")) if paths.log_dir.exists() else []
     log_suffix = f"  {len(log_files)} file(s)" if log_files else ""
     _print_path_row("Log dir", paths.log_dir, is_dir=True, suffix=log_suffix)
@@ -2540,7 +2543,7 @@ def _run_reset_account(
         return 2
     acc = matches[0]
     mirror_path = acc.mirror.path
-    scan_state_path = paths.data_dir / "local_scan_state.json"
+    scan_state_path = paths.scan_state_file
 
     print(f"The following will be permanently deleted for account {acc.name!r}:")
     mirror_label = "(exists)" if mirror_path.exists() else "(not found)"
@@ -2691,7 +2694,7 @@ def run_tui(
     # sessions or restored from a backup.
     # The folder-mtime cache lets us skip folders that haven't changed
     # since last run, keeping startup fast on big cold archives.
-    scan_state_path = paths.data_dir / "local_scan_state.json"
+    scan_state_path = paths.scan_state_file
     scan_state_by_account = _load_scan_state(scan_state_path)
     for acc in config.accounts:
         if isinstance(acc, LocalAccountConfig):
@@ -3685,11 +3688,10 @@ def require_config(config_path: Path | None) -> AppConfig:
     try:
         return load_config(config_path)
     except ConfigError as error:
-        config_file = config_path or AppPaths.default().config_file
+        paths = resolve(config_path)
+        config_file = paths.config_file
         if not sys.stdin.isatty():
             raise SystemExit(f"Configuration error: {error}") from error
-
-        paths = AppPaths.default()
 
         if not config_file.exists():
             print(f"No config file found at {config_file}.\n")
@@ -3728,10 +3730,9 @@ def render_doctor_report(service_status: ServiceStatus) -> str:
         "Paths:",
         f"  Config file:  {p.config_file}",
         f"  Data dir:     {p.data_dir}",
-        f"  State dir:    {p.state_dir}",
-        f"  Cache dir:    {p.cache_dir}",
         f"  Log dir:      {p.log_dir}",
         f"  Index DB:     {p.index_db_file}",
+        f"  Calendar dir: {p.calendar_dir}",
         "",
         "Checks:",
     ]

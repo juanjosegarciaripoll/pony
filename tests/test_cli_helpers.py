@@ -20,10 +20,6 @@ def _paths(root: Path) -> AppPaths:
     return AppPaths(
         config_file=root / "config" / "config.toml",
         data_dir=root / "data",
-        state_dir=root / "state",
-        cache_dir=root / "cache",
-        log_dir=root / "state" / "logs",
-        index_db_file=root / "data" / "index.sqlite3",
     )
 
 
@@ -176,7 +172,7 @@ def test_require_config_can_run_setup_then_reload(tmp_path: Path) -> None:
             side_effect=[ConfigError("missing"), config],
         ),
         mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli.AppPaths, "default", return_value=paths),
+        mock.patch.object(cli, "resolve", return_value=paths),
         mock.patch.object(cli, "input", return_value=""),
         mock.patch.object(cli, "run_account_add_interactive", return_value=0),
     ):
@@ -188,7 +184,7 @@ def test_require_config_declined_setup_reports_error(tmp_path: Path) -> None:
     with (
         mock.patch.object(cli, "load_config", side_effect=ConfigError("missing")),
         mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli.AppPaths, "default", return_value=paths),
+        mock.patch.object(cli, "resolve", return_value=paths),
         mock.patch.object(cli, "input", return_value="no"),
         mock.patch.object(cli, "run_account_add_interactive") as setup,
         pytest.raises(SystemExit, match="Configuration error: missing"),
@@ -210,7 +206,7 @@ def test_require_config_can_edit_then_reload(tmp_path: Path) -> None:
             side_effect=[ConfigError("broken"), config],
         ),
         mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli.AppPaths, "default", return_value=paths),
+        mock.patch.object(cli, "resolve", return_value=paths),
         mock.patch.object(cli, "input", return_value="yes"),
         mock.patch.object(cli, "run_config_edit") as edit,
     ):
@@ -230,7 +226,7 @@ def test_require_config_reports_failed_retry_after_edit(tmp_path: Path) -> None:
             side_effect=[ConfigError("broken"), ConfigError("still broken")],
         ),
         mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli.AppPaths, "default", return_value=paths),
+        mock.patch.object(cli, "resolve", return_value=paths),
         mock.patch.object(cli, "input", return_value="yes"),
         mock.patch.object(cli, "run_config_edit") as edit,
         pytest.raises(SystemExit, match="Configuration still invalid: still broken"),

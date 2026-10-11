@@ -23,6 +23,7 @@ from chronos.domain import (
     VEvent,
 )
 from chronos.index_store import SqliteIndexRepository
+from chronos.paths import CalendarPaths
 from chronos.storage import VdirMirrorRepository
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
@@ -620,9 +621,8 @@ class SyncLockReleaseTest(CliTestCase):
 
         ctx = self._ctx(session_factory=factory)
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        lock_path = tmp / "sync.lock"
 
-        with mock.patch("chronos.cli.sync_lock_path", return_value=lock_path):
+        with mock.patch("chronos.cli.active", return_value=CalendarPaths(root=tmp)):
             runner = cli.build_sync_runner(ctx)
             with self.assertRaises(KeyboardInterrupt):
                 runner()
@@ -645,10 +645,10 @@ class SyncLockReleaseTest(CliTestCase):
         self._seed()
         ctx = self._ctx(session_factory=lambda *_: self.session)
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        lock_path = tmp / "sync.lock"
+        lock_path = CalendarPaths(root=tmp).lock_file
 
         with (
-            mock.patch("chronos.cli.sync_lock_path", return_value=lock_path),
+            mock.patch("chronos.cli.active", return_value=CalendarPaths(root=tmp)),
             acquire_sync_lock(lock_path),
         ):
             exit_code = cli.cmd_sync(ctx)
@@ -1396,7 +1396,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
         self.assertEqual(cred.password, "s3cret")
 
     def test_add_account_without_mirror_path_uses_default(self) -> None:
-        from chronos.paths import default_mirror_path
+        from chronos.paths import active
 
         self._run(["init"])
         code = self._run(
@@ -1420,7 +1420,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
 
         config = load(self.config_path)
         self.assertEqual(
-            config.accounts[0].mirror_path, default_mirror_path("personal")
+            config.accounts[0].mirror_path, active().mirror_path("personal")
         )
         # The TOML on disk should NOT carry an explicit mirror_path line
         # (it round-trips through the default).
@@ -1910,8 +1910,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         from chronos import cli
 
         with mock.patch(
-            "chronos.cli.oauth_token_path",
-            return_value=self.tmp / "g-tokens.json",
+            "chronos.cli.active", return_value=CalendarPaths(root=self.tmp)
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
@@ -1926,7 +1925,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         self.assertEqual(cred.client_id, "g-cid")
         self.assertEqual(cred.client_secret, "g-cs")
         self.assertEqual(cred.scope, GOOGLE_OAUTH_SCOPE)
-        self.assertTrue((self.tmp / "g-tokens.json").exists())
+        self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
     def test_authorize_defaults_to_remote_browser_when_headless(self) -> None:
         from chronos.oauth import StoredTokens
@@ -1944,8 +1943,8 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             mock.patch("chronos.cli._has_local_graphical_browser", return_value=False),
             mock.patch("chronos.cli._default_remote_browser_flow", flow),
             mock.patch(
-                "chronos.cli.oauth_token_path",
-                return_value=self.tmp / "tokens.json",
+                "chronos.cli.active",
+                return_value=CalendarPaths(root=self.tmp),
             ),
         ):
             code = cli.cmd_oauth_authorize(
@@ -1956,7 +1955,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         self.assertEqual(code, 0)
         flow.assert_called_once()
-        self.assertTrue((self.tmp / "tokens.json").exists())
+        self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
     def test_authorize_uses_loopback_when_graphical(self) -> None:
         from chronos.oauth import StoredTokens
@@ -1974,8 +1973,8 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             mock.patch("chronos.cli._has_local_graphical_browser", return_value=True),
             mock.patch("chronos.cli._default_loopback_flow", flow),
             mock.patch(
-                "chronos.cli.oauth_token_path",
-                return_value=self.tmp / "tokens.json",
+                "chronos.cli.active",
+                return_value=CalendarPaths(root=self.tmp),
             ),
         ):
             code = cli.cmd_oauth_authorize(
@@ -1986,7 +1985,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         self.assertEqual(code, 0)
         flow.assert_called_once()
-        self.assertTrue((self.tmp / "tokens.json").exists())
+        self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
 
 class CliAuthorizerTest(unittest.TestCase):

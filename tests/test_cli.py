@@ -14,10 +14,17 @@ from typing import Any
 from uuid import uuid4
 
 import corpus
-from conftest import ISOLATED_DATA_DIR, TMP_ROOT, isolated_data_dir, resolve_fixture
+from conftest import (
+    ISOLATED_DATA_DIR,
+    TMP_ROOT,
+    isolated_data_dir,
+    isolated_paths,
+    resolve_fixture,
+)
 
 from pony.cli import main
 from pony.domain import MessageFlag
+from pony.paths import AppPaths
 
 
 @dataclass(frozen=True)
@@ -91,12 +98,18 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("Total hits: 1", output)
 
     def test_doctor_creates_runtime_directories(self) -> None:
+        """With no config to follow, the defaults land inside PONY_ROOT."""
+        from pony.paths import resolve
+
         with isolated_app_env() as env_root:
             run_cli("doctor")
-            self.assertTrue((env_root / "config").exists())
-            self.assertTrue((env_root / "data").exists())
-            self.assertTrue((env_root / "state" / "pony" / "logs").exists())
-            self.assertTrue((env_root / "cache" / "pony").exists())
+
+            paths = resolve()
+            self.assertTrue(paths.data_dir.is_relative_to(env_root))
+            self.assertTrue(paths.config_file.is_relative_to(env_root))
+            self.assertTrue(paths.config_file.parent.is_dir())
+            self.assertTrue(paths.data_dir.is_dir())
+            self.assertTrue(paths.log_dir.is_dir())
 
     def test_rescan_refreshes_body_preview(self) -> None:
         """`pony rescan` re-projects stored rows and fixes stale previews."""
@@ -106,13 +119,12 @@ class CliTestCase(unittest.TestCase):
         from pony.domain import FolderRef, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
             account = next(iter(config.accounts))
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
 
             rfc5322_id = f"<rescan-test-{uuid4().hex}@example.com>"
@@ -175,13 +187,12 @@ class CliTestCase(unittest.TestCase):
         from pony.domain import FolderRef, MessageFlag, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
             account = next(iter(config.accounts))
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
 
             rfc5322_id = f"<sync-state-{uuid4().hex}@example.com>"
@@ -244,13 +255,12 @@ class CliTestCase(unittest.TestCase):
         from pony.domain import FolderRef, MessageRef
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
             account = next(iter(config.accounts))
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
 
             msg = EmailMessage()
@@ -553,11 +563,10 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
         import sqlite3
 
         from pony.config import load_config
-        from pony.paths import AppPaths
 
         config = load_config(config_path)
         account = next(iter(config.accounts))
-        app_paths = AppPaths.default()
+        app_paths = isolated_paths()
         app_paths.ensure_runtime_dirs()
         account.mirror.path.mkdir(parents=True, exist_ok=True)
         (account.mirror.path / "INBOX").mkdir(exist_ok=True)
@@ -678,13 +687,12 @@ def _seed_one_message(
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     rfc5322_id = f"<test-{uuid4().hex}@example.com>"
@@ -744,13 +752,12 @@ def _seed_dup_messages(
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     msg = EmailMessage()
@@ -818,13 +825,12 @@ def _seed_message_with_attachments(config_path: Path) -> _SeedHandle:
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     raw = corpus.multipart_mixed_attachment()
@@ -894,40 +900,25 @@ def temporary_config() -> Iterator[Path]:
 
 @contextlib.contextmanager
 def isolated_app_env() -> Iterator[Path]:
-    """Create isolated app directories through PONY_* environment overrides."""
+    """Confine one test's paths to a directory of its own."""
     env_root = TMP_ROOT / "env" / uuid4().hex
-    config_dir = env_root / "config"
     data_dir = env_root / "data"
-    state_dir = env_root / "state"
-    cache_dir = env_root / "cache"
-    config_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    previous = {
-        "PONY_CONFIG_DIR": os.environ.get("PONY_CONFIG_DIR"),
-        "PONY_DATA_DIR": os.environ.get("PONY_DATA_DIR"),
-        "PONY_STATE_DIR": os.environ.get("PONY_STATE_DIR"),
-        "PONY_CACHE_DIR": os.environ.get("PONY_CACHE_DIR"),
-    }
-
-    os.environ["PONY_CONFIG_DIR"] = str(config_dir)
-    os.environ["PONY_DATA_DIR"] = str(data_dir)
-    os.environ["PONY_STATE_DIR"] = str(state_dir)
-    os.environ["PONY_CACHE_DIR"] = str(cache_dir)
-    # Config fixtures declare this as their ``data_dir`` too, so they
-    # look like a real config rather than relying on the override alone.
+    previous = os.environ.get("PONY_ROOT")
+    os.environ["PONY_ROOT"] = str(env_root)
+    # Config fixtures declare this as their ``data_dir``, so they look
+    # like a real config.  It is inside the root already, so resolution
+    # leaves it alone.
     ISOLATED_DATA_DIR.append(data_dir)
     try:
         yield env_root
     finally:
         ISOLATED_DATA_DIR.pop()
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        if previous is None:
+            os.environ.pop("PONY_ROOT", None)
+        else:
+            os.environ["PONY_ROOT"] = previous
 
 
 class DedupFolderTestCase(unittest.TestCase):
@@ -937,7 +928,6 @@ class DedupFolderTestCase(unittest.TestCase):
         """Dry-run prints groups but leaves all rows ACTIVE."""
         from pony.domain import FolderRef, MessageFlag, MessageStatus
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_dup_messages(
@@ -963,7 +953,7 @@ class DedupFolderTestCase(unittest.TestCase):
             self.assertIn("Would trash 2 row(s)", output)
             self.assertNotIn("Run `pony sync`", output)
 
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             rows = index.list_folder_messages(
                 folder=FolderRef(account_name="personal", folder_name="INBOX")
@@ -975,7 +965,6 @@ class DedupFolderTestCase(unittest.TestCase):
         """``--apply`` trashes copies with fewer flags; winner stays ACTIVE."""
         from pony.domain import FolderRef, MessageFlag, MessageStatus
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_dup_messages(
@@ -997,7 +986,7 @@ class DedupFolderTestCase(unittest.TestCase):
                 "--apply",
             )
 
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             rows = index.list_folder_messages(
                 folder=FolderRef(account_name="personal", folder_name="INBOX")
@@ -1017,7 +1006,6 @@ class DedupFolderTestCase(unittest.TestCase):
         """With equal flag counts, ANSWERED wins over FLAGGED."""
         from pony.domain import FolderRef, MessageFlag, MessageStatus
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             # Both have two flags; ANSWERED should win the tiebreaker.
@@ -1040,7 +1028,7 @@ class DedupFolderTestCase(unittest.TestCase):
                 "--apply",
             )
 
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             rows = index.list_folder_messages(
                 folder=FolderRef(account_name="personal", folder_name="INBOX")
@@ -1055,7 +1043,6 @@ class DedupFolderTestCase(unittest.TestCase):
 
         from pony.domain import FolderRef, MessageFlag, MessageStatus
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             handles = _seed_dup_messages(
@@ -1067,7 +1054,7 @@ class DedupFolderTestCase(unittest.TestCase):
                 ],
             )
             # Manually mark the winner TRASHED before the dedup run.
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             winner_handle = handles[1]  # the ANSWERED one
             all_rows = index.list_folder_messages(
@@ -1101,7 +1088,6 @@ class DedupFolderTestCase(unittest.TestCase):
 
         from pony.domain import FolderRef, MessageFlag, MessageStatus
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             handles = _seed_dup_messages(
@@ -1110,7 +1096,7 @@ class DedupFolderTestCase(unittest.TestCase):
                 flags_list=[frozenset({MessageFlag.SEEN}), frozenset()],
             )
             # Blank out the message_id on both rows.
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             for handle in handles:
                 rows = index.list_folder_messages(
@@ -1287,13 +1273,12 @@ def _seed_multipart_alternative(config_path: Path) -> _SeedHandle:
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     raw = corpus.multipart_alternative()
@@ -1335,13 +1320,12 @@ def _seed_plain_text_fixture(config_path: Path) -> _SeedHandle:
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     raw = corpus.plain_text()
@@ -1646,9 +1630,7 @@ class ContactsCommandsTest(unittest.TestCase):
         from pony.cli import run_contacts_export
 
         with isolated_app_env():
-            from pony.paths import AppPaths
-
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
             rc = run_contacts_export(paths=paths, output_path=None)
             self.assertEqual(rc, 0)
@@ -1780,10 +1762,9 @@ class MoreCliCommandsTest(unittest.TestCase):
         """``pony contacts show`` displays details for a known contact."""
         from pony.domain import Contact
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
@@ -1909,9 +1890,7 @@ class ResetCommandTest(unittest.TestCase):
         import sqlite3
 
         with isolated_app_env(), temporary_config() as config_path:
-            from pony.paths import AppPaths
-
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
             # Create a DB so there's something to delete.
             paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1964,14 +1943,13 @@ class MessageGetCcTest(unittest.TestCase):
         from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
             account = next(iter(config.accounts))
             assert isinstance(account, AccountConfig)
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
 
             rfc5322_id = f"<cc-test-{uuid4().hex}@example.com>"
@@ -2067,11 +2045,9 @@ class ResetAccountBranchesTest(unittest.TestCase):
         """Answering anything but 'y' leaves the account untouched."""
         from unittest.mock import patch
 
-        from pony.paths import AppPaths
-
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Keep", body="body")
-            index_file = AppPaths.default().index_db_file
+            index_file = isolated_paths().index_db_file
             with patch("builtins.input", return_value="n"):
                 output = run_cli(
                     "--config", str(config_path), "reset", "--account", "personal"
@@ -2110,9 +2086,7 @@ class ResetAccountBranchesTest(unittest.TestCase):
         import json as _json
 
         with isolated_app_env(), temporary_config() as config_path:
-            from pony.paths import AppPaths
-
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
             state_path = paths.data_dir / "local_scan_state.json"
             state_path.write_text(
@@ -2247,13 +2221,12 @@ def _seed_fixture(config_path: Path, raw: bytes) -> _SeedHandle:
     from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
     from pony.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     mirror = MaildirMirrorRepository(
@@ -2280,12 +2253,20 @@ def _seed_fixture(config_path: Path, raw: bytes) -> _SeedHandle:
     )
 
 
-def _seed_index_only(config_path: Path, *, storage_key: str = "") -> _SeedHandle:
+def _seed_index_only(
+    config_path: Path,
+    *,
+    storage_key: str = "",
+    paths: AppPaths | None = None,
+) -> _SeedHandle:
     """Insert an index row whose ``storage_key`` has no file in the mirror.
 
     Models a headers-only row, or a mirror that was pruned behind the
     index's back: every command that reaches for the raw bytes has to
     cope with the lookup failing.
+
+    *paths* overrides where the index goes, for a run that resolves its
+    own data directory instead of reading *config_path*.
     """
     import dataclasses
     from email.message import EmailMessage
@@ -2294,12 +2275,11 @@ def _seed_index_only(config_path: Path, *, storage_key: str = "") -> _SeedHandle
     from pony.domain import AccountConfig, MessageRef, MessageStatus
     from pony.index_store import SqliteIndexRepository
     from pony.message_projection import project_rfc822_message
-    from pony.paths import AppPaths
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = paths if paths is not None else isolated_paths()
     paths.ensure_runtime_dirs()
 
     rfc5322_id = f"<orphan-{uuid4().hex}@example.com>"
@@ -2415,9 +2395,13 @@ class MessageMirrorFallbackTests(unittest.TestCase):
 
     def test_get_falls_back_without_a_config_file(self) -> None:
         """No config means no mirror to consult — the flag still prints."""
+        from pony.paths import resolve
+
         with isolated_app_env(), temporary_config() as config_path:
-            ref = _seed_index_only(config_path)
-            # Note: no --config, and the default path holds no config file.
+            # No --config, so the run resolves its own data directory:
+            # that is where the row has to be for the lookup to fail on
+            # the mirror rather than on the index.
+            ref = _seed_index_only(config_path, paths=resolve())
             output = run_cli(
                 "message",
                 "get",
@@ -2607,10 +2591,9 @@ class DoctorReportRenderingTests(unittest.TestCase):
     """``render_doctor_report`` summary line across the status combinations."""
 
     def _status(self, *checks: object) -> object:
-        from pony.paths import AppPaths
         from pony.services import ServiceStatus
 
-        return ServiceStatus(paths=AppPaths.default(), checks=tuple(checks))  # type: ignore[arg-type]
+        return ServiceStatus(paths=isolated_paths(), checks=tuple(checks))  # type: ignore[arg-type]
 
     def test_a_clean_run_reports_all_checks_passed(self) -> None:
         from pony.cli import render_doctor_report
@@ -2647,11 +2630,9 @@ class ResetPromptTests(unittest.TestCase):
     def test_declining_the_prompt_deletes_nothing(self) -> None:
         from unittest.mock import patch
 
-        from pony.paths import AppPaths
-
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Keep me", body="body")
-            index_file = AppPaths.default().index_db_file
+            index_file = isolated_paths().index_db_file
             self.assertTrue(index_file.exists())
 
             with patch("builtins.input", return_value="n"):
@@ -2662,11 +2643,10 @@ class ResetPromptTests(unittest.TestCase):
 
     def test_confirming_deletes_the_index_and_the_mirror_tree(self) -> None:
         from pony.config import load_config
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Delete me", body="body")
-            index_file = AppPaths.default().index_db_file
+            index_file = isolated_paths().index_db_file
             mirror_path = next(iter(load_config(config_path).accounts)).mirror.path
             self.assertTrue(index_file.exists())
             self.assertTrue(mirror_path.is_dir())
@@ -2685,10 +2665,9 @@ class ContactsShowDetailTests(unittest.TestCase):
 
         from pony.domain import Contact
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             paths.ensure_runtime_dirs()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
@@ -2728,7 +2707,6 @@ class RescanReconciliationTests(unittest.TestCase):
         from pony.config import load_config
         from pony.domain import FolderRef
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
@@ -2737,7 +2715,7 @@ class RescanReconciliationTests(unittest.TestCase):
             )
             config = load_config(config_path)
             account = next(iter(config.accounts))
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
             mirror = MaildirMirrorRepository(
@@ -2782,11 +2760,10 @@ class SchemaResetWithoutContactsTests(unittest.TestCase):
         import sqlite3
 
         from pony.config import load_config
-        from pony.paths import AppPaths
 
         with isolated_app_env() as env_root, temporary_config() as config_path:
             account = next(iter(load_config(config_path).accounts))
-            app_paths = AppPaths.default()
+            app_paths = isolated_paths()
             app_paths.ensure_runtime_dirs()
             account.mirror.path.mkdir(parents=True, exist_ok=True)
 
@@ -3210,11 +3187,10 @@ class RemainingCommandArmTests(unittest.TestCase):
     def test_the_index_query_reports_counts_and_last_sync(self) -> None:
         """``local-summary`` reads the index directly rather than via the repo."""
         from pony.cli import _query_index
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Counted", body="body")
-            db = AppPaths.default().index_db_file
+            db = isolated_paths().index_db_file
 
             counts = _query_index(db, "personal")
 
@@ -3225,10 +3201,8 @@ class RemainingCommandArmTests(unittest.TestCase):
         """A mirror listed in config but never created is not an error."""
         import sqlite3
 
-        from pony.paths import AppPaths
-
         with isolated_app_env(), temporary_config() as config_path:
-            app_paths = AppPaths.default()
+            app_paths = isolated_paths()
             app_paths.ensure_runtime_dirs()
             db = app_paths.index_db_file
             db.parent.mkdir(parents=True, exist_ok=True)
@@ -3431,10 +3405,9 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
         from pony.domain import FolderRef, MessageRef, MessageStatus
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
-        paths = AppPaths.default()
+        paths = isolated_paths()
         paths.ensure_runtime_dirs()
         mirror = MaildirMirrorRepository(account_name="archive", root_dir=mirror_dir)
         folder = FolderRef(account_name="archive", folder_name="INBOX")
@@ -3610,6 +3583,16 @@ class ProfileStampTestCase(unittest.TestCase):
         self.dir = TMP_ROOT / "instance" / uuid4().hex
         self.data = self.dir / "data"
         self.data.mkdir(parents=True, exist_ok=True)
+        # PONY_ROOT confines resolution; a data_dir declared inside it
+        # is already contained, so it is used exactly as written.
+        self._previous_root = os.environ.get("PONY_ROOT")
+        os.environ["PONY_ROOT"] = str(self.dir)
+
+    def tearDown(self) -> None:
+        if self._previous_root is None:
+            os.environ.pop("PONY_ROOT", None)
+        else:
+            os.environ["PONY_ROOT"] = self._previous_root
 
     def _config(self, *, profile: str, data_dir: Path | None = None) -> Path:
         path = self.dir / f"{profile}.toml"
@@ -3649,69 +3632,50 @@ class ProfileStampTestCase(unittest.TestCase):
         """A second config may not run against a claimed directory."""
         from unittest.mock import patch
 
-        previous = os.environ.pop("PONY_DATA_DIR", None)
-        try:
-            mine = self._config(profile="mine")
-            errors = io.StringIO()
-            with (
-                patch("pony.cli.run_sync", return_value=0) as handler,
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                self.assertEqual(main(["--config", str(mine), "doctor"]), 0)
-                scratch = self._config(profile="scratch")
-                with contextlib.redirect_stderr(errors):
-                    rc = main(["--config", str(scratch), "sync"])
-            self.assertEqual(rc, 2)
-            self.assertFalse(handler.called)
-            self.assertIn("belongs to profile 'mine'", errors.getvalue())
-            self.assertIn("declares 'scratch'", errors.getvalue())
-        finally:
-            if previous is not None:
-                os.environ["PONY_DATA_DIR"] = previous
+        mine = self._config(profile="mine")
+        errors = io.StringIO()
+        with (
+            patch("pony.cli.run_sync", return_value=0) as handler,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(main(["--config", str(mine), "doctor"]), 0)
+            scratch = self._config(profile="scratch")
+            with contextlib.redirect_stderr(errors):
+                rc = main(["--config", str(scratch), "sync"])
+        self.assertEqual(rc, 2)
+        self.assertFalse(handler.called)
+        self.assertIn("belongs to profile 'mine'", errors.getvalue())
+        self.assertIn("declares 'scratch'", errors.getvalue())
 
     def test_the_declared_data_dir_is_where_the_index_goes(self) -> None:
-        previous = os.environ.pop("PONY_DATA_DIR", None)
-        try:
-            config = self._config(profile="mine")
-            out, rc = run_cli_capture("--config", str(config), "doctor")
-            self.assertEqual(rc, 0)
-            self.assertIn(str(self.data / "index.sqlite3"), out)
-        finally:
-            if previous is not None:
-                os.environ["PONY_DATA_DIR"] = previous
+        config = self._config(profile="mine")
+        out, rc = run_cli_capture("--config", str(config), "doctor")
+        self.assertEqual(rc, 0)
+        self.assertIn(str(self.data / "index.sqlite3"), out)
 
     def test_a_scratch_config_isolates_by_declaring_its_own_dir(self) -> None:
         """Isolation is a config with another data_dir, nothing more."""
-        previous = os.environ.pop("PONY_DATA_DIR", None)
-        try:
-            elsewhere = self.dir / "elsewhere"
-            config = self._config(profile="scratch", data_dir=elsewhere)
-            out, rc = run_cli_capture("--config", str(config), "doctor")
-            self.assertEqual(rc, 0)
-            self.assertIn(str(elsewhere / "index.sqlite3"), out)
+        elsewhere = self.dir / "elsewhere"
+        config = self._config(profile="scratch", data_dir=elsewhere)
+        out, rc = run_cli_capture("--config", str(config), "doctor")
+        self.assertEqual(rc, 0)
+        self.assertIn(str(elsewhere / "index.sqlite3"), out)
 
-            from pony.paths import read_profile
+        from pony.paths import read_profile
 
-            self.assertEqual(read_profile(elsewhere), "scratch")
-            self.assertIsNone(read_profile(self.data))
-        finally:
-            if previous is not None:
-                os.environ["PONY_DATA_DIR"] = previous
+        self.assertEqual(read_profile(elsewhere), "scratch")
+        self.assertIsNone(read_profile(self.data))
 
-    def test_the_env_override_beats_the_config(self) -> None:
-        """PONY_DATA_DIR stays the override the test suite runs on."""
-        from pony.paths import resolve_data_dir
+    def test_a_declared_dir_outside_the_root_is_pulled_inside_it(self) -> None:
+        """PONY_ROOT wins: a config cannot point a run out of the sandbox."""
+        outside = TMP_ROOT / "outside" / uuid4().hex
+        config = self._config(profile="scratch", data_dir=outside)
 
-        declared = self.data
-        previous = os.environ.get("PONY_DATA_DIR")
-        os.environ["PONY_DATA_DIR"] = str(self.dir / "env")
-        try:
-            self.assertEqual(resolve_data_dir(declared), self.dir / "env")
-        finally:
-            if previous is None:
-                os.environ.pop("PONY_DATA_DIR", None)
-            else:
-                os.environ["PONY_DATA_DIR"] = previous
+        out, rc = run_cli_capture("--config", str(config), "doctor")
+
+        self.assertEqual(rc, 0)
+        self.assertIn(f"Data dir:     {self.dir}", out)
+        self.assertFalse(outside.exists())
 
 
 class UnsafeDeleteTestCase(unittest.TestCase):

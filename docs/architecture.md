@@ -139,9 +139,18 @@ Key types: `AppConfig`, `AccountConfig`, `IndexedMessage`, `MessageFlag`,
 ### Configuration (`pony.config`, `pony.paths`)
 
 TOML configuration loading and validation. The config is parsed directly into
-domain objects with no intermediate model layer. `AppPaths` resolves
-platform-specific directories (XDG on Linux/macOS, `APPDATA`/`LOCALAPPDATA`
-on Windows) with environment variable overrides.
+domain objects with no intermediate model layer.
+
+`AppPaths` holds two paths — the config file and the `data_dir` that
+config declares — and derives every other from the second:
+`index_db_file`, `log_dir`, `scan_state_file`, `mcp_state_file` and
+`calendar_dir`, so none of them can point at a different directory than
+the rest. `paths.resolve()` is the single entry point; when no config
+declares a `data_dir` it falls back to platform convention (XDG on
+Linux/macOS, `APPDATA`/`LOCALAPPDATA` on Windows). `PONY_ROOT`, when
+set, contains all of it: `graft` strips a path's anchor and re-adds it
+as an ordinary component, because joining an absolute or
+drive-qualified path onto a root discards the root.
 
 Path values in the config support `~`, `$VAR`, and `%VAR%` expansion via
 `_expand_path`.

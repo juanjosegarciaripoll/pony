@@ -158,14 +158,26 @@ class ParseAccountTest(unittest.TestCase):
         self.assertNotIn("~", str(path))
         self.assertTrue(path.is_absolute())
 
-    def test_mirror_path_defaults_to_platform_path_when_omitted(self) -> None:
-        from chronos.paths import default_mirror_path
+    def test_a_relative_mirror_path_resolves_under_the_calendar_root(self) -> None:
+        """Not under the working directory the command happened to run in."""
+        from chronos.paths import active
+
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["mirror_path"] = "mirrors/personal"
+        config = parse(self._wrap(acct_data))
+
+        self.assertEqual(
+            config.accounts[0].mirror_path, active().root / "mirrors" / "personal"
+        )
+
+    def test_mirror_path_defaults_to_the_active_layout_when_omitted(self) -> None:
+        from chronos.paths import active
 
         acct_data = dict(self.BASE_ACCOUNT)
         del acct_data["mirror_path"]
         config = parse(self._wrap(acct_data))
         self.assertEqual(
-            config.accounts[0].mirror_path, default_mirror_path("personal")
+            config.accounts[0].mirror_path, active().mirror_path("personal")
         )
 
     def test_mirror_path_must_be_a_string_when_present(self) -> None:
@@ -411,7 +423,7 @@ class DumpTest(unittest.TestCase):
         self.assertNotIn("editor", data)
 
     def test_dump_omits_mirror_path_when_default(self) -> None:
-        from chronos.paths import default_mirror_path
+        from chronos.paths import active
 
         config = _sample_config()
         config = AppConfig(
@@ -424,7 +436,7 @@ class DumpTest(unittest.TestCase):
                     url=config.accounts[0].url,
                     username=config.accounts[0].username,
                     credential=config.accounts[0].credential,
-                    mirror_path=default_mirror_path("personal"),
+                    mirror_path=active().mirror_path("personal"),
                     trash_retention_days=config.accounts[0].trash_retention_days,
                     include=config.accounts[0].include,
                     exclude=config.accounts[0].exclude,
@@ -439,19 +451,19 @@ class DumpTest(unittest.TestCase):
         # And the round-trip recovers the same path via the default.
         reparsed = parse(data)
         self.assertEqual(
-            reparsed.accounts[0].mirror_path, default_mirror_path("personal")
+            reparsed.accounts[0].mirror_path, active().mirror_path("personal")
         )
 
     def test_dump_omits_url_and_username_for_google_defaults(self) -> None:
         from chronos.domain import GoogleCredential
-        from chronos.paths import default_mirror_path
+        from chronos.paths import active
 
         account = AccountConfig(
             name="google",
             url="https://apidata.googleusercontent.com/caldav/v2/",
             username="",
             credential=GoogleCredential(client_id="cid", client_secret="cs"),
-            mirror_path=default_mirror_path("google"),
+            mirror_path=active().mirror_path("google"),
             trash_retention_days=30,
             include=(re.compile(".*"),),
             exclude=(),

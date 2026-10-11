@@ -13,7 +13,7 @@ Pieces:
   what "Desktop app" OAuth clients use (same flow as Thunderbird, gh
   CLI, vdirsyncer, etc.). Requires a local browser.
 - **Token store** (`save_tokens`, `load_tokens`) — plain JSON under
-  `paths.oauth_token_dir()`, with a best-effort 0600 chmod (ignored
+  `paths.active().token_dir`, with a best-effort 0600 chmod (ignored
   on Windows). Contains the refresh token; keep it safe.
 - **Bearer auth** (`BearerTokenAuth`) — checks the expiry and invokes
   the refresh grant (RFC 6749 §6) against `_TOKEN_URL` when needed.

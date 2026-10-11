@@ -26,7 +26,7 @@ from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..keymap import APPLICATION_KEYS
 from ..notifications import Notification, NotificationCenter, NotificationSource
-from ..paths import AppPaths
+from ..paths import resolve
 from ..protocols import (
     ContactRepository,
     CredentialsProvider,
@@ -544,7 +544,7 @@ class PonyApp(App[None]):
         from ..config import ConfigError
         from ..mcp_server import start_tcp_mcp_server
 
-        paths = AppPaths.default()
+        paths = resolve(self._config_path, data_dir=self._config.data_dir)
         state_file = paths.mcp_state_file
         try:
             task, _ = await start_tcp_mcp_server(self._config_path, state_file)

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from conftest import isolated_paths
 from test_cli import (
     isolated_app_env,
     run_cli_capture,
@@ -34,7 +35,6 @@ from pony.domain import (
 from pony.imap_client import ImapAuthError
 from pony.index_store import SqliteIndexRepository
 from pony.message_projection import project_rfc822_message
-from pony.paths import AppPaths
 from pony.storage import MaildirMirrorRepository
 
 # Type alias for the per-folder seed map FakeImapSession accepts.
@@ -72,7 +72,7 @@ def _seed_local_rows(config_path: Path, count: int) -> None:
     config = load_config(config_path)
     account = next(iter(config.accounts))
     assert isinstance(account, AccountConfig)
-    paths = AppPaths.default()
+    paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
     mirror = MaildirMirrorRepository(
@@ -140,7 +140,7 @@ class RunSyncTestCase(unittest.TestCase):
             patch("pony.cli.ImapSession", _fake_factory(_seeded_inbox())),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
             rows = index.list_folder_messages(

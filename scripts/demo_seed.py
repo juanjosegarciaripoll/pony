@@ -31,6 +31,7 @@ from chronos.domain import AccountConfig as CalendarAccount
 from chronos.domain import AppConfig as CalendarConfig
 from chronos.domain import CalendarRef, PlaintextCredential, ResourceRef
 from chronos.index_store import SqliteIndexRepository as CalendarIndex
+from chronos.paths import activate as activate_calendar
 from chronos.recurrence import rebuild_caches
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
@@ -514,8 +515,9 @@ def _build_calendar(root: Path) -> CalendarRuntime:
     a screenshot run syncs, and `background_sync_enabled = False` keeps the
     timer from arming in the first place.
     """
-    mirror = VdirMirrorRepository(root / "mirror")
-    index = CalendarIndex(root / "index.sqlite3")
+    paths = activate_calendar(root)
+    mirror = VdirMirrorRepository(paths.mirror_dir)
+    index = CalendarIndex(paths.index_file)
     account_name = "Personal"
 
     for calendar_name, events in (
@@ -562,14 +564,7 @@ def build_demo(root: Path) -> DemoData:
     """Create a fully seeded demo store under *root* and return its handles."""
     root.mkdir(parents=True, exist_ok=True)
     data_dir = root / "data"
-    paths = AppPaths(
-        config_file=root / "config.toml",
-        data_dir=data_dir,
-        state_dir=root / "state",
-        cache_dir=root / "cache",
-        log_dir=root / "state" / "logs",
-        index_db_file=data_dir / "index.sqlite3",
-    )
+    paths = AppPaths(config_file=root / "config.toml", data_dir=data_dir)
     mirror_dir = data_dir / "mirrors" / "personal"
     mirror_dir.mkdir(parents=True, exist_ok=True)
     account = AccountConfig(

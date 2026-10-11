@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pony.config import load_config
 from pony.domain import LocalAccountConfig
-from pony.paths import AppPaths
+from pony.paths import resolve
 from pony.storage import _build_mbox_toc
 
 ACCOUNT = "Old"
@@ -22,7 +22,7 @@ ITERATIONS = 3
 
 
 def _resolve_mbox_root() -> Path:
-    paths = AppPaths.default()
+    paths = resolve()
     config = load_config(paths.config_file)
     account = next(a for a in config.accounts if a.name == ACCOUNT)
     if not isinstance(account, LocalAccountConfig):

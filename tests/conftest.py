@@ -4,6 +4,9 @@ Defines TMP_ROOT — a temporary directory in the system temp location that all
 test files use as their scratch space.  It is cleaned up automatically when the
 test process exits (atexit, LIFO after MboxMirrorRepository._close_all).
 
+Sets ``PONY_ROOT`` for the whole session, so no test can reach a real
+user directory.
+
 Also loads a repo-root ``.env`` if present, so opt-in switches such as
 ``PONY_LIVE_IMAP=1`` can be set once per checkout instead of prefixed to
 every command.  A real environment variable always wins, and the file is
@@ -14,6 +17,12 @@ import atexit
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from chronos.paths import activate as activate_calendar
+
+if TYPE_CHECKING:
+    from pony.paths import AppPaths
 
 
 def _load_dotenv() -> None:
@@ -42,21 +51,17 @@ _load_dotenv()
 
 
 def _sandbox_app_dirs(root: Path) -> None:
-    """Point every Pony directory inside *root*, for the whole session.
+    """Confine every path Pony resolves to *root*, for the whole session.
 
     Without this the default data directory is the one the user keeps
-    mail in, and a test that builds ``AppPaths.default()`` writes there.
-    Set before any test imports, so no test has to remember.
+    mail in, and a test that resolves paths writes there.  Set before
+    any test imports, so no test has to remember.
     """
-    for key, name in (
-        ("PONY_CONFIG_DIR", "config"),
-        ("PONY_DATA_DIR", "data"),
-        ("PONY_STATE_DIR", "state"),
-        ("PONY_CACHE_DIR", "cache"),
-    ):
-        path = root / name
-        path.mkdir(parents=True, exist_ok=True)
-        os.environ[key] = str(path)
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ["PONY_ROOT"] = str(root)
+    # The calendar is hosted and has to be told where its files go; in
+    # production `pony.cli.main` does this from the resolved data dir.
+    activate_calendar(root / "data" / "calendar")
 
 
 _tmp_dir = tempfile.TemporaryDirectory(prefix="pony-tests-", ignore_cleanup_errors=True)
@@ -66,7 +71,10 @@ TMP_ROOT = Path(_tmp_dir.name)
 
 atexit.register(_tmp_dir.cleanup)
 
-_sandbox_app_dirs(TMP_ROOT / "session-dirs")
+#: Everything this session resolves lives under here.
+SESSION_ROOT = TMP_ROOT / "session-dirs"
+
+_sandbox_app_dirs(SESSION_ROOT)
 
 #: Data directory the innermost ``isolated_app_env()`` is using.  Config
 #: fixtures interpolate it so tests declare ``data_dir`` the way a real
@@ -76,7 +84,7 @@ ISOLATED_DATA_DIR: list[Path] = []
 
 def isolated_data_dir() -> Path:
     """Data directory for config fixtures to declare."""
-    return ISOLATED_DATA_DIR[-1] if ISOLATED_DATA_DIR else TMP_ROOT / "data"
+    return ISOLATED_DATA_DIR[-1] if ISOLATED_DATA_DIR else SESSION_ROOT / "data"
 
 
 def resolve_fixture(toml: str) -> str:
@@ -87,3 +95,14 @@ def resolve_fixture(toml: str) -> str:
     escapes, which would make every fixture invalid TOML there.
     """
     return toml.replace("{DATA_DIR}", str(isolated_data_dir()))
+
+
+def isolated_paths() -> "AppPaths":
+    """The paths a CLI run inside ``isolated_app_env`` resolves to.
+
+    The data directory is the one the config fixtures declare, which is
+    where the index really goes -- not the platform default.
+    """
+    from pony.paths import resolve
+
+    return resolve(data_dir=isolated_data_dir())

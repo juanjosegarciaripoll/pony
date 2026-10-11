@@ -133,37 +133,34 @@ setup and credential backends.
 
 ## Application paths
 
-Pony Express follows platform conventions and respects standard environment
-variable overrides.
+A config file declares `data_dir`, and everything a run writes lives
+inside it:
 
-| Platform | Config file | Data directory | Logs |
-|---|---|---|---|
-| Linux | `~/.config/pony/config.toml` | `~/.local/share/pony/` | `~/.local/state/pony/logs/` |
-| macOS | `~/.config/pony/config.toml` | `~/.local/share/pony/` | `~/.local/state/pony/logs/` |
-| Windows | `%APPDATA%\pony\config.toml` | `%LOCALAPPDATA%\pony\` | `%LOCALAPPDATA%\pony\logs\` |
-
-The SQLite index lives at `<data_dir>/index.sqlite3`. Mirror directories are
-specified per-account in the config file and can live anywhere.
-
-The calendar keeps its own state — `.ics` mirror, index, OAuth tokens —
-under its own data directory (`~/.local/share/chronos/`,
-`%APPDATA%\chronos\` on Windows, `~/Library/Application Support/chronos/`
-on macOS). Only the configuration file is shared, so a calendar that was
-already in use keeps everything it had synced.
-
-### Environment overrides
-
-Any path can be redirected before launch:
-
-| Variable | Overrides |
+| Path | Contents |
 |---|---|
-| `PONY_CONFIG_DIR` | Directory that contains `config.toml` |
-| `PONY_DATA_DIR` | Data directory (index DB) |
-| `PONY_STATE_DIR` | State directory (logs) |
-| `PONY_CACHE_DIR` | Cache directory |
+| `<data_dir>/index.sqlite3` | The SQLite index |
+| `<data_dir>/logs/` | Logs |
+| `<data_dir>/calendar/` | The calendar's `.ics` mirror, index and OAuth tokens |
+| `<data_dir>/profile.toml` | The profile stamp that says which config owns this directory |
 
-The `--config` CLI flag accepts an explicit path to a config file and takes
-precedence over everything else.
+Mirror directories are specified per-account and can live anywhere; a
+relative `mirror.path` resolves under `data_dir`.
+
+When no config declares one, the data directory follows platform
+convention — `~/.local/share/pony/` on Linux and macOS,
+`%LOCALAPPDATA%\pony\` on Windows — and `config.toml` is looked for in
+`~/.config/pony/` or `%APPDATA%\pony\`.
+
+### Running somewhere else
+
+Two mechanisms, and no others:
+
+- `--config <path>` names the config file to read, which decides the
+  data directory through its `data_dir` key.
+- `PONY_ROOT` relocates every directory Pony writes to underneath it,
+  including a `data_dir` a config declares. It exists for sandboxed
+  installs and for the test suite, which sets it so no test can reach a
+  real directory.
 
 ## Documentation
 

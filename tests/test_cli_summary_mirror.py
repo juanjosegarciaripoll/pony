@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from conftest import isolated_data_dir
+from conftest import isolated_data_dir, isolated_paths
 from test_cli import (
     _seed_one_message,
     isolated_app_env,
@@ -224,9 +224,8 @@ class MirrorFolderTest(unittest.TestCase):
             # Destination folder now holds an indexed row with uid=NULL.
             from pony.domain import FolderRef
             from pony.index_store import SqliteIndexRepository
-            from pony.paths import AppPaths
 
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
             dst = index.list_folder_messages(
@@ -365,13 +364,12 @@ class MirrorFolderTest(unittest.TestCase):
         )
         from pony.index_store import SqliteIndexRepository
         from pony.message_projection import project_rfc822_message
-        from pony.paths import AppPaths
         from pony.storage import MaildirMirrorRepository
 
         config = load_config(config_path)
         account = next(iter(config.accounts))
         assert isinstance(account, AccountConfig)
-        paths = AppPaths.default()
+        paths = isolated_paths()
         paths.ensure_runtime_dirs()
 
         msg = EmailMessage()
@@ -465,11 +463,10 @@ class FolderListTableTest(unittest.TestCase):
 
         from pony.domain import FolderSyncState
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Hi", body="body")
-            paths = AppPaths.default()
+            paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
             index.record_folder_sync_state(
@@ -512,13 +509,10 @@ class MirrorFolderPreservesFlagsTest(unittest.TestCase):
 
         from pony.domain import FolderRef, MessageFlag
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             seeded = _seed_one_message(config_path, subject="Read me", body="body")
-            index = SqliteIndexRepository(
-                database_path=AppPaths.default().index_db_file
-            )
+            index = SqliteIndexRepository(database_path=isolated_paths().index_db_file)
             index.initialize()
             source = FolderRef(account_name="personal", folder_name="INBOX")
             row = index.list_folder_messages(folder=source)[0]
@@ -554,7 +548,6 @@ class MirrorFolderPreservesFlagsTest(unittest.TestCase):
         """It must look like a local addition so sync APPENDs it."""
         from pony.domain import FolderRef
         from pony.index_store import SqliteIndexRepository
-        from pony.paths import AppPaths
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Fresh", body="body")
@@ -568,9 +561,7 @@ class MirrorFolderPreservesFlagsTest(unittest.TestCase):
                 "personal",
                 "Archive",
             )
-            index = SqliteIndexRepository(
-                database_path=AppPaths.default().index_db_file
-            )
+            index = SqliteIndexRepository(database_path=isolated_paths().index_db_file)
             index.initialize()
             copied = index.list_folder_messages(
                 folder=FolderRef(account_name="personal", folder_name="Archive")

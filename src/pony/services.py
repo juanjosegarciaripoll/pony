@@ -37,21 +37,21 @@ class ServiceStatus:
     checks: tuple[DoctorCheck, ...]
 
 
-def _calendar_checks(config_path: Path) -> list[DoctorCheck]:
+def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
     """Report the calendar's configuration and local state.
 
     The calendar is half of this program, so `pony doctor` answers for
-    it too. Its mirror and index live under the calendar's own data
-    directory, not Pony's, which is what keeps an install that predates
-    the merge working — so they are reported by their real paths rather
-    than assumed to sit beside the mail ones.
+    it too. *root* is where its files live: `data_dir/calendar`, shared
+    with the mail side rather than resolved separately.
 
     An unconfigured calendar is not a problem to report: plenty of
     people only want the mail client.
     """
-    from chronos.paths import default_index_path, user_data_dir
+    from chronos.paths import CalendarPaths
 
     from .calendar import load_calendar_config
+
+    calendar_paths = CalendarPaths(root=root)
 
     try:
         config = load_calendar_config(config_path)
@@ -74,7 +74,7 @@ def _calendar_checks(config_path: Path) -> list[DoctorCheck]:
             + ", ".join(a.name for a in config.accounts),
         )
     ]
-    index_path = default_index_path()
+    index_path = calendar_paths.index_file
     if index_path.exists():
         checks.append(DoctorCheck("Calendar index", CheckStatus.OK, str(index_path)))
     else:
@@ -85,7 +85,7 @@ def _calendar_checks(config_path: Path) -> list[DoctorCheck]:
                 f'Not yet created (run "pony calendar sync" first): {index_path}',
             )
         )
-    mirror_root = user_data_dir() / "mirror"
+    mirror_root = calendar_paths.mirror_dir
     if mirror_root.is_dir():
         calendars = sum(
             1
@@ -243,7 +243,7 @@ def build_service_status(
     # ------------------------------------------------------------------ #
     # Calendar
     # ------------------------------------------------------------------ #
-    checks.extend(_calendar_checks(effective_config_path))
+    checks.extend(_calendar_checks(effective_config_path, root=paths.calendar_dir))
 
     # ------------------------------------------------------------------ #
     # Markdown renderer (optional runtime dep)

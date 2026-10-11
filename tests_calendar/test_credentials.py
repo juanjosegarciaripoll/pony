@@ -19,6 +19,7 @@ from chronos.domain import (
     KeyringCredential,
     PlaintextCredential,
 )
+from chronos.paths import CalendarPaths
 
 
 def _account(
@@ -143,7 +144,9 @@ class GoogleBackendTest(unittest.TestCase):
         from chronos.domain import GOOGLE_OAUTH_SCOPE, GoogleCredential
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        token_path = tmp / "tokens.json"
+        paths = CalendarPaths(root=tmp)
+        token_path = paths.token_path("acct")
+        token_path.parent.mkdir(parents=True, exist_ok=True)
         # Presence is enough; build_bearer_auth is mocked below.
         token_path.write_text("{}", encoding="utf-8")
 
@@ -157,10 +160,7 @@ class GoogleBackendTest(unittest.TestCase):
             patch(
                 "chronos.credentials.build_bearer_auth", return_value=bearer
             ) as mock_build,
-            patch(
-                "chronos.credentials.oauth_token_path",
-                return_value=token_path,
-            ),
+            patch("chronos.credentials.active", return_value=paths),
         ):
             auth = provider.build_auth(account)
         mock_build.assert_called_once_with(

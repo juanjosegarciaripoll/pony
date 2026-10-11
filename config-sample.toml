@@ -9,7 +9,8 @@
 # intervention.  The current supported version is 3.
 #
 # data_dir (REQUIRED, absolute):
-# Where the index lives.  Relative mirror paths resolve under it.
+# Where the index, the logs and the calendar's data live.  Relative
+# mirror paths resolve under it.
 #
 # profile (REQUIRED):
 # Which data directory this config owns.  On first use Pony writes

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import unittest
-from unittest import mock
 
 from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
@@ -26,10 +25,6 @@ def _tmp_paths(label: str) -> AppPaths:
     return AppPaths(
         config_file=root / "config.toml",
         data_dir=root / "data",
-        state_dir=root / "state",
-        cache_dir=root / "cache",
-        log_dir=root / "state" / "logs",
-        index_db_file=root / "data" / "index.sqlite3",
     )
 
 
@@ -254,14 +249,9 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = _tmp_paths(f"cal-{self.id().rsplit('.', 1)[-1]}")
         self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
-        # Keep the calendar's data directory inside this test's tree.
-        # Patch the resolver rather than the environment: only the POSIX
-        # branch reads XDG_DATA_HOME, so an env patch leaves Windows
-        # looking at the real %APPDATA% and the fixture invisible.
-        self.calendar_home = self.paths.data_dir / "cal-home" / "chronos"
-        patcher = mock.patch("chronos.paths.user_data_dir", lambda: self.calendar_home)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # The calendar's files live under the data directory the doctor
+        # was handed, so there is nothing to redirect.
+        self.calendar_home = self.paths.calendar_dir
 
     def _write_config(self, text: str) -> None:
         self.paths.config_file.write_text(resolve_fixture(text), encoding="utf-8")

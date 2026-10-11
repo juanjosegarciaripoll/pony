@@ -21,7 +21,7 @@ from chronos.domain import (
     OAuthCredential,
     PlaintextCredential,
 )
-from chronos.paths import default_mirror_path, expand_path
+from chronos.paths import active, expand_path
 
 _DEFAULT_TRASH_RETENTION_DAYS = 30
 _DEFAULT_INCLUDE = (".*",)
@@ -188,22 +188,28 @@ def _parse_credential(data: object, key: str) -> CredentialSpec:
 def _parse_mirror_path(
     account: dict[str, object], account_name: str, account_key: str
 ) -> Path:
-    """Resolve `mirror_path` if present, else fall back to the platform default.
+    """Resolve `mirror_path` if present, else fall back to the default.
 
-    The default is `paths.default_mirror_path(account_name)` — i.e. a
-    subdirectory of the OS user-data directory named after the account.
-    Users who want a custom location override the field; users who don't
-    can omit it entirely.
+    The default is the active layout's `mirror_path(account_name)` — a
+    subdirectory of the calendar's root named after the account. Users
+    who want a custom location override the field; users who don't can
+    omit it entirely.
     """
+    paths = active()
     raw = account.get("mirror_path")
     if raw is None:
-        return default_mirror_path(account_name)
+        return paths.mirror_path(account_name)
     if not isinstance(raw, str):
         raise ConfigError(
             f"'mirror_path' must be a string, got {type(raw).__name__}",
             account_key,
         )
-    return expand_path(raw)
+    expanded = expand_path(raw)
+    if expanded.is_absolute():
+        return expanded
+    # A relative path belongs to the calendar's root, not to whatever
+    # directory the command was run from.
+    return paths.root / expanded
 
 
 def _parse_regex_list(data: object, key: str) -> tuple[re.Pattern[str], ...]:
@@ -397,7 +403,7 @@ def _dump_account(account: AccountConfig) -> dict[str, object]:
     # Only emit mirror_path when the user picked a non-default location;
     # accounts that took the default stay clean on round-trip through
     # `chronos account add` / `config edit`.
-    if account.mirror_path != default_mirror_path(account.name):
+    if account.mirror_path != active().mirror_path(account.name):
         out["mirror_path"] = str(account.mirror_path)
     return out
 

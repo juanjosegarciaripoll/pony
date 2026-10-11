@@ -176,7 +176,12 @@ class TimelineGrid(DataTable[str | Text]):
         if self._last_days is None or self._last_today is None:
             return
         num_days = len(self._last_days)
-        if num_days > 0:
+        # `self.columns` is empty when `show_days` bailed out because the
+        # widget had no width yet -- which is every switch into this view,
+        # since the agenda keeps it hidden.  Skipping the re-render then
+        # would leave the grid permanently empty, so the width shortcut
+        # only applies once something has actually been drawn.
+        if num_days > 0 and self.columns:
             available = self.size.width - _TIME_COL_WIDTH
             new_width = max(_DAY_COL_WIDTH, available // num_days)
             if new_width == self._day_col_width:

@@ -17,8 +17,7 @@ does not exist yet).
 | macOS | `~/.config/pony/config.toml` |
 | Windows | `%APPDATA%\pony\config.toml` |
 
-Override the directory with `PONY_CONFIG_DIR`, or pass `--config <path>` to
-any command to use a specific file.
+Pass `--config <path>` to any command to use a specific file.
 
 ---
 
@@ -42,9 +41,14 @@ differs from the stamped one. Two configs may share a data directory only
 by declaring the same profile.
 
 To work against a scratch index, write a config with its own `data_dir`
-and `profile`; that is the whole mechanism. (The `PONY_DATA_DIR`
-environment variable also overrides `data_dir`, as `PONY_CONFIG_DIR` and
-friends override their directories; the test suite runs on it.)
+and `profile`; that is the whole mechanism.
+
+The calendar shares it: its mirror, index and OAuth tokens live under
+`<data_dir>/calendar/`.
+
+`PONY_ROOT`, if set, relocates everything Pony writes underneath it —
+including a `data_dir` declared here. The test suite runs on it, so no
+test can reach a real directory.
 
 `config_version` is **required** at the top of the file. Pony refuses to
 load a config that omits it or carries a different value, rather than

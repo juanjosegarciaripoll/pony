@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from conftest import resolve_fixture
+from conftest import isolated_paths, resolve_fixture
 from test_cli import (
     isolated_app_env,
     run_cli_capture,
@@ -30,7 +30,6 @@ from pony.cli import (
     run_account_set_password,
 )
 from pony.imap_client import ImapAuthError
-from pony.paths import AppPaths
 
 
 class _FakeSession:
@@ -220,7 +219,7 @@ class AccountSetPasswordTestCase(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             config_path.write_text(_encrypted_config_toml(), encoding="utf-8")
             with mock.patch("getpass.getpass", return_value=""):
-                paths = AppPaths.default()
+                paths = isolated_paths()
                 err = io.StringIO()
                 with redirect_stderr(err):
                     rc = run_account_set_password(
@@ -237,7 +236,7 @@ class ConfigEditTestCase(unittest.TestCase):
 
     def test_creates_from_sample_and_opens_editor(self) -> None:
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             self.assertFalse(paths.config_file.exists())
             fake_run = mock.Mock(return_value=mock.Mock(returncode=0))
             with (
@@ -279,7 +278,7 @@ class ConfigEditTestCase(unittest.TestCase):
             return real_exists(self)
 
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             fake_run = mock.Mock(return_value=mock.Mock(returncode=0))
             with (
                 mock.patch.dict("os.environ", {"EDITOR": "true"}, clear=False),
@@ -324,7 +323,7 @@ class ConfigShowTestCase(unittest.TestCase):
 
     def test_missing_config_returns_error(self) -> None:
         with isolated_app_env():
-            missing = AppPaths.default().config_file.parent / "does-not-exist.toml"
+            missing = isolated_paths().config_file.parent / "does-not-exist.toml"
             out, err, rc = _run_capturing_stderr(
                 ["--config", str(missing), "config", "show"]
             )
@@ -352,7 +351,7 @@ class AccountAddWizardTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             config_file = paths.config_file
             out = io.StringIO()
 
@@ -386,7 +385,7 @@ class AccountAddWizardTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             out = io.StringIO()
 
             with (
@@ -419,7 +418,7 @@ class AccountAddWizardTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             out = io.StringIO()
 
             with (
@@ -439,7 +438,7 @@ class AccountAddWizardTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             original = config_path.read_text(encoding="utf-8")
             out = io.StringIO()
 
@@ -472,7 +471,7 @@ class AccountAddWizardTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env(), temporary_config() as config_path:
-            paths = AppPaths.default()
+            paths = isolated_paths()
             out = io.StringIO()
 
             with (
@@ -515,7 +514,7 @@ class AccountAddWizardEdgeCaseTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             config_file = paths.config_file
             config_file.parent.mkdir(parents=True, exist_ok=True)
             config_file.write_text("this is not valid toml [[[", encoding="utf-8")
@@ -550,7 +549,7 @@ class AccountAddWizardEdgeCaseTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             out = io.StringIO()
 
             with (
@@ -589,7 +588,7 @@ class AccountAddWizardEdgeCaseTestCase(unittest.TestCase):
             ]
         )
         with isolated_app_env():
-            paths = AppPaths.default()
+            paths = isolated_paths()
             out = io.StringIO()
 
             with (

@@ -21,10 +21,6 @@ class FixtureFlowTestCase(unittest.TestCase):
         paths = AppPaths(
             config_file=temp_root / "config.toml",
             data_dir=temp_root / "data",
-            state_dir=temp_root / "state",
-            cache_dir=temp_root / "cache",
-            log_dir=temp_root / "state" / "logs",
-            index_db_file=temp_root / "data" / "index.sqlite3",
         )
         config = AppConfig(
             accounts=(

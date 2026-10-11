@@ -35,6 +35,7 @@ from chronos.domain import AppConfig as CalendarAppConfig
 from chronos.domain import CalendarRef, ResourceRef
 from chronos.domain import PlaintextCredential as CalendarPlaintextCredential
 from chronos.index_store import SqliteIndexRepository as CalendarIndex
+from chronos.paths import activate as activate_calendar
 from chronos.recurrence import rebuild_caches
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
@@ -209,10 +210,6 @@ def make_tmp_paths(label: str) -> AppPaths:
     return AppPaths(
         config_file=root / "config.toml",
         data_dir=root / "data",
-        state_dir=root / "state",
-        cache_dir=root / "cache",
-        log_dir=root / "state" / "logs",
-        index_db_file=root / "data" / "index.sqlite3",
     )
 
 
@@ -330,14 +327,15 @@ def make_calendar_runtime(
     expanded into the occurrence cache, which is what the agenda renders
     from — an event only in the mirror is invisible to the views.
     """
-    mirror = VdirMirrorRepository(paths.data_dir / "calendar" / "mirror")
-    index = CalendarIndex(paths.data_dir / "calendar" / "index.sqlite3")
+    calendar_paths = activate_calendar(paths.calendar_dir)
+    mirror = VdirMirrorRepository(calendar_paths.mirror_dir)
+    index = CalendarIndex(calendar_paths.index_file)
     account = CalendarAccountConfig(
         name=account_name,
         url="https://caldav.example.com/dav/",
         username="user@example.com",
         credential=CalendarPlaintextCredential(password="x"),
-        mirror_path=paths.data_dir / "calendar" / "mirror" / account_name,
+        mirror_path=calendar_paths.mirror_path(account_name),
         trash_retention_days=30,
         include=(re.compile(".*"),),
         exclude=(),

@@ -223,9 +223,9 @@ async def run_mcp_stdio(
     from tinymcp import LOOPBACK_HOST, run_mcp
 
     if state_file is None:
-        from chronos.paths import mcp_server_state_path
+        from chronos.paths import active
 
-        state_file = mcp_server_state_path()
+        state_file = active().mcp_state_file
 
     state = read_state(state_file)
     remote = (LOOPBACK_HOST, state.port, state.token) if state is not None else None
@@ -255,9 +255,9 @@ async def start_tcp_server(
     from tinymcp import serve_tcp
 
     if state_file is None:
-        from chronos.paths import mcp_server_state_path
+        from chronos.paths import active
 
-        state_file = mcp_server_state_path()
+        state_file = active().mcp_state_file
 
     token = secrets.token_hex(32)
     server = build_mcp_server(index=index, mirror=mirror)

@@ -68,15 +68,7 @@ from chronos.oauth import (
     run_paste_redirect_flow,
     save_tokens,
 )
-from chronos.paths import (
-    default_config_path,
-    default_index_path,
-    default_mirror_dir,
-    default_mirror_path,
-    oauth_token_path,
-    sync_lock_path,
-    user_data_dir,
-)
+from chronos.paths import active
 from chronos.protocols import (
     CalDAVSession,
     CredentialsProvider,
@@ -136,7 +128,7 @@ def main(
         err,
         default_level=logging.INFO if args.command == "sync" else logging.WARNING,
     )
-    config_path: Path = args.config or default_config_path()
+    config_path: Path = args.config or active().config_file
 
     # Config-editing commands operate on the TOML file without needing the
     # mirror / index / credential plumbing.
@@ -220,15 +212,15 @@ def _handle_missing_config(
 
 
 def _default_context_factory(config_path: Path | None) -> CliContext:
-    path = config_path or default_config_path()
+    path = config_path or active().config_file
     config = load_config(path)
     mirror = VdirMirrorRepository(
-        user_data_dir() / "mirror",
+        active().mirror_dir,
         # Each account's configured `mirror_path`, whose default is the
         # `<root>/<account>` this layout would have used anyway.
         account_roots={a.name: a.mirror_path for a in config.accounts},
     )
-    index = SqliteIndexRepository(default_index_path())
+    index = SqliteIndexRepository(active().index_file)
     return CliContext(
         config=config,
         mirror=mirror,
@@ -909,7 +901,7 @@ def cmd_sync(
             )
             return 2
     try:
-        with acquire_sync_lock(sync_lock_path()):
+        with acquire_sync_lock(active().lock_file):
             if force:
                 if account is not None:
                     cleared = ctx.index.clear_account_sync_state(account)
@@ -1002,11 +994,11 @@ def cmd_reset(
     next `chronos sync` knows where to fetch from but starts with a
     blank slate.
 
-    `index_path` and `mirror_dir` default to the platform-standard
-    locations from `paths.py`; tests inject tmpdir-rooted overrides.
+    `index_path` and `mirror_dir` default to the active layout; tests
+    inject tmpdir-rooted overrides.
     """
-    target_index = index_path or default_index_path()
-    target_mirror = mirror_dir or default_mirror_dir()
+    target_index = index_path or active().index_file
+    target_mirror = mirror_dir or active().mirror_dir
 
     targets: list[Path] = []
     if target_index.exists():
@@ -1024,9 +1016,8 @@ def cmd_reset(
 
     if not force:
         from chronos.mcp_server import is_server_reachable
-        from chronos.paths import mcp_server_state_path
 
-        live = is_server_reachable(mcp_state_file or mcp_server_state_path())
+        live = is_server_reachable(mcp_state_file or active().mcp_state_file)
         if live is not None:
             ctx.stderr.write(
                 f"refusing to reset: the calendar TUI / MCP server is running "
@@ -1057,7 +1048,7 @@ def cmd_reset(
             ctx.stdout.write("Cancelled.\n")
             return 1
 
-    effective_lock = lock_path or sync_lock_path()
+    effective_lock = lock_path or active().lock_file
     lock_cm = (
         acquire_sync_lock(effective_lock) if not force else contextlib.nullcontext()
     )
@@ -1592,7 +1583,7 @@ def _redirect_logs_to_file() -> _LogRedirector:
     keeps the user's logs available (`tail -f $XDG_DATA_HOME/chronos/
     tui.log`) without touching stderr while the app owns the terminal.
     """
-    log_path = user_data_dir() / "tui.log"
+    log_path = active().log_file
     log_path.parent.mkdir(parents=True, exist_ok=True)
     return _LogRedirector(log_path)
 
@@ -1647,7 +1638,7 @@ def build_sync_runner(
 
     def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
         try:
-            with acquire_sync_lock(sync_lock_path()):
+            with acquire_sync_lock(active().lock_file):
                 return _run_locked(cancel_event)
         except SyncLockError as exc:
             # Surface the lock contention as a SyncResult so the TUI's
@@ -1776,7 +1767,7 @@ def cmd_account_add(
         resolved_username = username
     import re  # local import: avoid module-level coupling for one-shot CLI
 
-    resolved_mirror_path = mirror_path or default_mirror_path(name)
+    resolved_mirror_path = mirror_path or active().mirror_path(name)
     new_account = AccountConfig(
         name=name,
         url=resolved_url,
@@ -1938,7 +1929,7 @@ def cmd_oauth_authorize(
     except OAuthError as exc:
         stderr.write(f"{exc}\n")
         return 1
-    token_path = oauth_credential.token_path or oauth_token_path(account_name)
+    token_path = oauth_credential.token_path or active().token_path(account_name)
     save_tokens(token_path, tokens)
     stdout.write(f"Tokens saved to {token_path}\n")
     return 0

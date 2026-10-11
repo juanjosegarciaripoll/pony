@@ -59,7 +59,7 @@ class OAuthCredential:
 
     `client_id` and `client_secret` are inlined in `config.toml` (per
     project decision); `token_path` is None when the default location
-    under `paths.oauth_token_dir()` should be used, or an absolute
+    under `paths.active().token_dir` should be used, or an absolute
     path to override it.
 
     Access/refresh tokens live in a separate JSON file at `token_path`

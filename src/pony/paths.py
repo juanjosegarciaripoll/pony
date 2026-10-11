@@ -1,96 +1,165 @@
-"""Application path resolution."""
+"""Application path resolution.
+
+Everything Pony writes lives under one directory: the index, the logs,
+the scan state, the calendar's own data.  A config file says where that
+directory is (`data_dir`), and `PONY_ROOT` relocates it -- which is how
+a test session or a sandboxed install runs without reaching a real user
+directory.
+"""
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import sys as _sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
+from urllib.parse import quote
+
+APP_NAME = "pony"
+ROOT_ENV = "PONY_ROOT"
+PROFILE_STAMP = "profile.toml"
+
+
+def sandbox_root() -> Path | None:
+    """The directory ``PONY_ROOT`` confines this process to, if any."""
+    raw = os.environ.get(ROOT_ENV)
+    if not raw:
+        return None
+    # os.path.expanduser, not Path.expanduser: the latter raises
+    # RuntimeError when there is no home directory to expand to.
+    return Path(os.path.expanduser(os.path.expandvars(raw)))  # noqa: PTH111
+
+
+def _lexically_normal[AnyPath: PurePath](path: AnyPath) -> AnyPath:
+    """*path* with its ``.`` and ``..`` segments folded away.
+
+    Lexical, not filesystem-truthful: nothing is read from disk and
+    symlinks are not followed.  It exists because containment is decided
+    by comparing spellings, and ``/box/../../etc`` is spelled as though
+    it were inside ``/box``.
+    """
+    kept: list[str] = []
+    for part in path.parts[1:] if path.anchor else path.parts:
+        if part == "..":
+            if kept:
+                kept.pop()
+        elif part != ".":
+            kept.append(part)
+    return type(path)(path.anchor, *kept)
+
+
+def graft[AnyPath: PurePath](root: AnyPath, path: AnyPath) -> AnyPath:
+    """Return *path* relocated inside *root*.
+
+    ``root / path`` is not relocation: a join discards its left side
+    when the right side carries an anchor, so ``Path("/box") / "/etc"``
+    is ``/etc`` and ``PureWindowsPath("X:/box") / "C:/data"`` is
+    ``C:\\data``.  The anchor therefore comes off and goes back on as an
+    ordinary component, percent-encoded so that it stays one component
+    and stays distinct: ``/`` becomes ``%2F``, ``C:\\`` becomes
+    ``C%3A%5C``, and two drives cannot land on the same directory.
+
+    Both sides are folded first, so a path that merely *reads* as though
+    it were inside the root -- ``/box/../../etc`` -- is relocated like
+    any other outsider instead of being let through.
+
+    Grafting an already-grafted path returns it unchanged, so resolving
+    twice is harmless.
+    """
+    base = _lexically_normal(root)
+    target = _lexically_normal(path)
+    if target.is_relative_to(base):
+        return target
+    anchor = target.anchor
+    if not anchor:
+        return base / target
+    return base / quote(anchor, safe="") / target.relative_to(anchor)
+
+
+def contain(path: Path) -> Path:
+    """*path*, or its image under ``PONY_ROOT`` when that is set."""
+    root = sandbox_root()
+    return path if root is None else graft(root, path)
+
+
+def _home_dir(windows: str, xdg: str, fallback: Path) -> Path:
+    """The platform's base directory for one kind of user data."""
+    raw = os.environ.get(windows) or os.environ.get(xdg)
+    return Path(raw) if raw else fallback
+
+
+def default_config_file() -> Path:
+    """Where ``config.toml`` lives when ``--config`` does not say."""
+    home = _home_dir("APPDATA", "XDG_CONFIG_HOME", Path.home() / ".config")
+    return home / APP_NAME / "config.toml"
+
+
+def default_data_dir() -> Path:
+    """Where data lives when no config declares a ``data_dir``."""
+    home = _home_dir(
+        "LOCALAPPDATA",
+        "XDG_DATA_HOME",
+        Path.home() / ".local" / "share",
+    )
+    return home / APP_NAME
 
 
 @dataclass(frozen=True, slots=True)
 class AppPaths:
-    """Resolved application directories for Pony Express."""
+    """Where this run reads and writes.
+
+    Two paths decide every other: the config file, and the data
+    directory that config declares.  The rest are derived, so a data
+    directory cannot disagree with its own index.
+    """
 
     config_file: Path
     data_dir: Path
-    state_dir: Path
-    cache_dir: Path
-    log_dir: Path
-    index_db_file: Path
 
-    @classmethod
-    def default(cls) -> AppPaths:
-        """Resolve default application paths using environment overrides."""
-        app_name = "pony"
+    @property
+    def index_db_file(self) -> Path:
+        return self.data_dir / "index.sqlite3"
 
-        home = Path.home()
-        config_root = Path(
-            os.environ.get("PONY_CONFIG_DIR")
-            or os.environ.get("APPDATA")
-            or os.environ.get("XDG_CONFIG_HOME")
-            or (home / ".config"),
-        )
-        data_root = Path(
-            os.environ.get("PONY_DATA_DIR")
-            or os.environ.get("LOCALAPPDATA")
-            or os.environ.get("XDG_DATA_HOME")
-            or (home / ".local" / "share"),
-        )
-        state_root = Path(
-            os.environ.get("PONY_STATE_DIR")
-            or os.environ.get("LOCALAPPDATA")
-            or os.environ.get("XDG_STATE_HOME")
-            or (home / ".local" / "state"),
-        )
-        cache_root = Path(
-            os.environ.get("PONY_CACHE_DIR")
-            or os.environ.get("LOCALAPPDATA")
-            or os.environ.get("XDG_CACHE_HOME")
-            or (home / ".cache"),
-        )
-
-        config_dir = (
-            config_root if os.environ.get("PONY_CONFIG_DIR") else config_root / app_name
-        )
-        data_dir = (
-            data_root if os.environ.get("PONY_DATA_DIR") else data_root / app_name
-        )
-        state_dir = state_root / app_name
-
-        return cls(
-            config_file=config_dir / "config.toml",
-            data_dir=data_dir,
-            state_dir=state_dir,
-            cache_dir=cache_root / app_name,
-            log_dir=state_dir / "logs",
-            index_db_file=data_dir / "index.sqlite3",
-        )
-
-    def with_data_dir(self, data_dir: Path) -> AppPaths:
-        """Return a copy whose data directory (and index) is *data_dir*."""
-        resolved = data_dir.expanduser()
-        return dataclasses.replace(
-            self,
-            data_dir=resolved,
-            index_db_file=resolved / "index.sqlite3",
-        )
+    @property
+    def log_dir(self) -> Path:
+        return self.data_dir / "logs"
 
     @property
     def mcp_state_file(self) -> Path:
-        return self.state_dir / "mcp.json"
+        return self.data_dir / "mcp.json"
+
+    @property
+    def scan_state_file(self) -> Path:
+        return self.data_dir / "local_scan_state.json"
+
+    @property
+    def calendar_dir(self) -> Path:
+        """Root of the calendar's data, inside the shared data directory."""
+        return self.data_dir / "calendar"
 
     def ensure_runtime_dirs(self) -> None:
         """Create expected runtime directories if missing."""
-        self.config_file.parent.mkdir(parents=True, exist_ok=True)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        for directory in (self.config_file.parent, self.data_dir, self.log_dir):
+            directory.mkdir(parents=True, exist_ok=True)
 
 
-PROFILE_STAMP = "profile.toml"
+def resolve(
+    config_arg: Path | None = None,
+    *,
+    data_dir: Path | None = None,
+) -> AppPaths:
+    """The paths this run uses.
+
+    *config_arg* is ``--config``, taken as given: reading a file where
+    the user pointed is not a write.  *data_dir* is what that config
+    declares.  Both directories Pony writes into -- the data directory,
+    and the one holding a *default* config file -- are contained by
+    ``PONY_ROOT``.
+    """
+    default_config = contain(default_config_file())
+    config_file = config_arg if config_arg is not None else default_config
+    declared = data_dir if data_dir is not None else default_data_dir()
+    return AppPaths(config_file=config_file, data_dir=contain(declared))
 
 
 class ProfileMismatchError(Exception):
@@ -139,21 +208,6 @@ def claim_profile(data_dir: Path, profile: str) -> None:
             found=found,
             declared=profile,
         )
-
-
-def resolve_data_dir(declared: Path | None) -> Path | None:
-    """Effective data directory: ``PONY_DATA_DIR`` wins, else *declared*.
-
-    The config's ``data_dir`` is how a user says where data lives.  The
-    environment variable relocates the *default* -- something no config
-    can do, because it has to apply before and without one.  The test
-    suite sets it for the whole session so no test can reach the real
-    directory, and packagers use it for sandboxed installs.
-    """
-    override = os.environ.get("PONY_DATA_DIR")
-    if override:
-        return Path(override).expanduser()
-    return declared
 
 
 def bundled_docs_path() -> Path | None:

@@ -9,6 +9,7 @@ from unittest import mock
 
 from conftest import TMP_ROOT, resolve_fixture
 
+from chronos.paths import activate, active
 from pony.cli import _split_calendar_argv, main, run_calendar
 
 _CONFIG = """
@@ -95,18 +96,11 @@ class RunCalendarTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = TMP_ROOT / "cli-calendar" / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(parents=True, exist_ok=True)
-        # Keep the calendar's mirror, index and tokens inside the
-        # test's own tree. `pony.calendar` binds these resolvers at
-        # import time, and patching them covers every platform —
-        # XDG_DATA_HOME is read only on the POSIX branch.
-        data = self.root / "data" / "chronos"
-        for target, value in (
-            ("pony.calendar.user_data_dir", lambda: data),
-            ("pony.calendar.default_index_path", lambda: data / "index.sqlite3"),
-        ):
-            patcher = mock.patch(target, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # Keep the calendar's files inside this test's tree: the host
+        # says where they live, so activating a root is all it takes.
+        previous = active()
+        activate(self.root / "data" / "calendar")
+        self.addCleanup(activate, previous.root)
 
     def _config(self, text: str = _CONFIG) -> Path:
         text = resolve_fixture(text)

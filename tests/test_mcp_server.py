@@ -135,10 +135,6 @@ def _make_mcp_env(
     paths = AppPaths(
         config_file=root / "config" / "config.toml",
         data_dir=root / "data",
-        state_dir=root / "state",
-        cache_dir=root / "cache",
-        log_dir=root / "state" / "logs",
-        index_db_file=root / "data" / "index.sqlite3",
     )
     paths.ensure_runtime_dirs()
     account = AccountConfig(
@@ -205,7 +201,7 @@ def _build_mcp_from_env(paths: AppPaths, config: AppConfig) -> object:
 
     with (
         patch("pony.mcp_server.load_config", return_value=config),
-        patch("pony.mcp_server.AppPaths.default", return_value=paths),
+        patch("pony.mcp_server.resolve", return_value=paths),
     ):
         mcp = build_mcp_server(config_path=None)
     return mcp

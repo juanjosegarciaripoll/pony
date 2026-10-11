@@ -532,10 +532,6 @@ def _cli_paths() -> tuple[AppPaths, SqliteIndexRepository]:
     paths = AppPaths(
         config_file=tmp / "config.toml",
         data_dir=tmp,
-        state_dir=tmp,
-        cache_dir=tmp,
-        log_dir=tmp,
-        index_db_file=tmp / "index.sqlite3",
     )
     repo = SqliteIndexRepository(database_path=paths.index_db_file)
     repo.initialize()

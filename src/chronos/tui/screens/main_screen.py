@@ -27,7 +27,7 @@ from chronos.event_actions import (
 )
 from chronos.mutations import all_day_bounds
 from chronos.outcome import Outcome
-from chronos.paths import default_tui_state_path
+from chronos.paths import active
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.tui.bindings import main_bindings
 from chronos.tui.screens.agenda_screen import (
@@ -937,14 +937,15 @@ def _round_up_to_half_hour(value: datetime) -> datetime:
 
 
 def _save_last_view(view: ViewKind) -> None:
-
+    paths = active()
     with contextlib.suppress(OSError):
-        default_tui_state_path().write_text(view.value, encoding="utf-8")
+        paths.root.mkdir(parents=True, exist_ok=True)
+        paths.tui_state_file.write_text(view.value, encoding="utf-8")
 
 
 def _load_last_view() -> ViewKind:
     try:
-        text = default_tui_state_path().read_text(encoding="utf-8").strip()
+        text = active().tui_state_file.read_text(encoding="utf-8").strip()
         return ViewKind(text)
     except (OSError, ValueError):
         return ViewKind.AGENDA

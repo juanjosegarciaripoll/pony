@@ -39,11 +39,11 @@ from chronos import config as calendar_config
 from chronos.credentials import DefaultCredentialsProvider, InteractiveAuthorizer
 from chronos.domain import AppConfig as CalendarConfig
 from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
-from chronos.paths import default_index_path, user_data_dir
+from chronos.paths import active
 from chronos.storage import VdirMirrorRepository
 
 from .config import ConfigError, read_raw_config
-from .paths import AppPaths
+from .paths import resolve
 
 CALENDAR_SECTION = "calendar"
 
@@ -126,7 +126,7 @@ def parse_calendar_config(raw: object) -> CalendarConfig | None:
 
 def load_calendar_config(config_path: Path | None = None) -> CalendarConfig | None:
     """Read Pony's config file and return the calendar's slice of it."""
-    path = config_path or AppPaths.default().config_file
+    path = config_path if config_path is not None else resolve().config_file
     return parse_calendar_config(read_raw_config(path))
 
 
@@ -135,20 +135,25 @@ def open_calendar_runtime(
     *,
     interactive_authorizer: InteractiveAuthorizer | None = None,
 ) -> CalendarRuntime | None:
-    """Open the calendar's mirror and index, or None when unconfigured."""
+    """Open the calendar's mirror and index, or None when unconfigured.
+
+    The files come from the root the host activated, which is
+    `AppPaths.calendar_dir` inside the shared data directory.
+    """
     config = load_calendar_config(config_path)
     if config is None:
         return None
+    paths = active()
     return CalendarRuntime(
         config=config,
         mirror=VdirMirrorRepository(
-            user_data_dir() / "mirror",
+            paths.mirror_dir,
             # Honour each account's `mirror_path`. Its default is the
             # same `<root>/<account>` the layout would choose, so an
             # account that sets nothing keeps its files where they are.
             account_roots={a.name: a.mirror_path for a in config.accounts},
         ),
-        index=CalendarIndexRepository(default_index_path()),
+        index=CalendarIndexRepository(paths.index_file),
         credentials=DefaultCredentialsProvider(
             interactive_authorizer=interactive_authorizer
         ),

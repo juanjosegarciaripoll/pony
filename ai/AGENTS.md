@@ -76,6 +76,11 @@ so `tests_calendar/` still exercises the calendar standalone.
    keys required and the stamp check ahead of anything that opens the
    index. `pony --config X doctor` prints the paths a run will use.
 
+   `PONY_ROOT` relocates every directory a run writes to underneath it,
+   including a `data_dir` a config declares. `tests/conftest.py` sets it
+   for the whole session, which is why no test can reach a real
+   directory; do not remove it, and do not add a second variable.
+
 4. **No speculative complexity.** No feature flags, compat shims, unused abstractions.
 5. **Runtime deps:** `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil` — new ones need approval. The browser front end's `starlette` + `uvicorn` are an **extra** (`[project.optional-dependencies] web`), not required deps; keep it that way, and add nothing to it without asking. `pony.web` must never import Textual and nothing outside it may import Starlette — `tests/test_layering.py` enforces both.
 6. **Keep docs in sync:** `config-sample.toml` ↔ config model (both halves); `docs/architecture.md` ↔ package layout and subsystems. There is exactly one architecture document — it is published, so it is the one that must be right. Do not add a second copy under `ai/`.

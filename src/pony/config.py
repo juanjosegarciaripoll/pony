@@ -36,7 +36,7 @@ from .domain import (
 from .domain import (
     AppConfig as AppConfig,  # explicit re-export
 )
-from .paths import AppPaths, resolve_data_dir
+from .paths import contain, resolve
 
 
 class ConfigError(ValueError):
@@ -51,7 +51,7 @@ class ConfigError(ValueError):
 
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Load application configuration from a TOML or JSON file."""
-    path = config_path or AppPaths.default().config_file
+    path = config_path if config_path is not None else resolve().config_file
     return parse_config(read_raw_config(path), base_dir=path.parent)
 
 
@@ -107,7 +107,7 @@ def _parse_app_config(raw: object) -> AppConfig:
 
     _require_config_version(data)
     profile = _require_profile(data)
-    data_dir = resolve_data_dir(_require_data_dir(data))
+    data_dir = contain(_require_data_dir(data))
 
     accounts_raw = data.get("accounts", [])
     if not isinstance(accounts_raw, list):
@@ -430,7 +430,7 @@ def _parse_mirror(
         # Relative paths resolve under this config's data_dir, not the
         # platform default.  Use an absolute path to store mirrors
         # elsewhere.
-        base = data_dir if data_dir is not None else AppPaths.default().data_dir
+        base = data_dir if data_dir is not None else resolve().data_dir
         mirror_path = (base / mirror_path).resolve()
 
     trash_retention_days = _require_int(data, "trash_retention_days", default=30)

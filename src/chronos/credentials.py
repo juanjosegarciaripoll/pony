@@ -25,7 +25,7 @@ from chronos.oauth import (
     build_bearer_auth,
     save_tokens,
 )
-from chronos.paths import oauth_token_path
+from chronos.paths import active
 
 _COMMAND_TIMEOUT_SECONDS = 30
 
@@ -52,7 +52,7 @@ class DefaultCredentialsProvider:
       - KeyringCredential: deferred in v1 (requires the `keyring`
         package).
       - OAuthCredential / GoogleCredential: load tokens from
-        `paths.oauth_token_path(account)`. If the file is missing and
+        `paths.active().token_path(account)`. If the file is missing and
         an `interactive_authorizer` is configured, run it to obtain
         fresh tokens and save them. Otherwise raise.
     """
@@ -120,7 +120,7 @@ def _build_oauth_authorization(
     *,
     interactive_authorizer: InteractiveAuthorizer | None,
 ) -> Authorization:
-    token_path = spec.token_path or oauth_token_path(account_name)
+    token_path = spec.token_path or active().token_path(account_name)
 
     def _new_bearer() -> BearerTokenAuth:
         return build_bearer_auth(

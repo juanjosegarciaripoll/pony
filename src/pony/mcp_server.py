@@ -28,7 +28,7 @@ from .config import load_config
 from .domain import AccountConfig, SearchQuery
 from .index_store import SqliteIndexRepository
 from .message_renderer import AttachmentPayload, extract_attachment, render_message
-from .paths import AppPaths
+from .paths import resolve
 from .protocols import MirrorRepository
 
 # ---------------------------------------------------------------------------
@@ -155,9 +155,13 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
     All tools are registered as closures that capture the index and mirror
     objects built at startup — no per-call reconnection overhead.
     """
-    paths = AppPaths.default()
+    config_file = config_path if config_path is not None else resolve().config_file
+    config = load_config(config_file)
+    # The config decides where the index is, so the paths come from it
+    # rather than from the platform default -- otherwise a server
+    # started with --config would read a different index than the TUI.
+    paths = resolve(config_file, data_dir=config.data_dir)
     paths.ensure_runtime_dirs()
-    config = load_config(config_path or paths.config_file)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     mirrors: dict[str, MirrorRepository] = build_mirrors(config)
