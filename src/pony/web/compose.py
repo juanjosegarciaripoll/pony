@@ -300,7 +300,7 @@ def compose_page(
                         value="1",
                         class_="action",
                     ),
-                    element("a", "Discard", href=_back_to(form), class_="action"),
+                    element("a", "Discard", href=back_to(form), class_="action"),
                     class_="actions",
                 ),
             ),
@@ -311,8 +311,16 @@ def compose_page(
     )
 
 
-def _back_to(form: Form) -> str:
-    ref = form.source or form.forward_of
+def back_to(form: Form) -> str:
+    """The folder the user was reading when they started composing.
+
+    All three refs count, and leaving one out is how a sent reply came
+    to land in the default folder: a reply carries the message it
+    answers as ``answering``, a forward as ``forward_of``, and only a
+    resumed draft as ``source``.  Discard and send both come here, so
+    they cannot disagree about where "back" is.
+    """
+    ref = form.source or form.forward_of or form.answering
     if ref is None:
         return urls.MAIL
     return urls.mail_url(
@@ -690,6 +698,7 @@ def _forwarded_copy(services: WebServices, ref: MessageRef) -> Path | None:
 __all__ = [
     "Attached",
     "Form",
+    "back_to",
     "build_form",
     "compose_page",
     "form_from_fields",

@@ -551,16 +551,7 @@ async def _compose_post(services: WebServices, request: Request) -> Response:
         return HTMLResponse(
             compose_view.compose_page(services, form, notices=outcome.notices),
         )
-    return _back_with(_after_compose(form), outcome)
-
-
-def _after_compose(form: compose_view.Form) -> str:
-    ref = form.source or form.forward_of
-    if ref is None:
-        return urls.MAIL
-    return urls.mail_url(
-        FolderRef(account_name=ref.account_name, folder_name=ref.folder_name),
-    )
+    return _back_with(compose_view.back_to(form), outcome)
 
 
 # The largest file this route will take.  Above it the upload is

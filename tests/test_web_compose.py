@@ -11,8 +11,11 @@ bytes is the file that goes out.
 from __future__ import annotations
 
 import dataclasses
+import re
+from html import unescape
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 from corpus import plain_text
 from starlette.testclient import TestClient
@@ -303,6 +306,69 @@ def test_saving_a_draft_files_it_without_sending() -> None:
     assert any(
         row.subject == "Later" for row in index.list_folder_messages(folder=INBOX)
     )
+
+
+def test_sending_a_reply_returns_to_the_folder_it_was_read_in() -> None:
+    """A reply carries its message as `answering`, not as `source`.
+
+    The redirect only looked at `source` and `forward_of`, so a sent
+    reply landed on whatever `/mail` resolves to -- the first account's
+    inbox -- rather than where the user was reading.  Forwarding and
+    resuming a draft were right; replying never was.
+    """
+    services, index = _services("compose-reply-back")
+    source = _only_message(index)
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **_kwargs: None),
+        _client(services) as client,
+    ):
+        page = client.get(
+            "/compose?"
+            + urlencode(
+                {"mode": "reply", "account": "acct", "folder": "INBOX", "id": source}
+            )
+        ).text
+        # Exactly the fields a browser would send back.
+        hidden = dict(
+            re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', page)
+        )
+        assert "answering" in hidden
+        fields = {name: unescape(value) for name, value in hidden.items()}
+        fields.update(
+            {
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "Re: hi",
+                "body": "thanks",
+                "send": "1",
+            }
+        )
+        response = client.post("/compose", data=fields, follow_redirects=False)
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "account=acct" in location
+    assert "folder=INBOX" in location
+
+
+def test_discarding_a_reply_goes_back_where_sending_it_would() -> None:
+    """Both routes ask the same function, so they cannot disagree."""
+    services, index = _services("compose-reply-discard")
+    source = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(
+            "/compose?"
+            + urlencode(
+                {"mode": "reply", "account": "acct", "folder": "INBOX", "id": source}
+            )
+        ).text
+
+    discard = re.search(r'<a href="([^"]*)"[^>]*>Discard</a>', page)
+    assert discard is not None
+    assert "account=acct" in unescape(discard.group(1))
+    assert "folder=INBOX" in unescape(discard.group(1))
 
 
 def test_sending_a_resumed_draft_retires_the_draft_it_came_from() -> None:
