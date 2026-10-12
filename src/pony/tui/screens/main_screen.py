@@ -916,15 +916,19 @@ class MainScreen(Screen[None]):
         if search is None:
             return
         query = parse_query(search.raw)
+        # Scoped in the query, not afterwards: `search` bounds what it
+        # materialises, so filtering the result dropped the hits that
+        # were past the bound -- one match in INBOX behind 500 in
+        # Archive came back as nothing at all.
         results = list(
-            self._index.search(query=query, account_name=search.account_name),
+            self._index.search(
+                query=query,
+                account_name=search.account_name,
+                folder_name=(
+                    None if search.folder is None else search.folder.folder_name
+                ),
+            ),
         )
-        if search.folder is not None:
-            results = [
-                m
-                for m in results
-                if m.message_ref.folder_name == search.folder.folder_name
-            ]
 
         msg_list = self.query_one(MessageListPanel)
         summary = msg_list.get_selected_summary() if keep_cursor else None

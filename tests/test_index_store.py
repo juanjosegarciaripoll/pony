@@ -1492,3 +1492,55 @@ class OneConnectionPerThreadTest(unittest.TestCase):
             folder=FolderRef(account_name="personal", folder_name="INBOX"),
         )
         self.assertEqual(len(rows), 1)
+
+
+class SearchFolderScopeTest(unittest.TestCase):
+    """A folder-scoped search must be scoped in the query.
+
+    Both front ends asked for the account's hits and dropped the other
+    folders afterwards, which put the filter on the wrong side of
+    `limit`: one matching message in INBOX behind 500 matching ones in
+    Archive came back as "nothing found" in the browser and an empty
+    list in the terminal.
+    """
+
+    def setUp(self) -> None:
+        self.index = _fresh_repo()
+
+    def _message(self, *, folder: str, uid: int, when: datetime) -> None:
+        message = _make_message(
+            f"{folder}-{uid}",
+            folder_name=folder,
+            uid=uid,
+            subject="needle in here",
+        )
+        self.index.insert_message(
+            message=dataclasses.replace(message, received_at=when)
+        )
+
+    def test_a_scoped_search_reaches_past_the_limit(self) -> None:
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        # The one INBOX hit is the oldest, so an unscoped search ordered
+        # by date puts it behind every Archive hit.
+        self._message(folder="INBOX", uid=1, when=base)
+        for n in range(520):
+            self._message(
+                folder="Archive",
+                uid=100 + n,
+                when=base + timedelta(minutes=n + 1),
+            )
+
+        query = parse_query("needle")
+        unscoped = self.index.search(query=query, account_name="personal")
+        scoped = self.index.search(
+            query=query, account_name="personal", folder_name="INBOX"
+        )
+
+        # What the old code did: ask for the account, filter afterwards.
+        self.assertEqual(
+            [],
+            [m for m in unscoped if m.message_ref.folder_name == "INBOX"],
+        )
+        # What it does now.
+        self.assertEqual(1, len(scoped))
+        self.assertEqual("INBOX", scoped[0].message_ref.folder_name)

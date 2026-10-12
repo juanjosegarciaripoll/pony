@@ -926,6 +926,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         *,
         query: SearchQuery,
         account_name: str | None,
+        folder_name: str | None = None,
         limit: int = 500,
     ) -> Sequence[IndexedMessage]:
         """Run an FTS5-backed metadata search.
@@ -937,6 +938,12 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         and the TUI calls it on the event loop, so a broad term over a
         large mailbox froze the interface for as long as it took to build
         every row — measured at 385 ms for 40 000 messages, and linear.
+
+        *folder_name* narrows the search here rather than in the caller.
+        Both front ends used to ask for the account's hits and drop the
+        other folders afterwards, which put the filter on the wrong side
+        of *limit*: one matching message in INBOX behind 500 in Archive
+        came back as "nothing found".
         """
         match_expr = _build_fts_match(query)
         # Trashed rows stay in the table until retention reaps them, so
@@ -955,6 +962,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         if account_name is not None:
             clauses.append("m.account_name = ?")
             params.append(account_name)
+        if folder_name is not None:
+            clauses.append("m.folder_name = ?")
+            params.append(folder_name)
         where_sql = " AND ".join(clauses)
         join_sql = "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
 

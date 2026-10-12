@@ -369,9 +369,19 @@ class IndexRepository(Protocol):
         ...
 
     def search(
-        self, *, query: SearchQuery, account_name: str | None
+        self,
+        *,
+        query: SearchQuery,
+        account_name: str | None,
+        folder_name: str | None = None,
+        limit: int = 500,
     ) -> Sequence[IndexedMessage]:
-        """Run a metadata search query."""
+        """Run a metadata search query.
+
+        *folder_name* narrows it; the narrowing belongs here rather than
+        in a caller, because *limit* is applied before a caller could
+        filter and the hits it wanted may all be past it.
+        """
         ...
 
     # ------------------------------------------------------------------

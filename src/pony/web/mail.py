@@ -365,15 +365,16 @@ def _search(
     """
     from ..search_parser import parse_query
 
+    # Scoped in the query, not afterwards: `search` bounds what it
+    # materialises, so filtering the result dropped the hits that were
+    # past the bound -- one match in INBOX behind 500 in Archive showed
+    # as "Nothing found."
     found = services.index.search(
         query=parse_query(raw_query),
         account_name=folder.account_name,
+        folder_name=folder.folder_name,
     )
-    return [
-        summary_of(message)
-        for message in found
-        if message.message_ref.folder_name == folder.folder_name
-    ]
+    return [summary_of(message) for message in found]
 
 
 def _row(
