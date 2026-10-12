@@ -915,6 +915,120 @@ def test_a_wrong_token_is_refused() -> None:
         assert TOKEN_COOKIE not in client.cookies
 
 
+def test_a_token_outside_ascii_is_refused_rather_than_raising() -> None:
+    """``compare_digest`` on two ``str`` raises for anything non-ASCII.
+
+    So the one function that must never raise answered 500 with a
+    traceback where it should answer 403.
+    """
+    services, _index = _services("web-token-unicode", token="s3cret")
+
+    with _client(services) as client:
+        assert client.get(_mail(token="é")).status_code == 403
+
+
+# ----------------------------------------------------------------------
+# Where a request came from
+# ----------------------------------------------------------------------
+
+
+def _states(index: SqliteIndexRepository) -> list[MessageStatus]:
+    return [
+        message.local_status for message in index.list_folder_messages(folder=INBOX)
+    ]
+
+
+def test_a_cross_site_post_changes_nothing() -> None:
+    """The whole of CSRF, as a browser labels it.
+
+    ``--no-token`` is the configuration the design points at — a tailnet
+    already authenticates the device — so the refusal cannot depend on
+    the token, and this runs with none.
+    """
+    services, index = _services("web-origin-cross")
+    before = _states(index)
+
+    with _client(services) as client:
+        for headers in (
+            {"sec-fetch-site": "cross-site"},
+            {"sec-fetch-site": "same-site"},
+            {"origin": "https://evil.example"},
+            # A sandboxed frame or a `data:` page sends no origin at all.
+            {"origin": "null"},
+        ):
+            refused = client.post(
+                "/action/trash",
+                data={"account": "acct", "folder": "INBOX", "id": "1"},
+                headers=headers,
+            )
+            assert refused.status_code == 403, headers
+            assert "another site" in refused.text
+
+    assert _states(index) == before
+
+
+def test_every_mutating_route_is_behind_the_origin_check() -> None:
+    """Not just ``/action/*``: the forms and the upload route too."""
+    services, _index = _services("web-origin-routes")
+    hostile = {"sec-fetch-site": "cross-site"}
+
+    with _client(services) as client:
+        for path in (
+            "/action/trash",
+            "/compose",
+            "/compose/attachment?name=x.txt",
+            "/contacts/edit",
+            "/calendar/event",
+        ):
+            answered = client.post(path, data={"to": "a@b.test"}, headers=hostile)
+            assert answered.status_code == 403, path
+
+
+def test_the_pages_own_request_is_served() -> None:
+    """What a browser sends for Pony's own page, and for a typed URL."""
+    services, index = _services("web-origin-same")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        for headers in (
+            {"sec-fetch-site": "same-origin"},
+            {"sec-fetch-site": "none"},
+            {"origin": "http://testserver"},
+        ):
+            answered = client.post(
+                "/action/toggle_flagged",
+                data={"account": "acct", "folder": "INBOX", "id": str(message_id)},
+                headers=headers,
+            )
+            assert answered.status_code == 200, headers
+            assert answered.json()["changed"] == 1
+
+
+def test_a_client_that_names_no_origin_still_works() -> None:
+    """curl, a script, a phone shortcut: not a browser aimed at anyone."""
+    services, index = _services("web-origin-headless")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        answered = client.post(
+            "/action/toggle_flagged",
+            data={"account": "acct", "folder": "INBOX", "id": str(message_id)},
+        )
+
+    assert answered.status_code == 200
+    assert answered.json()["changed"] == 1
+
+
+def test_a_cross_site_read_is_still_served() -> None:
+    """Reads are not refused: the browser keeps the answer to itself."""
+    services, _index = _services("web-origin-read")
+
+    with _client(services) as client:
+        answered = client.get(_mail(), headers={"sec-fetch-site": "cross-site"})
+
+    assert answered.status_code == 200
+
+
 def test_the_sync_keys_mean_the_calendar_on_the_calendar_page() -> None:
     """One spelling, two tables: the surface tells them apart."""
     source = JS.read_text(encoding="utf-8")

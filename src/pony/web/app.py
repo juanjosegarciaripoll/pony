@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -210,10 +210,10 @@ def _handler(
     services: WebServices,
     view: Callable[[WebServices, Request], Awaitable[Response]],
 ) -> Callable[[Request], Awaitable[Response]]:
-    """Bind *services* to *view* and gate it on the token."""
+    """Bind *services* to *view*, gated on the token and on the origin."""
 
     async def endpoint(request: Request) -> Response:
-        refused = _check_token(services, request)
+        refused = _check_token(services, request) or _check_origin(request)
         if refused is not None:
             return refused
         response = await view(services, request)
@@ -235,9 +235,79 @@ def _check_token(services: WebServices, request: Request) -> Response | None:
     if expected is None:
         return None
     offered = request.query_params.get("token") or request.cookies.get(TOKEN_COOKIE)
-    if offered is not None and secrets.compare_digest(offered, expected):
+    # `compare_digest` on two `str` raises for anything outside ASCII, so
+    # `?token=%C3%A9` answered 500 with a traceback where it should answer
+    # 403.  A non-ASCII offer cannot be the token anyway — that is
+    # `secrets.token_urlsafe` output — so this loses no legitimate client.
+    if (
+        offered is not None
+        and offered.isascii()
+        and secrets.compare_digest(offered, expected)
+    ):
         return None
     return PlainTextResponse("Not authorised.", status_code=403)
+
+
+# Methods that cannot change anything, so nothing has to be proved about
+# where they came from.  `GET /message` is the one read that writes, and
+# it asks `_from_own_page` for itself.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# What `Sec-Fetch-Site` says when the request is Pony's own page asking,
+# or the user navigating by hand.  Everything else — `cross-site`,
+# `same-site` — is some other page's request, and no other page has
+# business changing the mailbox.
+_OWN_SITE = frozenset({"same-origin", "none"})
+
+
+def _from_own_page(request: Request) -> bool:
+    """Whether a browser says this request came from Pony's own page.
+
+    Browsers label every request they make: ``Sec-Fetch-Site`` says
+    where it came from, and an ``Origin`` accompanies anything that is
+    not a plain navigation.  A client that sends neither — curl, a
+    script, a phone shortcut — is taken at its word, because it is not a
+    browser being aimed at the user's mailbox by a page they happened to
+    open.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site.lower() in _OWN_SITE
+    origin = request.headers.get("origin")
+    return origin is None or _is_own_origin(origin, request)
+
+
+def _is_own_origin(origin: str, request: Request) -> bool:
+    """Whether *origin* names the host this request was addressed to.
+
+    Compared by authority rather than by whole URL: the scheme a proxy
+    terminated is not ours to know, while the host and port the browser
+    dialled are in the request itself.
+    """
+    if origin == "null":
+        return False
+    offered = urlsplit(origin).netloc.lower()
+    host = (request.headers.get("host") or "").lower()
+    return bool(offered) and offered == host
+
+
+def _check_origin(request: Request) -> Response | None:
+    """Refuse a state-changing request that some other page sent.
+
+    This is the front end's CSRF defence, and it is deliberately
+    independent of the token: a token kept in a cookie rides along with
+    a cross-site form post exactly as it rides along with the page's own
+    requests, and under ``--no-token`` there is nothing else at all.  It
+    covers every mutating route at once — ``/action/*``, ``/compose``,
+    ``/compose/attachment``, ``/contacts/edit``, ``/calendar/event`` —
+    because it sits in front of all of them rather than inside any one.
+    """
+    if request.method.upper() in _SAFE_METHODS or _from_own_page(request):
+        return None
+    return PlainTextResponse(
+        "That request came from another site.",
+        status_code=403,
+    )
 
 
 def _remember_token(
@@ -253,6 +323,11 @@ def _remember_token(
         TOKEN_COOKIE,
         services.token,
         httponly=True,
+        # Security, not phone convenience: `strict` is what keeps this
+        # cookie out of a request some other page made, so a token
+        # remembered here cannot be spent on the user's behalf by a page
+        # they opened.  `_check_origin` is the defence that holds when
+        # the token is off altogether.
         samesite="strict",
         max_age=60 * 60 * 24 * 365,
     )

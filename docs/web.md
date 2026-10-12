@@ -348,6 +348,7 @@ works.
 | **Binding** | `127.0.0.1` unless `--host` says otherwise |
 | **Token** | A fresh random token per run, in the URL once, then an `HttpOnly` `SameSite=strict` cookie for a year; compared in constant time |
 | **`--no-token`** | Serves without it, for an address that is already restricted to people who may read the mail |
+| **Where a request came from** | Anything that changes something is refused unless the browser says it came from Pony's own page, token or no token: `Sec-Fetch-Site` when it is sent, the `Origin` otherwise. A client that sends neither — curl, a script, a phone shortcut — is let through |
 | **Message HTML** | A page of its own, with `default-src 'none'`, images limited to the data URIs already inlined, and no referrer |
 | **Attachments** | Downloaded with `X-Content-Type-Options: nosniff` |
 | **The page itself** | One stylesheet and one script, no framework and no CDN: a tailnet has no reason to reach the public internet, and a front end that needs one stops working on a train |
@@ -368,6 +369,13 @@ tailscale serve --bg 8730
 Either way the device at the other end has already authenticated to the
 tailnet, and the token is a second lock on the same door. Anywhere else
 — a LAN, a VPS, a port forwarded through a router — keep it.
+
+Dropping the token does not open the mailbox to every page the browser
+has open: a page served from anywhere else cannot archive, send or
+delete, because the server reads what the browser says about where the
+request came from and refuses anything that is not Pony's own page.
+What `--no-token` gives up is *reading* — anything that can route to
+the port can fetch a page.
 
 !!! danger "Do not put it on the open internet"
     There is no login, no rate limiting and no second factor. The token

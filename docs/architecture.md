@@ -489,6 +489,19 @@ authenticated and `--no-token` is reasonable. There is deliberately no
 login form: Pony holds one user's credentials in one config file, so
 serving it to several people is an instance each, not a session each.
 
+The token is not what stops another web page from acting: a cookie
+travels with a cross-site form post exactly as it travels with Pony's
+own requests. Every state-changing request is refused unless the browser
+says it came from Pony's own page — `Sec-Fetch-Site: same-origin` or
+`none`, or an `Origin` naming the host the request was addressed to —
+which covers `/action/*`, `/compose`, `/compose/attachment`,
+`/contacts/edit` and `/calendar/event` from one place in front of them
+all, and holds under `--no-token` as much as with a token. A client that
+sends neither header (curl, a script, a phone shortcut) is let through;
+it is not a browser being aimed at the mailbox by a page the user
+happened to open. The token cookie is `SameSite=strict` for the same
+reason, not for the phone's convenience.
+
 ### MCP (`pony.mcp_server`)
 
 Read-only server built on `tinymcp` rather than the MCP SDK's HTTP stack. When
