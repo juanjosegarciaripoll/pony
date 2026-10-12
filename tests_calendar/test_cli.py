@@ -5,6 +5,7 @@ import io
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -930,6 +931,89 @@ class AddCommandTest(CliTestCase):
         assert component is not None
         self.assertIsNone(component.href)
         self.assertEqual(component.summary, "Lunch")
+
+    def test_an_added_event_is_visible_in_the_views(self) -> None:
+        """It was not: the occurrence cache was never rebuilt.
+
+        Every view -- agenda, day, grid, month -- joins `components`
+        against `occurrences`, and so does the alarm pass. `add` wrote
+        the row directly, and `upsert_component` *clears* the cached
+        occurrences for a master, so the event the command reported
+        creating could not be seen anywhere until the next sync put the
+        cache back.
+        """
+        from chronos.domain import CalendarRef
+        from chronos.views import CalendarSelection, gather_occurrences
+
+        code = self._run(
+            [
+                "add",
+                "--account",
+                "personal",
+                "--calendar",
+                "work",
+                "--summary",
+                "Visible",
+                "--start",
+                "2026-05-01T12:00:00+00:00",
+                "--end",
+                "2026-05-01T13:00:00+00:00",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        rows = gather_occurrences(
+            index=self.index,
+            calendars=(CalendarRef("personal", "work"),),
+            selection=CalendarSelection(refs=frozenset()),
+            window=(
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 2, tzinfo=UTC),
+            ),
+        )
+        self.assertEqual(["Visible"], [row.component.summary for row in rows])
+
+    def test_an_edit_keeps_the_reminders_it_was_not_asked_about(self) -> None:
+        """Rebuilding the text from fields dropped them silently."""
+        from chronos.ical_parser import extract_alarm_triggers
+
+        self._run(
+            [
+                "add",
+                "--account",
+                "personal",
+                "--calendar",
+                "work",
+                "--summary",
+                "Standup",
+                "--start",
+                "2026-05-01T09:00:00+00:00",
+                "--uid",
+                "standup@example.com",
+            ]
+        )
+        ref = ComponentRef("personal", "work", "standup@example.com")
+        stored = self.index.get_component(ref)
+        assert stored is not None
+        with_alarm = stored.raw_ics.replace(
+            b"END:VEVENT",
+            b"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\n"
+            b"END:VALARM\r\nEND:VEVENT",
+        )
+        self.index.upsert_component(replace(stored, raw_ics=with_alarm))
+        self.mirror.write(ref.resource, with_alarm)
+
+        code = self._run(["edit", "standup@example.com", "--summary", "Sync"])
+
+        self.assertEqual(code, 0)
+        edited = self.index.get_component(ref)
+        assert edited is not None
+        self.assertEqual("Sync", edited.summary)
+        self.assertEqual(
+            1,
+            len(extract_alarm_triggers(edited.raw_ics, ref.uid)),
+            edited.raw_ics,
+        )
 
     def test_add_with_attendees_writes_invites(self) -> None:
         from chronos.ical_parser import extract_attendees

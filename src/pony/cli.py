@@ -952,13 +952,27 @@ def run_mcp_server_command(*, config_path: Path | None, paths: AppPaths) -> int:
 
 
 def run_doctor(*, paths: AppPaths, config_path: Path | None) -> int:
-    """Print a high-level health summary for the local app state."""
+    """Print a high-level health summary for the local app state.
+
+    Exits non-zero when a check failed.  It used to return 0 whatever it
+    found, so the command the documentation points at for a broken
+    config reported the breakage and then told the shell all was well.
+    """
     paths.ensure_runtime_dirs()
-    config = try_load_config(config_path)
+    config_error: str | None = None
+    try:
+        config = load_config(config_path)
+    except ConfigError as error:
+        config, config_error = None, str(error)
     service_status = build_service_status(
-        paths=paths, config_path=config_path, config=config
+        paths=paths,
+        config_path=config_path,
+        config=config,
+        config_error=config_error,
     )
     print(render_doctor_report(service_status))
+    if any(check.status is CheckStatus.ERROR for check in service_status.checks):
+        return 1
     return 0
 
 

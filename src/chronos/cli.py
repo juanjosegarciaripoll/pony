@@ -45,22 +45,16 @@ from chronos.domain import (
     LocalStatus,
     OAuthCredential,
     PlaintextCredential,
-    ResourceRef,
     StoredComponent,
     SyncResult,
     VEvent,
     VTodo,
 )
-from chronos.ical_parser import extract_attendees, extract_organizer
+from chronos.event_actions import Calendars, EditDraft, save_event, trash_event
+from chronos.ical_parser import extract_alarm_triggers, extract_attendees
 from chronos.index_store import SqliteIndexRepository
 from chronos.locking import SyncLockError, acquire_sync_lock
-from chronos.mutations import (
-    build_event_ics,
-    edited_flags,
-    generate_uid,
-    is_all_day_span,
-    trashed_copy,
-)
+from chronos.mutations import is_all_day_span
 from chronos.oauth import (
     OAuthError,
     StoredTokens,
@@ -1125,43 +1119,25 @@ def cmd_add(
     if not any(a.name == account_name for a in ctx.config.accounts):
         ctx.stderr.write(f"unknown account: {account_name}\n")
         return 2
-    resolved_uid = uid or generate_uid(
-        account_name, calendar_name, summary, start, ctx.now
+    draft = EditDraft(
+        target=CalendarRef(account_name, calendar_name),
+        summary=summary,
+        dtstart=start,
+        dtend=end,
+        location="",
+        description="",
+        attendees=tuple(attendees),
+        alarms=(),
+        existing=None,
+        all_day=is_all_day_span(start, end),
+        uid=uid,
     )
     try:
-        ics = build_event_ics(
-            resolved_uid,
-            summary,
-            start,
-            end,
-            ctx.now,
-            attendees=attendees,
-            organizer=_organizer_for(account_name, ctx.config),
-        )
+        saved = save_event(_calendars(ctx), draft, now=ctx.now)
     except ValueError as exc:
         ctx.stderr.write(f"add: {exc}\n")
         return 2
-    ctx.mirror.write(ResourceRef(account_name, calendar_name, resolved_uid), ics)
-    ref = ComponentRef(account_name, calendar_name, resolved_uid)
-    component = VEvent(
-        ref=ref,
-        href=None,
-        etag=None,
-        raw_ics=ics,
-        summary=summary,
-        description=None,
-        location=None,
-        dtstart=start,
-        dtend=end,
-        status=None,
-        local_flags=frozenset(),
-        server_flags=frozenset(),
-        local_status=LocalStatus.ACTIVE,
-        trashed_at=None,
-        synced_at=None,
-    )
-    ctx.index.upsert_component(component)
-    ctx.stdout.write(f"{resolved_uid}\n")
+    ctx.stdout.write(f"{saved.component.ref.uid}\n")
     return 0
 
 
@@ -1192,44 +1168,28 @@ def cmd_edit(
         ctx.stderr.write("edit: missing DTSTART\n")
         return 2
     existing_attendees = extract_attendees(current.raw_ics, current.ref.uid)
-    organizer = extract_organizer(current.raw_ics, current.ref.uid)
-    if organizer is None:
-        organizer = _organizer_for(current.ref.account_name, ctx.config)
+    draft = EditDraft(
+        target=current.ref.calendar,
+        summary=new_summary,
+        dtstart=new_start,
+        dtend=new_end,
+        location=current.location or "",
+        description=current.description or "",
+        attendees=tuple(existing_attendees if attendees is None else attendees),
+        # Rebuilding the text from fields drops anything the fields do
+        # not carry, and the reminders are the part a user notices: an
+        # edit used to silently remove them.
+        alarms=tuple(extract_alarm_triggers(current.raw_ics, current.ref.uid)),
+        existing=current,
+        # Keep all-day events as VALUE=DATE when the span still is one.
+        all_day=is_all_day_span(new_start, new_end),
+    )
     try:
-        new_ics = build_event_ics(
-            current.ref.uid,
-            new_summary,
-            new_start,
-            new_end,
-            ctx.now,
-            attendees=existing_attendees if attendees is None else attendees,
-            organizer=organizer,
-            # Keep all-day events as VALUE=DATE when the span still is one.
-            all_day=is_all_day_span(new_start, new_end),
-        )
+        saved = save_event(_calendars(ctx), draft, now=ctx.now)
     except ValueError as exc:
         ctx.stderr.write(f"edit: {exc}\n")
         return 2
-    ctx.mirror.write(current.ref.resource, new_ics)
-    updated = VEvent(
-        ref=current.ref,
-        href=current.href,
-        etag=current.etag,
-        raw_ics=new_ics,
-        summary=new_summary,
-        description=current.description,
-        location=current.location,
-        dtstart=new_start,
-        dtend=new_end,
-        status=current.status,
-        local_flags=edited_flags(current),
-        server_flags=current.server_flags,
-        local_status=current.local_status,
-        trashed_at=current.trashed_at,
-        synced_at=current.synced_at,
-    )
-    ctx.index.upsert_component(updated)
-    ctx.stdout.write(f"{current.ref.uid}\n")
+    ctx.stdout.write(f"{saved.component.ref.uid}\n")
     return 0
 
 
@@ -1238,9 +1198,9 @@ def cmd_rm(ctx: CliContext, *, uid: str) -> int:
     if not matches:
         ctx.stderr.write(f"not found: {uid}\n")
         return 1
+    calendars = _calendars(ctx)
     for component in matches:
-        trashed = trashed_copy(component, trashed_at=ctx.now)
-        ctx.index.upsert_component(trashed)
+        trash_event(calendars, component, now=ctx.now)
     ctx.stdout.write(f"trashed {len(matches)}\n")
     return 0
 
@@ -2181,13 +2141,17 @@ def _parse_dt(raw: str) -> datetime:
     return dt
 
 
-def _organizer_for(account_name: str, config: AppConfig) -> str | None:
-    for account in config.accounts:
-        if account.name != account_name:
-            continue
-        username = account.username.strip()
-        return username if "@" in username else None
-    return None
+def _calendars(ctx: CliContext) -> Calendars:
+    """The stores the event operations work over.
+
+    `CliContext` already holds exactly these three, which is why the
+    commands can call the action module rather than reimplementing it:
+    `cmd_add` and `cmd_edit` wrote the mirror and the index row by hand
+    and never rebuilt the occurrence cache, so the event they reported
+    creating was invisible in the agenda, the day and grid views, the
+    month grid and to the alarm pass until the next sync.
+    """
+    return Calendars(config=ctx.config, mirror=ctx.mirror, index=ctx.index)
 
 
 def _sort_key(component: StoredComponent) -> datetime:

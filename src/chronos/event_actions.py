@@ -88,6 +88,10 @@ class EditDraft:
     # `all_day_bounds` (end exclusive) and the event is saved as
     # `VALUE=DATE`.
     all_day: bool = False
+    # A caller that already knows the UID it wants, which only
+    # `chronos calendar add --uid` does: a form has no business naming
+    # one.  Ignored for an edit, which keeps the UID it has.
+    uid: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +284,7 @@ def save_event(
     """
     existing = draft.existing
     if existing is None:
-        uid = generate_uid(
+        uid = draft.uid or generate_uid(
             draft.target.account_name,
             draft.target.calendar_name,
             draft.summary,

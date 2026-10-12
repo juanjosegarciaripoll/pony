@@ -261,25 +261,35 @@ pony doctor
 
 ### Example output
 
-```
-Pony Express -- diagnostics
-----------------------------
-[OK   ] Python 3.13.2
-[OK   ] Config loaded  (2 IMAP accounts, 1 local)
-[OK   ] Index DB       ~/.local/share/pony/index.sqlite3
-[OK   ] Personal       mirror exists and is writable
-[OK   ] Work           mirror exists and is writable
-[OK   ] Archive        mirror exists and is writable
-[OK   ] markdown-it-py 3.0.0
+The paths come first, because "which directory is this run using?" is the
+question that brings most people here:
 
-Paths
-  Config : ~/.config/pony/config.toml
-  Data   : ~/.local/share/pony/
-  State  : ~/.local/state/pony/
-  Logs   : ~/.local/state/pony/logs/
+```
+Pony Express doctor
+
+Paths:
+  Config file:  ~/.config/pony/config.toml
+  Data dir:     ~/.local/share/pony
+  Log dir:      ~/.local/share/pony/logs
+  Index DB:     ~/.local/share/pony/index.sqlite3
+  Calendar dir: ~/.local/share/pony/calendar
+
+Checks:
+  [OK   ] Python version: 3.13.5
+  [OK   ] Config file: 1 account(s): personal
+  [WARN ] Index database: Not yet created (run "pony sync" first): …
+  [WARN ] Mirror "personal": Does not exist (created on first sync): …
+  [OK   ] Calendar: Not configured (add a [calendar] table to enable it)
+  [OK   ] Markdown renderer: markdown-it-py available
+
+4 OK, 2 warnings
 ```
 
-Exit code is 0 when all checks pass, 1 if any check reports ERROR or WARN.
+Exit code is 1 when any check reports ERROR, and 0 otherwise — a warning is
+not a failure, because a fresh install legitimately has no index and no
+mirror yet. A config that will not load is an ERROR and the report quotes
+the loader's own reason for it, which is the sentence worth having when the
+version or a required key is the problem.
 
 ---
 

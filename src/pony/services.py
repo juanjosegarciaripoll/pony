@@ -117,8 +117,16 @@ def build_service_status(
     paths: AppPaths,
     config_path: Path | None,
     config: AppConfig | None,
+    config_error: str | None = None,
 ) -> ServiceStatus:
-    """Run all doctor checks and return a :class:`ServiceStatus`."""
+    """Run all doctor checks and return a :class:`ServiceStatus`.
+
+    *config_error* is why the config could not be loaded, when it could
+    not.  Without it this check could only say "Could not parse", which
+    is the least useful sentence available at the one moment a user runs
+    this command: the loader already knows whether the version is
+    unsupported, a key is missing or the TOML is malformed.
+    """
     effective_config_path = config_path or paths.config_file
     checks: list[DoctorCheck] = []
 
@@ -150,13 +158,10 @@ def build_service_status(
             )
         )
     elif config is None:
-        checks.append(
-            DoctorCheck(
-                "Config file",
-                CheckStatus.ERROR,
-                f"Could not parse: {effective_config_path}",
-            )
-        )
+        detail = f"Could not parse: {effective_config_path}"
+        if config_error:
+            detail = f"{detail}\n    {config_error}"
+        checks.append(DoctorCheck("Config file", CheckStatus.ERROR, detail))
     else:
         names = ", ".join(a.name for a in config.accounts)
         checks.append(

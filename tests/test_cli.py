@@ -51,6 +51,28 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("[ERROR] Config file", output)
         self.assertIn("Not found:", output)
 
+    def test_doctor_says_why_a_config_will_not_load_and_fails(self) -> None:
+        """It printed "Could not parse" and told the shell all was well.
+
+        This is the command the documentation points a user at when the
+        config is broken, so the one sentence the loader already knows
+        -- which version, which missing key -- is the sentence worth
+        printing, and a failed check should reach the exit code.
+        """
+        with isolated_app_env(), temporary_config() as config_path:
+            config_path.write_text("config_version = 2\n", encoding="utf-8")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = main(("--config", str(config_path), "doctor"))
+            output = buffer.getvalue()
+
+        self.assertEqual(1, code)
+        self.assertIn("[ERROR] Config file", output)
+        self.assertIn("Could not parse", output)
+        # The loader's own words, not a shrug.
+        self.assertIn("config_version", output)
+        self.assertIn("requires config_version = 3", output)
+
     def test_sync_reports_planning_failure(self) -> None:
         # With an unreachable server the planning pass raises, and the
         # CLI should surface the error.
