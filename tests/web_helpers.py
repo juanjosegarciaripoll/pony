@@ -23,6 +23,13 @@ function nobody defined — which is exactly how ``Q`` came to be dead —
 but not a mistake in what the function then does.  For that there is
 ``tests/test_web_browser.py``, which runs the real script in a headless
 Chromium when one is present and ``PONY_BROWSER_UI=1`` asks for it.
+
+Reading has one trap worth naming: an assertion that a string appears
+in the source holds whether or not the code around it ever runs.
+Wrapping ``quit()``'s body in ``if (false) {}`` left every such
+assertion about quitting still passing.  So what is read is what
+reading can decide — a name, a table, a path — and what the code
+*does* belongs in the browser test.
 """
 
 from __future__ import annotations
@@ -530,6 +537,59 @@ def called_names(source: str) -> set[str]:
     return called - _JS_KEYWORDS - _JS_GLOBALS
 
 
+#: Methods the script is allowed to call on ``window``, ``document`` and
+#: the standard objects.  Bare calls are checked against what the script
+#: declares; a *member* call is preceded by a dot and so slipped through
+#: that check entirely, which is how a typo'd ``window.closeTab()`` --
+#: a method no browser has -- would have passed every test there was.
+BROWSER_METHODS = frozenset(
+    {
+        "Array.from",
+        "JSON.parse",
+        "JSON.stringify",
+        "Math.max",
+        "Math.min",
+        "Number.toFixed",
+        "Object.entries",
+        "document.addEventListener",
+        "document.body.classList.toggle",
+        "document.createElement",
+        "document.getElementById",
+        "document.querySelector",
+        "document.querySelectorAll",
+        "window.close",
+        "window.confirm",
+        "window.history.back",
+        "window.localStorage.getItem",
+        "window.localStorage.setItem",
+        "window.location.assign",
+        "window.location.reload",
+        "window.open",
+        "window.setTimeout",
+    },
+)
+
+_MEMBER_CALL = re.compile(
+    r"\b(window|document|JSON|Math|Array|Object|Number|String)"
+    r"((?:\.[A-Za-z_$][\w$]*)+)\s*\(",
+)
+
+
+def browser_calls(source: str) -> set[str]:
+    """Every method the script calls on a browser object, dotted path and all.
+
+    ``called_names`` deliberately ignores anything preceded by a dot,
+    because most of those are methods of elements the script just made
+    and there is nothing to check them against.  The handful of standard
+    objects *can* be checked, and must be: a misspelt one is a
+    ``TypeError`` at the moment the user presses the key.
+    """
+    return {
+        f"{found.group(1)}{found.group(2)}"
+        for found in _MEMBER_CALL.finditer(_code_only(source))
+    }
+
+
 def fetched_paths(source: str) -> set[str]:
     """Every server path the script navigates to or fetches.
 
@@ -546,10 +606,12 @@ def fetched_paths(source: str) -> set[str]:
 
 
 __all__ = [
+    "BROWSER_METHODS",
     "JS_FILE",
     "Dispatched",
     "actions",
     "attribute_values",
+    "browser_calls",
     "called_names",
     "client_actions",
     "declared_names",

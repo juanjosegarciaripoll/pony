@@ -21,6 +21,14 @@ pretended at here.  ``tests/test_web_browser.py`` presses the keys at a
 real page in a headless Chromium for that, opt-in through
 ``PONY_BROWSER_UI=1``, so a machine without a browser still has
 everything below.
+
+The line between the two matters, because a test that only asserts a
+string appears in the source cannot fail for the reason it names:
+wrapping ``quit()``'s body in ``if (false) {}`` left a whole test about
+quitting passing, which is the shape of the dead ``server()`` bug that
+shipped once already.  Five tests here were that shape and are now
+split — the mismatch half read, the behaviour half executed, each
+naming the other.
 """
 
 from __future__ import annotations
@@ -42,8 +50,10 @@ from tui_helpers import (
     seed_message,
 )
 from web_helpers import (
+    BROWSER_METHODS,
     actions,
     attribute_values,
+    browser_calls,
     called_names,
     client_actions,
     declared_names,
@@ -369,19 +379,17 @@ def test_no_served_key_is_one_a_press_could_never_produce() -> None:
         assert len(keys) == len(set(keys)), surface
 
 
-def test_the_dispatcher_spells_a_press_the_way_the_keymap_does() -> None:
-    """Both sides of the normalisation, so neither drifts alone."""
-    source = script()
-    pressed = _function(source, "pressed")
+def test_the_keymap_spells_a_key_the_way_a_browser_reports_it() -> None:
+    """The server's half of the normalisation, run rather than read.
 
-    # ctrl, then alt, then shift — the order `MODIFIER_ORDER` names.
-    pushes = re.findall(r'parts\.push\("(\w+)"\)', pressed)
-    assert pushes == list(MODIFIER_ORDER)
-    # Shift only in front of a named key.
-    assert "event.key.length > 1" in pressed
-    tail = 'parts.push(event.key);\n  return parts.join("+");'
-    assert pressed.rstrip().endswith(tail)
-    # And the keymap's own translation says the same thing.
+    The dispatcher's half is run too, in
+    ``tests/test_web_browser.py::test_every_key_the_server_serves_is_one_the_page_can_match``,
+    which hands ``pressed()`` the event a browser would deliver for
+    every key the server serves and requires the same spelling back.
+    Asserting the shape of its source here as well said nothing that
+    was not already said, and said it about the text rather than the
+    behaviour.
+    """
     assert web_key("shift+m") == "M"
     assert web_key("shift+up") == "shift+ArrowUp"
     assert web_key("ctrl+g") == "ctrl+g"
@@ -466,17 +474,24 @@ def test_the_dispatcher_calls_only_functions_it_defines() -> None:
     source = script()
 
     assert called_names(source) <= declared_names(source)
+    # And the ones preceded by a dot, which that check skips: a typo'd
+    # `window.closeTab()` is a method no browser has, and it passed.
+    assert browser_calls(source) <= BROWSER_METHODS
 
 
-def test_a_press_into_a_field_belongs_to_the_field() -> None:
-    """Typing ``D`` into a recipient must not trash the open message."""
-    guard = _function(script(), "onKeyDown")
+def test_everything_that_can_be_typed_into_counts_as_a_field() -> None:
+    """Which elements keep a plain key to themselves.
 
-    assert "inField" in guard
-    # A plain key is the field's; a chord and Escape are still ours.
-    assert "!event.ctrlKey && !event.altKey" in guard
-    assert 'event.key !== "Escape"' in guard
+    That a press into one is *left* to it is executed in
+    ``tests/test_web_browser.py::test_a_press_into_the_search_field_is_left_to_the_field``,
+    which types ``D`` into a search box and requires that nothing was
+    trashed.  What a browser test types into is one element, though, so
+    the list of the others is worth pinning: a `<select>` or a
+    contenteditable left off it would silently hand the page a
+    destructive key mid-word.
+    """
     typing = _function(script(), "typing")
+
     for kind in ("HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement"):
         assert kind in typing
     assert "isContentEditable" in typing
@@ -674,10 +689,11 @@ def test_every_button_that_names_an_action_goes_through_the_dispatcher() -> None
     named = {name for page in pages.values() for name in actions(page)}
     assert named
     assert named <= set(SERVER_ACTIONS)
-    # Every one of them is clicked into the same `server()` call a key is.
-    wiring = _function(source, "wireActionButtons")
-    assert "[data-action]" in wiring
-    assert "server(button.dataset.action, buttonFields(button))" in wiring
+    # Every one of them is wired to an action the dispatcher can send,
+    # which is the half reading the source can see.  That a click really
+    # posts it is executed in
+    # ``tests/test_web_browser.py::test_a_button_runs_the_action_a_key_would``.
+    assert "wireActionButtons" in _function(source, "start")
     # And what a button adds to the post is read off the button itself.
     fields = _function(source, "buttonFields")
     for name in ("attachment", "uid", "target", "calendarFrom"):
@@ -853,27 +869,19 @@ def test_the_actions_with_neither_a_key_nor_a_button_are_known() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_the_quit_key_stops_the_server_and_then_closes_the_page() -> None:
-    """Both halves, and the order they have to happen in.
+def test_the_quit_key_is_a_key_on_both_sides() -> None:
+    """``Q`` needs an entry in two tables, and had one in neither.
 
-    The server half is ``tests/test_web_app.py``'s; what is pinned here
-    is the page's: that it asks before closing, that it closes only on a
-    server that really stopped, and that it stops answering keys
-    afterwards instead of posting into a socket that has gone.
+    What it then *does* — ask the server, wait for an answer, close the
+    tab, say so where the tab cannot be closed, and answer no further
+    keys — is executed in
+    ``tests/test_web_browser.py::test_quitting_stops_the_page_as_well_as_the_server``.
+    Wrapping ``quit()``'s body in ``if (false) {}`` left every assertion
+    that used to be here still holding, which is the shape of the dead
+    ``server()`` bug that shipped once already.
     """
-    source = script()
-    quit_path = _function(source, "quit")
-
-    assert "quit" in client_actions(source)
+    assert "quit" in client_actions(script())
     assert "quit" in SERVER_ACTIONS
-    assert 'await server("quit")' in quit_path
-    # Nothing happens if the server would not stop.
-    assert "outcome.changed === 0) return" in quit_path
-    # Then the tab, and a word if the browser refuses to close it.
-    assert quit_path.index("state.quitting = true") < quit_path.index("window.close()")
-    assert "You can close this tab" in quit_path
-    # A page whose server has gone answers no more keys.
-    assert "state.quitting" in _function(source, "onKeyDown")
 
 
 # ----------------------------------------------------------------------
@@ -915,10 +923,19 @@ def _web_sources() -> str:
     )
 
 
-def test_the_event_form_syncs_the_calendar_not_the_mail() -> None:
-    """Its Sync button and `g` are on a calendar page, whatever the surface."""
-    source = script()
-    rewrite = _function(source, "server")
+def test_the_event_form_offers_a_sync_at_all() -> None:
+    """*Which* half it syncs is executed in the browser test.
 
-    assert 'state.surface === "calendar" || state.surface === "event"' in rewrite
-    assert 'name = "sync_calendar";' in rewrite
+    ``tests/test_web_browser.py::test_the_event_form_syncs_the_calendar_and_not_the_mail``
+    taps the button on a real event form and requires
+    ``/action/sync_calendar``.  What is left here is that the button is
+    on the page and the action exists to receive it.
+    """
+    services, _runtime, seeded = _services("dispatch-event-sync")
+
+    with TestClient(build_web_app(services)) as client:
+        pages = _pages(client, seeded)
+
+    assert page_data(pages["event"])["surface"] == "event"
+    assert "sync" in actions(pages["event"])
+    assert "sync_calendar" in SERVER_ACTIONS

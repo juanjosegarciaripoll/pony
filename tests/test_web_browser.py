@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from corpus import plain_text
 from tui_helpers import (
+    make_calendar_runtime,
     make_index,
     make_mirrors,
     make_test_account,
@@ -65,6 +66,17 @@ INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 #: Where the message that tries to phish the reader is kept, so the
 #: list the rest of this file drives stays three rows long.
 HOSTILE = FolderRef(account_name="acct", folder_name="Hostile")
+
+
+def _event_ics() -> bytes:
+    """One event, so the agenda has a row and the form has something to open."""
+    return (
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        b"BEGIN:VEVENT\r\nUID:standing@example.com\r\n"
+        b"DTSTAMP:20260101T090000Z\r\n"
+        b"DTSTART:20260601T090000Z\r\nDTEND:20260601T100000Z\r\n"
+        b"SUMMARY:Standing meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
 
 
 def _phishing_message() -> bytes:
@@ -149,16 +161,17 @@ const out = () => {
 };
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-// The page is ready once it answers keys, which is later than the
-// script running: the keymap arrives in a request of its own, and until
-// it has, every press matches nothing and is quietly dropped.  So the
-// probe is a press — `>` goes to the last row — rather than the
-// presence of a function.
-async function ready(frame) {
+// The page is ready once its script has run, which also means its
+// keymap is loaded: the page carries the table, so there is no request
+// to wait for.  *what* is the selector that says the page is the one
+// expected; a list is confirmed by a press, because `>` going to the
+// last row proves the dispatch and not just the parse.
+async function ready(frame, what = "#rows .row") {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const win = frame.contentWindow;
     const doc = frame.contentDocument;
-    if (typeof win.pressed === "function" && doc.querySelector("#rows .row")) {
+    if (typeof win.pressed === "function" && doc.querySelector(what)) {
+      if (what !== "#rows .row") return;
       press(doc.body, ">");
       if (selected(doc) === doc.querySelector("#rows .row:last-child").dataset.id) {
         press(doc.body, "<");
@@ -167,7 +180,7 @@ async function ready(frame) {
     }
     await sleep(25);
   }
-  throw new Error("the page never started answering keys");
+  throw new Error(`the page never started answering keys: ${what}`);
 }
 
 // Watch what the page asks the server to do, and answer as the server
@@ -281,6 +294,21 @@ async function run() {
   report.steps.push("open");
   out();
 
+  // The event form is a calendar page too, whatever surface it
+  // declares, so its Sync button and `g` must fetch the calendar and
+  // not the mail. The same frame, sent there: `__EVENT__` is the link
+  // the agenda's own row carries.
+  frame.contentWindow.location.assign("__EVENT__");
+  await ready(frame, "form#event-form");
+  const form = frame.contentDocument;
+  intercept(frame.contentWindow, { changed: 0, notices: [] });
+  const beforeSync = report.posts.length;
+  form.querySelector("[data-action='sync']").click();
+  await sleep(300);
+  report.syncPosts = report.posts.slice(beforeSync).map((post) => post.url);
+  report.steps.push("event-sync");
+  out();
+
   // Quitting, in the other frame, because it stops that page for good.
   const reader = document.getElementById("reader");
   await ready(reader);
@@ -350,11 +378,19 @@ def _report() -> dict[str, Any]:
         raw=_phishing_message(),
         message_id="<browser-phish@example.com>",
     )
+    runtime = make_calendar_runtime(
+        make_tmp_paths("browser-ux-cal"),
+        account_name="personal",
+        calendar_name="work",
+        events=(("standing@example.com", _event_ics()),),
+    )
+    (runtime.mirror.root / "personal" / "work").mkdir(parents=True, exist_ok=True)
     services = WebServices(
         config=config,
         index=index,
         mirrors=mirrors,
         contacts=index,
+        calendar=runtime,
     )
     app = build_web_app(services)
     first = index.list_folder_message_summaries(folder=INBOX)[0].message_ref.id
@@ -367,6 +403,10 @@ def _report() -> dict[str, Any]:
         .replace(
             "__MESSAGE__",
             f"/message?account=acct&amp;folder=INBOX&amp;id={first}",
+        )
+        .replace(
+            "__EVENT__",
+            "/calendar/event?account=personal&calendar=work&uid=standing@example.com",
         )
         .replace("__KEYMAP__", json.dumps(keymap))
     )
@@ -481,6 +521,7 @@ def test_the_harness_got_all_the_way_through() -> None:
         "button",
         "typing",
         "open",
+        "event-sync",
         "quit",
     ]
 
@@ -548,6 +589,19 @@ def test_a_press_into_the_search_field_is_left_to_the_field() -> None:
 
 def test_enter_opens_the_row_the_cursor_is_on() -> None:
     assert _report()["opened"] == "/message"
+
+
+def test_the_event_form_syncs_the_calendar_and_not_the_mail() -> None:
+    """Its Sync button and ``g`` are on a calendar page, whatever the surface.
+
+    The surface it declares is ``event``, so the button used to fetch
+    mail.  ``g`` is not live on this surface at all — the edit keymap
+    does not inherit the application keys — so the button is the whole
+    of it, and it is tapped here rather than read for a string.
+    """
+    report = _report()
+
+    assert report["syncPosts"] == ["/action/sync_calendar"]
 
 
 def test_quitting_stops_the_page_as_well_as_the_server() -> None:
