@@ -431,6 +431,15 @@ class MainScreen(Screen[None]):
         display, addr = pair
         self.compose_new(to=f"{display} <{addr}>" if display else addr)
 
+    def action_show_sender_check(self) -> None:
+        """Say what the padlock beside `From` means, at length."""
+        from .sender_check_screen import SenderCheckScreen
+
+        panel = self.query_one(MessageViewPanel)
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            SenderCheckScreen(panel.authentication)
+        )
+
     def action_activate_link(self, idx: str) -> None:
         pair = self.query_one(MessageViewPanel).body_link(int(idx))
         if pair is None or pair[0] != "web":

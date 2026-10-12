@@ -535,6 +535,17 @@ const clientActions = {
   compose_reply_all: () => go(composeUrl("reply_all")),
   compose_forward: () => go(composeUrl("forward")),
   edit_draft: () => go(composeUrl("draft")),
+  show_sender_check: () => {
+    // The padlock beside `From` is a <details>, so there is nothing to
+    // fetch and nothing to render: the key does what a click does.
+    const panel = document.querySelector("details.sender-check");
+    if (!panel) {
+      say("Open a message first.", "warning");
+      return;
+    }
+    panel.open = !panel.open;
+    if (panel.open) panel.scrollIntoView({ block: "nearest" });
+  },
   open_browser: () => {
     const params = messageParams();
     if (!params) {

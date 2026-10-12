@@ -209,11 +209,21 @@ class RenderedTest(unittest.TestCase):
     def test_the_browser_page_states_it_beside_from(self) -> None:
         page = build_browser_html(corpus.authenticated_message())
 
-        self.assertIn("class='auth auth-passed'", page)
+        self.assertIn("sender-check sender-passed", page)
+        self.assertIn("\U0001f512", page)
         self.assertIn("example.com confirmed by dkim+dmarc", page)
-        # Beside `From`, because it is a statement about `From`.
-        self.assertLess(page.index("<td>From</td>"), page.index("<td>Sender</td>"))
-        self.assertLess(page.index("<td>Sender</td>"), page.index("<td>To</td>"))
+        self.assertIn("Anyone can authenticate mail from a domain they own", page)
+        # On the `From` row, because it is a statement about `From`.
+        from_row = page[page.index("<td>From</td>") : page.index("<td>To</td>")]
+        self.assertIn("sender-check", from_row)
+
+    def test_the_padlock_needs_no_script_to_open(self) -> None:
+        """The page is served with scripts switched off, so it uses none."""
+        page = build_browser_html(corpus.authenticated_message())
+
+        self.assertIn("<details class='sender-check", page)
+        self.assertIn("<summary", page)
+        self.assertNotIn("<script", page)
 
     def test_the_browser_page_marks_a_mismatched_signature(self) -> None:
         page = build_browser_html(
@@ -222,14 +232,28 @@ class RenderedTest(unittest.TestCase):
             )
         )
 
-        self.assertIn("class='auth auth-unaligned'", page)
+        self.assertIn("sender-check sender-unaligned", page)
+        self.assertIn("\U0001f513", page)
         self.assertIn("not by example.com", page)
 
-    def test_the_browser_page_says_nothing_when_there_is_no_report(self) -> None:
+    def test_an_unchecked_message_gets_an_open_padlock(self) -> None:
+        """Absent is not the same as unchecked, so the lock is always there."""
         page = build_browser_html(corpus.plain_text())
 
-        self.assertNotIn("<td>Sender</td>", page)
-        self.assertNotIn("class='auth", page)
+        self.assertIn("sender-check sender-unknown", page)
+        self.assertIn("\U0001f513", page)
+        self.assertIn("Sender not checked", page)
+        # Nothing to report means no summary and no method list.
+        self.assertNotIn("<p class='sender-detail'", page)
+        self.assertNotIn("<p>not checked</p>", page)
+
+    def test_a_failed_check_is_not_the_same_glyph_as_an_unchecked_one(self) -> None:
+        page = build_browser_html(
+            corpus.authenticated_message(results="mx; dkim=fail header.d=example.com")
+        )
+
+        self.assertIn("\u26a0\ufe0f", page)
+        self.assertIn("sender-check sender-failed", page)
 
     def test_the_senders_own_styles_come_before_ponys(self) -> None:
         """A `table{}` of the sender's must not win on being later.

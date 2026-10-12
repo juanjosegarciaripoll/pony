@@ -786,6 +786,7 @@ CLIENT_ACTIONS = frozenset(
         "browse_contacts",
         "open_browser",
         "print_pdf",
+        "show_sender_check",
         "save_message",
         "attachments_open",
         "attachments_save",

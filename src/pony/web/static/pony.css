@@ -411,24 +411,56 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* What the receiving server said about the sender.  The message's own
-   markup is never in this page -- it is a page of its own -- so these
-   colours cannot be restyled by it. */
-.headers dd.auth {
+/* The padlock beside `From`, and what it means when opened.  A
+   <details> rather than a dialog: the pages work without the script,
+   and `L` only toggles what a click already toggles. */
+details.sender-check {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+details.sender-check > summary {
+  display: inline;
+  cursor: pointer;
+  list-style: none;
+}
+
+details.sender-check > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.sender-check[open] {
+  display: block;
+  margin-top: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 44rem;
+}
+
+details.sender-check p {
+  margin: 0.4rem 0;
+}
+
+details.sender-check p.sender-headline {
+  font-weight: 600;
+}
+
+details.sender-check p.sender-detail {
   color: var(--fg-dim);
+  font-size: 0.8rem;
 }
 
-.headers dd.auth-passed {
+details.sender-passed p.sender-headline {
   color: var(--ok);
-  font-weight: 600;
 }
 
-.headers dd.auth-failed {
+details.sender-failed p.sender-headline {
   color: var(--error);
-  font-weight: 600;
 }
 
-.headers dd.auth-unaligned {
+details.sender-unaligned p.sender-headline {
   color: var(--warning);
 }
 

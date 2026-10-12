@@ -98,8 +98,86 @@ class MessageAuthentication:
 
     @property
     def worth_showing(self) -> bool:
-        """False when there is nothing to say, so no front end says it."""
+        """False when no server reported, so the detail has nothing in it."""
         return self.verdict is not Authenticity.UNKNOWN
+
+    @property
+    def icon(self) -> str:
+        """The one character a header line carries.
+
+        Shut only for an aligned pass: a shut lock on a message that
+        failed its check would be a lie, however briefly told, and a
+        signature belonging to some other domain has not confirmed this
+        sender either.  A check that ran and failed gets a third glyph
+        rather than sharing the open lock with the ordinary case of no
+        report at all, because those two are not the same news and a
+        reader should not have to click to tell them apart.
+        """
+        match self.verdict:
+            case Authenticity.PASSED:
+                return "\U0001f512"  # shut padlock
+            case Authenticity.FAILED:
+                return "\u26a0\ufe0f"  # warning sign
+            case Authenticity.UNALIGNED | Authenticity.UNKNOWN:
+                return "\U0001f513"  # open padlock
+
+    def headline(self) -> str:
+        """The dialog's title: four words at most, no jargon."""
+        match self.verdict:
+            case Authenticity.PASSED:
+                return "Sender confirmed"
+            case Authenticity.UNALIGNED:
+                return "Sender not confirmed"
+            case Authenticity.FAILED:
+                return "Sender check failed"
+            case Authenticity.UNKNOWN:
+                return "Sender not checked"
+
+    def meaning(self) -> str:
+        """What the verdict does and does not mean, in plain words.
+
+        A shut lock is read as "safe", and this is the only place that
+        can say it is not: a domain's own mail authenticates perfectly
+        well, which is exactly what a convincing phishing domain relies
+        on.  Every front end shows this text, unabridged.
+        """
+        match self.verdict:
+            case Authenticity.PASSED:
+                return (
+                    f"The domain {self.from_domain or 'in From'} really did sign "
+                    "this message, so it is not a forgery of that domain.\n\n"
+                    "That is not the same as the sender being trustworthy. "
+                    "Anyone can authenticate mail from a domain they own, and a "
+                    "convincing imitation of a bank is usually sent from a "
+                    "domain the attacker owns outright. Read the domain itself, "
+                    "not the lock."
+                )
+            case Authenticity.UNALIGNED:
+                signer = self.signed_domain or "another domain"
+                return (
+                    f"Something signed this message, but it was {signer}, not "
+                    f"{self.from_domain or 'the domain in From'}.\n\n"
+                    "A great deal of legitimate mail looks like this: "
+                    "newsletters and notifications are often sent by a service "
+                    "on the sender's behalf. So does phishing. Nothing here "
+                    "says which."
+                )
+            case Authenticity.FAILED:
+                return (
+                    "The server that accepted this message checked, and the "
+                    "message did not pass.\n\n"
+                    "That can mean it was tampered with in transit, or was "
+                    "forwarded by something that rewrote it, or was forged. "
+                    "Treat anything it asks of you with suspicion."
+                )
+            case Authenticity.UNKNOWN:
+                return (
+                    "The server that accepted this message said nothing about "
+                    "who sent it, so nothing is known either way.\n\n"
+                    "This is ordinary. Many mail servers do not add an "
+                    "Authentication-Results header at all, and a message "
+                    "without one is not suspicious by itself."
+                )
 
     def label(self) -> str:
         """One short line for a header area."""

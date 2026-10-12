@@ -105,6 +105,9 @@ READER_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("R", "compose_reply_all", "Reply all", Surface.READER),
     KeyBinding("f", "compose_forward", "Forward", Surface.READER),
     KeyBinding("w", "open_browser", "Web view", Surface.READER),
+    # Off the footer: the padlock beside `From` is the affordance, and
+    # this is the same thing for a reader who does not use a mouse.
+    KeyBinding("L", "show_sender_check", "Sender check", Surface.READER, show=False),
     KeyBinding("ctrl+p", "print_pdf", "Print PDF", Surface.READER),
     KeyBinding("u", "mark_unread", "Mark unread", Surface.READER),
     KeyBinding("!", "toggle_flagged", "Flag", Surface.READER),

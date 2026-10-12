@@ -335,9 +335,11 @@ def test_the_reader_states_who_vouched_for_the_message() -> None:
     with _client(services) as client:
         page = client.get(_message(message_id)).text
 
-    assert "Sender" in page
+    assert "sender-check sender-passed" in page
+    assert "\U0001f512" in page
     assert "example.com confirmed by dkim+dmarc" in page
-    assert "auth-passed" in page
+    # The padlock is read as "safe", so the panel says what it is not.
+    assert "Anyone can authenticate mail from a domain they own" in page
 
 
 def test_the_reader_marks_a_signature_from_another_domain() -> None:
@@ -353,19 +355,21 @@ def test_the_reader_marks_a_signature_from_another_domain() -> None:
         page = client.get(_message(message_id)).text
 
     assert "not by example.com" in page
-    assert "auth-unaligned" in page
+    assert "sender-check sender-unaligned" in page
+    assert "\U0001f513" in page
 
 
-def test_the_reader_says_nothing_when_no_server_reported() -> None:
-    """Most mail has no report; a header that is always there is noise."""
+def test_an_unchecked_message_gets_an_open_padlock() -> None:
+    """Absent is not the same as unchecked, so the lock is always there."""
     services, index = _services("web-auth-silent")
     message_id = _only_message(index)
 
     with _client(services) as client:
         page = client.get(_message(message_id)).text
 
-    assert "auth-passed" not in page
-    assert ">Sender<" not in page
+    assert "sender-check sender-unknown" in page
+    assert "\U0001f513" in page
+    assert "sender-check sender-passed" not in page
 
 
 def test_a_message_can_be_downloaded_as_it_arrived() -> None:

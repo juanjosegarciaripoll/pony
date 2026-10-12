@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from chronos.outcome import Notice, Outcome, failure, info, warn
 
 from .. import mailbox_actions
+from ..authentication import MessageAuthentication
 from ..domain import FolderRef, MessageFlag
 from ..folder_utils import shows_recipient
 from ..invitation import CALENDAR_CONTENT_TYPES
@@ -497,30 +498,47 @@ def _row_action(name: str, label: str) -> Raw:
     )
 
 
+def _sender_check(auth: MessageAuthentication) -> Raw:
+    """The padlock beside ``From``, and what it means when opened.
+
+    A ``<details>`` rather than a dialog: it needs no script, which
+    matters because this front end's script is a convenience and its
+    pages have to work without one.  ``L`` opens it from the keyboard,
+    through the shared keymap.
+    """
+    return element(
+        "details",
+        element("summary", auth.icon, title=auth.headline()),
+        element("p", auth.headline(), class_="sender-headline"),
+        # With no report there is nothing to summarise: the headline
+        # already says "not checked".
+        element("p", auth.label()) if auth.worth_showing else None,
+        join(element("p", paragraph) for paragraph in auth.meaning().split("\n\n")),
+        element("p", auth.detail(), class_="sender-detail")
+        if auth.worth_showing
+        else None,
+        class_=f"sender-check sender-{auth.verdict.value}",
+    )
+
+
 def _headers(rendered: RenderedMessage) -> Raw:
-    auth = rendered.authentication
+    # The verdict rides on `From`, because it is a statement about
+    # `From`: whether the domain the message claims actually vouched for
+    # it.  The receiving server decided that; Pony only read its answer.
     fields = (
-        ("From", rendered.from_, ""),
-        ("To", rendered.to, ""),
-        ("Cc", rendered.cc, ""),
-        ("Date", rendered.date, ""),
-        # Next to From, because it is about From: whether the domain the
-        # message claims to come from actually vouched for it.  The
-        # receiving server decided this; Pony only read its answer.
-        (
-            "Sender",
-            auth.label() if auth.worth_showing else "",
-            f"auth auth-{auth.verdict.value}",
-        ),
+        ("From", fragment(rendered.from_, _sender_check(rendered.authentication))),
+        ("To", rendered.to),
+        ("Cc", rendered.cc),
+        ("Date", rendered.date),
     )
     return element(
         "dl",
         join(
             fragment(
                 element("dt", label),
-                element("dd", value, class_=css) if css else element("dd", value),
+                element("dd", value),
             )
-            for label, value, css in fields
+            for label, value in fields
             if value
         ),
         class_="headers",

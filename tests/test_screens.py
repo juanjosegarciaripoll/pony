@@ -776,13 +776,17 @@ async def test_the_reader_states_who_vouched_for_the_message() -> None:
         panel = app.screen.query_one(MessageViewPanel)
         shown = str(panel.query_one("#content", Static).content)
 
-    assert "Sender:" in shown
-    assert "example.com confirmed by dkim+dmarc" in shown
-    assert shown.index("From:") < shown.index("Sender:")
+    # One character on the `From` line, and nothing else: the header
+    # area is for the message's own headers.
+    assert "\U0001f512" in shown
+    assert "show_sender_check" in shown
+    assert "confirmed by" not in shown
+    from_line = next(line for line in shown.splitlines() if line.startswith("From:"))
+    assert "\U0001f512" in from_line
 
 
-async def test_the_reader_is_silent_when_no_server_reported() -> None:
-    """Most mail carries no report, and a line that is always there is noise."""
+async def test_an_unchecked_message_gets_an_open_padlock() -> None:
+    """Absent is not the same as unchecked, so the lock is always there."""
     from textual.widgets import Static
 
     from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
@@ -794,7 +798,56 @@ async def test_the_reader_is_silent_when_no_server_reported() -> None:
         panel = app.screen.query_one(MessageViewPanel)
         shown = str(panel.query_one("#content", Static).content)
 
-    assert "Sender:" not in shown
+    assert "\U0001f513" in shown
+    assert "\U0001f512" not in shown
+
+
+async def test_the_padlock_opens_a_panel_that_says_what_it_means() -> None:
+    """A shut lock reads as "safe"; this is the only place that can deny it."""
+    from textual.widgets import Static
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.screens.sender_check_screen import SenderCheckScreen
+
+    app = _make_host(EmlViewerScreen, corpus.authenticated_message())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_show_sender_check()
+        await pilot.pause()
+
+        panel = app.screen
+        assert isinstance(panel, SenderCheckScreen)
+        shown = " ".join(str(widget.content) for widget in panel.query(Static))
+        assert "Sender confirmed" in shown
+        assert "example.com confirmed by dkim+dmarc" in shown
+        assert "Anyone can authenticate mail from a domain they own" in shown
+        assert "reported by mx.example.org" in shown
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, EmlViewerScreen)
+
+
+async def test_the_panel_explains_an_unchecked_message_too() -> None:
+    from textual.widgets import Static
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.screens.sender_check_screen import SenderCheckScreen
+
+    app = _make_host(EmlViewerScreen, corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_show_sender_check()
+        await pilot.pause()
+
+        panel = app.screen
+        assert isinstance(panel, SenderCheckScreen)
+        shown = " ".join(str(widget.content) for widget in panel.query(Static))
+        assert "not suspicious by itself" in shown
 
 
 async def test_eml_viewer_screen_reports_attachment_io_errors(

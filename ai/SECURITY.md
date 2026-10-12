@@ -26,7 +26,15 @@ second surface.  What stands between them:
   pass, because it authenticates the envelope and not the `From` a
   reader sees; and nothing shown at all when no server reported, so the
   indicator stays worth reading.  Pony verifies no signature itself and
-  does not claim to — the line names the server that did.
+  does not claim to — the panel names the server that did.
+
+  It reaches the reader as one padlock, shut only for an aligned pass,
+  with a third glyph for a check that ran and failed so that is not
+  confused with the ordinary case of no report.  Behind it, in every
+  front end, is a paragraph saying what a shut lock does *not* mean: a
+  domain's own mail authenticates perfectly well, which is what a
+  convincing phishing domain relies on.  An indicator that reassures
+  without that sentence would be worse than none.
 - **A message body is shown as text.** The reader renders
   `render_message(...).body` — HTML stripped, URLs as text — and
   linkifies only `https?://`, `ftp://` and bare addresses, so a

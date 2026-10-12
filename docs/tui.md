@@ -104,45 +104,43 @@ When the message view is focused (after opening a message):
 
 ### Who the message is from
 
-Under `From`, the reader shows a `Sender` line when the server that
-accepted the message said something about who sent it:
+The `From` line carries one character — a padlock:
 
 ```
- From:    Alice Smith <alice@example.com>
- Sender:  example.com confirmed by dkim+dmarc
+ From:    Alice Smith <alice@example.com>  🔒
 ```
+
+| Glyph | Means |
+|---|---|
+| 🔒 | The domain in `From` is the domain that signed the message |
+| 🔓 | Nobody signed it as that domain, or no server said |
+| ⚠️ | The server checked and the message did not pass |
+
+Click it, or press ++l++, and a panel says which of those it is, what it
+does *not* mean, and what the server actually reported.
+
+That panel matters more than the glyph. A shut padlock is read as
+"safe", and it does not mean that: it means the message really is from
+the domain it claims. Anyone can authenticate mail from a domain they
+own, and a convincing imitation of a bank is usually sent from a domain
+the attacker owns outright. The panel says so in those words, every
+time.
 
 Pony checks nothing itself. DKIM is a signature verified against DNS,
-and by the time a message is in the mirror the key may have rotated;
-the server that accepted it did check, and recorded the result in an
-`Authentication-Results` header. The line reports that, and nothing
+and by the time a message is in the mirror the key may have rotated; the
+server that accepted it did check, and recorded the result in an
+`Authentication-Results` header. The padlock reports that, and nothing
 else.
 
-Three things it can say:
+Two limits worth knowing. Only the topmost header is read: a message can
+arrive carrying any number of reports the sender wrote itself, and only
+the receiving server's own — the one it prepended — is worth anything.
+And `spf=pass` on its own is not treated as a pass, because SPF
+authenticates the envelope sender rather than the `From` header a reader
+is looking at, and the two differ for every mailing list.
 
-| Line | Means |
-|---|---|
-| `example.com confirmed by dkim+dmarc` | The domain in `From` is the domain that signed it |
-| `signed by bulk.example, not by example.com` | Something signed it, but not the sender it claims |
-| `failed dkim+dmarc` | The server checked and it did not pass |
-
-The middle one is the case the line exists for. A signature that passes
-proves only that *somebody* signed the message, and in phishing that
-somebody is usually a domain the attacker owns — so a reader told only
-"signed" would be reassured about exactly the mail they should not be.
-
-Nothing is shown when no server reported, which is most personal mail
-relayed by servers that do not add the header. An indicator that is
-always there is one nobody reads.
-
-Two limits worth knowing. Only the topmost header is read: a message
-can arrive carrying any number of reports the sender wrote itself, and
-only the receiving server's own — the one it prepended — is worth
-anything. And `spf=pass` on its own is not treated as a pass, because
-SPF authenticates the envelope sender rather than the `From` header a
-reader is looking at, and the two differ for every mailing list.
-
-The same line appears in the browser front end and on the printed page.
+The browser front end shows the same padlock, as a panel that opens in
+place; so does the page ++w++ opens and the PDF ++ctrl+p++ prints.
 
 ---
 

@@ -14,7 +14,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
-from ...authentication import Authenticity
+from ...authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
 from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
@@ -205,6 +205,13 @@ class MessageViewPanel(VerticalScroll):
         self._set_content("")
 
     @property
+    def authentication(self) -> MessageAuthentication:
+        """What the receiving server said about the open message's sender."""
+        if self._rendered is None:
+            return UNKNOWN_AUTHENTICATION
+        return self._rendered.authentication
+
+    @property
     def invitation(self) -> Invitation | None:
         """The meeting invitation on the open message, if it carries one."""
         return self._invitation
@@ -312,19 +319,17 @@ class MessageViewPanel(VerticalScroll):
             ("Cc:      ", r.cc),
         ):
             line = self._addr_field(label, header)
-            if line is not None:
-                lines.append(line)
+            if line is None:
+                continue
+            if header is r.from_:
+                # One character, because a header area is for reading the
+                # message's own headers.  What the padlock means needs a
+                # sentence, so it is a sentence away: see SenderCheckScreen.
+                click = '[@click="screen.show_sender_check()"]'
+                line += f"  {click}{r.authentication.icon}[/]"
+            lines.append(line)
         lines.append(f"Date:    {_escape(r.date)}")
         lines.append(f"Subject: {_escape(r.subject)}")
-        if r.authentication.worth_showing:
-            # What the receiving server found, not what Pony checked.
-            # Shown next to From because it is about From: whether the
-            # domain the message claims actually vouched for it.
-            auth = r.authentication
-            style = "red" if auth.verdict is Authenticity.FAILED else "dim"
-            if auth.verdict is Authenticity.PASSED:
-                style = "green"
-            lines.append(f"Sender:  [{style}]{_escape(auth.label())}[/{style}]")
 
         if r.attachments:
             lines.append("")

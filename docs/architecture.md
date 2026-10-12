@@ -526,6 +526,13 @@ WeasyPrint or LibreOffice).
 `pony.authentication` reads the first `Authentication-Results` header
 (RFC 8601) into a verdict on `RenderedMessage`, so the terminal, the
 browser and the printed page show one answer decided in one place. It
+reaches the reader as one padlock on the `From` line, because a header
+area is for the message's own headers; what the padlock means takes a
+paragraph, so it is a click or `L` away — `SenderCheckScreen` in the
+terminal, a scriptless `<details>` in the browser and on the printed
+page. That paragraph is not decoration: a shut lock is read as "safe",
+and the only honest place to say it means something narrower is
+somewhere with room for a sentence. It
 reads only the topmost header, because a message can arrive carrying
 reports the sender wrote, and it compares the signing domain against
 the `From` domain, because a signature that passes for some other
