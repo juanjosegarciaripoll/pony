@@ -122,7 +122,10 @@ class HtmlToPdfTest(unittest.TestCase):
         ):
             html_to_pdf("<html>hi</html>", Path(tmp) / "msg.pdf")
 
-        with self.assertRaises(urllib.error.URLError):
+        # A closed listening socket refuses the connection; which
+        # exception that surfaces as is not the same on every platform,
+        # and CI runs three.
+        with self.assertRaises((urllib.error.URLError, ConnectionError)):
             request = urllib.request.Request(urls[0])  # noqa: S310
             urllib.request.urlopen(request, timeout=5)  # noqa: S310
 

@@ -339,7 +339,7 @@ jobs:
               "```\n\n"
               "Pre-built binaries for Linux, macOS, and Windows are attached below.\n\n"
               "**[Full documentation](https://juanjosegarciaripoll.github.io/pony/)** "
-              "| **[Changelog](https://github.com/juanjosegarciaripoll/pony/blob/main/CHANGELOG.md)**"
+              "| **[Changelog](https://github.com/juanjosegarciaripoll/pony/blob/${{ needs.prepare.outputs.tag }}/CHANGELOG.md)**"
           )
 
           with open("release_body.md", "w", encoding="utf-8") as f:
