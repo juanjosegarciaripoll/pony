@@ -1533,6 +1533,33 @@ def test_the_page_closes_itself_after_the_server_stops() -> None:
     assert "state.quitting" in source.split("function onKeyDown")[1]
 
 
+def test_an_action_drops_the_message_it_took_out_of_the_folder() -> None:
+    """`A` twice archived one message and then failed on it again.
+
+    `data-message` is rendered by the server and a refresh swaps only
+    the rows, so after archiving the open message the page went on
+    naming it. `targets()` prefers that name over the cursor, so the
+    second press acted on a message that had left the folder -- and the
+    reading pane still showed it. The refresh now leaves for the folder
+    without it.
+
+    Read rather than executed: the behaviour needs a browser, and the
+    real-browser harness intercepts `/action/*`, so nothing would
+    actually leave the folder there.
+    """
+    source = JS.read_text(encoding="utf-8")
+    refresh = source.split("async function refresh()")[1].split("\n}")[0]
+
+    assert "here().message" in refresh
+    assert "folderParams()" in refresh
+    # Without the `id`, so the page stops naming a message that is gone.
+    assert "id" not in _params_of(source, "folderParams")
+
+
+def _params_of(source: str, name: str) -> str:
+    return source.split(f"function {name}()")[1].split("\n}")[0]
+
+
 def test_the_footer_lists_each_key_once() -> None:
     """A surface can inherit the application keys and declare them again."""
     from chronos.keymap import web_key

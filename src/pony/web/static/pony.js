@@ -121,16 +121,23 @@ function here() {
   return document.body.dataset;
 }
 
-function mailParams() {
+// The folder being read, without the message open in it.
+function folderParams() {
   const data = here();
   const params = new URLSearchParams();
   if (data.account) params.set("account", data.account);
   if (data.folder) params.set("folder", data.folder);
   if (data.query) params.set("q", data.query);
+  return params;
+}
+
+function mailParams() {
+  const params = folderParams();
   // Which row is open, so the refreshed list comes back with it marked
   // as such. Without it the fragment carries no selection at all, the
   // cursor dropped to the first row after every action, and the next
   // press acted on whatever happened to be at the top.
+  const data = here();
   if (data.message) params.set("id", data.message);
   return params;
 }
@@ -303,6 +310,18 @@ async function refresh() {
   if (fresh) {
     target.replaceWith(fresh);
     wireMarkTaps();
+    // The message that was open may have left the folder: archiving,
+    // trashing or moving it does that. `data-message` is rendered by
+    // the server and this swapped only the rows, so it would go on
+    // naming a message that is no longer here -- `targets()` prefers
+    // it, so `A` pressed twice archived the first message and then
+    // failed on it again, and the reading pane still showed it. The
+    // folder without it is what the user is actually looking at.
+    const open = here().message;
+    if (open && !document.querySelector(`#rows .row[data-id="${CSS.escape(open)}"]`)) {
+      go(`/mail?${folderParams()}`);
+      return;
+    }
     const again =
       wasId && document.querySelector(`#rows .row[data-id="${CSS.escape(wasId)}"]`);
     // The row may be gone -- archiving it takes it out of the folder --
