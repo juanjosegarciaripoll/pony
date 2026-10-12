@@ -1674,24 +1674,28 @@ class MainScreen(Screen[None]):
         self.open_current_in_browser()
 
     def open_current_in_browser(self) -> None:
-        import tempfile
         import webbrowser
 
+        from ...browser_preview import serve_html
         from ...message_renderer import build_browser_html
 
         current = self._current_message_bytes(noun="browser view")
         if current is None:
             return
         _msg, raw = current
-        with tempfile.NamedTemporaryFile(
-            suffix=".html", delete=False, mode="w", encoding="utf-8"
-        ) as handle:
-            handle.write(build_browser_html(raw))
-            path = handle.name
+        # Served over loopback rather than written to a temporary file:
+        # nothing of the message reaches the disk, and the page arrives
+        # under the same policy as the browser front end's own
+        # `/message/body`.  See `pony.browser_preview`.
+        try:
+            url = serve_html(build_browser_html(raw))
+        except OSError as exc:
+            self.app.notify(f"Could not open the browser view: {exc}", severity="error")
+            return
         # A browser may itself be a terminal application.  Suspend Textual
         # so it restores terminal modes (including mouse reporting) after.
         with suspend_for_external_program(self.app):
-            webbrowser.open(Path(path).as_uri())
+            webbrowser.open(url)
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""

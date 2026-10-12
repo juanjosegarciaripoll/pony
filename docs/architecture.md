@@ -56,6 +56,8 @@ src/pony/
   keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
+  html_policy.py       # the headers a message's own HTML is shown under
+  browser_preview.py   # serves that HTML to the browser over loopback
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
   search_parser.py     # query language parser
@@ -458,10 +460,9 @@ The reader shows what `render_message` produced — the same text the CLI
 prints and the MCP tools return, with URLs and addresses linkified and
 nothing to execute. `w` opens `/message/body`, which returns
 `build_browser_html` output — `cid:` images already inlined as data
-URIs — under `Content-Security-Policy: default-src 'none'; img-src
-data:` and `Referrer-Policy: no-referrer`, as a top-level page rather
-than a frame inside the application. Attachments are downloaded with
-`X-Content-Type-Options: nosniff`.
+URIs — under the headers in `pony.html_policy`, as a top-level page
+rather than a frame inside the application. Attachments are downloaded
+with `X-Content-Type-Options: nosniff`.
 
 **Attachments go up as bytes.** A multipart form would mean a third
 runtime dependency for the sake of one request, so the script posts the
@@ -518,6 +519,21 @@ first. `build_browser_html()` produces self-contained HTML with CID-resolved
 inline images for the `w` key. `pony.pdf_export` feeds that same HTML to
 whichever external converter is present (Chromium/Chrome, `wkhtmltopdf`,
 WeasyPrint or LibreOffice).
+
+**A message's HTML is never shown inside either front end, and never as
+a file.** It is a page of its own, and both front ends serve it: the
+browser at `GET /message/body`, the terminal through
+`pony.browser_preview`, which binds `127.0.0.1` on a kernel-chosen port,
+answers one unguessable path with the document held in memory, and
+closes after two minutes or when the next message is opened. Nothing of
+the message reaches the disk, and because a `file://` document carries
+no headers while a served one does, the restrictions apply to both.
+Those restrictions are one definition in `pony.html_policy`, which
+neither transport owns, so the two pages cannot drift apart.
+
+`browser_preview` is not the browser front end: `http.server` from the
+standard library answers one GET, so the `w` key works on a
+terminal-only install with no `web` extra and no Starlette.
 
 Nothing about that conversion is terminal-specific, so it lives outside
 `tui/`: `pony view --pdf` converts `.eml` files from the command line with

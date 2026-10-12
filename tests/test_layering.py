@@ -82,6 +82,11 @@ _BACKEND_MODULES = (
     "pony.invitation",
     "pony.domain",
     "pony.paths",
+    # The terminal's `w` serves its page from here instead of writing a
+    # file, and it has to do that without the `web` extra installed:
+    # `http.server` only, no Starlette, and no widget tree either.
+    "pony.browser_preview",
+    "pony.html_policy",
     "pony.web",
 )
 

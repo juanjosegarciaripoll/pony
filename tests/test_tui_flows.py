@@ -12,7 +12,9 @@ via ``tui_helpers.build_pony_app`` / ``build_compose_app`` — the shared
 
 from __future__ import annotations
 
+import tempfile
 import threading
+import urllib.request
 from collections.abc import Callable
 from email.message import EmailMessage, Message
 from pathlib import Path
@@ -42,6 +44,7 @@ from tui_helpers import (
 import pony.tui.screens.add_attachment_screen as add_attachment_module
 import pony.tui.screens.save_folder_picker_screen as save_folder_module
 from chronos.scheduler import SyncOutcome
+from pony.browser_preview import close_preview
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,
@@ -327,10 +330,18 @@ async def test_forward_eml_attachment_can_be_removed(
     )
 
 
-async def test_open_in_browser_calls_webbrowser(
+async def test_open_in_browser_serves_the_page_and_writes_no_file(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """Pressing ``w`` on an HTML-only message hands a file URI to webbrowser."""
+    """Pressing ``w`` hands over a loopback URL, not a file in the temp dir.
+
+    The file this used to write was never unlinked, so a reader left one
+    copy of every message it looked at in the system temporary
+    directory — out of reach of ``pony reset``, and in RAM where that
+    directory is a tmpfs.  Pointing ``tempfile`` at an empty directory
+    makes the regression visible: the press must leave it empty.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="browser",
@@ -341,18 +352,29 @@ async def test_open_in_browser_calls_webbrowser(
         "pony.tui.widgets.message_view.webbrowser.open",
         open_mock,
     )
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
-    async with app.run_test() as pilot:
-        await _select_first_inbox(pilot)
-        await pilot.press("enter")  # open the message
-        await pilot.pause()
-        await pilot.press("w")
-        await pilot.pause()
+    try:
+        async with app.run_test() as pilot:
+            await _select_first_inbox(pilot)
+            await pilot.press("enter")  # open the message
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
 
-    assert open_mock.call_count == 1
-    uri = open_mock.call_args.args[0]
-    assert uri.startswith("file://")
-    assert uri.endswith(".html")
+        assert open_mock.call_count == 1
+        url = open_mock.call_args.args[0]
+        assert url.startswith("http://127.0.0.1:")
+        assert list(tmp_path.iterdir()) == []
+
+        request = urllib.request.Request(url)  # noqa: S310 (loopback)
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+            served = response.read().decode("utf-8")
+            policy = response.headers["Content-Security-Policy"]
+        assert "default-src 'none'" in policy
+        assert "html" in served.lower()
+    finally:
+        close_preview()
 
 
 async def test_print_pdf_picks_folder_and_exports(

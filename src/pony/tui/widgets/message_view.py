@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 import webbrowser
 from dataclasses import dataclass
 from email.utils import getaddresses
@@ -15,6 +14,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
+from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
 from ...message_renderer import (
@@ -209,19 +209,27 @@ class MessageViewPanel(VerticalScroll):
         return self._invitation
 
     def open_in_browser(self) -> None:
-        """Render the message as a self-contained HTML file and open it."""
+        """Serve the message as a page of its own and open it.
+
+        The document goes out over loopback rather than into a temporary
+        file, so no part of the message is written to the disk and the
+        browser applies the same headers the web front end sends with
+        it.  See :mod:`pony.browser_preview`.
+        """
         if self._rendered is None:
             return
         html = build_browser_html(self._rendered.raw_bytes)
-        with tempfile.NamedTemporaryFile(
-            suffix=".html", delete=False, mode="w", encoding="utf-8"
-        ) as f:
-            f.write(html)
-            path = f.name
+        try:
+            url = serve_html(html)
+        except OSError as exc:
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Could not open the browser view: {exc}", severity="error"
+            )
+            return
         # A browser may itself be a terminal application.  Suspend Textual so
         # it restores terminal modes (including mouse reporting) afterwards.
         with suspend_for_external_program(self.app):
-            webbrowser.open(Path(path).as_uri())
+            webbrowser.open(url)
 
     @property
     def attachment_count(self) -> int:

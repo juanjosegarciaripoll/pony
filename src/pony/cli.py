@@ -27,6 +27,7 @@ from .accounts import (
     find_account,
     find_imap_account,
 )
+from .browser_preview import close_preview
 from .config import ConfigError, load_config, read_raw_config
 from .contact_merge import merged_contact
 from .credentials import build_credentials_provider, encrypt_password
@@ -2863,6 +2864,9 @@ def run_tui(
     try:
         app.run()
     finally:
+        # Stop answering for whatever `w` last served, rather than
+        # leaving a message fetchable on loopback after the app is gone.
+        close_preview()
         if calendar is not None:
             calendar.close()
         index.close()
