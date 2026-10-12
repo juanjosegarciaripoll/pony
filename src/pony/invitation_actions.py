@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from chronos.outcome import Notice, NoticeLog, Outcome, failure, info, warn
 
-from .accounts import resolve_smtp_password
+from .delivery import resolve_send_password
 from .invitation import (
     build_itip_message,
     parse_invitation,
@@ -125,15 +125,13 @@ def reply_to_invitation(
         return Outcome.refused(
             warn(f"Account {account.name!r} has no SMTP server configured."),
         )
-    try:
-        password = resolve_smtp_password(account, credentials)
-    except Exception as exc:  # noqa: BLE001 — any backend may fail
-        _log.error("credential lookup failed for %r: %s", account.name, exc)
-        return Outcome.refused(failure(f"Could not get password: {exc}"))
-    if password is None:
-        return Outcome.refused(
-            failure(f"No password available for account {account.name!r}."),
-        )
+    # `delivery.resolve_send_password` is the one answer to "what does
+    # this account send with": it logs a backend failure and words both
+    # refusals, which this used to do again in its own words through a
+    # second function with the arguments the other way round.
+    password = resolve_send_password(credentials, account)
+    if isinstance(password, Notice):
+        return Outcome.refused(password)
 
     sender = account.email_address or account.username
     message = build_itip_message(

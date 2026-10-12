@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import logging
 import os
 import shutil
@@ -1872,14 +1871,18 @@ def run_dedup_folder(
             print("Rerun with --apply to write changes.")
             return 0
 
-        for msg in all_losers:
-            index.upsert_message(
-                message=dataclasses.replace(
-                    msg,
-                    local_status=MessageStatus.TRASHED,
-                    trashed_at=now,
-                )
-            )
+        # Through the action, not a second spelling of it: the field set
+        # a trashed row carries *is* the sync contract, and this copy
+        # overwrote `trashed_at` -- so a row already in the trash had
+        # its retention clock reset by a dedup pass, and survived a
+        # retention it had already outlived.
+        from .mailbox_actions import Mailboxes, trash_messages
+
+        trash_messages(
+            Mailboxes(config=config, index=index, mirrors={}),
+            all_losers,
+            now=now,
+        )
 
     print(
         f"\nTrashed {n_losers} row(s) in {n_groups} group(s)."

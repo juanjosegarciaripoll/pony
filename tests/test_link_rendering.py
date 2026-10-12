@@ -70,6 +70,19 @@ class HTMLAnchorExtractionTest(unittest.TestCase):
         self.assertNotIn("\x00", r.body)
         self.assertIn("https://x.org", r.body)
 
+    def test_a_shouted_scheme_is_still_a_link(self) -> None:
+        """RFC 3986 §3.1: a scheme is case-insensitive.
+
+        Three of the four sibling spellings of this test in
+        `message_renderer` fold the case; the anchor's did not, so
+        `<a href="HTTP://...">` lost its link with no sign that it had.
+        """
+        html = "<p>See <a href='HTTP://Example.COM/x'>the notes</a>.</p>"
+        r = render_message(_html_msg(html))
+        self.assertEqual(r.links, (("web", "HTTP://Example.COM/x"),))
+        self.assertIn("the notes", r.styled_body)
+        self.assertIn("\x00LINK:0\x00", r.styled_body)
+
     def test_mailto_anchor_human_text(self) -> None:
         html = "<p>Mail <a href='mailto:foo@bar.com'>Foo</a>.</p>"
         r = render_message(_html_msg(html))

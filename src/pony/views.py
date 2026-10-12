@@ -206,13 +206,26 @@ def format_received(received_at: datetime, *, now: datetime | None = None) -> st
     Today's mail is told apart by the time of day; this year's by day and
     month; anything older carries its year, because that is the only
     thing that distinguishes it.
+
+    In the reader's own zone, as every calendar view renders a moment
+    (`chronos.views` starts each of its three with
+    ``start.astimezone()``).  Stored times are UTC, so at UTC+2 mail
+    that arrived at 00:30 this morning was rendered ``Jan 05`` -- a
+    date, for mail that came in a few hours ago -- because its UTC day
+    was yesterday.
+
+    The zone is *now*'s, which is the system's when nobody says
+    otherwise.  That is what makes the rule testable without setting
+    ``TZ`` for the whole process: a caller that passes a moment in
+    another zone gets the row that reader would see.
     """
-    moment = now or datetime.now(tz=received_at.tzinfo)
-    if received_at.date() == moment.date():
-        return received_at.strftime("%H:%M")
-    if received_at.year == moment.year:
-        return received_at.strftime("%b %d")
-    return received_at.strftime("%Y-%m-%d")
+    moment = now if now is not None else datetime.now().astimezone()
+    local = received_at.astimezone(moment.tzinfo)
+    if local.date() == moment.date():
+        return local.strftime("%H:%M")
+    if local.year == moment.year:
+        return local.strftime("%b %d")
+    return local.strftime("%Y-%m-%d")
 
 
 def summary_of(message: IndexedMessage) -> FolderMessageSummary:

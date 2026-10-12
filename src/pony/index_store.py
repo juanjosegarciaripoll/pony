@@ -949,6 +949,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
         Uses a single UPDATE so no Python-level row materialisation is
         needed even for large folders.  Returns the number of rows changed.
+
+        The CSV it writes has to come out in the order
+        :func:`_flags_to_csv` produces, because
+        :meth:`list_folder_push_candidates` compares ``local_flags``
+        against ``base_flags`` as *strings*: a row whose flags differ
+        only in their order would look changed on every sync and have
+        them pushed again, for ever.  Appending is canonical only while
+        ``seen`` sorts last of the flag values, which is an accident of
+        the vocabulary rather than a decision --
+        ``tests/test_index_store.py::MarkFolderReadTestCase::test_seen_sorts_last_which_is_what_lets_the_sql_append_it``
+        is what fails when a flag is added after it.
         """
         with self._use_atomic() as conn:
             conn.execute(
@@ -2261,9 +2272,17 @@ def _build_contact(
 
 
 def _looks_like_address(value: str) -> bool:
-    """A minimal sanity check: one ``@`` with a non-empty side each."""
-    local, sep, domain = value.partition("@")
-    return bool(sep) and bool(local) and "@" not in domain and "." in domain
+    """`contact_actions.looks_like_address`, which owns the rule.
+
+    Imported rather than spelled again: this store and
+    `harvest_addresses` are the two places that decide what counts as
+    an address, and they decided differently -- so the same malformed
+    header that this one refused went into the address book through the
+    other.
+    """
+    from .contact_actions import looks_like_address
+
+    return looks_like_address(value)
 
 
 def _harvest_message_contacts(

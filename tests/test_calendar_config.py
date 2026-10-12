@@ -86,6 +86,45 @@ class ParseCalendarConfigTest(unittest.TestCase):
         self.assertFalse(config.use_utf8)
         self.assertEqual("nord", config.theme)
 
+    def test_turning_background_sync_off_turns_both_halves_off(self) -> None:
+        """It describes the program, not a subsystem.
+
+        The two halves default it oppositely -- mail off every 600 s,
+        the calendar on every 3600 s -- so
+        `background_sync_enabled = false` at the top of the file left
+        the calendar polling CalDAV every hour, which is the one
+        setting a user turns off on purpose.
+        """
+        raw: dict[str, object] = {
+            **_MAIL_ONLY,
+            "background_sync_enabled": False,
+            "background_sync_interval_seconds": 900,
+            "calendar": {},
+        }
+
+        config = parse_calendar_config(raw)
+
+        assert config is not None
+        self.assertFalse(config.background_sync_enabled)
+        self.assertEqual(900, config.background_sync_interval_seconds)
+
+    def test_the_calendar_can_still_sync_on_its_own_cadence(self) -> None:
+        """Inherited, not imposed: the section's own value wins."""
+        raw: dict[str, object] = {
+            **_MAIL_ONLY,
+            "background_sync_enabled": False,
+            "calendar": {
+                "background_sync_enabled": True,
+                "background_sync_interval_seconds": 1800,
+            },
+        }
+
+        config = parse_calendar_config(raw)
+
+        assert config is not None
+        self.assertTrue(config.background_sync_enabled)
+        self.assertEqual(1800, config.background_sync_interval_seconds)
+
     def test_mail_keys_do_not_leak_into_the_calendar(self) -> None:
         # The mail accounts are a different shape entirely; inheriting
         # them would make the calendar reject the whole file.

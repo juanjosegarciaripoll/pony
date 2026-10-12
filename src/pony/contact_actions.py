@@ -54,6 +54,21 @@ def normalize_address(address: str) -> str:
     return address.lower().strip()
 
 
+def looks_like_address(value: str) -> bool:
+    """A minimal sanity check: one ``@`` with a non-empty side each.
+
+    `getaddresses` makes what it can of a malformed header, so a ``To:``
+    line reading "not an address at all" comes back as the bare word
+    ``not``.  The index has refused those since it started harvesting;
+    `harvest_addresses` did not, and it runs on every successful send --
+    so ``not`` went into the address book and then into the composer's
+    completion. One rule, in the module that owns the spelling of an
+    address.
+    """
+    local, sep, domain = value.partition("@")
+    return bool(sep) and bool(local) and "@" not in domain and "." in domain
+
+
 def harvest_addresses(
     contacts: ContactRepository | None,
     *fields: str,
@@ -70,7 +85,7 @@ def harvest_addresses(
     added = 0
     for display_name, raw in getaddresses(list(fields)):
         address = normalize_address(raw)
-        if not address:
+        if not looks_like_address(address):
             continue
         if contacts.find_contact_by_email(email_address=address) is not None:
             continue
@@ -326,6 +341,7 @@ __all__ = [
     "harvest_folder",
     "label_for",
     "list_contacts",
+    "looks_like_address",
     "merge_contacts",
     "normalize_address",
     "plan_merge",

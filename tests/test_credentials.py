@@ -256,6 +256,33 @@ class TestMcpStateRoundTrip(unittest.TestCase):
         self.assertEqual(recovered.port, original.port)
         self.assertEqual(recovered.token, original.token)
 
+    def test_the_token_file_is_owner_only_and_never_half_written(self) -> None:
+        """It authorises read access to the whole mail index.
+
+        `write_text` created it at the ambient umask -- world-readable
+        on most systems -- and a reader that arrived between the open
+        and the flush saw a truncated file. The calendar's half has
+        done mkstemp → fsync → chmod 0600 → replace for the same file
+        shape since it was written.
+        """
+        import os
+        import stat
+
+        state_file = self._state_file()
+
+        write_mcp_state(state_file, McpState(port=4242, token="s3cret"))
+
+        if os.name != "nt":
+            mode = stat.S_IMODE(state_file.stat().st_mode)
+            self.assertEqual(mode, 0o600, oct(mode))
+        # Nothing left behind by the rename, either.
+        leftovers = [
+            path.name
+            for path in state_file.parent.iterdir()
+            if path.name.startswith(".tmp-mcp-")
+        ]
+        self.assertEqual(leftovers, [])
+
     def test_clear_mcp_state_removes_file(self) -> None:
         state_file = self._state_file()
         write_mcp_state(state_file, McpState(port=1234, token="tok"))

@@ -18,7 +18,7 @@ no reach into anything else.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from chronos.outcome import Notice, Outcome, failure, info, warn
@@ -371,7 +371,11 @@ def rows(
     summaries = (
         _search(services, folder, query) if query else _folder_rows(services, folder)
     )
-    now = datetime.now(UTC)
+    # The server's own zone, which is the one `format_received` renders
+    # a row in: one `datetime.now(UTC)` here put every row's date back
+    # into UTC, which is the drift `pony.views.format_received`
+    # describes.
+    now = datetime.now().astimezone()
     rendered = [
         _row(
             summary,

@@ -14,15 +14,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
+from chronos.outcome import Notice
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.scheduler import PeriodicSync
 from chronos.tui.app import CALENDAR_CSS
 from chronos.tui.app import TuiServices as CalendarServices
 from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
-from ..accounts import resolve_smtp_password
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
+from ..delivery import resolve_send_password
 from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..invitation_actions import send_event_invitations
 from ..keymap import APPLICATION_KEYS, KeyBinding, Surface
@@ -298,16 +299,12 @@ class PonyApp(QuitAsksTheScreen):
                 severity="warning",
             )
             return
-        try:
-            password = resolve_smtp_password(account, self._credentials)
-        except Exception as exc:  # noqa: BLE001 — any backend may fail
-            self.notify(f"Could not get password: {exc}", severity="error")
-            return
-        if password is None:
-            self.notify(
-                f"No password available for account {account.name!r}.",
-                severity="error",
-            )
+        # One answer to "what does this account send with", which words
+        # both refusals: this used to ask a second function with the
+        # arguments the other way round and then word them again here.
+        password = resolve_send_password(self._credentials, account)
+        if isinstance(password, Notice):
+            self.notify(password.text, severity=password.severity)
             return
         self._deliver_invitation(
             ics=ics,

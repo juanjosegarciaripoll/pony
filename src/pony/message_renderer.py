@@ -642,7 +642,11 @@ class _HTMLStripper(HTMLParser):
         if tag == "a":
             attr_dict = dict(attrs)
             href = (attr_dict.get("href") or "").strip()
-            if href.startswith(("http://", "https://")):
+            # Case-folded, like the `mailto:` arm below and the three
+            # other spellings of this test in this module: RFC 3986
+            # §3.1 makes a scheme case-insensitive, and
+            # `<a href="HTTP://x.test">` lost its link silently.
+            if href.lower().startswith(("http://", "https://")):
                 self._in_anchor = True
                 self._anchor_kind = "web"
                 self._anchor_target = href

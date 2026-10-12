@@ -64,7 +64,20 @@ CALENDAR_SECTION = "calendar"
 
 # Settings the two subsystems share: taken from the top level of the
 # file unless `[calendar]` names its own value.
-_INHERITED_KEYS = ("use_utf8", "editor", "theme")
+#
+# The two sync keys are here because they describe the program, not a
+# subsystem: the halves default them oppositely (mail off every 600 s,
+# the calendar on every 3600 s), so `background_sync_enabled = false`
+# at the top of the file left the calendar polling CalDAV every hour --
+# which is the one setting a user turns off on purpose, on a metered
+# connection or a laptop on battery.
+_INHERITED_KEYS = (
+    "use_utf8",
+    "editor",
+    "theme",
+    "background_sync_enabled",
+    "background_sync_interval_seconds",
+)
 
 # `chronos.config.parse` requires a schema version of its own.  The
 # unified file carries one `config_version`, Pony's, at the top; the

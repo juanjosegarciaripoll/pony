@@ -494,8 +494,15 @@ def _require_string_list(data: dict[str, object], key: str) -> tuple[str, ...]:
 
 
 def _require_int(data: dict[str, object], key: str, *, default: int) -> int:
+    """An integer setting, which a boolean is not.
+
+    `isinstance(True, int)` is true in Python, so ``imap_port = true``
+    was accepted and became port 1 -- a connection refused, with
+    nothing to say why.  The calendar's half of the loader has always
+    refused it (`chronos.config._require_int`); this is the same rule.
+    """
     value = data.get(key, default)
-    if not isinstance(value, int):
+    if not isinstance(value, int) or isinstance(value, bool):
         raise ConfigError(f"{key!r} must be an integer")
     return value
 

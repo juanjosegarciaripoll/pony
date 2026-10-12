@@ -539,6 +539,18 @@ class ConfigValidationErrorsTestCase(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_config(data)
 
+    def test_a_boolean_is_not_an_integer(self) -> None:
+        """`isinstance(True, int)` is true, so `imap_port = true` was port 1.
+
+        A connection refused, with nothing anywhere to say why. The
+        calendar's half of the loader has always refused it.
+        """
+        data = sample_config()
+        data["accounts"][0]["imap_port"] = True  # type: ignore[index]
+        with self.assertRaises(ConfigError) as caught:
+            parse_config(data)
+        self.assertIn("must be an integer", str(caught.exception))
+
     def test_optional_string_empty_raises(self) -> None:
         data = sample_config()
         data["accounts"][0]["sent_folder"] = ""  # type: ignore[index]

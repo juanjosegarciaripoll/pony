@@ -16,7 +16,9 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import secrets
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,15 +47,42 @@ class McpState:
 
 
 def write_mcp_state(state_file: Path, state: McpState) -> None:
+    """Publish the port and token, the way the calendar publishes its own.
+
+    This token authorises a loopback server with read access to the
+    whole mail index, and it was written with `write_text`: created at
+    the ambient umask, so world-readable on most systems, and visible
+    half-written to a reader that got there between the open and the
+    flush.  `chronos.mcp_server.write_state` has done
+    mkstemp → fsync → chmod 0600 → replace for the same file shape and
+    the same `secrets.token_hex(32)` since it was written; this is that,
+    not a second answer to it.
+    """
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps({"port": state.port, "token": state.token}))
+    payload = json.dumps({"port": state.port, "token": state.token}).encode()
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".tmp-mcp-",
+        dir=state_file.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)  # noqa: S103 - 0o600 is owner-only
+        os.replace(temporary, state_file)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
 
 
 def read_mcp_state(state_file: Path) -> McpState | None:
     try:
-        data = json.loads(state_file.read_text())
+        data = json.loads(state_file.read_bytes())
         return McpState(port=int(data["port"]), token=str(data["token"]))
-    except Exception:
+    except (FileNotFoundError, KeyError, ValueError, TypeError, OSError):
         return None
 
 

@@ -122,10 +122,34 @@ def test_older_mail_carries_its_year() -> None:
     assert format_received(received, now=NOW) == "2001-03-04"
 
 
+def test_a_moment_is_rendered_in_the_readers_own_zone() -> None:
+    """Stored times are UTC; a reader is not.
+
+    At UTC+2, mail that arrived at 00:30 local was rendered as a *date*
+    -- its UTC day was the day before -- while every calendar view
+    renders the same moment locally (`chronos.views` starts each of its
+    three with `start.astimezone()`).
+    """
+    from datetime import timedelta, timezone
+
+    east = timezone(timedelta(hours=2))
+    # 00:30 on the 17th where this reader is sitting.
+    arrived = datetime(2026, 4, 16, 22, 30, tzinfo=UTC)
+
+    assert format_received(arrived, now=NOW.astimezone(east)) == "00:30"
+    # The same moment for a reader ten hours behind: still the 16th
+    # there, so the row carries the date rather than a bare clock.
+    west = timezone(timedelta(hours=-10))
+    assert format_received(arrived, now=NOW.astimezone(west)) == "Apr 16"
+
+
 def test_format_received_reads_the_clock_when_not_told_otherwise() -> None:
     now = datetime.now(tz=UTC)
 
-    assert format_received(now) == now.strftime("%H:%M")
+    # The reader's clock, not UTC's. This assertion used to read
+    # `now.strftime(...)`, which is the defect the test was meant to
+    # cover: UTC in, UTC out, and no zone anywhere in the suite.
+    assert format_received(now) == now.astimezone().strftime("%H:%M")
 
 
 # ----------------------------------------------------------------------

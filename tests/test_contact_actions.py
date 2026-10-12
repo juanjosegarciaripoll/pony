@@ -426,6 +426,29 @@ def test_record_sent_without_a_draft_or_contacts_still_files_the_copy() -> None:
 # ----------------------------------------------------------------------
 
 
+def test_one_function_answers_what_an_account_sends_with() -> None:
+    """There were two, with the arguments the other way round.
+
+    `accounts.resolve_smtp_password` returned `None` and raised, and
+    both of its call sites then worded the two refusals again in their
+    own words; `delivery.resolve_send_password` returns the `Notice`.
+    The invitation path and the app use that one now, so there is one
+    sentence for "no password" and one for a backend that failed.
+    """
+    from pony import accounts
+
+    assert not hasattr(accounts, "resolve_smtp_password")
+
+    import inspect
+
+    from pony import invitation_actions, tui
+
+    for module in (invitation_actions, tui.app):
+        source = inspect.getsource(module)
+        assert "resolve_send_password" in source, module.__name__
+        assert "resolve_smtp_password" not in source, module.__name__
+
+
 def test_resolve_send_password_prefers_the_credentials_provider() -> None:
     paths = make_tmp_paths("send-password")
     account = make_test_account(paths, password="s3cret")
@@ -510,6 +533,28 @@ def _sendable(
         ),
         account,
     )
+
+
+def test_harvesting_refuses_what_is_not_an_address() -> None:
+    """`getaddresses` makes what it can of a malformed header.
+
+    A `To:` line reading "not an address at all" comes back as the bare
+    word `not`, and harvesting ran on every successful send -- so `not`
+    went into the address book and then into the composer's
+    completion. The index has refused those since it started
+    harvesting; this used to accept anything non-empty.
+    """
+    store = _contacts("harvest-nonsense")
+
+    outcome = contact_actions.harvest_addresses(
+        store,
+        "not an address at all, Real Person <real@example.test>",
+    )
+
+    assert outcome.changed == 1
+    assert [contact.emails for contact in store.list_all_contacts()] == [
+        ("real@example.test",),
+    ]
 
 
 def test_a_message_with_nowhere_to_go_is_refused_by_the_send_itself() -> None:

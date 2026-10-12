@@ -934,6 +934,65 @@ class MarkFolderReadTestCase(unittest.TestCase):
         count = repo.mark_folder_read(folder=folder)
         self.assertEqual(count, 0)
 
+    def test_seen_sorts_last_which_is_what_lets_the_sql_append_it(self) -> None:
+        """The one UPDATE appends ",seen"; `_flags_to_csv` sorts.
+
+        They agree by accident: "seen" happens to sort last of the five
+        flag values. A flag added after it would make
+        `mark_folder_read` write a CSV in a different order from every
+        other writer, and `list_folder_push_candidates` compares
+        `local_flags` against `base_flags` *as strings* — so every
+        message in a folder marked read would look changed and have its
+        flags pushed on every sync, for ever.
+        """
+        values = sorted(flag.value for flag in MessageFlag)
+
+        self.assertEqual(values[-1], MessageFlag.SEEN.value)
+
+    def test_marking_a_folder_read_writes_the_canonical_order(self) -> None:
+        """Whatever a row already carries, the result reads back sorted."""
+        from datetime import UTC, datetime
+
+        from pony.domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
+
+        repo = _fresh_repo()
+        folder = FolderRef(account_name="acct", folder_name="INBOX")
+        flags = frozenset({MessageFlag.FLAGGED, MessageFlag.ANSWERED})
+        repo.insert_message(
+            message=IndexedMessage(
+                message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=0),
+                message_id="<order@x.com>",
+                sender="alice@x.com",
+                recipients="bob@x.com",
+                cc="",
+                subject="Order",
+                body_preview="",
+                storage_key="key",
+                local_flags=flags,
+                base_flags=flags,
+                local_status=MessageStatus.ACTIVE,
+                received_at=datetime(2024, 1, 1, tzinfo=UTC),
+            ),
+        )
+
+        self.assertEqual(repo.mark_folder_read(folder=folder), 1)
+
+        (stored,) = repo.list_folder_messages(folder=folder)
+        # What the row now holds, as the one writer that sorts would
+        # have written it.
+        expected = ",".join(sorted(flag.value for flag in stored.local_flags))
+        import sqlite3
+
+        conn = sqlite3.connect(str(repo._database_path))  # noqa: SLF001
+        try:
+            (csv,) = conn.execute(
+                "SELECT local_flags FROM messages WHERE message_id = ?",
+                ("<order@x.com>",),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(csv, expected)
+
 
 class MissingDatabaseTestCase(unittest.TestCase):
     """Read paths must answer for a database that was never created.

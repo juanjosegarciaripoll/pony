@@ -284,8 +284,11 @@ trash_retention_days = 30
 # both, and both read this file.  Without a [calendar] table the
 # calendar is simply not configured and F2 says so.
 #
-# `use_utf8`, `editor` and `theme` come from the top of this file unless
-# repeated here.  There is one `config_version`, also at the top.
+# `use_utf8`, `editor`, `theme` and the two background_sync keys come
+# from the top of this file unless repeated here -- they describe the
+# program rather than one half of it, so turning background sync off at
+# the top turns it off for the calendar too.  There is one
+# `config_version`, also at the top.
 
 # [calendar]
 # Every calendar account is synced in the background on a thread of its own,
@@ -295,6 +298,9 @@ trash_retention_days = 30
 # `g` opens the confirmation dialog.  With background_sync_enabled = false
 # nothing is synced on a schedule and ctrl+g syncs once, without starting
 # a cadence.
+# Both keys are inherited from the top of the file; repeat them here only
+# to give the calendar a cadence of its own (its own default, with
+# nothing set anywhere, is on every 3600 s).
 # background_sync_enabled = true
 # background_sync_interval_seconds = 3600
 
