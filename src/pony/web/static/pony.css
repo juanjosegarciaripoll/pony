@@ -332,7 +332,6 @@ body {
   margin: 0;
   padding: 0.35rem 0.6rem;
   background: var(--bg-sunken);
-  font-size: 0.78rem;
   font-weight: 600;
   color: var(--fg);
 }
@@ -407,7 +406,9 @@ body {
 }
 
 /* In the folder pane it names the section rather than annotating a
-   row, so it reads as a heading there. */
+   row, so it reads as a heading there -- and at the size of the
+   folders under it, as the reader's panel does. The bare rule above is
+   the calendar's, where the name annotates a row. */
 #folders .account-name {
   color: var(--fg);
   font-size: inherit;
