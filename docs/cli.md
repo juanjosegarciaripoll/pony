@@ -137,15 +137,13 @@ with no timezone is read as UTC**, not as local time; write
 is the usual way in. `pony calendar some-event.ics` opens it with an import
 dialog for that file.
 
-!!! warning "Configure calendar accounts by editing the file"
-    `pony calendar` also carries `init`, `account add|list|rm`,
-    `config edit` and `oauth authorize` from the days when the calendar was
-    a separate program. Each one *writes* a configuration file of its own,
-    which Pony does not read, so inside Pony all four refuse and say where
-    the settings actually live. Add, change and remove calendar accounts by
-    editing the `[calendar]` table — `pony config edit` — and let
-    `pony calendar sync` run the OAuth flow the first time an account needs
-    it. Standalone `chronos` still has them, and they still work there.
+`pony calendar init`, `account add|list|rm`, `config edit` and
+`oauth authorize` edit the `[calendar]` table of the config file this run is
+using, which is the same file and the same table `pony config edit` opens.
+Everything outside the table is kept byte for byte, comments included; the
+table itself is written from the configuration, so a comment *inside* it is
+not preserved. `config edit` is the exception — it opens the whole file in
+`$EDITOR` and keeps exactly what you typed, saving it only if it parses.
 
 ---
 

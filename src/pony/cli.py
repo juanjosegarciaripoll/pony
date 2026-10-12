@@ -3035,7 +3035,7 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
 
     from chronos import cli as calendar_cli
 
-    from .calendar import open_calendar_runtime
+    from .calendar import hosted_calendar_document, open_calendar_runtime
 
     def _context(path: Path | None) -> calendar_cli.CliContext:
         runtime = open_calendar_runtime(
@@ -3064,7 +3064,9 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
             forwarded,
             context_factory=_context,
             prog="pony calendar",
-            hosted=True,
+            config_document=hosted_calendar_document(
+                config_path or resolve(config_path).config_file
+            ),
         )
     except ConfigError as error:
         print(f"error: {error}", file=sys.stderr)

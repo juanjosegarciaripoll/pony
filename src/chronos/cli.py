@@ -33,6 +33,7 @@ from chronos.config import load as load_config
 from chronos.config import save as save_config
 from chronos.credentials import CredentialResolutionError, DefaultCredentialsProvider
 from chronos.domain import (
+    CALENDAR_CONFIG_VERSION,
     GOOGLE_CALDAV_URL,
     AccountConfig,
     AppConfig,
@@ -101,7 +102,7 @@ def main(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     prog: str = "chronos",
-    hosted: bool = False,
+    config_document: ConfigDocument | None = None,
 ) -> int:
     """Run one calendar command.
 
@@ -109,23 +110,17 @@ def main(
     passes "pony calendar", which is how the user reached this parser
     when the calendar runs as part of it.
 
-    `hosted` says the calendar is running inside Pony, where the
-    configuration is Pony's file and the calendar's settings are a
-    table inside it.  The four commands that *edit* a configuration
-    then refuse, because neither thing they could do is right: writing
-    this parser's own flat schema into Pony's file would corrupt it,
-    and writing the calendar's standalone file -- which Pony never
-    reads -- reports a success that nothing acted on.
+    `config_document` says where the configuration lives and how to
+    read and write it.  Standalone that is a file of this program's
+    own; inside Pony it is the `[calendar]` table of Pony's file, and
+    the host supplies the pair of functions that put it there.  The
+    commands that edit a configuration go through it, so they edit the
+    configuration the program is actually running on.
     """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     argv_for_parse = _rewrite_ics_shortcut(raw_argv)
-    hosted_refusal = _refuse_config_command(
-        argv_for_parse, hosted=hosted, prog=prog, err=err
-    )
-    if hosted_refusal is not None:
-        return hosted_refusal
     parser = _build_parser(prog)
     args = parser.parse_args(argv_for_parse)
     # `sync` defaults to INFO so the per-calendar / per-chunk progress
@@ -137,19 +132,20 @@ def main(
         default_level=logging.INFO if args.command == "sync" else logging.WARNING,
     )
     config_path: Path = args.config or active().config_file
+    document = config_document or _file_document(config_path)
 
-    # Config-editing commands operate on the TOML file without needing the
+    # Config-editing commands work on the document without needing the
     # mirror / index / credential plumbing.
     if args.command == "init":
-        return cmd_init(out, err, config_path=config_path)
+        return cmd_init(out, err, document=document)
     if args.command == "account":
-        return _dispatch_account(args, out, err, config_path=config_path)
+        return _dispatch_account(args, out, err, document=document)
     if args.command == "config":
         return _dispatch_config(
-            args, out, err, config_path=config_path, open_editor=open_editor
+            args, out, err, document=document, open_editor=open_editor
         )
     if args.command == "oauth":
-        return _dispatch_oauth(args, out, err, config_path=config_path)
+        return _dispatch_oauth(args, out, err, document=document)
 
     # `tui --list-themes` just enumerates Textual's bundled themes; it
     # needs no config, mirror, or index, so handle it before the data-path
@@ -240,39 +236,45 @@ def _default_context_factory(config_path: Path | None) -> CliContext:
     )
 
 
-# The commands that write a configuration file rather than read one.
-# Inside Pony there is no file of theirs to write -- see `main`.
-_CONFIG_FILE_COMMANDS = frozenset({"init", "account", "config", "oauth"})
+@dataclass(frozen=True, slots=True)
+class ConfigDocument:
+    """Where the configuration lives, and how to read and write it.
 
+    Standalone, it is a file of this program's own: the whole file is
+    the configuration.  Hosted by Pony, the configuration is one table
+    inside a larger file that the mail client also owns, so reading and
+    writing it are the host's to define and arrive here as this.
 
-def _refuse_config_command(
-    argv: Sequence[str],
-    *,
-    hosted: bool,
-    prog: str,
-    err: TextIO,
-) -> int | None:
-    """``2`` when this command edits a config Pony does not keep here.
-
-    Read before the parser runs, so a command that cannot work is not
-    first asked to complete its arguments: ``pony calendar account add``
-    would otherwise demand ``--credential-backend`` and refuse after
-    being given it.
+    `label` is how to name it to a user -- the path on its own when the
+    file is the configuration, and the table and the path when it is
+    not.
     """
-    if not hosted:
-        return None
-    command = next((arg for arg in argv if arg in _SUBCOMMANDS), None)
-    if command not in _CONFIG_FILE_COMMANDS:
-        return None
-    err.write(
-        f"{prog} {command}: the calendar's settings live in Pony's"
-        " config.toml, under the [calendar] table, and this command writes"
-        " the calendar's own standalone file.\n"
-        "Edit the table instead: pony config edit\n"
-        "An OAuth account is authorized by the first `pony calendar sync`"
-        " that needs it.\n"
+
+    path: Path
+    label: str
+    load: Callable[[], AppConfig]
+    save: Callable[[AppConfig], None]
+    # Does this text parse as a configuration?  Raises `ConfigError`.
+    # Hosted, the whole file has to parse, not just the calendar's
+    # table: an edit that breaks the mail half breaks the program.
+    validate: Callable[[Path], None]
+    editable_in_place: bool = True
+
+
+def _parses_or_raises(path: Path) -> None:
+    """Raise `ConfigError` unless *path* is a loadable configuration."""
+    load_config(path)
+
+
+def _file_document(path: Path) -> ConfigDocument:
+    """The standalone document: this file is the configuration."""
+    return ConfigDocument(
+        path=path,
+        label=str(path),
+        load=lambda: load_config(path),
+        save=lambda config: save_config(config, path),
+        validate=_parses_or_raises,
     )
-    return 2
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -861,14 +863,14 @@ def _dispatch_account(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
 ) -> int:
     sub = str(args.account_cmd)
     if sub == "add":
         return cmd_account_add(
             stdout,
             stderr,
-            config_path=config_path,
+            document=document,
             name=args.name,
             url=args.url,
             username=args.username,
@@ -881,9 +883,9 @@ def _dispatch_account(
             trash_retention_days=args.trash_retention_days,
         )
     if sub == "list":
-        return cmd_account_list(stdout, stderr, config_path=config_path)
+        return cmd_account_list(stdout, stderr, document=document)
     if sub == "rm":
-        return cmd_account_rm(stdout, stderr, config_path=config_path, name=args.name)
+        return cmd_account_rm(stdout, stderr, document=document, name=args.name)
     stderr.write(f"unknown account subcommand: {sub}\n")
     return 2
 
@@ -893,7 +895,7 @@ def _dispatch_config(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     open_editor: EditorFn | None,
 ) -> int:
     sub = str(args.config_cmd)
@@ -901,7 +903,7 @@ def _dispatch_config(
         return cmd_config_edit(
             stdout,
             stderr,
-            config_path=config_path,
+            document=document,
             open_editor=open_editor or _default_open_editor,
         )
     stderr.write(f"unknown config subcommand: {sub}\n")
@@ -913,14 +915,14 @@ def _dispatch_oauth(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
 ) -> int:
     sub = str(args.oauth_cmd)
     if sub == "authorize":
         return cmd_oauth_authorize(
             stdout,
             stderr,
-            config_path=config_path,
+            document=document,
             account_name=args.account,
             remote_browser=bool(getattr(args, "remote_browser", False)),
         )
@@ -1712,26 +1714,54 @@ def _failure_result(account_name: str, message: str) -> SyncResult:
     )
 
 
-def cmd_init(stdout: TextIO, stderr: TextIO, *, config_path: Path) -> int:
-    if config_path.exists():
-        stderr.write(
-            f"config already exists at {config_path}. "
-            "Use `pony calendar config edit` to modify it.\n"
+def cmd_init(stdout: TextIO, stderr: TextIO, *, document: ConfigDocument) -> int:
+    """Put an empty configuration where this run reads one."""
+    if document.editable_in_place:
+        if document.path.exists():
+            stderr.write(
+                f"config already exists at {document.label}. "
+                "Use `config edit` to modify it.\n"
+            )
+            return 1
+        write_template(document.path)
+        stdout.write(
+            f"Wrote template to {document.label}\n"
+            "Edit it directly, or run `account add ...` to populate.\n"
         )
+        return 0
+    # The file is the host's and already holds its own settings, so this
+    # writes an empty configuration into the document rather than a
+    # template over the file.
+    try:
+        existing = document.load()
+    except ConfigError:
+        existing = None
+    if existing is not None and existing.accounts:
+        stderr.write(f"{document.label} already has calendar accounts.\n")
         return 1
-    write_template(config_path)
+    document.save(_empty_calendar_config())
     stdout.write(
-        f"Wrote template to {config_path}\n"
-        "Edit it directly, or run `pony calendar account add ...` to populate.\n"
+        f"Initialised {document.label}\n"
+        "Edit it directly, or run `account add ...` to populate.\n"
     )
     return 0
+
+
+def _empty_calendar_config() -> AppConfig:
+    """A configuration with no accounts, for `init` to write."""
+    return AppConfig(
+        config_version=CALENDAR_CONFIG_VERSION,
+        use_utf8=True,
+        editor=None,
+        accounts=(),
+    )
 
 
 def cmd_account_add(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     name: str,
     url: str | None,
     username: str | None,
@@ -1744,7 +1774,7 @@ def cmd_account_add(
     trash_retention_days: int,
 ) -> int:
     try:
-        config = load_config(config_path)
+        config = document.load()
     except ConfigError as exc:
         stderr.write(f"{exc}\n")
         return 2
@@ -1794,14 +1824,16 @@ def cmd_account_add(
         editor=config.editor,
         accounts=(*config.accounts, new_account),
     )
-    save_config(updated, config_path)
-    stdout.write(f"Added account {name} to {config_path}\n")
+    document.save(updated)
+    stdout.write(f"Added account {name} to {document.label}\n")
     return 0
 
 
-def cmd_account_list(stdout: TextIO, stderr: TextIO, *, config_path: Path) -> int:
+def cmd_account_list(
+    stdout: TextIO, stderr: TextIO, *, document: ConfigDocument
+) -> int:
     try:
-        config = load_config(config_path)
+        config = document.load()
     except ConfigError as exc:
         stderr.write(f"{exc}\n")
         return 2
@@ -1820,11 +1852,11 @@ def cmd_account_rm(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     name: str,
 ) -> int:
     try:
-        config = load_config(config_path)
+        config = document.load()
     except ConfigError as exc:
         stderr.write(f"{exc}\n")
         return 2
@@ -1838,8 +1870,8 @@ def cmd_account_rm(
         editor=config.editor,
         accounts=remaining,
     )
-    save_config(updated, config_path)
-    stdout.write(f"Removed account {name} from {config_path}\n")
+    document.save(updated)
+    stdout.write(f"Removed account {name} from {document.label}\n")
     return 0
 
 
@@ -1847,13 +1879,13 @@ def cmd_config_edit(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     open_editor: EditorFn,
 ) -> int:
+    """Open the configuration in an editor, keeping it only if it parses."""
+    config_path = document.path
     if not config_path.exists():
-        stderr.write(
-            f"config not found: {config_path}. Run `pony calendar init` first.\n"
-        )
+        stderr.write(f"config not found: {document.label}. Run `init` first.\n")
         return 1
     # Copy the current contents into a temp file; the user edits there.
     # On validation success we atomically replace the original; on failure
@@ -1877,12 +1909,16 @@ def cmd_config_edit(
             stderr.write(f"editor not found: {exc}\n")
             return 1
         try:
-            config = load_config(tmp_path)
+            document.validate(tmp_path)
         except ConfigError as exc:
             stderr.write(f"config parse error: {exc}\n")
             stderr.write("Original config left unchanged.\n")
             return 1
-        save_config(config, config_path)
+        # The edited bytes, not a re-rendering of what they parsed to:
+        # reserialising threw away every comment in the file on every
+        # edit, and inside Pony it would also have thrown away the mail
+        # half of a file this command does not own.
+        shutil.copyfile(tmp_path, config_path)
         stdout.write(f"Saved {config_path}\n")
         return 0
     finally:
@@ -1893,7 +1929,7 @@ def cmd_oauth_authorize(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     account_name: str,
     auth_flow: Callable[[OAuthCredential, TextIO], StoredTokens] | None = None,
     remote_browser: bool = False,
@@ -1906,7 +1942,7 @@ def cmd_oauth_authorize(
     refresh token without waiting for the next sync to discover it.
     """
     try:
-        config = load_config(config_path)
+        config = document.load()
     except ConfigError as exc:
         stderr.write(f"{exc}\n")
         return 2

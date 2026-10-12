@@ -321,15 +321,32 @@ def _toml_inline_table(d: dict[str, object]) -> str:
     return "{ " + ", ".join(pairs) + " }"
 
 
-def _dumps_toml(data: dict[str, object]) -> str:
+def _dumps_toml(data: dict[str, object], *, table: str = "") -> str:
+    """Render *data* as TOML, optionally nested under a *table*.
+
+    With no *table* this is the standalone file: top-level keys and
+    ``[[accounts]]``.  With one it is the same configuration as a table
+    inside a larger file -- ``[calendar]`` and ``[[calendar.accounts]]``
+    -- which is how the calendar's settings live inside Pony's config.
+    One renderer for both, so a key added to the calendar's schema
+    cannot appear in one spelling and not the other.
+    """
+    prefix = f"{table}." if table else ""
     lines: list[str] = []
+    if table:
+        lines.append(f"[{table}]")
     for k, v in data.items():
         if k == "accounts":
+            continue
+        # A table inside someone else's file does not carry a schema
+        # version: the file has one, at the top, and the host rejects a
+        # second one here.
+        if table and k == "config_version":
             continue
         lines.append(f"{k} = {_toml_scalar(cast(str | int | bool, v))}")
     for account in cast(list[dict[str, object]], data.get("accounts", [])):
         lines.append("")
-        lines.append("[[accounts]]")
+        lines.append(f"[[{prefix}accounts]]")
         for k, v in account.items():
             if isinstance(v, dict):
                 lines.append(f"{k} = {_toml_inline_table(cast(dict[str, object], v))}")
@@ -338,6 +355,11 @@ def _dumps_toml(data: dict[str, object]) -> str:
             else:
                 lines.append(f"{k} = {_toml_scalar(cast(str | int | bool, v))}")
     return "\n".join(lines) + "\n"
+
+
+def dumps(config: AppConfig, *, table: str = "") -> str:
+    """*config* as TOML text, flat or nested under *table*."""
+    return _dumps_toml(dump(config), table=table)
 
 
 def dump(config: AppConfig) -> dict[str, object]:

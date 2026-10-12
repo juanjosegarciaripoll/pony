@@ -1913,7 +1913,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         code = cli.cmd_oauth_authorize(
             self.stdout,
             self.stderr,
-            config_path=self.config_path,
+            document=cli._file_document(self.config_path),
             account_name="google",
             auth_flow=fake_flow,
         )
@@ -1999,7 +1999,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                config_path=self.config_path,
+                document=cli._file_document(self.config_path),
                 account_name="google",
                 auth_flow=fake_flow,
             )
@@ -2034,7 +2034,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                config_path=self.config_path,
+                document=cli._file_document(self.config_path),
                 account_name="google",
             )
         self.assertEqual(code, 0)
@@ -2064,7 +2064,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                config_path=self.config_path,
+                document=cli._file_document(self.config_path),
                 account_name="google",
             )
         self.assertEqual(code, 0)

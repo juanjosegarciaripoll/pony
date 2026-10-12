@@ -26,6 +26,12 @@ LOCAL_FLAG_DIRTY = "dirty"
 # Default period of the TUI's automatic background sync.
 DEFAULT_BACKGROUND_SYNC_INTERVAL_SECONDS = 3600
 
+# The calendar's configuration schema.  Named once, because the number
+# appears in the template `init` writes, in the configuration the host
+# builds when it reads its own file, and in anything that validates a
+# file it is handed.
+CALENDAR_CONFIG_VERSION = 1
+
 
 class AlarmAction(StrEnum):
     DISPLAY = "DISPLAY"

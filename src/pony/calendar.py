@@ -31,19 +31,26 @@ drag Textual into the CLI and MCP import graphs (see
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from chronos import config as calendar_config
 from chronos.credentials import DefaultCredentialsProvider, InteractiveAuthorizer
+from chronos.domain import CALENDAR_CONFIG_VERSION
 from chronos.domain import AppConfig as CalendarConfig
 from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
 from chronos.paths import active
 from chronos.storage import VdirMirrorRepository
 
-from .config import ConfigError, read_raw_config
+from .config import ConfigError, load_config, read_raw_config
 from .domain import CONFIG_VERSION
+
+if TYPE_CHECKING:
+    from chronos.cli import ConfigDocument
 from .paths import resolve
 
 # The example above quotes the schema version the loader actually
@@ -62,7 +69,6 @@ _INHERITED_KEYS = ("use_utf8", "editor", "theme")
 # `chronos.config.parse` requires a schema version of its own.  The
 # unified file carries one `config_version`, Pony's, at the top; the
 # calendar's slice is always at the current calendar schema.
-_CALENDAR_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +121,7 @@ def parse_calendar_config(raw: object) -> CalendarConfig | None:
             "unified config file carries one 'config_version' at the top."
         )
 
-    merged: dict[str, object] = {"config_version": _CALENDAR_SCHEMA_VERSION}
+    merged: dict[str, object] = {"config_version": CALENDAR_CONFIG_VERSION}
     for key in _INHERITED_KEYS:
         if key in section:
             merged[key] = section[key]
@@ -136,6 +142,120 @@ def load_calendar_config(config_path: Path | None = None) -> CalendarConfig | No
     """Read Pony's config file and return the calendar's slice of it."""
     path = config_path if config_path is not None else resolve().config_file
     return parse_calendar_config(read_raw_config(path))
+
+
+def save_calendar_config(config: CalendarConfig, path: Path) -> None:
+    """Write *config* back as the ``[calendar]`` table of *path*.
+
+    Everything outside the table is kept byte for byte, so the mail
+    half of the file -- and its comments -- survives a calendar edit.
+    The table itself is re-rendered from the parsed configuration, so
+    comments *inside* it do not survive; that is the cost of writing it
+    from a model rather than patching text.
+
+    Written through a temporary file and renamed, because this file is
+    the one thing a user cannot lose: a half-written config is a client
+    that will not start.
+    """
+    rendered = calendar_config.dumps(config, table=CALENDAR_SECTION).rstrip("\n")
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    body = _replace_calendar_table(existing, rendered)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", suffix=".toml", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise
+
+
+def _replace_calendar_table(text: str, rendered: str) -> str:
+    """*text* with its ``[calendar]`` span replaced by *rendered*.
+
+    The span runs from the ``[calendar]`` header to the next top-level
+    table header that is not part of it, which is what makes
+    ``[[calendar.accounts]]`` belong to the calendar and ``[[accounts]]``
+    belong to the mail half.  With no table there, the rendering is
+    appended.
+    """
+    lines = text.splitlines()
+    start: int | None = None
+    end = len(lines)
+    for number, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("["):
+            continue
+        header = stripped.strip("[]").strip()
+        belongs = header == CALENDAR_SECTION or header.startswith(
+            f"{CALENDAR_SECTION}."
+        )
+        if belongs and start is None:
+            start = number
+        elif not belongs and start is not None:
+            end = number
+            break
+    if start is None:
+        prefix = text.rstrip("\n")
+        joiner = "\n\n" if prefix else ""
+        return f"{prefix}{joiner}{rendered}\n"
+    kept_before = lines[:start]
+    kept_after = lines[end:]
+    # Blank lines immediately above the table belong to whatever is
+    # before it, and a trailing run inside the span is ours to drop.
+    while kept_before and not kept_before[-1].strip():
+        kept_before.pop()
+    out = [*kept_before]
+    if out:
+        out.append("")
+    out.extend(rendered.splitlines())
+    if kept_after:
+        out.append("")
+        out.extend(kept_after)
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def hosted_calendar_document(path: Path) -> ConfigDocument:
+    """The calendar's configuration as the `[calendar]` table of *path*.
+
+    The calendar's own commands write a configuration; inside Pony the
+    configuration is a table in a file the mail client owns too, so
+    they are given the reading and the writing of that table rather
+    than a file of their own to write.  Without this they wrote a
+    standalone file nothing here reads, and reported success.
+    """
+    from chronos.cli import ConfigDocument as _Document
+
+    def _load() -> CalendarConfig:
+        config = parse_calendar_config(read_raw_config(path))
+        if config is not None:
+            return config
+        # No `[calendar]` table yet: an empty configuration, which is
+        # what `account add` then adds its first account to.
+        return CalendarConfig(
+            config_version=CALENDAR_CONFIG_VERSION,
+            use_utf8=True,
+            editor=None,
+            accounts=(),
+        )
+
+    def _validate(candidate: Path) -> None:
+        # The whole file, not just the table: an edit that breaks the
+        # mail half breaks the program just as thoroughly.
+        load_config(candidate)
+
+    return _Document(
+        path=path,
+        label=f"the [{CALENDAR_SECTION}] table in {path}",
+        load=_load,
+        save=lambda config: save_calendar_config(config, path),
+        validate=_validate,
+        editable_in_place=False,
+    )
 
 
 def open_calendar_runtime(
@@ -173,6 +293,8 @@ __all__ = [
     "CalendarConfig",
     "CalendarRuntime",
     "calendar_section",
+    "hosted_calendar_document",
+    "save_calendar_config",
     "load_calendar_config",
     "open_calendar_runtime",
     "parse_calendar_config",

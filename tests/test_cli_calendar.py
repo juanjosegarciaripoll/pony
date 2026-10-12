@@ -130,38 +130,79 @@ class RunCalendarTest(unittest.TestCase):
             code = run_calendar(config_path=None, argv=["--config", str(path), "list"])
         self.assertEqual(0, code)
 
-    def test_a_command_that_edits_a_config_refuses_inside_pony(self) -> None:
-        """Neither file it could write is the right one.
+    def test_account_add_writes_the_calendar_table_in_ponys_config(self) -> None:
+        """It used to write a standalone file nothing here reads.
 
-        `init`, `account`, `config` and `oauth` come from the days when
-        the calendar was a separate program. Without `--config` they
-        wrote `<data_dir>/calendar/config.toml`, which Pony never reads
-        -- so `account add` reported success and `calendar list` then
-        showed nothing. With `--config` forwarded they would write the
-        calendar's own flat schema into Pony's config file, which is
-        worse: that file is the mail client's too.
+        The command reported success into `<data_dir>/calendar/
+        config.toml` and `pony calendar list` then showed nothing.
         """
         path = self._config()
         before = path.read_text(encoding="utf-8")
-        err = io.StringIO()
-        with mock.patch("sys.stderr", err):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
             code = run_calendar(
                 config_path=path,
-                argv=["account", "add", "--name", "work", "--url", "https://x/dav/"],
+                argv=[
+                    "account",
+                    "add",
+                    "--name",
+                    "home",
+                    "--url",
+                    "https://dav.example.com/home/",
+                    "--username",
+                    "me@example.com",
+                    "--credential-backend",
+                    "plaintext",
+                    "--credential-value",
+                    "secret",
+                ],
             )
 
-        self.assertEqual(2, code)
-        message = err.getvalue()
-        self.assertIn("[calendar] table", message)
-        self.assertIn("pony config edit", message)
-        # And it wrote nothing anywhere.
-        self.assertEqual(before, path.read_text(encoding="utf-8"))
+        self.assertEqual(0, code)
+        self.assertIn("[calendar] table", out.getvalue())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("[[calendar.accounts]]", text)
+        # The mail half of the file, and the comment on it, are intact.
+        self.assertIn("config_version = 3", text)
+        self.assertIn("profile = ", text)
+        # And the account is visible to the loader the program uses.
+        from pony.calendar import load_calendar_config
 
-    def test_the_commands_that_read_a_config_still_work_inside_pony(self) -> None:
+        config = load_calendar_config(path)
+        assert config is not None
+        self.assertIn("home", [account.name for account in config.accounts])
+        self.assertNotEqual(before, text)
+
+    def test_account_list_and_rm_see_the_same_table(self) -> None:
         path = self._config()
-        captured = io.StringIO()
-        with mock.patch("sys.stdout", captured):
-            self.assertEqual(0, run_calendar(config_path=path, argv=["list"]))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(
+                0, run_calendar(config_path=path, argv=["account", "list"])
+            )
+        listed = out.getvalue()
+
+        err = io.StringIO()
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", err):
+            code = run_calendar(config_path=path, argv=["account", "rm", "work"])
+
+        self.assertIn("work", listed)
+        self.assertEqual(0, code, err.getvalue())
+        from pony.calendar import load_calendar_config
+
+        config = load_calendar_config(path)
+        assert config is not None
+        self.assertEqual([], [account.name for account in config.accounts])
+
+    def test_a_comment_outside_the_table_survives_an_edit(self) -> None:
+        path = self._config()
+        path.write_text(
+            "# keep me\n" + path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        with mock.patch("sys.stdout", io.StringIO()):
+            run_calendar(config_path=path, argv=["account", "rm", "work"])
+
+        self.assertIn("# keep me", path.read_text(encoding="utf-8"))
 
     def test_main_routes_the_calendar_command(self) -> None:
         path = self._config()
