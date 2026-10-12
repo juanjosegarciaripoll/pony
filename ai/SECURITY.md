@@ -20,9 +20,16 @@ second surface.  What stands between them:
   `render_message(...).body` — HTML stripped, URLs as text — and
   linkifies only `https?://`, `ftp://` and bare addresses, so a
   `javascript:` URL in a message is text.  The HTML version is a
-  separate top-level page under `default-src 'none'; img-src data:`
-  with `Referrer-Policy: no-referrer`, never a frame inside the
-  application, so nothing in a message can reach the page around it.
+  separate top-level page under `default-src 'none'; img-src data:;
+  style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';
+  frame-ancestors 'none'` with `Referrer-Policy: no-referrer`, never a
+  frame inside the application, so nothing in a message can reach the
+  page around it.  `form-action` and `base-uri` are named explicitly
+  because CSP3 does **not** fall them back to `default-src`; without
+  them a `<form>` in a message posted to the attacker's server from
+  Pony's own origin.  One gap remains: a message can still navigate
+  the tab it was opened in, and no directive covers that — a sandbox
+  strict enough to stop it also breaks every ordinary link.
 - **Attachments are downloads.** Served with
   `X-Content-Type-Options: nosniff` and a quoted filename stripped of
   quotes, backslashes and carriage returns.
@@ -35,6 +42,12 @@ second surface.  What stands between them:
   `secrets.compare_digest` and kept in an `HttpOnly`, `SameSite=strict`
   cookie.  A tailnet address or `tailscale serve` is the intended way to
   publish it.
+- **A request has to come from Pony's own page.** Every mutating
+  method is refused unless `Sec-Fetch-Site` is `same-origin`/`none`,
+  or — for a client that sends neither header — `Origin` is absent or
+  matches the request's own authority.  The check is independent of
+  the token, because the address is not a secret: the loopback default
+  is reachable from the user's browser whatever the network does.
 
 ---
 
@@ -48,6 +61,11 @@ second surface.  What stands between them:
 | 4 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` as a body filename stem. | MEDIUM | `tui/screens/save_message_screen.py` | Fixed |
 | 5 | **Terminal escape injection via email headers** — `_escape()` escaped `[` for Rich markup but did not strip `\x1b` or other C0 control characters.  A Subject or From header containing ANSI escape sequences could corrupt terminal state (clear screen, move cursor, change colours) when the message was displayed. | MEDIUM | `tui/widgets/message_view.py` | Fixed |
 | 6 | **Textual markup injection via contact fields** — `ContactDetailScreen` passed `display_name`, `affix`, `aliases`, `organization`, email addresses and `notes` directly to `Static()` without escaping.  A crafted `From` display name harvested into the contacts database could inject `[link=…]` or other Rich markup tags, creating false clickable links in the contact detail view. | HIGH | `tui/screens/contact_detail_screen.py` | Fixed |
+| 8 | **Cross-site request forgery against every mutating route** — `POST /action/<name>`, `/compose`, `/compose/attachment` and `/contacts/edit` had no origin check of any kind.  Under `--no-token` — the configuration `docs/architecture.md` recommends for a tailnet — any page the user's browser loaded could empty a folder, send mail as them and stop the process, needing no network access at all because the documented `127.0.0.1:8730` default is reachable from their own browser.  Reproduced from a genuinely cross-site origin in headless Chromium.  With a token the attack was refused only by the cookie's `SameSite=strict`, which carried a comment describing it as a convenience for phones. | CRITICAL | `web/app.py` | Fixed |
+| 9 | **CSP omitted the directives that do not inherit** — `/message/body` was served under `default-src 'none'; img-src data:; style-src 'unsafe-inline'`.  CSP3 does not fall `form-action` or `base-uri` back to `default-src`, so a `<form>` in a `text/html` message rendered and submitted from Pony's own origin — a password prompt one tab from the mailbox.  Reproduced to a sink in headless Chromium. | HIGH | `web/app.py` | Fixed |
+| 10 | **The token comparison raised instead of refusing** — `secrets.compare_digest` rejects non-ASCII `str`, so `GET /mail?token=%C3%A9` returned 500 with a traceback rather than 403.  No bypass; the one function that must never raise, raised, and distinguished itself from an ordinary refusal. | MEDIUM | `web/app.py` | Fixed |
+| 11 | **Unbounded upload into memory** — `/compose/attachment` read the whole request body with no size cap, and the staging directory it wrote to was a `mkdtemp` outside `data_dir` and `PONY_ROOT` that nothing ever removed.  A forward staged a fresh copy on every attempt.  With finding 8 this was remotely triggerable; on its own it filled `$TMPDIR`, which on a RAM-backed `/tmp` is memory. | MEDIUM | `web/app.py`, `web/compose.py` | Fixed |
+| 12 | **An attachment filename outside Latin-1 could not be served** — `Content-Disposition` was built by stripping three characters and letting Starlette encode it Latin-1, so `документ.pdf` raised `UnicodeEncodeError` and returned 500.  A newline survived the strip; the email parser happened to fold it, so no header injection materialised. | LOW | `web/app.py` | Fixed |
 | 7 | **NUL-byte injection of format sentinels** — The renderer uses `\x00` as an internal delimiter for format tokens (`\x00B1\x00` = bold-open, etc.).  A `text/plain` body with embedded NUL bytes (valid in base64/QP-encoded parts) or an HTML body using `&#0;` entities (converted by `HTMLParser`'s default `convert_charrefs=True`) could inject fake bold/italic/underline/strike formatting into the TUI display. | LOW | `tui/message_renderer.py` | Fixed |
 
 ### Mitigations applied
@@ -81,6 +99,21 @@ second surface.  What stands between them:
 - All contact fields (`display_name`, `affix`, `aliases`, `organization`,
   email addresses, `notes`) are passed through `rich.markup.escape` before
   being placed in `Static()` widgets (finding #6).
+
+**`web/app.py`** (findings 8–12)
+
+- `_check_origin()` runs beside `_check_token()` in `_handler`, so one
+  place covers every mutating route rather than each one remembering.
+- `MESSAGE_HTML_CSP` names `form-action`, `base-uri` and
+  `frame-ancestors` explicitly.
+- The token is compared only when `offered.isascii()`.
+- `MAX_ATTACHMENT_BYTES` is enforced on the declared length *and* by
+  counting the stream, so a lying `Content-Length` does not get past it.
+- `_content_disposition()` follows RFC 6266: an ASCII-sanitised
+  `filename=` plus `filename*=UTF-8''<percent-encoded>`.
+- Staging moved to `data_dir/web-attachments`, which `PONY_ROOT`
+  contains and `pony reset` clears, with an `atexit` sweep and a
+  release on send.
 
 **`tui/screens/main_screen.py`**
 

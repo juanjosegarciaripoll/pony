@@ -76,10 +76,16 @@ class Outcome:
     def blocked(self) -> bool:
         """True when the operation did not go through: refused or failed.
 
-        A front end holding a form open tests this rather than
-        :attr:`failed`, because a validation refusal is a *warning* and
-        not an error -- throwing away what the user typed over a
-        warning loses their work.
+        A validation refusal is a *warning* and not an error, so a
+        front end cannot decide on :attr:`failed` alone whether to keep
+        what the user typed.
+
+        It cannot decide on this either, though, and the browser front
+        end no longer does: ``not acted`` is also true of a save that
+        legitimately changed nothing, which is not a reason to hold a
+        form open.  `pony.web.actions.holds_form` is the narrower
+        question -- did this refuse what was typed? -- and the three
+        browser forms all ask it.
         """
         return self.failed or not self.acted
 

@@ -408,8 +408,9 @@ reader's. `pony.tui.bindings.to_textual` and
 `chronos.tui.bindings.to_textual` turn a slice into Textual `Binding`s —
 which is where `MainScreen.BINDINGS`, `PonyApp.BINDINGS`,
 `ComposeScreen.BINDINGS`, `ContactBrowserScreen.BINDINGS` and the
-calendar's screens come from — and `/keymap.json` serves the tables to a
-browser that matches `keydown` against them, one per page surface. Each
+calendar's screens come from — and every page carries its own
+surface's table inline, so a key pressed before the script settles is
+not dropped; `/keymap.json` still serves them for anything that asks. Each
 entry carries `available`, so a key the terminal has and the browser has
 not (editing the body in `$EDITOR`) is listed in the help and marked,
 rather than appearing to work. `tests/test_web_dispatch.py` fails if
