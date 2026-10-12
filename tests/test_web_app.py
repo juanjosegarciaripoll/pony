@@ -308,10 +308,12 @@ def test_a_form_in_a_message_has_nowhere_to_post_and_nothing_to_rebase() -> None
         "frame-ancestors 'none'",
     ):
         assert directive in policy, directive
-    # And deliberately no `sandbox`: this is the tab the reader opened
-    # for the message, and a sandbox without `allow-top-navigation`
-    # would kill every link in it.
-    assert "sandbox" not in policy
+    # And a `sandbox`, which is the only thing that stops a
+    # `<meta http-equiv="refresh">` taking the tab somewhere else: no
+    # directive covers one, because it is not a fetch.  The two tokens
+    # it gives back are what a link needs; `tests/test_html_policy.py`
+    # has the measurement, and checks them in a real browser.
+    assert "sandbox allow-popups allow-popups-to-escape-sandbox" in policy
 
 
 def test_a_message_can_be_downloaded_as_it_arrived() -> None:

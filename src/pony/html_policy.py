@@ -30,17 +30,29 @@ from typing import Final
 #   relative URL on the page at the sender's server.
 # * ``frame-ancestors`` — no page may embed this one.
 #
-# Deliberately **no** ``sandbox``: this is a top-level page the reader
-# opened in a tab of its own, and a sandbox that withholds
-# ``allow-top-navigation`` kills every ordinary link in the message —
-# which is most of what a reader wants from the HTML version — while
-# granting it back reinstates the one thing a sandbox was wanted for.
-# So a ``<meta http-equiv="refresh">`` in a message can still take that
-# tab somewhere else; it is the tab the user opened for the message, it
-# carries no referrer, and nothing of Pony's is in it.
+# ``sandbox`` is what stops a ``<meta http-equiv="refresh">``.  No other
+# directive covers one: it is not a fetch, so ``default-src`` does not
+# apply, and CSP3 dropped ``navigate-to``.  Two tokens are given back,
+# and measuring Chromium 154 says exactly these two and no more:
+#
+# * ``allow-popups`` — without it a ``target="_blank"`` link does
+#   nothing at all, and in a newsletter that is most of the links.
+# * ``allow-popups-to-escape-sandbox`` — without it the site the reader
+#   clicked through to opens *inside* the sandbox: its own scripts do
+#   not run and its storage raises ``SecurityError``, so a real page
+#   arrives broken.
+#
+# ``allow-top-navigation-by-user-activation`` is **not** here.  It
+# governs whether a nested context may navigate its ancestor, and this
+# is a top-level page with no ancestor; ordinary same-tab links work
+# without it, and adding it changed nothing that could be measured.
+#
+# What the sandbox costs is nothing visible: inline styles still apply
+# and ``data:`` images still load, both measured.
 MESSAGE_HTML_CSP: Final = (
     "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'; "
+    "sandbox allow-popups allow-popups-to-escape-sandbox"
 )
 
 # Sent with the document by both transports.

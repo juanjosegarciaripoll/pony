@@ -108,6 +108,8 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 11. **Browser UX tests are opt-in.** `PONY_BROWSER_UI=1 uv run python -m pytest tests/test_web_browser.py` serves the real app on a loopback port, loads it in a headless Chromium (`--dump-dom`) with a driver page around it, and presses keys at it. It installs nothing — only a `chromium` / `google-chrome` on `PATH` — and without the variable, or without a browser, it skips, so the default run needs neither. Use it for anything in `static/pony.js` whose behaviour matters: the rest of that file is checked by *reading* it (`tests/test_web_dispatch.py`), which catches a name that does not exist but not a mistake in what the code does.
 
+    The same switch guards `tests/test_html_policy.py`, which loads a message that tries to navigate itself away — once under `MESSAGE_HTML_CSP` and once without it — and reads the DOM back with `--dump-dom`. The policy's `sandbox` is the only thing that stops a `<meta http-equiv="refresh">`, and nothing but a browser can show that it does. It uses no iframe and no driver page: one URL, one `--dump-dom`, and the control case proves the probe can see a real hijack.
+
 ## Coverage requirements
 
 The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.2 %** across both packages, measured on the full suite after the browser front end landed — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
@@ -147,6 +149,7 @@ Key test infrastructure:
 | Browser flows, as a user walks them | `tests/test_web_flows.py` — links and forms read off the page itself |
 | `/keymap.json` ↔ `pony.js` ↔ the buttons | `tests/test_web_dispatch.py` |
 | The dispatcher executed in a real browser | `tests/test_web_browser.py` — **opt-in**, see rule 11 |
+| The policy message HTML is shown under | `tests/test_html_policy.py` — the directives always, a real browser **opt-in** |
 | Reading a served page or `pony.js` | `tests/web_helpers.py` |
 | The shared keymap | `tests/test_keymap.py` — both tables, and that the screens bind exactly them |
 | Answering an invitation | `tests/test_invitation_actions.py` — no screen, no socket |

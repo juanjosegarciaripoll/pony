@@ -67,6 +67,7 @@ second surface.  What stands between them:
 | 11 | **Unbounded upload into memory** — `/compose/attachment` read the whole request body with no size cap, and the staging directory it wrote to was a `mkdtemp` outside `data_dir` and `PONY_ROOT` that nothing ever removed.  A forward staged a fresh copy on every attempt.  With finding 8 this was remotely triggerable; on its own it filled `$TMPDIR`, which on a RAM-backed `/tmp` is memory. | MEDIUM | `web/app.py`, `web/compose.py` | Fixed |
 | 12 | **An attachment filename outside Latin-1 could not be served** — `Content-Disposition` was built by stripping three characters and letting Starlette encode it Latin-1, so `документ.pdf` raised `UnicodeEncodeError` and returned 500.  A newline survived the strip; the email parser happened to fold it, so no header injection materialised. | LOW | `web/app.py` | Fixed |
 | 13 | **The terminal showed message HTML at a `file://` origin, and left it on disk** — `w` and the `.eml` viewer wrote `build_browser_html`'s output to `NamedTemporaryFile(delete=False)` and opened it as a file URL.  Nothing unlinked it, so a reader accumulated one plaintext copy of every message it opened in `$TMPDIR` — outside `data_dir`, so `pony reset` did not reach it, and resident in memory on a machine whose `/tmp` is a tmpfs.  At a file origin none of `MESSAGE_HTML_CSP` applied, so the same bytes the browser front end serves with scripts, network and framing switched off ran with all three available, from a local-file origin. | HIGH | `tui/screens/main_screen.py`, `tui/widgets/message_view.py` | Fixed |
+| 14 | **A message could navigate the tab it was opened in** — `<meta http-equiv="refresh">` is not a fetch, so `default-src` does not cover it and CSP3 dropped `navigate-to`; no directive in the policy applied to it.  The page a reader opened to read a message could send itself to the sender's server, which is a phishing hop that starts from inside the mailbox.  It was a knowingly accepted limitation: the comment beside the policy argued a sandbox strict enough to stop it would break every link in the message.  Measuring Chromium 154 showed that is not so — `sandbox allow-popups allow-popups-to-escape-sandbox` blocks the refresh while leaving same-tab links, `target=_blank` links, inline styles and `data:` images working. | MEDIUM | `html_policy.py` | Fixed |
 | 7 | **NUL-byte injection of format sentinels** — The renderer uses `\x00` as an internal delimiter for format tokens (`\x00B1\x00` = bold-open, etc.).  A `text/plain` body with embedded NUL bytes (valid in base64/QP-encoded parts) or an HTML body using `&#0;` entities (converted by `HTMLParser`'s default `convert_charrefs=True`) could inject fake bold/italic/underline/strike formatting into the TUI display. | LOW | `tui/message_renderer.py` | Fixed |
 
 ### Mitigations applied
@@ -129,6 +130,17 @@ second surface.  What stands between them:
   `Cache-Control: no-store`; without the latter the browser's own cache
   writes the message to disk, which is the leak serving was meant to
   close.
+- `MESSAGE_HTML_CSP` carries `sandbox allow-popups
+  allow-popups-to-escape-sandbox` (finding 14).  Each token was measured
+  rather than reasoned about: without the first a `target="_blank"` link
+  does nothing, and without the second the site the reader clicked
+  through to opens inside the sandbox, with its own scripts dead and its
+  storage raising `SecurityError`.
+  `allow-top-navigation-by-user-activation` is deliberately absent — it
+  governs a nested context navigating its ancestor, so it changes
+  nothing on a top-level page.  `tests/test_html_policy.py` asserts the
+  token list, and under `PONY_BROWSER_UI=1` loads a refreshing page in a
+  real browser both with the policy and without it.
 - **Not covered:** the attachment viewer still writes
   `pony-attachment-*` with `delete=False`, because an external viewer
   needs a real file to open.  Serving cannot answer that one.
