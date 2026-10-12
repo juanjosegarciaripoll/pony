@@ -2929,8 +2929,17 @@ async def test_reply_and_send_marks_answered(
         app.screen.query_one("#body-area", TextArea).load_text("Reply body")
         await pilot.press("ctrl+s")
         await pilot.pause()
+        # Asserted inside the app, because the flag is what makes the
+        # list show the reply arrow and the test is named for it.
+        rows = index.list_folder_messages(folder=folder)
+        marked = [row for row in rows if MessageFlag.ANSWERED in row.local_flags]
 
     assert send_mock.call_count == 1
+    # The test was named for this and asserted only that SMTP was
+    # called, so it would have passed with the flag never set -- which
+    # is exactly what moving the bookkeeping into deliver_message put
+    # at risk.
+    assert [row.message_id for row in marked] == ["<reply-me@example.com>"]
 
 
 async def test_navigate_prev_in_message_view() -> None:
@@ -2985,8 +2994,19 @@ async def test_compose_reply_sends_and_marks_answered(
         app.screen.query_one("#body-area", TextArea).load_text("Reply")
         await pilot.press("ctrl+s")
         await pilot.pause()
+        answered = [
+            row
+            for row in index.list_folder_messages(folder=folder)
+            if MessageFlag.ANSWERED in row.local_flags
+        ]
+        # The reader is still open on it, so the mark the panel shows
+        # has to have been repainted too.
+        shown = app.screen.query_one(MessageListPanel).get_selected_summary()
 
     assert send_mock.call_count == 1
+    assert len(answered) == 1
+    assert shown is not None
+    assert MessageFlag.ANSWERED in shown.local_flags
 
 
 async def test_save_message_opens_save_screen() -> None:
