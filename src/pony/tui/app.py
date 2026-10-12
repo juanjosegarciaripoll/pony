@@ -24,7 +24,7 @@ from ..accounts import resolve_smtp_password
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
-from ..keymap import APPLICATION_KEYS
+from ..keymap import APPLICATION_KEYS, KeyBinding, Surface
 from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import resolve
 from ..protocols import (
@@ -72,7 +72,39 @@ class MailSyncHost(Protocol):
     def mail_sync(self) -> MailSyncScheduler | None: ...
 
 
-class PonyApp(App[None]):
+@runtime_checkable
+class AnswersQuitKey(Protocol):
+    """A screen for which ++shift+q++ means something other than exit."""
+
+    def handle_quit_key(self) -> bool:
+        """Leave this screen, and say whether that is what happened."""
+        ...
+
+
+class QuitAsksTheScreen(App[None]):
+    """An application whose ++shift+q++ asks the screen in front first.
+
+    ``Q`` is ``priority=True``, which it has to be — quit must work with
+    a form field focused — and Textual's priority pass walks the binding
+    chain *from the App down*.  So a screen that bound ``Q`` for itself
+    never saw the press: the ``.eml`` viewer's footer advertised "Close"
+    while ``Q`` quit Pony outright, and a ``Q`` with a Button focused in
+    the composer exited without the save prompt, draft and all.
+
+    The priority is not the mistake.  Not asking was.  A screen says
+    what leaving means for it by implementing
+    :meth:`AnswersQuitKey.handle_quit_key`; anything that does not still
+    exits the application, which is what ``Q`` means in the reader.
+    """
+
+    async def action_quit(self) -> None:
+        screen = self.screen
+        if isinstance(screen, AnswersQuitKey) and screen.handle_quit_key():
+            return
+        await super().action_quit()
+
+
+class PonyApp(QuitAsksTheScreen):
     """Pony Express — terminal mail client with its calendar.
 
     One application, two full-screen subsystems.  The mail reader is
@@ -566,7 +598,7 @@ class PonyApp(App[None]):
         pop_terminal_title()
 
 
-class ComposeApp(App[None]):
+class ComposeApp(QuitAsksTheScreen):
     """Minimal Textual app that opens the composer directly.
 
     Used by ``pony compose`` when the user wants to write a new message
@@ -575,6 +607,7 @@ class ComposeApp(App[None]):
 
     TITLE = "Pony Express — Compose"
     INHERIT_BINDINGS = False
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         Binding("Q", "quit", "Quit", priority=True),
@@ -654,7 +687,7 @@ class ComposeApp(App[None]):
         pop_terminal_title()
 
 
-class EmlViewerApp(App[None]):
+class EmlViewerApp(QuitAsksTheScreen):
     """Minimal Textual app for viewing a single .eml file.
 
     Used by ``pony view <file>`` and when Pony is invoked with a filename
@@ -664,10 +697,18 @@ class EmlViewerApp(App[None]):
 
     TITLE = "Pony Express — Viewer"
     INHERIT_BINDINGS = False
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         Binding("Q", "quit", "Quit", priority=True),
+        Binding("f1", "show_help", "Help"),
     ]
+
+    def action_show_help(self) -> None:
+        """What the reader's keys do here, from the one table."""
+        from .screens.help_screen import HelpScreen
+
+        self.push_screen(HelpScreen(Surface.READER))
 
     def __init__(
         self,
@@ -697,7 +738,7 @@ class EmlViewerApp(App[None]):
             self.exit()
 
 
-class ContactsApp(App[None]):
+class ContactsApp(QuitAsksTheScreen):
     """Minimal Textual app for the standalone contacts browser.
 
     Used by ``pony contacts browse`` to open the contacts browser
@@ -705,6 +746,25 @@ class ContactsApp(App[None]):
     """
 
     TITLE = "Pony Express — Contacts"
+    # Same two decisions the main application makes, for the same
+    # reasons: `F1` is the keyboard reference, not Textual's `ctrl+p`
+    # side panel.  Without them `pony contacts browse` answered to
+    # neither `Q` nor `F1` and injected a command palette nobody else in
+    # the program has.
+    ENABLE_COMMAND_PALETTE = False
+    INHERIT_BINDINGS = False
+    BINDINGS = to_textual(
+        (
+            KeyBinding("Q", "quit", "Quit", Surface.APPLICATION, priority=True),
+            KeyBinding("f1", "show_help", "Help", Surface.APPLICATION),
+        ),
+    )
+
+    def action_show_help(self) -> None:
+        """The contacts browser's keys, from the one table."""
+        from .screens.help_screen import HelpScreen
+
+        self.push_screen(HelpScreen(Surface.CONTACTS))
 
     def __init__(
         self,

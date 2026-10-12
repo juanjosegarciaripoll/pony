@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from time import monotonic
 
 from rich.markup import escape as markup_escape
-from textual.binding import Binding
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Tree
@@ -16,6 +15,7 @@ from textual.widgets._tree import TreeNode
 from ...domain import AppConfig, FolderRef
 from ...protocols import IndexRepository, MirrorRepository
 from ...views import FolderTreeNode, build_folder_tree, has_inbox_mail
+from ..bindings import FOLDER_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
 ACCOUNT_MAIL_SUFFIX = "✉"
@@ -79,12 +79,10 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
     # The right border doubles as the resize handle for this pane.
     DRAG_EDGE = "right"
 
-    BINDINGS = [
-        Binding("n", "cursor_down", "Next", show=False),
-        Binding("p", "cursor_up", "Prev", show=False),
-        Binding("N", "next_inbox", "Next inbox", show=False),
-        Binding("P", "prev_inbox", "Prev inbox", show=False),
-    ]
+    # From the one table both front ends read, like every other key:
+    # written here, `N` shadowed the reader's "New folder" from the pane
+    # where one would naturally create a folder.
+    BINDINGS = list(FOLDER_BINDINGS)
 
     @dataclass
     class FolderSelected(Message):

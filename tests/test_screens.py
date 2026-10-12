@@ -2518,3 +2518,58 @@ async def test_clicking_a_recipient_option_selects_that_row() -> None:
         await pilot.pause()
 
         assert field.value == expected
+
+
+async def test_q_in_the_eml_viewer_closes_the_viewer_not_pony() -> None:
+    """`Q` is the application's key, so the application has to ask.
+
+    `Binding("Q", "quit_viewer", priority=True)` could never fire:
+    Textual settles the priority pass from the App down, so the viewer
+    advertised "Close" in its footer while `Q` exited Pony outright.
+    """
+    from corpus import plain_text
+    from tui_helpers import build_pony_app
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.screens.main_screen import MainScreen
+
+    app, *_ = build_pony_app(label="screens-eml-quit")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(EmlViewerScreen(plain_text()))
+        await pilot.pause()
+        assert isinstance(app.screen, EmlViewerScreen)
+
+        await pilot.press("Q")
+        await pilot.pause()
+
+        assert app.is_running
+        assert isinstance(app.screen, MainScreen)
+
+
+async def test_q_with_a_button_focused_in_compose_offers_to_save() -> None:
+    """It used to exit the application, draft and all, with no prompt."""
+    from textual.widgets import Button
+    from tui_helpers import build_compose_app
+
+    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+
+    app, *_ = build_compose_app(
+        label="screens-compose-quit",
+        subject="unsent",
+        body="work in progress",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # A Button does not consume letters the way an Input does, which
+        # is why this was reachable at all.
+        next(iter(app.screen.query(Button))).focus()
+        await pilot.pause()
+
+        await pilot.press("Q")
+        await pilot.pause()
+
+        assert app.is_running
+        assert isinstance(app.screen, SaveDraftScreen)

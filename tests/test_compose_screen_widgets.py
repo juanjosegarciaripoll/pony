@@ -16,7 +16,7 @@ from textual.containers import Horizontal, Vertical
 from textual.events import Paste
 from textual.widgets import Button, Input
 from textual.widgets.input import Selection
-from tui_helpers import build_compose_app
+from tui_helpers import build_compose_app, make_tmp_paths
 
 from pony.tui.screens.compose_screen import (
     BCC_CONTAINER,
@@ -877,3 +877,83 @@ async def test_the_attachment_buttons_share_the_recipient_columns() -> None:
         assert len(add_columns) == 1, f"+ columns disagree: {add_columns}"
         # And + sits one cell to the right of ×, not on top of it.
         assert add_columns.pop() > remove_columns.pop()
+
+
+async def test_escape_in_compose_puts_the_suggestions_away_first() -> None:
+    """One press means "not that address", the next "not this message".
+
+    `escape` is `priority=True` on the compose surface, so the
+    suggester's own `escape` arm could never fire -- it was dead code
+    behind a live key, and the only test of it drove the widget in a
+    bare app of its own.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import OptionList
+    from tui_helpers import make_index, make_test_account, make_test_config
+
+    from pony.composer import DraftSpec
+    from pony.domain import Contact
+    from pony.mailbox_actions import Mailboxes
+    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+    from pony.tui.widgets.contact_suggester import RecipientInput
+
+    paths = make_tmp_paths("compose-escape-suggestions")
+    # With a display name on the account, nothing pushes the contact
+    # editor over the composer on mount.
+    account = dataclasses.replace(make_test_account(paths), full_name="Me")
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    index.upsert_contact(
+        contact=Contact(
+            id=None,
+            first_name="Marina",
+            last_name="Robles",
+            emails=("marina@example.test",),
+        ),
+    )
+    mailboxes = Mailboxes(config=config, index=index, mirrors={})
+
+    class _Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield from ()
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                ComposeScreen(
+                    config,
+                    [account],
+                    index,
+                    dict(mailboxes.mirrors),
+                    DraftSpec(
+                        account_name=account.name,
+                        subject="draft",
+                        body="body",
+                    ),
+                    contacts=index,
+                ),
+            )
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _screen(app)
+        field = screen.query_one("#to-input", Input)
+        field.focus()
+        field.value = "mar"
+        await pilot.pause()
+        # The From Select has an OptionList of its own, so this asks the
+        # recipient field for its own suggestion list.
+        options = screen.query_one(RecipientInput).query_one(OptionList)
+        assert options.display
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # The list is gone and the composer is still open.
+        assert not options.display
+        assert app.screen is screen
+
+        # A second press leaves, with the save prompt the draft deserves.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, SaveDraftScreen)

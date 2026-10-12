@@ -126,7 +126,32 @@ class RecipientInput(Vertical):
         options.display = bool(addresses)
         options.highlighted = 0 if addresses else None
 
+    def dismiss_suggestions(self) -> bool:
+        """Put the alternatives away; say whether there were any.
+
+        ++escape++ reaches this from
+        :meth:`pony.tui.screens.compose_screen.ComposeScreen.action_cancel`
+        rather than from :meth:`on_key`, because the composer binds that
+        key with ``priority=True`` and Textual settles a priority
+        binding before the key reaches a widget -- which is why the arm
+        below was dead for as long as it existed.  Asking here first is
+        what makes one press mean "not that address" and the next one
+        "not this message".
+        """
+        options = self.query_one(OptionList)
+        if not options.display:
+            return False
+        self._hide_options()
+        self.input.focus()
+        return True
+
     def on_key(self, event: Key) -> None:
+        """Walk into the suggestions, take the first, or put them away.
+
+        The ++escape++ arm is live only where nothing above claims the
+        key -- a host embedding this field on its own.  Inside the
+        composer :meth:`dismiss_suggestions` is the way in.
+        """
         options = self.query_one(OptionList)
         if not self._suggestions:
             return
@@ -137,9 +162,7 @@ class RecipientInput(Vertical):
             self._select(0)
             event.prevent_default()
             event.stop()
-        elif event.key == "escape":
-            self._hide_options()
-            self.input.focus()
+        elif event.key == "escape" and self.dismiss_suggestions():
             event.prevent_default()
             event.stop()
 

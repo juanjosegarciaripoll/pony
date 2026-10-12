@@ -559,6 +559,24 @@ class MainScreen(Screen[None]):
             return
         self._refresh_detail()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter on an agenda row opens it.
+
+        `enter` is `open_event` in the keymap, but `EventList` is a
+        `DataTable`, and `DataTable`'s own `enter` -> `select_cursor`
+        resolves first — so the table posted `RowSelected`, this screen
+        listened only for `RowHighlighted`, and the key advertised in
+        the table did nothing in the default view.  The grids worked
+        because they re-post messages of their own.
+        """
+        from textual.widget import Widget
+
+        sender = cast(Widget, event.control)
+        if sender is not self.query_one(EventList):
+            return
+        event.stop()
+        self.action_open_event()
+
     def on_month_grid_day_highlighted(self, event: MonthGrid.DayHighlighted) -> None:
         """Track the cursor day; flip months when it leaves the shown one."""
         shown_month = (self._viewed_date.year, self._viewed_date.month)

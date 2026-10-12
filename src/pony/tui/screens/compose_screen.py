@@ -651,7 +651,20 @@ class ComposeScreen(Screen[bool]):
         self.dismiss(True)
 
     def action_cancel(self) -> None:
-        """Prompt to save draft if the form has any content."""
+        """Back out of the suggestion list first, then of the form.
+
+        ++escape++ is ``priority=True`` here, because a bare key belongs
+        to whatever field has focus, so the suggester's own ++escape++
+        arm could never fire -- dead code behind a live key.  One press
+        now means "not that address" and the next one "not this
+        message".
+        """
+        from ..widgets.contact_suggester import RecipientInput
+
+        for suggester in self.query(RecipientInput):
+            if suggester.dismiss_suggestions():
+                return
+
         has_content = bool(
             self._collect_field(TO_CONTAINER)
             or self.query_one("#subject-input", Input).value.strip()
@@ -679,6 +692,18 @@ class ComposeScreen(Screen[bool]):
 
         self.app.push_screen(SaveDraftScreen(), _on_save)  # pyright: ignore[reportUnknownMemberType]
 
+    def handle_quit_key(self) -> bool:
+        """++shift+q++ leaves the composer the way ++escape++ does.
+
+        Every compose key is a chord because a bare letter belongs to
+        whatever field has focus — but a Button has focus sometimes, and
+        Buttons do not consume letters, so the application's ``Q`` fired
+        there and exited with the draft unsaved and unprompted.  It asks
+        now, and the answer is the same prompt ++escape++ gives.
+        """
+        self.action_cancel()
+        return True
+
     def action_toggle_markdown(self) -> None:
         self._markdown_mode = not self._markdown_mode
         self._refresh_body_title()
@@ -693,13 +718,7 @@ class ComposeScreen(Screen[bool]):
         parts.append("Markdown ON" if self._markdown_mode else "Markdown OFF")
         self.query_one("#body-area", TextArea).border_title = "  ".join(parts)
         md = "[b $success][MD] [/b $success]" if self._markdown_mode else ""
-        k = "[b $warning]"
-        e = "[/b $warning]"
-        keys = (
-            f"{k}^S{e} Send  {k}Esc{e} Cancel  "
-            f"{k}Alt+A{e} Attach  {k}Alt+E{e} Editor  {k}Alt+M{e} Markdown"
-        )
-        self.query_one("#compose-footer", Static).update(f"{md}{keys}")
+        self.query_one("#compose-footer", Static).update(f"{md}{_compose_cheatsheet()}")
 
     def action_edit_external(self) -> None:
         """Write body to a temp file, open the configured editor, read back."""
@@ -912,3 +931,35 @@ class ComposeScreen(Screen[bool]):
                 )
 
         self.call_after_refresh(_mount)
+
+
+# How a person reads a Textual key name on one cramped footer line.
+_COMPOSE_MODIFIERS = {"ctrl": "^", "alt": "Alt+"}
+_COMPOSE_KEY_NAMES = {"escape": "Esc"}
+
+
+def _compose_key_label(key: str) -> str:
+    """``ctrl+s`` as ``^S``, ``alt+a`` as ``Alt+A``, ``escape`` as ``Esc``."""
+    *modifiers, base = key.split("+")
+    prefix = "".join(_COMPOSE_MODIFIERS.get(mod, f"{mod}+") for mod in modifiers)
+    return prefix + _COMPOSE_KEY_NAMES.get(base, base.upper())
+
+
+def _compose_cheatsheet() -> str:
+    """The compose keys, from the one table both front ends read.
+
+    This line used to be typed out by hand -- ``^S Send  Esc Cancel
+    Alt+A Attach  Alt+E Editor  Alt+M Markdown`` -- which is the third
+    place a compose key was written down and the first to fall behind.
+    It renders the same line now, from the table, and follows the
+    table's ``show`` flag: ++alt+s++ is the alias for terminals that
+    will not deliver ++ctrl+s++, and it belongs in the help screen
+    rather than on a footer that has to fit beside the attachment bar.
+    """
+    k = "[b $warning]"
+    e = "[/b $warning]"
+    return "  ".join(
+        f"{k}{_compose_key_label(binding.key)}{e} {binding.description}"
+        for binding in for_surface(MAIL_KEYMAP, Surface.COMPOSE)
+        if binding.show
+    )

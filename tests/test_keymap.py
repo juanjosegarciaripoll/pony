@@ -166,3 +166,200 @@ def test_every_calendar_binding_has_a_web_spelling_too() -> None:
         assert not spelled.endswith("+")
     # The vim-style "go to date" key is one the DOM names differently.
     assert web_key("colon") == ":"
+
+
+def test_the_folder_tree_binds_the_folders_surface() -> None:
+    """A widget's keys are in the table too.
+
+    Whole-list equality for five named *screens* is what let `N` be
+    written into the tree, where it shadowed the reader's "New folder"
+    and took it out of the footer as well.
+    """
+    from pony.tui.bindings import FOLDER_BINDINGS
+    from pony.tui.widgets.folder_panel import FolderPanel
+
+    expected = to_textual(for_surface(MAIL_KEYMAP, Surface.FOLDERS))
+    assert list(FolderPanel.BINDINGS) == expected
+    assert tuple(expected) == FOLDER_BINDINGS
+
+
+def test_the_message_list_binds_the_list_surface() -> None:
+    from pony.tui.widgets.message_list import MessageListPanel
+
+    assert list(MessageListPanel.BINDINGS) == to_textual(
+        for_surface(MAIL_KEYMAP, Surface.LIST),
+    )
+
+
+def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
+    """One key, one action, wherever it is bound.
+
+    Every ``BINDINGS`` list under ``pony.tui`` is checked, not just the
+    five named screens -- a widget is exactly where the shadowing
+    happened.  A key may be *absent* from a pane; what it may not do is
+    mean a different thing there without the table saying so.
+    """
+    import importlib
+    import pkgutil
+
+    from textual.binding import Binding as TextualBinding
+    from textual.widgets import Input, TextArea
+
+    import pony.tui
+
+    table = {
+        binding.key: binding.action
+        for binding in for_surface(MAIL_KEYMAP, Surface.READER, Surface.APPLICATION)
+    }
+    # The contacts browser and the composer replace the reader rather
+    # than sitting inside it, so a letter may mean something else there
+    # -- `D` deletes a contact where it trashes a message.  The tree and
+    # the message list are panes *of* the reader and are held to it; see
+    # `test_no_key_means_two_things_at_once_in_the_reader`.
+    local = {
+        binding.key
+        for binding in for_surface(MAIL_KEYMAP, Surface.CONTACTS, Surface.COMPOSE)
+    }
+
+    offenders: list[str] = []
+    for info in pkgutil.walk_packages(pony.tui.__path__, "pony.tui."):
+        module = importlib.import_module(info.name)
+        for name in dir(module):
+            obj = getattr(module, name)
+            bindings = getattr(obj, "BINDINGS", None)
+            if not isinstance(bindings, list):
+                continue
+            if getattr(obj, "__module__", "") != info.name:
+                continue
+            # A text field owns its own editing chords -- ctrl+left is
+            # "previous word" in anything you can type into, and a field
+            # that could not do that would be broken.  Textual filters
+            # those keys out of the screen's chain while such a widget
+            # has focus, so there is no clash to resolve.
+            if isinstance(obj, type) and issubclass(obj, (Input, TextArea)):
+                continue
+            for binding in bindings:
+                if not isinstance(binding, TextualBinding):
+                    continue
+                if binding.key in local:
+                    continue
+                expected = table.get(binding.key)
+                if expected is not None and expected != binding.action:
+                    offenders.append(
+                        f"{info.name}.{name} binds {binding.key!r} to "
+                        f"{binding.action!r}, the table says {expected!r}",
+                    )
+    assert offenders == []
+
+
+def test_the_help_screen_is_rendered_from_the_table() -> None:
+    """It was a third hand-typed copy, and it contradicted itself on `N`."""
+    from pony.tui.screens.help_screen import HelpScreen
+
+    shown = HelpScreen().bindings_shown()
+
+    assert shown == for_surface(
+        MAIL_KEYMAP,
+        Surface.APPLICATION,
+        Surface.READER,
+        Surface.LIST,
+        Surface.FOLDERS,
+    )
+    # Every one of the keys the hand-typed version had lost.
+    actions = {binding.action for binding in shown}
+    assert {
+        "background_sync",
+        "edit_draft",
+        "print_pdf",
+        "save_message",
+        "attachments_open",
+        "attachments_save",
+        "goto_folder",
+        "cursor_first",
+        "cursor_last",
+    } <= actions
+    # And it no longer claims `N` twice.
+    keys = [binding.key for binding in shown]
+    assert keys.count("N") == 1
+
+
+def test_the_help_screen_can_describe_another_surface() -> None:
+    from pony.tui.screens.help_screen import HelpScreen
+
+    shown = HelpScreen(Surface.CONTACTS).bindings_shown()
+
+    assert shown == for_surface(MAIL_KEYMAP, Surface.CONTACTS)
+
+
+def test_the_compose_footer_is_rendered_from_the_table() -> None:
+    """The one-line cheatsheet was a fourth copy, already out of date."""
+    import re
+
+    from pony.keymap import COMPOSE_KEYS
+    from pony.tui.screens.compose_screen import _compose_cheatsheet
+
+    plain = re.sub(r"\[[^]]*\]", "", _compose_cheatsheet())
+
+    for binding in COMPOSE_KEYS:
+        if binding.show:
+            assert binding.description in plain, binding.key
+    assert plain == "^S Send  Esc Cancel  Alt+A Attach  Alt+E Editor  Alt+M Markdown"
+
+
+def test_the_standalone_apps_answer_the_application_keys() -> None:
+    """`pony contacts browse` answered to neither `Q` nor `F1`.
+
+    And it injected Textual's `ctrl+p` command palette, which nothing
+    else in the program has.
+    """
+    from pony.tui.app import ContactsApp, EmlViewerApp, PonyApp
+
+    for app in (PonyApp, ContactsApp, EmlViewerApp):
+        assert app.ENABLE_COMMAND_PALETTE is False, app.__name__
+        bound = {
+            binding.key: binding.action
+            for binding in app.BINDINGS
+            if isinstance(binding, Binding)
+        }
+        assert bound.get("Q") == "quit", app.__name__
+        assert bound.get("f1") == "show_help", app.__name__
+
+
+def test_the_calendar_agenda_opens_what_the_table_says_enter_opens() -> None:
+    """`enter` is `open_event`, and the agenda has to answer it."""
+    from chronos.keymap import KEY_OPEN
+    from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
+
+    assert KEY_OPEN == "enter"
+    # `EventList` is a `DataTable`, whose own `enter` posts `RowSelected`;
+    # the screen listened only for `RowHighlighted`, so the key did
+    # nothing in the default view.
+    assert hasattr(CalendarScreen, "on_data_table_row_selected")
+
+
+def test_no_key_means_two_things_at_once_in_the_reader() -> None:
+    """The reader and its two panes are live together, so they agree.
+
+    `N` was `new_folder` in the reader and `next_inbox` in the tree, and
+    the tree is a pane of the reader -- so with the tree focused, which
+    is the natural place to create a folder, `N` created nothing and
+    "New folder" was gone from the footer as well.
+
+    The contacts browser and the composer are *not* in this set: they
+    replace the reader, so `D` there may delete a contact.
+    """
+    import collections
+
+    together = for_surface(
+        MAIL_KEYMAP,
+        Surface.APPLICATION,
+        Surface.READER,
+        Surface.LIST,
+        Surface.FOLDERS,
+    )
+    actions: dict[str, set[str]] = collections.defaultdict(set)
+    for binding in together:
+        actions[binding.key].add(binding.action)
+
+    clashing = {key: sorted(names) for key, names in actions.items() if len(names) > 1}
+    assert clashing == {}

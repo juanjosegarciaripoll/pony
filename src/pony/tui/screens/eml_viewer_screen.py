@@ -28,8 +28,11 @@ class EmlViewerScreen(Screen[None]):
     of this screen on the same app stack.
     """
 
+    # No `Q` here.  It is the application's key, and the application
+    # asks this screen what leaving means (`handle_quit_key`): a binding
+    # written here could never fire, because Textual's priority pass
+    # runs the App first -- which is how "Close [Q]" came to quit Pony.
     BINDINGS = [
-        Binding("Q", "quit_viewer", "Close", priority=True, show=False),
         Binding("w", "open_browser", "Browser"),
         Binding("ctrl+p", "print_pdf", "Print PDF"),
     ]
@@ -58,6 +61,17 @@ class EmlViewerScreen(Screen[None]):
 
     def action_quit_viewer(self) -> None:
         self.dismiss()
+
+    def handle_quit_key(self) -> bool:
+        """++shift+q++ closes the viewer, not Pony.
+
+        A nested attachment opens a second viewer on the same stack, so
+        this closes one layer at a time; in ``pony view`` the last one
+        closing is what ends the program (see
+        ``EmlViewerApp.on_screen_resume``).
+        """
+        self.action_quit_viewer()
+        return True
 
     def on_message_view_panel_close_requested(
         self, event: MessageViewPanel.CloseRequested

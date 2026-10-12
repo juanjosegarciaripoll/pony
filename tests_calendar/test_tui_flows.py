@@ -4458,3 +4458,53 @@ class OAuthCopyUrlTest(TuiFlowTestCase):
                     release.set()
                     for _ in range(10):
                         await pilot.pause()
+
+
+class AgendaKeysTest(TuiFlowTestCase):
+    """The agenda has to answer the keys the table advertises.
+
+    Every edit/open test in this file called `screen._edit_specific`
+    directly, so nothing ever pressed `enter` or `e` in the default
+    view -- and `enter` did nothing there: `EventList` is a `DataTable`
+    whose own `enter` posts `RowSelected`, and the screen listened only
+    for `RowHighlighted`.
+    """
+
+    async def _agenda_over_the_seeded_events(self, pilot: Pilot[None]) -> MainScreen:
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.pause()
+        screen._viewed_date = date(2026, 5, 1)
+        screen.refresh_view()
+        await pilot.pause()
+        screen.query_one(EventList).focus()
+        await pilot.pause()
+        return screen
+
+    async def test_enter_on_an_agenda_row_opens_the_event(self) -> None:
+        from chronos.tui.screens.event_detail_screen import EventDetailScreen
+
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = await self._agenda_over_the_seeded_events(pilot)
+            self.assertGreater(screen.query_one(EventList).row_count, 0)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            self.assertIsInstance(pilot.app.screen, EventDetailScreen)
+
+    async def test_e_on_an_agenda_row_edits_the_event(self) -> None:
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self._agenda_over_the_seeded_events(pilot)
+
+            await pilot.press("e")
+            await pilot.pause()
+
+            self.assertIsInstance(pilot.app.screen, EventEditScreen)

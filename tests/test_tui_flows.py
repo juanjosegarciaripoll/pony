@@ -644,7 +644,12 @@ async def test_search_dialog_returns_results() -> None:
 
 
 async def test_folder_tree_next_inbox() -> None:
-    """`N` / `P` jump the folder cursor between per-account INBOX nodes."""
+    """`]` / `[` jump the folder cursor between per-account INBOX nodes.
+
+    They used to be `N` / `P`, written into the widget, where `N`
+    shadowed the reader's "New folder" from the pane where one would
+    naturally create a folder -- and took it out of the footer too.
+    """
     paths = make_tmp_paths("jump")
     a1 = make_test_account(paths, name="one")
     a2 = make_test_account(paths, name="two")
@@ -679,20 +684,30 @@ async def test_folder_tree_next_inbox() -> None:
         # message list; restore it so the FolderPanel bindings are active.
         fp.focus()
         await pilot.pause()
-        await pilot.press("N")
+        await pilot.press("]")
         await pilot.pause()
         assert fp.cursor_node is not None
         assert fp.cursor_node.data == FolderRef(
             account_name="two",
             folder_name="INBOX",
         )
-        await pilot.press("P")
+        await pilot.press("[")
         await pilot.pause()
         assert fp.cursor_node is not None
         assert fp.cursor_node.data == FolderRef(
             account_name="one",
             folder_name="INBOX",
         )
+
+        # And `N` reaches the reader, from the pane that needs it most --
+        # both as the press and as the footer entry that advertises it.
+        from pony.tui.screens.new_folder_screen import NewFolderScreen
+
+        advertised = app.screen.active_bindings
+        assert advertised["N"].binding.action == "new_folder"
+        await pilot.press("N")
+        await pilot.pause()
+        assert isinstance(app.screen, NewFolderScreen)
 
 
 async def test_account_mail_suffix_keeps_account_search_scope() -> None:

@@ -43,6 +43,10 @@ class Surface(StrEnum):
     READER = "reader"
     # Any list of rows that supports marking and cursor motion.
     LIST = "list"
+    # The folder tree.  Its own surface because two of its keys mean
+    # something different there than in the message list: `n`/`p` walk
+    # the tree rather than the rows under it.
+    FOLDERS = "folders"
     # The compose form.
     COMPOSE = "compose"
     # The contacts browser.
@@ -75,6 +79,22 @@ MOTION_KEYS: tuple[KeyBinding, ...] = (
 )
 
 LIST_KEYS: tuple[KeyBinding, ...] = (*MARK_KEYS, *MOTION_KEYS)
+
+# The folder tree, which is not a list of messages: `n`/`p` step through
+# folders here, and `]`/`[` jump between the accounts' INBOXes.
+#
+# Those two used to be `N`/`P`, written straight into the widget, where
+# they shadowed the reader's `N` -- so with the tree focused, the pane
+# where one would naturally create a folder, "New folder" was both
+# unreachable and absent from the footer.  A bracket is free on both
+# tables and in a browser, and reads as "next section" the way vim's
+# does.
+FOLDER_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding("n", "cursor_down", "Next folder", Surface.FOLDERS, show=False),
+    KeyBinding("p", "cursor_up", "Prev folder", Surface.FOLDERS, show=False),
+    KeyBinding("]", "next_inbox", "Next inbox", Surface.FOLDERS, show=False),
+    KeyBinding("[", "prev_inbox", "Prev inbox", Surface.FOLDERS, show=False),
+)
 
 
 READER_KEYS: tuple[KeyBinding, ...] = (
@@ -174,6 +194,7 @@ MAIL_KEYMAP: tuple[KeyBinding, ...] = (
     *APPLICATION_KEYS,
     *READER_KEYS,
     *LIST_KEYS,
+    *FOLDER_KEYS,
     *PANE_KEYS,
     *CONTACT_KEYS,
     *COMPOSE_KEYS,
@@ -184,6 +205,7 @@ __all__ = [
     "APPLICATION_KEYS",
     "COMPOSE_KEYS",
     "CONTACT_KEYS",
+    "FOLDER_KEYS",
     "LIST_KEYS",
     "MAIL_KEYMAP",
     "MARK_KEYS",
