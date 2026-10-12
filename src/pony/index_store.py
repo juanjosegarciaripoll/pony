@@ -6,7 +6,7 @@ import contextlib
 import dataclasses
 import json
 import sqlite3
-from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import cast
 
 from chronos.index_store import (
     ThreadLocalSqlite,
+    chunked,
     datetime_to_sql,
     sql_to_datetime,
 )
@@ -51,10 +52,6 @@ _SCHEMA_VERSION = 3
 # cost disappears into the work.
 _BATCH_COMMIT_ROWS = 500
 _MIGRATABLE_FROM = 2
-# Host parameters per statement, kept well under SQLite's own limit
-# (999 before 3.32, 32,766 after) so an ``IN (…)`` built from a list as
-# long as the address book is never the thing that fails.
-_MAX_SQL_PARAMETERS = 400
 
 
 class ContactEmailConflictError(RuntimeError):
@@ -124,16 +121,6 @@ _FULL_SELECT = ", ".join(_FULL_COLS)
 _INSERT_COLS = ", ".join(_FULL_COLS[1:])  # skip id
 _INSERT_QS = ", ".join(["?"] * (len(_FULL_COLS) - 1))
 _UPDATE_ASSIGNS = ", ".join(f"{c} = ?" for c in _FULL_COLS[1:])
-
-
-def _chunked_ids(ids: Sequence[int]) -> Iterator[Sequence[int]]:
-    """Split *ids* into runs that fit in one statement's parameters.
-
-    The runs keep the caller's order, so a result assembled from several
-    of them is in the same order a single statement would have given.
-    """
-    for start in range(0, len(ids), _MAX_SQL_PARAMETERS):
-        yield ids[start : start + _MAX_SQL_PARAMETERS]
 
 
 def _row_params(message: IndexedMessage) -> tuple[object, ...]:
@@ -1186,10 +1173,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             return ()
         result: list[SlowPathRow] = []
         ordered_uids = tuple(dict.fromkeys(int(uid) for uid in uids))
-        # Keep comfortably under SQLite's default 999-parameter limit:
-        # account, folder, then up to 900 UIDs.
-        for start in range(0, len(ordered_uids), 900):
-            chunk = ordered_uids[start : start + 900]
+        for chunk in chunked(ordered_uids):
             placeholders = ", ".join("?" for _ in chunk)
             with self._use() as conn:
                 rows = conn.execute(
@@ -1641,7 +1625,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             # a build option -- 999 before SQLite 3.32, 32,766 by default
             # since -- and past it a whole-book listing or export raised
             # instead of answering.
-            for chunk in _chunked_ids(ids):
+            for chunk in chunked(ids):
                 placeholders = ",".join("?" * len(chunk))
                 rows.extend(
                     conn.execute(

@@ -15,6 +15,7 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 
 from pony.domain import (
+    Contact,
     FolderRef,
     FolderSyncState,
     IndexedMessage,
@@ -1143,6 +1144,58 @@ class SearchSemanticsTest(unittest.TestCase):
             )
         )
         self.assertEqual(self._find(repo, "archived"), {"Archived thing"})
+
+
+class ChunkedParametersTest(unittest.TestCase):
+    """A list longer than one statement's parameters keeps its order.
+
+    The chunker's docstring used to claim the concatenation of its runs
+    "is in the same order a single statement would have given", which
+    is false for any ORDER BY -- each run is sorted on its own.  Its one
+    call site re-orders afterwards, so the claim was wrong rather than
+    broken, and the next caller to believe it would have shipped a
+    mis-sorted list.
+    """
+
+    def test_a_listing_longer_than_one_statement_is_still_sorted(self) -> None:
+        repo = _fresh_repo()
+        total = 450  # more than _MAX_SQL_PARAMETERS
+        with repo.connection():
+            for n in range(total):
+                repo.upsert_contact(
+                    contact=Contact(
+                        id=None,
+                        first_name="Ada",
+                        last_name=f"{n:04d}",
+                        emails=(f"ada{n}@example.com",),
+                    )
+                )
+
+        names = [c.last_name for c in repo.list_all_contacts()]
+
+        self.assertEqual(len(names), total)
+        self.assertEqual(names, sorted(names))
+
+    def test_slow_path_rows_come_back_for_every_uid(self) -> None:
+        repo = _fresh_repo()
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        uids = list(range(1, 451))
+        with repo.connection():
+            for uid in uids:
+                repo.insert_message(
+                    message=dataclasses.replace(
+                        _make_message(f"<u{uid}@x>", uid=uid),
+                        uid_validity=1,
+                    )
+                )
+
+        rows = repo.list_folder_slow_path_rows_by_uid(
+            account_name=folder.account_name,
+            folder_name=folder.folder_name,
+            uids=uids,
+        )
+
+        self.assertEqual({row.uid for row in rows}, set(uids))
 
 
 class UtcNormalisationTest(unittest.TestCase):

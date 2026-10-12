@@ -530,7 +530,7 @@ class SqliteIndexRepository:
                 return ()
             uid_filters = [
                 (f"AND c.uid IN ({', '.join('?' * len(chunk))}) ", tuple(chunk))
-                for chunk in _chunked(wanted)
+                for chunk in chunked(wanted)
             ]
         else:
             uid_filters = [("", ())]
@@ -649,7 +649,7 @@ class SqliteIndexRepository:
         columns = ", ".join(_COMPONENT_COLUMNS)
         out: list[StoredComponent] = []
         with self.connection() as conn:
-            for chunk in _chunked(wanted):
+            for chunk in chunked(wanted):
                 placeholders = ", ".join("?" * len(chunk))
                 cursor = conn.execute(
                     f"SELECT {columns} FROM components "  # noqa: S608
@@ -1086,13 +1086,15 @@ def _decode_flags(value: object) -> Sequence[str]:
     return tuple(out)
 
 
-def _chunked(values: Sequence[str]) -> Iterator[Sequence[str]]:
+def chunked[T](values: Sequence[T]) -> Iterator[Sequence[T]]:
     """Split *values* into runs that fit in one statement's parameters.
 
     SQLite caps the number of host parameters per statement, so an
     ``IN (…)`` over an arbitrarily long list has to be issued in pieces.
-    The runs stay in the order given, so concatenating their results
-    keeps a sorted input sorted.
+    The runs stay in the order given, and nothing more: a statement
+    with an ``ORDER BY`` sorts each run on its own, so a caller that
+    was promised an order has to restore it over the concatenation --
+    as ``query_occurrences`` and ``contacts_by_ids`` both do.
     """
     for start in range(0, len(values), _MAX_SQL_PARAMETERS):
         yield values[start : start + _MAX_SQL_PARAMETERS]
