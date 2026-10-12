@@ -1813,7 +1813,10 @@ class MoreCliCommandsTest(unittest.TestCase):
 
         self.assertIn(f"config_version = {CONFIG_VERSION}", written)
         self.assertEqual(config.accounts, ())
-        assert config.data_dir.is_absolute()
+        # The loader refuses a config without one, so this is never None.
+        data_dir = config.data_dir
+        assert data_dir is not None
+        assert data_dir.is_absolute()
 
     def test_contacts_show_finds_existing_contact(self) -> None:
         """``pony contacts show`` displays details for a known contact."""

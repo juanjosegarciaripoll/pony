@@ -30,11 +30,21 @@ so `tests_calendar/` still exercises the calendar standalone.
 ## Rules
 
 1. **Read first.** Use `docs/architecture.md` to locate the right module.
-2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright src`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
+2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
 
    A development environment needs the web extra as well as the dev
    group, because the suite covers both front ends:
    `uv sync --group dev --extra web`. Both CI workflows pass it.
+
+   **Run `basedpyright` with no arguments, as the CI does.** Its
+   `include` in `pyproject.toml` is `["src", "tests"]`, so a path
+   argument narrows the check: `basedpyright src` leaves every test file
+   unchecked, and the test suite is where most new code lands. One run
+   of it that way sent an `Optional` member access to CI unnoticed. On a
+   machine with under about 2 GB the bare run dies with a V8 heap
+   overflow — node sizes its heap from the memory it finds, not from the
+   work — and the equivalent is the same check in two passes,
+   `basedpyright src` *and* `basedpyright tests`. Not one of them.
 
    The run is parallel: `addopts` carries `-n auto --dist loadfile`
    (pytest-xdist). Most of the suite drives a Textual app through `Pilot`

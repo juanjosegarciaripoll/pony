@@ -407,6 +407,13 @@ async function run() {
   // Back to the folder the rest of these steps use.
   await goTo(frame, listUrl, "#rows .row");
   doc = frame.contentDocument;
+  // An action brings the pane back too, and the server renders every
+  // fold open -- so the fold has to survive the swap as the scroll
+  // position does, and not only survive a navigation.
+  intercept(win, { changed: 1, notices: [] });
+  press(doc.body, "A", { shiftKey: true });
+  await sleep(400);
+  report.foldAfterAction = !doc.querySelector("#folders details.branch").open;
   report.steps.push("tree");
   out();
 
@@ -853,6 +860,11 @@ def test_the_folder_tree_folds_and_shows_what_descends_from_what() -> None:
     # is what the reader's tree does and a re-rendered page does not.
     assert "folder=Drafts" in report["foldedOn"]
     assert report["foldRemembered"] is True
+    # An action refreshes the pane without navigating, and the fold
+    # survives that as well: the folds carried over are the ones on the
+    # tree being replaced, not the ones written down at the last
+    # navigation, which an action does not perform.
+    assert report["foldAfterAction"] is True
 
 
 def test_enter_opens_the_row_the_cursor_is_on() -> None:

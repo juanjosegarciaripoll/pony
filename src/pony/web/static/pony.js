@@ -179,13 +179,29 @@ function foldable() {
   return document.querySelectorAll("[data-fold]");
 }
 
-function rememberFolds() {
+// Which folders are shut right now.  An action replaces the pane with
+// markup the server renders fully open, so the state has to come off
+// the live tree and go back on -- not out of storage, which holds what
+// was written down at the last navigation and would undo a fold made
+// since.
+function shutFolds() {
   const shut = [];
   for (const fold of foldable()) {
     if (!fold.open) shut.push(fold.dataset.fold);
   }
+  return shut;
+}
+
+function applyFolds(shut) {
+  const closed = new Set(shut);
+  for (const fold of foldable()) {
+    if (closed.has(fold.dataset.fold)) fold.open = false;
+  }
+}
+
+function rememberFolds() {
   try {
-    window.sessionStorage.setItem(FOLDS, JSON.stringify(shut));
+    window.sessionStorage.setItem(FOLDS, JSON.stringify(shutFolds()));
   } catch {
     // A private window, or blocked site data, throws. A fold is a
     // convenience and nothing depends on remembering it.
@@ -200,10 +216,7 @@ function restoreFolds() {
     return;
   }
   if (!Array.isArray(shut)) return;
-  const closed = new Set(shut);
-  for (const fold of foldable()) {
-    if (closed.has(fold.dataset.fold)) fold.open = false;
-  }
+  applyFolds(shut);
 }
 
 // The folder being read, without the message open in it.
@@ -543,10 +556,13 @@ async function refresh() {
     .parseFromString(await folders.text(), "text/html")
     .getElementById("folders");
   if (refreshed) {
-    // The replacement starts at the top, so carry the position over.
+    // The replacement starts at the top and fully open, so carry the
+    // position and the folds over.
     const was = paneScroller("folders");
     const top = was ? was.scrollTop : 0;
+    const folds = shutFolds();
     tree.replaceWith(refreshed);
+    applyFolds(folds);
     const now = refreshed.querySelector(".pane-body");
     if (now) now.scrollTop = top;
   }

@@ -11,6 +11,7 @@ call the terminal makes.
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -43,6 +44,19 @@ if TYPE_CHECKING:
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 JS = Path(__file__).resolve().parents[1] / "src/pony/web/static/pony.js"
+CSS = Path(__file__).resolve().parents[1] / "src/pony/web/static/pony.css"
+
+
+def _selectors(css: str) -> list[str]:
+    """Every selector the stylesheet declares, one per entry."""
+    bare = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    found: list[str] = []
+    for block in bare.split("}"):
+        head = block.split("{")[0].strip()
+        if not head or head.startswith("@"):
+            continue
+        found.extend(part.strip() for part in head.split(","))
+    return [selector for selector in found if selector]
 
 
 def _services(
@@ -1771,3 +1785,25 @@ def test_the_footer_lists_each_key_once() -> None:
         rendered = str(_footer(bindings))
         shown = [web_key(b.key) for b in bindings if b.show]
         assert rendered.count('class="key"') == len(set(shown)), surface
+
+
+def test_a_state_class_is_never_styled_on_its_own() -> None:
+    """`unread` is a count beside a folder and a state on a message row.
+
+    A bare `.unread` rule reached both, so every unread row inherited
+    the monospace meant for the count and read as a different typeface
+    instead of as bold.  It took two wrong diagnoses to find, because
+    nothing in either place looks wrong on its own.  A name the markup
+    uses as state stays qualified -- by the pane it belongs to or by the
+    element that carries it -- and then a rule written for one place
+    cannot travel to the other.
+    """
+    loose = [
+        selector
+        for selector in _selectors(CSS.read_text(encoding="utf-8"))
+        if ".unread" in selector
+        and not selector.startswith("#")
+        and ".row" not in selector
+    ]
+
+    assert loose == []
