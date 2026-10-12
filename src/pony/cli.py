@@ -172,8 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the plan and exit without touching the index, the "
-        "mirrors or the server.",
+        help="Print the plan and exit without writing anything: the index "
+        "and the mirrors are left alone. Planning still connects to the "
+        "server and reads from it.",
     )
 
     search_parser = subparsers.add_parser("search", help="Search indexed mail.")
@@ -194,15 +195,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     reset_parser = subparsers.add_parser(
         "reset",
-        help="Delete the index database and all local mirrors for a clean re-sync.",
+        help="Delete the index and every remote account's mirror for a clean re-sync.",
+        description=(
+            "Delete the index database and every remote account's mirror, "
+            "for a clean re-sync. A local account's mirror is the only copy "
+            "of that mail -- there is no server to re-fetch it from -- so it "
+            "is kept, and listed as kept."
+        ),
     )
     reset_parser.add_argument(
         "--account",
         dest="account",
         help=(
             "Reset only this account: drop its index rows and mirror "
-            "directory. Credentials and other accounts are left untouched. "
-            "Without this flag the whole index and every mirror are removed."
+            "directory, local account or not, because it was asked for by "
+            "name. Credentials and other accounts are left untouched."
         ),
     )
     reset_parser.add_argument(
@@ -2633,10 +2640,15 @@ def run_reset(
     account: str | None,
     yes: bool,
 ) -> int:
-    """Delete the index database and all local mirror directories.
+    """Delete the index database and every remote account's mirror.
 
-    With ``account`` set, only that account's index rows and mirror
-    directory are removed; credentials and other accounts stay intact.
+    A local account's mirror is kept: there is no server to re-fetch it
+    from, so that directory is the only copy of the mail and "delete it
+    all and re-sync" means nothing there.  It is listed as kept, and
+    ``account`` naming it removes it anyway, because then it was asked
+    for by name -- which is also the only way one account's rows and
+    mirror go without the rest.  Credentials and other accounts stay
+    intact either way.
     """
     if account is not None:
         return _run_reset_account(

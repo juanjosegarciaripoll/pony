@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [2.0.0]
+### Upgrading
+
+**The configuration file is version 3, and it says where its data goes.**
+Put `config_version = 3` at the top and add the two keys that are now
+required:
+
+- `data_dir`, an absolute path. The index, the logs and the calendar's
+  data live under it, and a relative `mirror.path` resolves under it.
+  A config that omits it is refused rather than guessed at; the
+  platform-convention directory is what a run with no loadable config
+  uses — `pony doctor`, `pony config edit`, `pony reset` on a fresh
+  install.
+- `profile`, the name this config claims that directory under. Pony
+  writes `<data_dir>/profile.toml` on first use and afterwards refuses
+  any config declaring a different profile for that directory, so two
+  configs share a data directory only by saying the same name. The
+  check is per directory and not per name: the same profile with two
+  different `data_dir` values is two directories, each with its own
+  stamp.
+
+`pony doctor` prints the paths a run will use, which is the quickest way
+to see whether a converted file points where you meant it to.
+
+**`PONY_ROOT` relocates everything a run writes.** With it set, every
+directory — the one `data_dir` names included, absolute or not — is
+re-rooted underneath it, which is how a scratch or sandboxed run stays
+out of a real user directory. Unset it for ordinary use.
+
+**`pony web` needs the `web` extra**: `pip install 'pony[web]'`, or
+`uv sync --extra web` from a checkout. Without it the subcommand is the
+only thing missing; everything else runs as before.
+
+**A Maildir filename now carries the handle its message was fetched
+with** — `,V=<uidvalidity>,U=<uid>`, the mbsync and Dovecot convention
+— which is what lets `pony reindex` rebuild a lost index from the files
+on disk, with each folder's watermark. Files already in your mirror keep
+the names they have; the suffix appears on messages written from here
+on. So `pony reindex` over a mirror from an earlier version indexes its
+messages as local-only, which is what the next sync would upload: the
+command says so, and a whole folder of them trips the mass-upload safety
+halt. Run `pony sync --dry-run` and read the plan before letting a sync
+proceed on a freshly reindexed mirror.
+
+**`pony reset` keeps a local account's mirror.** A local account has no
+server to re-fetch from — its mirror *is* the mail — so "delete it all
+and re-sync" has nothing to re-sync from and the directory is left
+alone, named in the output as kept. `pony reset --account <name>` still
+removes it, because then it was asked for by name. The reset also clears
+the scan cache, so `pony rescan` sees the mail that is still on disk;
+without that a kept mirror came back indexed by nothing.
+
 ### Added
 
 - **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`

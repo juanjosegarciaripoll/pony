@@ -372,7 +372,7 @@ class BuildMboxTocTestCase(unittest.TestCase):
 
 
 class MboxMessageByIdTest(unittest.TestCase):
-    """Tests for the mbox message_id fast-path and _close_all."""
+    """Tests for the mbox message_id fast-path and the handle flush."""
 
     def test_get_message_bytes_with_message_id_fast_path(self) -> None:
         """Providing message_id triggers the mmap fast path when mbox is not open."""
@@ -440,8 +440,13 @@ class MboxMessageByIdTest(unittest.TestCase):
         )
         self.assertIn(b"Fallback test", result)
 
-    def test_mbox_close_all_on_del(self) -> None:
-        """_close_all runs without error during garbage collection."""
+    def test_the_open_handles_are_flushed_when_the_mirror_goes(self) -> None:
+        """The finalizer is the flush, and running it twice is harmless.
+
+        It is called directly rather than by dropping the repository,
+        because what has to be exercised is the function the finalizer
+        holds -- the one that flushes without retaining anything.
+        """
         from uuid import uuid4
 
         from pony.domain import FolderRef
@@ -465,10 +470,10 @@ class MboxMessageByIdTest(unittest.TestCase):
             folder=folder,
             storage_key="0",
         )
-        # Calling _close_all explicitly should not raise
-        mirror._close_all()
-        # And calling it again (empty handles) should also be fine
-        mirror._close_all()
+        # What `weakref.finalize` in `__init__` will call, early.
+        mirror._finalizer()  # noqa: SLF001
+        # And again, with no handles left: a finalizer may run twice.
+        mirror._finalizer()  # noqa: SLF001
 
     def test_repository_is_not_retained_until_process_exit(self) -> None:
         """The cleanup registration must not keep the repository alive."""
@@ -587,6 +592,41 @@ class MboxMiscTestCase(unittest.TestCase):
 class MaildirShutdownTestCase(unittest.TestCase):
     """The async write pool must release cleanly and be idempotent."""
 
+    def test_a_repository_that_could_not_open_its_root_collects_cleanly(self) -> None:
+        """A half-built repository used to raise again while being collected.
+
+        ``__init__`` makes its directories before it sets the write
+        queue up, so a root it cannot create -- a file in the way, a
+        read-only parent -- left an object whose ``__del__`` then went
+        looking for attributes that were never assigned.  The
+        ``AttributeError`` surfaced as "Exception ignored in __del__" at
+        an unrelated moment, on top of the error the caller was already
+        handling.
+        """
+        import gc
+        import sys
+
+        blocked = TMP_ROOT / "maildir-blocked" / uuid4().hex
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_text("a file where the mirror root should be\n")
+        unraisable: list[object] = []
+        hook = sys.unraisablehook
+        sys.unraisablehook = unraisable.append
+        try:
+            try:
+                MaildirMirrorRepository(account_name="acct", root_dir=blocked)
+            except OSError:
+                # The traceback -- and the half-built object in its
+                # frame -- is released at the end of this block.
+                pass
+            else:
+                self.fail("a file in the way must fail the construction")
+            gc.collect()
+        finally:
+            sys.unraisablehook = hook
+
+        self.assertEqual(unraisable, [])
+
     def test_shutdown_is_idempotent(self) -> None:
         root = TMP_ROOT / "maildir-shutdown" / uuid4().hex
         repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
@@ -601,14 +641,24 @@ class MaildirShutdownTestCase(unittest.TestCase):
         repo._shutdown()
         repo._shutdown()
 
-    def test_shutdown_survives_a_failing_flush(self) -> None:
+    def test_a_write_that_failed_is_raised_once_and_not_at_shutdown(self) -> None:
+        """``flush_writes`` is who gets told; the exit path has nobody."""
+        import concurrent.futures
+
         root = TMP_ROOT / "maildir-shutdown-fail" / uuid4().hex
         repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+        failed: concurrent.futures.Future[int] = concurrent.futures.Future()
+        failed.set_exception(OSError("disk full"))
+        repo._writes.futures.append(failed)  # noqa: SLF001
 
-        def _boom() -> None:
-            raise OSError("flush failed")
+        with self.assertRaises(OSError):
+            repo.flush_writes()
 
-        repo.flush_writes = _boom  # type: ignore[method-assign]
+        # And again, with nobody to report to: shutting down a mirror
+        # whose write failed must not raise out of a finalizer.
+        failed_again: concurrent.futures.Future[int] = concurrent.futures.Future()
+        failed_again.set_exception(OSError("disk full"))
+        repo._writes.futures.append(failed_again)  # noqa: SLF001
         repo._shutdown()
 
 
@@ -1275,7 +1325,7 @@ class PendingWriteBoundTestCase(unittest.TestCase):
                 raw_message=f"Subject: m{n}\r\n\r\nbody\r\n".encode(),
             )
             self.assertLessEqual(
-                len(mirror._write_futures),  # noqa: SLF001
+                len(mirror._writes.futures),  # noqa: SLF001
                 _MAX_PENDING_WRITES,
             )
 

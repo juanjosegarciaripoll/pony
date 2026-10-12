@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import atexit
 import concurrent.futures
 import contextlib
 import itertools
@@ -14,6 +13,7 @@ import sys
 import time
 import weakref
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -32,6 +32,47 @@ _MAX_PENDING_WRITES = 32
 # ---------------------------------------------------------------------------
 
 
+@dataclass(slots=True)
+class _WriteQueue:
+    """The async writes one Maildir mirror has in flight.
+
+    Kept apart from the repository so that the finalizer which drains it
+    holds no reference back to one.  That is what the mbox backend does
+    with its open handles, for the same two reasons: a ``__del__`` that
+    reaches for attributes an interrupted ``__init__`` never assigned
+    raises again while the object is being collected, and an
+    ``atexit.register(self._shutdown)`` keeps every repository ever
+    built alive until the process ends.
+    """
+
+    pool: concurrent.futures.ThreadPoolExecutor | None = None
+    futures: list[concurrent.futures.Future[int]] = field(default_factory=list)
+
+
+def _finish_writes(writes: _WriteQueue) -> None:
+    """Wait for every queued write, raising the first failure."""
+    futures, writes.futures = writes.futures, []
+    if not futures:
+        return
+    done, _ = concurrent.futures.wait(futures)
+    for future in done:
+        future.result()  # raises if the write failed
+
+
+def _release_writes(writes: _WriteQueue) -> None:
+    """Drain *writes* and give the pool back, whatever happened.
+
+    The exit path, so it reports nothing and raises nothing: a write
+    that failed is the business of whoever called ``flush_writes``, and
+    at collection time there is nobody left to tell.
+    """
+    with contextlib.suppress(Exception):
+        _finish_writes(writes)
+    if writes.pool is not None:
+        writes.pool.shutdown(wait=True)
+        writes.pool = None
+
+
 class MaildirMirrorRepository(MirrorRepository):
     """Maildir-backed mirror repository."""
 
@@ -41,14 +82,15 @@ class MaildirMirrorRepository(MirrorRepository):
     def __init__(self, *, account_name: str, root_dir: Path) -> None:
         self._account_name = account_name
         self._root_dir = root_dir
+        self._ensured_dirs: set[str] = set()
+        self._sequence = itertools.count()
+        self._writes = _WriteQueue()
+        # Before the first thing that can fail, so an object that never
+        # finished being built is still one the finalizer can run on.
+        self._finalizer = weakref.finalize(self, _release_writes, self._writes)
         self._root_dir.mkdir(parents=True, exist_ok=True)
         for subdir in ("cur", "new", "tmp"):
             (self._root_dir / subdir).mkdir(parents=True, exist_ok=True)
-        self._ensured_dirs: set[str] = set()
-        self._sequence = itertools.count()
-        self._write_pool: concurrent.futures.ThreadPoolExecutor | None = None
-        self._write_futures: list[concurrent.futures.Future[int]] = []
-        atexit.register(self._shutdown)
 
     def list_folders(self, *, account_name: str) -> tuple[FolderRef, ...]:
         self._require_account(account_name)
@@ -131,52 +173,42 @@ class MaildirMirrorRepository(MirrorRepository):
         folder_path = self._ensure_folder_dirs(folder.folder_name)
         filename = self._make_filename(uid=uid, uid_validity=uid_validity)
         new_path = folder_path / "new" / filename
-        if self._write_pool is None:
-            self._write_pool = concurrent.futures.ThreadPoolExecutor(
+        if self._writes.pool is None:
+            self._writes.pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=4,
                 thread_name_prefix="mirror-write",
             )
-        future = self._write_pool.submit(new_path.write_bytes, raw_message)
-        self._write_futures.append(future)
+        future = self._writes.pool.submit(new_path.write_bytes, raw_message)
+        self._writes.futures.append(future)
         # A submitted task holds its message body until a worker runs it,
         # and the executor's queue is unbounded: a caller that stores
         # faster than four threads can write would otherwise pile a whole
         # folder's mail into memory.  Waiting here is what keeps the cost
         # of a 50,000-message folder the same as a 50-message one.
-        if len(self._write_futures) >= _MAX_PENDING_WRITES:
+        if len(self._writes.futures) >= _MAX_PENDING_WRITES:
             self._drain_pending(keep=_MAX_PENDING_WRITES // 2)
         return filename
 
     def _drain_pending(self, *, keep: int) -> None:
         """Wait, oldest first, until at most *keep* writes are in flight."""
-        while len(self._write_futures) > keep:
-            self._write_futures.pop(0).result()
+        while len(self._writes.futures) > keep:
+            self._writes.futures.pop(0).result()
 
     def flush_writes(self) -> None:
         """Wait for all pending async writes to complete.
 
         Raises the first exception encountered, if any.
         """
-        futures = self._write_futures
-        self._write_futures = []
-        if not futures:
-            return
-        done, _ = concurrent.futures.wait(futures)
-        for f in done:
-            f.result()  # raises if the write failed
+        _finish_writes(self._writes)
 
     def _shutdown(self) -> None:
-        """Wait for pending writes and release the thread pool."""
-        import contextlib
+        """Wait for pending writes and release the thread pool.
 
-        with contextlib.suppress(Exception):
-            self.flush_writes()
-        if self._write_pool is not None:
-            self._write_pool.shutdown(wait=True)
-            self._write_pool = None
-
-    def __del__(self) -> None:
-        self._shutdown()
+        The same thing the finalizer does at collection or at process
+        exit; a caller that knows it is finished with the mirror can say
+        so earlier.
+        """
+        _release_writes(self._writes)
 
     def list_messages(self, *, folder: FolderRef) -> tuple[str, ...]:
         self._require_folder(folder)
@@ -439,9 +471,6 @@ class MboxMirrorRepository(MirrorRepository):
             _close_mbox_handles,
             self._open_handles,
         )
-
-    def _close_all(self) -> None:
-        _close_mbox_handles(self._open_handles)
 
     def list_folders(self, *, account_name: str) -> tuple[FolderRef, ...]:
         self._require_account(account_name)

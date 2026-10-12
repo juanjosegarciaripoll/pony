@@ -1904,6 +1904,54 @@ class LocalSummaryNoConfigTest(unittest.TestCase):
         self.assertIn("Files", output)
 
 
+class HelpPromisesTests(unittest.TestCase):
+    """What ``--help`` promises is what the command does.
+
+    Nothing reads prose, so a help string outlives the code it
+    describes.  Two of them had: ``sync --dry-run`` said it touched
+    neither the index, the mirrors nor the server, while planning
+    connects, SELECTs, STATUSes and FETCHes; and ``reset`` said it
+    deleted every local mirror, while a local account's mirror is the
+    only copy of that mail and is deliberately kept.
+    """
+
+    def _help(self, *argv: str) -> str:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:
+            main([*argv, "--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        # argparse wraps to the terminal width, so compare on words.
+        return " ".join(buffer.getvalue().split())
+
+    def test_dry_run_does_not_promise_to_leave_the_server_alone(self) -> None:
+        text = self._help("sync")
+
+        self.assertIn("Planning still connects to the server", text)
+        self.assertIn("the index and the mirrors are left alone", text)
+        self.assertNotIn("mirrors or the server", text)
+
+    def test_reset_says_which_mirrors_it_deletes_and_which_it_keeps(self) -> None:
+        text = self._help("reset")
+
+        self.assertIn("every remote account's mirror", text)
+        self.assertIn("A local account's mirror is the only copy", text)
+        self.assertNotIn("all local mirrors", text)
+        # And `--account` is the way to remove one anyway.
+        self.assertIn("local account or not", text)
+        # The one-line form, in the list of subcommands.
+        self.assertNotIn("all local mirrors", self._help())
+
+    def test_the_reset_docstring_agrees_with_its_help(self) -> None:
+        """The docstring is the next reader's version of the same claim."""
+        from pony.cli import run_reset
+
+        self.assertIsNotNone(run_reset.__doc__)
+        doc = " ".join((run_reset.__doc__ or "").split())
+        self.assertIn("every remote account's mirror", doc)
+        self.assertIn("A local account's mirror is kept", doc)
+        self.assertNotIn("all local mirror", doc)
+
+
 class ResetCommandTest(unittest.TestCase):
     """Tests for ``pony reset --yes`` and ``pony reset --account``."""
 

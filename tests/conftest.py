@@ -2,7 +2,8 @@
 
 Defines TMP_ROOT — a temporary directory in the system temp location that all
 test files use as their scratch space.  It is cleaned up automatically when the
-test process exits (atexit, LIFO after MboxMirrorRepository._close_all).
+test process exits (atexit, LIFO after the mirror finalizers have
+flushed what they hold open).
 
 Sets ``PONY_ROOT`` for the whole session, so no test can reach a real
 user directory.
