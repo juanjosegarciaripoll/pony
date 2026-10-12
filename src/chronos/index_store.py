@@ -489,8 +489,8 @@ class SqliteIndexRepository:
                     "VALUES (?, ?, ?, ?)",
                     (
                         component_id,
-                        _datetime_to_sql(occ.start),
-                        _datetime_to_sql(occ.end),
+                        datetime_to_sql(occ.start),
+                        datetime_to_sql(occ.end),
                         1 if occ.is_override else 0,
                     ),
                 )
@@ -519,11 +519,11 @@ class SqliteIndexRepository:
         the end is not after the start) is treated as an instant, so it
         matches only when its start falls inside the window. Comparisons
         are lexical on the stored UTC ISO strings, which sort
-        chronologically because `_datetime_to_sql` normalises both the
+        chronologically because `datetime_to_sql` normalises both the
         zone and the width.
         """
-        start_sql = _datetime_to_sql(window_start)
-        end_sql = _datetime_to_sql(window_end)
+        start_sql = datetime_to_sql(window_start)
+        end_sql = datetime_to_sql(window_end)
         if uids is not None:
             wanted = sorted(set(uids))
             if not wanted:
@@ -690,7 +690,7 @@ class SqliteIndexRepository:
         ]
         if window is not None:
             sql += "AND COALESCE(due, dtstart) >= ? AND COALESCE(due, dtstart) < ? "
-            params.extend([_datetime_to_sql(window[0]), _datetime_to_sql(window[1])])
+            params.extend([datetime_to_sql(window[0]), datetime_to_sql(window[1])])
         sql += "ORDER BY uid, COALESCE(recurrence_id, '')"
         with self.connection() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
@@ -745,7 +745,7 @@ class SqliteIndexRepository:
             calendar=calendar,
             ctag=_opt_str(row[0]),
             sync_token=_opt_str(row[1]),
-            synced_at=_sql_to_datetime(_opt_str(row[2])),
+            synced_at=sql_to_datetime(_opt_str(row[2])),
             calendar_url=_opt_str(row[3]),
         )
 
@@ -766,7 +766,7 @@ class SqliteIndexRepository:
                     state.calendar.calendar_name,
                     state.ctag,
                     state.sync_token,
-                    _datetime_to_sql(state.synced_at),
+                    datetime_to_sql(state.synced_at),
                     state.calendar_url,
                 ),
             )
@@ -816,7 +816,7 @@ class SqliteIndexRepository:
             component_id = _find_component_id(conn, ref)
             if component_id is None:
                 return
-            occ_sql = _datetime_to_sql(occurrence_start)
+            occ_sql = datetime_to_sql(occurrence_start)
             fired: dict[tuple[str, str], str] = {
                 (cast(str, trigger), cast(str, action)): cast(str, fired_at)
                 for trigger, action, fired_at in conn.execute(
@@ -831,8 +831,8 @@ class SqliteIndexRepository:
                 (component_id, occ_sql),
             )
             for alarm in alarms:
-                trigger_sql = cast(str, _datetime_to_sql(alarm.trigger_at))
-                fired_sql = _datetime_to_sql(alarm.fired_at) or fired.get(
+                trigger_sql = cast(str, datetime_to_sql(alarm.trigger_at))
+                fired_sql = datetime_to_sql(alarm.fired_at) or fired.get(
                     (trigger_sql, alarm.action.value)
                 )
                 conn.execute(
@@ -856,8 +856,8 @@ class SqliteIndexRepository:
         window_end: datetime,
     ) -> tuple[AlarmRecord, ...]:
         """Return unfired alarms with trigger_at in [window_start, window_end)."""
-        start_sql = _datetime_to_sql(window_start)
-        end_sql = _datetime_to_sql(window_end)
+        start_sql = datetime_to_sql(window_start)
+        end_sql = datetime_to_sql(window_end)
         with self.connection() as conn:
             cursor = conn.execute(
                 "SELECT a.id, c.account_name, c.calendar_name, c.uid, c.recurrence_id, "
@@ -874,7 +874,7 @@ class SqliteIndexRepository:
         with self.connection() as conn:
             conn.execute(
                 "UPDATE alarms SET fired_at = ? WHERE id = ?",
-                (_datetime_to_sql(fired_at), alarm_id),
+                (datetime_to_sql(fired_at), alarm_id),
             )
 
 
@@ -920,13 +920,13 @@ def _row_to_occurrence(row: tuple[object, ...]) -> Occurrence:
         uid=cast(str, uid),
         recurrence_id=_opt_str(recurrence_id),
     )
-    start = _sql_to_datetime(_opt_str(occurrence_start))
+    start = sql_to_datetime(_opt_str(occurrence_start))
     if start is None:
         raise AssertionError("occurrence_start must be non-null in DB")
     return Occurrence(
         ref=ref,
         start=start,
-        end=_sql_to_datetime(_opt_str(occurrence_end)),
+        end=sql_to_datetime(_opt_str(occurrence_end)),
         recurrence_id=_opt_str(recurrence_id),
         is_override=bool(is_override),
     )
@@ -951,10 +951,10 @@ def _row_to_alarm_record(row: tuple[object, ...]) -> AlarmRecord:
         uid=cast(str, uid),
         recurrence_id=_opt_str(recurrence_id),
     )
-    occ_start = _sql_to_datetime(_opt_str(occurrence_start))
+    occ_start = sql_to_datetime(_opt_str(occurrence_start))
     if occ_start is None:
         raise AssertionError("occurrence_start must be non-null in alarms")
-    trig = _sql_to_datetime(_opt_str(trigger_at))
+    trig = sql_to_datetime(_opt_str(trigger_at))
     if trig is None:
         raise AssertionError("trigger_at must be non-null in alarms")
     return AlarmRecord(
@@ -987,15 +987,15 @@ def _component_to_row(component: StoredComponent) -> dict[str, object]:
         "summary": component.summary,
         "description": component.description,
         "location": component.location,
-        "dtstart": _datetime_to_sql(component.dtstart),
-        "dtend": _datetime_to_sql(dtend),
-        "due": _datetime_to_sql(due),
+        "dtstart": datetime_to_sql(component.dtstart),
+        "dtend": datetime_to_sql(dtend),
+        "due": datetime_to_sql(due),
         "status": component.status,
         "local_flags": json.dumps(sorted(component.local_flags)),
         "server_flags": json.dumps(sorted(component.server_flags)),
         "local_status": component.local_status.value,
-        "trashed_at": _datetime_to_sql(component.trashed_at),
-        "synced_at": _datetime_to_sql(component.synced_at),
+        "trashed_at": datetime_to_sql(component.trashed_at),
+        "synced_at": datetime_to_sql(component.synced_at),
     }
 
 
@@ -1038,14 +1038,14 @@ def _row_to_component(row: tuple[object, ...]) -> StoredComponent:
             summary=_opt_str(summary),
             description=_opt_str(description),
             location=_opt_str(location),
-            dtstart=_sql_to_datetime(_opt_str(dtstart)),
-            dtend=_sql_to_datetime(_opt_str(dtend)),
+            dtstart=sql_to_datetime(_opt_str(dtstart)),
+            dtend=sql_to_datetime(_opt_str(dtend)),
             status=_opt_str(status),
             local_flags=frozenset(_decode_flags(local_flags)),
             server_flags=frozenset(_decode_flags(server_flags)),
             local_status=LocalStatus(cast(str, local_status)),
-            trashed_at=_sql_to_datetime(_opt_str(trashed_at)),
-            synced_at=_sql_to_datetime(_opt_str(synced_at)),
+            trashed_at=sql_to_datetime(_opt_str(trashed_at)),
+            synced_at=sql_to_datetime(_opt_str(synced_at)),
         )
     return VTodo(
         ref=ref,
@@ -1055,14 +1055,14 @@ def _row_to_component(row: tuple[object, ...]) -> StoredComponent:
         summary=_opt_str(summary),
         description=_opt_str(description),
         location=_opt_str(location),
-        dtstart=_sql_to_datetime(_opt_str(dtstart)),
-        due=_sql_to_datetime(_opt_str(due)),
+        dtstart=sql_to_datetime(_opt_str(dtstart)),
+        due=sql_to_datetime(_opt_str(due)),
         status=_opt_str(status),
         local_flags=frozenset(_decode_flags(local_flags)),
         server_flags=frozenset(_decode_flags(server_flags)),
         local_status=LocalStatus(cast(str, local_status)),
-        trashed_at=_sql_to_datetime(_opt_str(trashed_at)),
-        synced_at=_sql_to_datetime(_opt_str(synced_at)),
+        trashed_at=sql_to_datetime(_opt_str(trashed_at)),
+        synced_at=sql_to_datetime(_opt_str(synced_at)),
     )
 
 
@@ -1098,13 +1098,29 @@ def _chunked(values: Sequence[str]) -> Iterator[Sequence[str]]:
         yield values[start : start + _MAX_SQL_PARAMETERS]
 
 
-def _datetime_to_sql(dt: datetime | None) -> str | None:
-    if dt is None:
-        return None
-    return dt.astimezone(UTC).isoformat()
+def datetime_to_sql(value: datetime | None) -> str | None:
+    """Render *value* for storage, normalised to UTC.
 
-
-def _sql_to_datetime(value: str | None) -> datetime | None:
+    One spelling on the way in is what lets the stored text be compared
+    as text: ``trashed_at <= cutoff`` and ``received_at DESC`` are both
+    lexical, and an offset of ``+02:00`` sorts and compares as a
+    different string from the same instant written as ``+00:00``.
+    """
     if value is None:
         return None
-    return datetime.fromisoformat(value)
+    return value.astimezone(UTC).isoformat()
+
+
+def sql_to_datetime(value: str | None) -> datetime | None:
+    """Parse a stored timestamp back, as UTC.
+
+    A value without an offset is read as UTC, because that is what
+    ``datetime_to_sql`` writes; guessing the local zone would move an
+    instant by the reader's own offset.
+    """
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

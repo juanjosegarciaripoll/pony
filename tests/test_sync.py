@@ -3461,6 +3461,53 @@ class UidValidityAdoptionFallbackTestCase(unittest.TestCase):
         rows = index.list_folder_messages(folder=self.folder)
         return before, len(rows), len(mirror.list_messages(folder=self.folder))
 
+    def _dated_message(self, subject: str) -> bytes:
+        """A message whose ``Date:`` is not UTC, and with no Message-ID."""
+        message = EmailMessage()
+        message["From"] = "alice@example.com"
+        message["To"] = "bob@example.com"
+        message["Subject"] = subject
+        message["Date"] = "Fri, 10 Apr 2026 12:00:00 +0200"
+        message.set_content("body")
+        return message.as_bytes()
+
+    def test_a_date_with_an_offset_is_adopted_not_duplicated(self) -> None:
+        """The fallback compares ``received_at`` in SQL, as text.
+
+        Nothing here is in UTC except by the projection's own doing:
+        ``_parse_date`` normalises, which is the only reason a header
+        offset has never reached the comparison.  One layer down, a row
+        written from any other ``IndexedMessage`` would have kept the
+        offset while a row read back and rewritten held ``+00:00``, and
+        the match would have failed — so a message would be inserted a
+        second time and the orphan would become a ``PushAppendOp``,
+        which is the duplicate this fallback exists to prevent.  The
+        store normalises on the way in now; this walks the whole path
+        with an offset in the header, which no test did.
+        """
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {
+                    1: ("", frozenset(), self._dated_message("alpha")),
+                    2: ("", frozenset(), self._dated_message("beta")),
+                }
+            }
+        )
+        service.sync()
+        # What a flag sync does to every UID-bearing row.
+        for row in index.list_folder_messages(folder=self.folder):
+            index.update_message(message=row)
+        session.call_log.clear()
+
+        session.uid_validity = 2
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 2, "the messages were duplicated, not adopted")
+        self.assertTrue(all(row.uid is not None for row in rows))
+        self.assertEqual(len(mirror.list_messages(folder=self.folder)), 2)
+        self.assertNotIn("append:INBOX", session.call_log)
+
     def test_messages_without_a_message_id_are_not_duplicated(self) -> None:
         before, after, files = self._reset_and_count(
             {

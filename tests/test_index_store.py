@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import sqlite3
 import threading
 import time
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -1142,6 +1143,88 @@ class SearchSemanticsTest(unittest.TestCase):
             )
         )
         self.assertEqual(self._find(repo, "archived"), {"Archived thing"})
+
+
+class UtcNormalisationTest(unittest.TestCase):
+    """Timestamps are stored in one spelling, so SQL can compare them.
+
+    ``_row_params`` used to store the header's own offset while every
+    read normalised to UTC, so a row written straight from a projection
+    held ``+02:00`` and the same row read back and rewritten held
+    ``+00:00``.  ``find_pending_matches`` compares ``received_at = ?``
+    as text, ``purge_expired_trash`` compares ``trashed_at <= cutoff``
+    as text, and the folder index sorts ``received_at DESC`` as text.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+    offset = timezone(timedelta(hours=2))
+
+    def test_the_fallback_match_ignores_the_headers_offset(self) -> None:
+        repo = _fresh_repo()
+        received = datetime(2026, 4, 10, 12, 0, tzinfo=self.offset)
+        repo.insert_message(
+            message=dataclasses.replace(
+                _make_message("<offset@x>", subject="Berlin"),
+                received_at=received,
+            )
+        )
+        # What a flag sync does to every UID-bearing row: read it back
+        # and write it again.
+        (row,) = repo.list_folder_messages(folder=self.folder)
+        repo.update_message(message=row)
+
+        for label, probe in (
+            ("the header's own offset", received),
+            ("the same instant in UTC", received.astimezone(UTC)),
+        ):
+            with self.subTest(label):
+                found = repo.find_pending_matches(
+                    folder=self.folder,
+                    sender="sender@example.com",
+                    subject="Berlin",
+                    received_at=probe,
+                )
+                self.assertEqual(len(found), 1)
+
+    def test_trash_expiry_compares_the_same_spelling(self) -> None:
+        # An hour past the retention, written at +02:00: the instant is
+        # expired, and the text of it sorts an hour *after* the cutoff's
+        # text, which is what the SQL comparison would have gone by.
+        repo = _fresh_repo()
+        expired = (datetime.now(tz=UTC) - timedelta(days=30, hours=1)).astimezone(
+            self.offset
+        )
+        repo.insert_message(
+            message=dataclasses.replace(
+                _make_message("<stale@x>", local_status=MessageStatus.TRASHED),
+                trashed_at=expired,
+            )
+        )
+
+        purged = repo.purge_expired_trash(account_name="personal", retention_days=30)
+
+        self.assertEqual(len(purged), 1)
+
+    def test_a_folder_listing_orders_across_offsets(self) -> None:
+        repo = _fresh_repo()
+        # 11:00+02:00 is 09:00Z — earlier than 10:00Z, whatever the
+        # text comparison of the two offsets would say.
+        repo.insert_message(
+            message=dataclasses.replace(
+                _make_message("<east@x>", subject="East"),
+                received_at=datetime(2026, 4, 10, 11, 0, tzinfo=self.offset),
+            )
+        )
+        repo.insert_message(
+            message=dataclasses.replace(
+                _make_message("<utc@x>", subject="UTC"),
+                received_at=datetime(2026, 4, 10, 10, 0, tzinfo=UTC),
+            )
+        )
+
+        rows = repo.list_folder_message_summaries(folder=self.folder)
+
+        self.assertEqual([r.subject for r in rows], ["UTC", "East"])
 
 
 class OneConnectionPerThreadTest(unittest.TestCase):

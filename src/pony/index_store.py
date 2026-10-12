@@ -10,8 +10,13 @@ from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
+from typing import cast
 
-from chronos.index_store import ThreadLocalSqlite
+from chronos.index_store import (
+    ThreadLocalSqlite,
+    datetime_to_sql,
+    sql_to_datetime,
+)
 
 from .contact_merge import merged_contact
 from .contact_naming import clean_display_name, split_display_name
@@ -133,8 +138,8 @@ def _chunked_ids(ids: Sequence[int]) -> Iterator[Sequence[int]]:
 
 def _row_params(message: IndexedMessage) -> tuple[object, ...]:
     """Convert an IndexedMessage to the parameter tuple used by INSERT/UPDATE."""
-    trashed_at = message.trashed_at.isoformat() if message.trashed_at else None
-    synced_at = message.synced_at.isoformat() if message.synced_at else None
+    trashed_at = datetime_to_sql(message.trashed_at)
+    synced_at = datetime_to_sql(message.synced_at)
     return (
         message.message_ref.account_name,
         message.message_ref.folder_name,
@@ -153,7 +158,7 @@ def _row_params(message: IndexedMessage) -> tuple[object, ...]:
         _flags_to_csv(message.server_flags),
         ",".join(sorted(message.extra_imap_flags)),
         message.local_status.value,
-        message.received_at.isoformat(),
+        datetime_to_sql(message.received_at),
         trashed_at,
         synced_at,
         message.source_folder,
@@ -617,7 +622,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         Returns ``[(folder_ref, storage_key), ...]`` for each purged row so
         the caller can clean up the corresponding mirror files.
         """
-        cutoff = (datetime.now(tz=UTC) - timedelta(days=retention_days)).isoformat()
+        cutoff = datetime_to_sql(datetime.now(tz=UTC) - timedelta(days=retention_days))
         with self._use_atomic() as conn:
             rows = conn.execute(
                 """
@@ -781,7 +786,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     MessageStatus.TRASHED.value,
                     sender,
                     subject,
-                    received_at.isoformat(),
+                    datetime_to_sql(received_at),
                 ),
             ).fetchall()
         return tuple(_indexed_message_from_row(row) for row in rows)
@@ -1011,7 +1016,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     state.highest_uid,
                     state.uidnext,
                     state.highest_modseq,
-                    state.synced_at.isoformat(),
+                    datetime_to_sql(state.synced_at),
                 ),
             )
 
@@ -1038,7 +1043,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             highest_uid=int(row[3]),
             uidnext=int(row[4]),
             highest_modseq=int(row[5]),
-            synced_at=datetime.fromisoformat(str(row[6])),
+            synced_at=_sql_datetime(row[6]),
         )
 
     def list_folder_sync_states(self, *, account_name: str) -> list[FolderSyncState]:
@@ -1063,7 +1068,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 highest_uid=int(r[3]),
                 uidnext=int(r[4]),
                 highest_modseq=int(r[5]),
-                synced_at=datetime.fromisoformat(str(r[6])),
+                synced_at=_sql_datetime(r[6]),
             )
             for r in rows
         ]
@@ -1143,11 +1148,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 extra_imap_flags=(
                     frozenset(str(r[6]).split(",")) - {""} if r[6] else frozenset()
                 ),
-                trashed_at=(
-                    datetime.fromisoformat(str(r[7])).astimezone(UTC)
-                    if r[7] is not None
-                    else None
-                ),
+                trashed_at=_sql_datetime_or_none(r[7]),
                 source_folder=str(r[8]) if r[8] is not None else None,
                 source_uid=int(str(r[9])) if r[9] is not None else None,
             )
@@ -1314,7 +1315,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def upsert_contact(self, *, contact: Contact) -> Contact:
         """Insert or update a contact record.  Returns the saved contact."""
         now = datetime.now(tz=UTC)
-        updated_at = contact.updated_at.isoformat()
+        updated_at = datetime_to_sql(contact.updated_at)
         with self._use_atomic() as conn:
             if contact.id is not None:
                 conn.execute(
@@ -1332,14 +1333,14 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                         contact.organization,
                         contact.notes,
                         contact.message_count,
-                        contact.last_seen.isoformat() if contact.last_seen else None,
-                        now.isoformat(),
+                        datetime_to_sql(contact.last_seen),
+                        datetime_to_sql(now),
                         contact.id,
                     ),
                 )
                 contact_id = contact.id
             else:
-                created_at = contact.created_at.isoformat()
+                created_at = datetime_to_sql(contact.created_at)
                 cur = conn.execute(
                     """
                     INSERT INTO contacts (
@@ -1354,7 +1355,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                         contact.organization,
                         contact.notes,
                         contact.message_count,
-                        contact.last_seen.isoformat() if contact.last_seen else None,
+                        datetime_to_sql(contact.last_seen),
                         created_at,
                         updated_at,
                     ),
@@ -1570,8 +1571,8 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 contact.organization,
                 contact.notes,
                 contact.message_count,
-                contact.last_seen.isoformat() if contact.last_seen else None,
-                datetime.now(tz=UTC).isoformat(),
+                datetime_to_sql(contact.last_seen),
+                datetime_to_sql(datetime.now(tz=UTC)),
                 contact.id,
             ),
         )
@@ -1785,6 +1786,16 @@ def load_contacts_for_backup(*, database_path: Path) -> list[Contact]:
             )
         )
     return contacts
+
+
+def _sql_datetime(value: object) -> datetime:
+    """Read back a timestamp from a column that cannot be NULL."""
+    return cast("datetime", sql_to_datetime(str(value)))
+
+
+def _sql_datetime_or_none(value: object) -> datetime | None:
+    """Read back a timestamp from a nullable column."""
+    return sql_to_datetime(str(value)) if value else None
 
 
 def _flags_to_csv(flags: frozenset[MessageFlag]) -> str:
@@ -2101,12 +2112,8 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
     extras: frozenset[str] = (
         frozenset(extra_raw.split(",")) - {""} if extra_raw else frozenset()
     )
-    trashed_at = (
-        datetime.fromisoformat(str(row[19])).astimezone(UTC) if row[19] else None
-    )
-    synced_at = (
-        datetime.fromisoformat(str(row[20])).astimezone(UTC) if row[20] else None
-    )
+    trashed_at = _sql_datetime_or_none(row[19])
+    synced_at = _sql_datetime_or_none(row[20])
     return IndexedMessage(
         message_ref=MessageRef(
             account_name=str(row[1]),
@@ -2126,7 +2133,7 @@ def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
         server_flags=_flags_from_csv(str(row[15])),
         extra_imap_flags=extras,
         local_status=MessageStatus(str(row[17])),
-        received_at=datetime.fromisoformat(str(row[18])).astimezone(UTC),
+        received_at=_sql_datetime(row[18]),
         uid=uid,
         uid_validity=int(str(row[4])) if row[4] is not None else 0,
         trashed_at=trashed_at,
@@ -2177,7 +2184,7 @@ def _summary_from_row(row: sqlite3.Row) -> FolderMessageSummary:
         sender=str(row[5]),
         recipients=str(row[6]),
         subject=str(row[7]),
-        received_at=datetime.fromisoformat(str(row[8])).astimezone(UTC),
+        received_at=_sql_datetime(row[8]),
         has_attachments=bool(row[9]),
         local_flags=_flags_from_csv(str(row[10])),
         local_status=MessageStatus(str(row[11])),
@@ -2191,11 +2198,7 @@ def _build_contact(
 ) -> Contact:
     """Assemble a Contact from a contacts row + related rows."""
     last_seen_raw = row[7]
-    last_seen = (
-        datetime.fromisoformat(str(last_seen_raw)).astimezone(UTC)
-        if last_seen_raw
-        else None
-    )
+    last_seen = _sql_datetime_or_none(last_seen_raw)
     affix_raw = str(row[3])
     affix = tuple(json.loads(affix_raw)) if affix_raw and affix_raw != "[]" else ()
     return Contact(
@@ -2207,8 +2210,8 @@ def _build_contact(
         notes=str(row[5]),
         message_count=int(str(row[6])),
         last_seen=last_seen,
-        created_at=datetime.fromisoformat(str(row[8])).astimezone(UTC),
-        updated_at=datetime.fromisoformat(str(row[9])).astimezone(UTC),
+        created_at=_sql_datetime(row[8]),
+        updated_at=_sql_datetime(row[9]),
         emails=tuple(str(r[0]) for r in email_rows),
         aliases=tuple(str(r[0]) for r in alias_rows),
     )
@@ -2228,7 +2231,7 @@ def _harvest_message_contacts(
     Sender is intentionally excluded — only addresses the user wrote *to*
     (recipients and Cc) are added to the contacts store.
     """
-    now = datetime.now(tz=UTC).isoformat()
+    now = datetime_to_sql(datetime.now(tz=UTC))
     raw = ", ".join(filter(None, [message.recipients, message.cc]))
     for display_name, addr in getaddresses([raw]):
         addr = addr.lower().strip()
