@@ -252,6 +252,10 @@ async function run() {
   report.notice = doc.getElementById("notices").textContent;
   report.markedAfter = marked(doc);
   report.rowsAfter = doc.querySelectorAll("#rows .row").length;
+  // Where the cursor ended up. One line, and it is the line that would
+  // have caught the refreshed list coming back with no selection in it
+  // — after which the next press acted on the first row of the folder.
+  report.selectedAfter = selected(doc);
   report.steps.push("action");
   out();
 
@@ -524,6 +528,10 @@ def test_a_key_acts_on_the_marks_and_then_clears_them() -> None:
     assert report["markedAfter"] == []
     # The list came back — it was refreshed, not reloaded away.
     assert report["rowsAfter"] == 3
+    # And the cursor is where it was, not back at the top of the folder.
+    # It used to drop to the first row, so the *next* press — Archive,
+    # Trash or Move — ran over somebody else's mail.
+    assert report["selectedAfter"] == report["cursor"][-1]
 
 
 def test_a_button_runs_the_action_a_key_would() -> None:

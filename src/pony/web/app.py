@@ -368,10 +368,19 @@ async def _mail_page(services: WebServices, request: Request) -> Response:
 
 
 async def _rows_fragment(services: WebServices, request: Request) -> Response:
+    """The list on its own, for the page to put back after an action.
+
+    ``id`` is the message the reader has open, and it has to travel:
+    without it the fragment carries no ``aria-selected`` and no ``.open``
+    at all, so the page lost both the cue to the reader and the cursor
+    the next action works off.
+    """
+    identifier = request.query_params.get("id", "")
     return HTMLResponse(
         mail_view.rows(
             services,
             _folder_from(request),
+            open_id=int(identifier) if identifier.isdigit() else None,
             query=request.query_params.get("q", ""),
         ),
     )

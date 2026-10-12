@@ -64,9 +64,20 @@ function toggleMark(row) {
   }
 }
 
-// What an action applies to: every marked row, or the selected one.
+// What an action applies to: every marked row, the open message, or the
+// selected row.
+//
+// The open message comes before the DOM deliberately. A refreshed list
+// may no longer hold the row that was acted on — archiving it takes it
+// out of the folder — and `selectedRow()` then falls back to the first
+// row, which is somebody else's mail. `composeUrl()` and
+// `messageParams()` already ask the page what is open rather than the
+// list; this is the same question, asked by the one caller that moves
+// mail around.
 function targets() {
   if (state.marked.size > 0) return Array.from(state.marked);
+  const open = here().message;
+  if (state.surface === "reader" && open) return [open];
   const row = selectedRow();
   return row ? [row.dataset.id] : [];
 }
@@ -111,6 +122,11 @@ function mailParams() {
   if (data.account) params.set("account", data.account);
   if (data.folder) params.set("folder", data.folder);
   if (data.query) params.set("q", data.query);
+  // Which row is open, so the refreshed list comes back with it marked
+  // as such. Without it the fragment carries no selection at all, the
+  // cursor dropped to the first row after every action, and the next
+  // press acted on whatever happened to be at the top.
+  if (data.message) params.set("id", data.message);
   return params;
 }
 
@@ -261,6 +277,12 @@ async function refresh() {
     window.location.reload();
     return;
   }
+  // Where the cursor is, so it can be put back. The server marks the
+  // open message in the fragment; a list with nothing open has only
+  // this to go on, and dropping it sent the cursor to the top of the
+  // folder after every action.
+  const was = selectedRow();
+  const wasId = was ? was.dataset.id : null;
   const response = await fetch(`/mail/rows?${mailParams()}`);
   const markup = await response.text();
   const parsed = new DOMParser().parseFromString(markup, "text/html");
@@ -268,7 +290,11 @@ async function refresh() {
   if (fresh) {
     target.replaceWith(fresh);
     wireMarkTaps();
-    select(selectedRow());
+    const again =
+      wasId && document.querySelector(`#rows .row[data-id="${CSS.escape(wasId)}"]`);
+    // The row may be gone -- archiving it takes it out of the folder --
+    // and then the fragment's own selection, or the first row, is right.
+    select(again || selectedRow());
   } else {
     window.location.reload();
     return;

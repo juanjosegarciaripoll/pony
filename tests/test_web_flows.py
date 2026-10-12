@@ -85,6 +85,19 @@ def _second_message() -> bytes:
     )
 
 
+def _third_message() -> bytes:
+    """A third message, so the cursor can start somewhere else."""
+    return (
+        b"From: carol@example.test\r\n"
+        b"To: you@example.test\r\n"
+        b"Subject: Third thing\r\n"
+        b"Date: Mon, 5 May 2025 11:00:00 +0000\r\n"
+        b"Message-ID: <third@example.test>\r\n"
+        b"\r\n"
+        b"The last of the three.\r\n"
+    )
+
+
 def _invitation_mail() -> bytes:
     """A message carrying an invitation the reader will offer to answer."""
     start = (datetime.now(UTC) + timedelta(days=3)).replace(microsecond=0)
@@ -176,8 +189,29 @@ def _refreshed_rows(client: TestClient, page: str) -> str:
             "account": data["account"],
             "folder": data["folder"],
             "q": data.get("query", ""),
+            # The open message, so the fragment comes back with the
+            # cursor where the page left it.
+            "id": data.get("message", ""),
         },
     ).text
+
+
+def _after_refresh(client: TestClient, page: str) -> str:
+    """*page* with its list replaced, the way ``refresh()`` replaces it.
+
+    The script swaps ``#rows`` for the fragment and leaves everything
+    else — the ``<body>`` dataset above all — exactly where it was, so a
+    press that follows an action is reading that same mixture.  A test
+    that re-fetches the whole page instead would quietly paper over
+    whatever the fragment forgot to carry.
+    """
+    import re
+
+    fresh = _refreshed_rows(client, page)
+    opening = re.search(r"<(ol|p)\b[^>]*\bid=\"rows\"[^>]*>", page)
+    assert opening is not None, "the page has no list to replace"
+    closing = page.index(f"</{opening.group(1)}>", opening.end())
+    return page[: opening.start()] + fresh + page[closing + len(opening.group(1)) + 3 :]
 
 
 # ----------------------------------------------------------------------
@@ -216,6 +250,85 @@ def test_opening_a_message_then_archiving_it_takes_it_out_of_the_folder() -> Non
     (row,) = index.list_folder_messages(folder=ARCHIVE)
     # No UID: the next sync is what will move it on the server.
     assert row.uid is None
+
+
+def test_a_second_action_still_acts_on_the_message_that_is_open() -> None:
+    """The refreshed list must not move the cursor off the open message.
+
+    Open the last of three, press ``u``, press ``A``.  The fragment used
+    to come back with no selection in it at all, so the page put the
+    cursor back on the first row and archived somebody else's mail —
+    and Archive, Trash and Move are the three that cannot be taken
+    back.  Asserted against the store, not against the markup.
+    """
+    services, index, _calendar = _services(
+        "flow-open-id",
+        seed=(plain_text(), _second_message(), _third_message()),
+    )
+
+    with _client(services) as client:
+        folder = client.get(MAIL).text
+        listed = row_ids(folder)
+        assert len(listed) == 3
+        # The one the cursor does *not* start on.
+        wanted = listed[-1]
+        opened = client.get(row_link(folder, wanted)).text
+        assert page_data(opened)["message"] == wanted
+
+        first = dispatch(client, opened, "mark_unread")
+        assert first.changed == 1
+
+        # What the page is looking at now: the same page, a new list.
+        refreshed = _after_refresh(client, opened)
+        # The fragment knows which row is open, so the cue survives too.
+        assert f'data-id="{wanted}"' in refreshed
+        assert 'aria-selected="true"' in refreshed
+        assert any(
+            "open" in value.split() for value in attribute_values(refreshed, "class")
+        )
+
+        second = dispatch(client, refreshed, "archive")
+        assert second.changed == 1
+
+    # The row that was open is the row that moved. `_move_in_place`
+    # keeps the row, so the id is the one the page was showing.
+    (archived,) = index.list_folder_message_summaries(folder=ARCHIVE)
+    assert str(archived.message_ref.id) == wanted
+    # And the other two are still where they were.
+    assert len(index.list_folder_message_summaries(folder=INBOX)) == 2
+
+
+def test_a_press_after_the_open_row_has_gone_moves_nobody_elses_mail() -> None:
+    """The second press, once the row it acted on has left the folder.
+
+    Archive takes the row out of the list, so there is nothing for the
+    cursor to sit on; reading the list for a target then found the
+    *first* row and archived that.  ``targets()`` asks the page what is
+    open instead, so the second press refuses rather than moving the
+    wrong mail.
+    """
+    services, index, _calendar = _services(
+        "flow-gone-row",
+        seed=(plain_text(), _second_message(), _third_message()),
+    )
+
+    with _client(services) as client:
+        folder = client.get(MAIL).text
+        listed = row_ids(folder)
+        wanted = listed[-1]
+        opened = client.get(row_link(folder, wanted)).text
+
+        assert dispatch(client, opened, "archive").changed == 1
+        refreshed = _after_refresh(client, opened)
+        # The row it acted on is gone, and the first row is somebody
+        # else's: this is the press that used to archive them.
+        assert wanted not in row_ids(refreshed)
+
+        again = dispatch(client, refreshed, "archive")
+
+    assert again.changed == 0
+    assert len(index.list_folder_message_summaries(folder=ARCHIVE)) == 1
+    assert len(index.list_folder_message_summaries(folder=INBOX)) == 2
 
 
 def test_marking_two_rows_archives_both_in_one_action() -> None:

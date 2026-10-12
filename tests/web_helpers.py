@@ -302,11 +302,34 @@ def dispatch(
 
 
 def _selected(page: str, data: dict[str, str]) -> list[str]:
-    """What the cursor points at: the open message, or the first row."""
-    if data.get("message"):
+    """What an action applies to, as ``targets()`` in `pony.js` decides.
+
+    Faithfully, which is the point.  This helper used to prefer
+    ``data["message"]`` while the script read only the DOM, and that one
+    line is why a hundred and seventy-seven passing tests sat on top of
+    the bug where the action after an action hit the first row of the
+    folder instead of the open message.  A simulation that is *better*
+    than the code it simulates hides exactly the defect it exists to
+    catch.
+
+    So: the open message on the reader surface, else the row carrying
+    ``aria-selected``, else the first row — which is where ``start()``
+    puts the cursor on a page that has just loaded.
+    """
+    if data.get("surface") == "reader" and data.get("message"):
         return [data["message"]]
+    cursor = selected_row_id(page)
+    return [] if cursor is None else [cursor]
+
+
+def selected_row_id(page: str) -> str | None:
+    """The row the cursor sits on: ``selectedRow()`` in `pony.js`."""
+    for match in re.finditer(r"<li\b([^>]*)>", page):
+        attributes = _attributes(match.group(1))
+        if attributes.get("aria-selected") == "true":
+            return attributes.get("data-id")
     rows = row_ids(page)
-    return rows[:1]
+    return rows[0] if rows else None
 
 
 # ----------------------------------------------------------------------
@@ -511,4 +534,5 @@ __all__ = [
     "row_link",
     "script",
     "select_value",
+    "selected_row_id",
 ]
