@@ -2983,6 +2983,35 @@ class AppLaunchingCommandTests(unittest.TestCase):
         self.assertIn("personal", kwargs["mirrors"])
         app_cls.return_value.run.assert_called_once()
 
+    def test_the_index_is_closed_when_the_tui_exits(self) -> None:
+        """The index commits in bounded batches, so an exit has a flush.
+
+        Leaving it to ``__del__`` leaves the last partial batch to a
+        moment nobody chose -- during interpreter shutdown, where the
+        destructor suppresses whatever it cannot do.
+        """
+        from unittest.mock import patch
+
+        from pony.index_store import SqliteIndexRepository
+
+        closed: list[bool] = []
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_one_message(config_path, subject="Waiting", body="body")
+            with (
+                patch("pony.tui.PonyApp") as app_cls,
+                patch.object(
+                    SqliteIndexRepository,
+                    "close",
+                    lambda _self: closed.append(True),
+                ),
+            ):
+                rc = run_cli_ret("--config", str(config_path), "tui")
+
+        self.assertEqual(rc, 0)
+        app_cls.return_value.run.assert_called_once()
+        self.assertTrue(closed, "the index was never closed")
+
     def test_a_bad_theme_is_rejected_before_the_tui_starts(self) -> None:
         from unittest.mock import patch
 

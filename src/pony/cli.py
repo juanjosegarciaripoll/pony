@@ -2820,6 +2820,7 @@ def run_tui(
     finally:
         if calendar is not None:
             calendar.close()
+        index.close()
     return 0
 
 
@@ -2914,6 +2915,11 @@ def run_web(
             scheduler.stop()
         if calendar is not None:
             calendar.close()
+        # The index commits in bounded batches, so a run that ends
+        # mid-batch has work to flush.  Closing here rather than
+        # leaving it to __del__, which runs at an unspecified moment
+        # during interpreter shutdown and swallows what it cannot do.
+        index.close()
     return 0
 
 
