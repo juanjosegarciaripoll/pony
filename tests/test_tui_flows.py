@@ -644,11 +644,12 @@ async def test_search_dialog_returns_results() -> None:
 
 
 async def test_folder_tree_next_inbox() -> None:
-    """`]` / `[` jump the folder cursor between per-account INBOX nodes.
+    """`N` / `P` jump the folder cursor between per-account INBOX nodes.
 
-    They used to be `N` / `P`, written into the widget, where `N`
-    shadowed the reader's "New folder" from the pane where one would
-    naturally create a folder -- and took it out of the footer too.
+    They were written into the widget, where `N` shadowed the reader's
+    "New folder" from the pane where one would naturally create a folder
+    -- and took it out of the footer too.  They keep the keys, because
+    that is the muscle memory; "New folder" is what moved, to `F`.
     """
     paths = make_tmp_paths("jump")
     a1 = make_test_account(paths, name="one")
@@ -684,14 +685,14 @@ async def test_folder_tree_next_inbox() -> None:
         # message list; restore it so the FolderPanel bindings are active.
         fp.focus()
         await pilot.pause()
-        await pilot.press("]")
+        await pilot.press("N")
         await pilot.pause()
         assert fp.cursor_node is not None
         assert fp.cursor_node.data == FolderRef(
             account_name="two",
             folder_name="INBOX",
         )
-        await pilot.press("[")
+        await pilot.press("P")
         await pilot.pause()
         assert fp.cursor_node is not None
         assert fp.cursor_node.data == FolderRef(
@@ -699,13 +700,15 @@ async def test_folder_tree_next_inbox() -> None:
             folder_name="INBOX",
         )
 
-        # And `N` reaches the reader, from the pane that needs it most --
-        # both as the press and as the footer entry that advertises it.
+        # And "New folder" reaches the reader from this pane, which is
+        # the one that needs it -- both as the press and as the footer
+        # entry that advertises it.
         from pony.tui.screens.new_folder_screen import NewFolderScreen
 
         advertised = app.screen.active_bindings
-        assert advertised["N"].binding.action == "new_folder"
-        await pilot.press("N")
+        assert advertised["F"].binding.action == "new_folder"
+        assert advertised["F"].binding.description == "New folder"
+        await pilot.press("F")
         await pilot.pause()
         assert isinstance(app.screen, NewFolderScreen)
 
@@ -1292,7 +1295,7 @@ async def test_goto_folder_shortcut_opens_dialog() -> None:
 
 
 async def test_new_folder_shortcut_opens_input() -> None:
-    """Pressing N opens the NewFolderScreen input bar."""
+    """Pressing F opens the NewFolderScreen input bar."""
     from pony.tui.screens.new_folder_screen import NewFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -1302,7 +1305,7 @@ async def test_new_folder_shortcut_opens_input() -> None:
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
-        await pilot.press("N")
+        await pilot.press("F")
         await pilot.pause()
         assert any(isinstance(s, NewFolderScreen) for s in app.screen_stack)
         await pilot.press("escape")
@@ -2770,7 +2773,7 @@ async def test_compose_from_draft_opens_compose() -> None:
 
 
 async def test_new_folder_creates_in_mirror() -> None:
-    """Pressing N, typing a name, and pressing Enter creates a new folder."""
+    """Pressing F, typing a name, and pressing Enter creates a new folder."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, mirrors = build_pony_app(
         label="new-folder-create",
@@ -2778,7 +2781,7 @@ async def test_new_folder_creates_in_mirror() -> None:
     )
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
-        await pilot.press("N")
+        await pilot.press("F")
         await pilot.pause()
         from pony.tui.screens.new_folder_screen import NewFolderScreen
 

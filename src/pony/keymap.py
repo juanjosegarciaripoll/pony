@@ -81,19 +81,18 @@ MOTION_KEYS: tuple[KeyBinding, ...] = (
 LIST_KEYS: tuple[KeyBinding, ...] = (*MARK_KEYS, *MOTION_KEYS)
 
 # The folder tree, which is not a list of messages: `n`/`p` step through
-# folders here, and `]`/`[` jump between the accounts' INBOXes.
+# folders here, and `N`/`P` jump between the accounts' INBOXes.
 #
-# Those two used to be `N`/`P`, written straight into the widget, where
-# they shadowed the reader's `N` -- so with the tree focused, the pane
-# where one would naturally create a folder, "New folder" was both
-# unreachable and absent from the footer.  A bracket is free on both
-# tables and in a browser, and reads as "next section" the way vim's
-# does.
+# These were written straight into the widget, where `N` shadowed the
+# reader's "New folder" -- so from the tree, the pane where one would
+# naturally create a folder, it was unreachable and absent from the
+# footer too.  `N`/`P` keep the tree, because years of muscle memory
+# point at them; it is "New folder" that moved, to `F`.
 FOLDER_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("n", "cursor_down", "Next folder", Surface.FOLDERS, show=False),
     KeyBinding("p", "cursor_up", "Prev folder", Surface.FOLDERS, show=False),
-    KeyBinding("]", "next_inbox", "Next inbox", Surface.FOLDERS, show=False),
-    KeyBinding("[", "prev_inbox", "Prev inbox", Surface.FOLDERS, show=False),
+    KeyBinding("N", "next_inbox", "Next inbox", Surface.FOLDERS, show=False),
+    KeyBinding("P", "prev_inbox", "Prev inbox", Surface.FOLDERS, show=False),
 )
 
 
@@ -114,7 +113,14 @@ READER_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("C", "mark_all_read", "Mark all read", Surface.READER),
     KeyBinding("Y", "copy", "Copy", Surface.READER),
     KeyBinding("M", "move", "Move", Surface.READER),
-    KeyBinding("N", "new_folder", "New folder", Surface.READER),
+    # `F` for folder.  It was `N`, which the folder tree also claimed for
+    # "next INBOX" -- and the tree is a pane of the reader, so one of the
+    # two had to move.  A bare capital rather than a chord, like every
+    # other reader verb: ++ctrl+n++ is reserved by Chrome and Firefox for
+    # "new window", which a page can neither see nor refuse, so serving
+    # it would have put a key in the browser's own help that could never
+    # fire.
+    KeyBinding("F", "new_folder", "New folder", Surface.READER),
     KeyBinding("s", "save_message", "Save", Surface.READER, show=False),
     KeyBinding("O", "attachments_open", "Open att.", Surface.READER, show=False),
     KeyBinding("S", "attachments_save", "Save att.", Surface.READER, show=False),
