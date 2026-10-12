@@ -326,10 +326,16 @@ def dispatch_agreeing(
     """Run *action*, saying yes to whatever it asks first.
 
     An irreversible operation answers with a question instead of a
-    result, and ``server()`` in ``static/pony.js`` re-sends the same
-    action with the fields the question names once ``window.confirm``
-    has returned true.  This does the same, so a flow test walks the
-    whole of a delete or a merge rather than stopping at the question.
+    result, and ``server()`` in ``static/pony.js`` puts it in Pony's own
+    ``<dialog>`` -- Proceed or Cancel, named as ``SyncConfirmScreen``
+    names them -- then re-sends the same action with the fields the
+    question carries once Proceed is pressed.  This does the re-sending
+    half, so a flow test walks the whole of a delete or a merge rather
+    than stopping at the question; the dialog itself is pressed in a
+    real browser by
+    ``tests/test_web_browser.py::test_a_held_action_is_confirmed_in_ponys_own_dialog``,
+    which is possible only because it is a ``<dialog>``: a native
+    ``confirm`` blocks the page and the ``--dump-dom`` harness with it.
     """
     asked = dispatch(client, page, action, ids=ids, **extra)
     if asked.confirm is None:
@@ -545,6 +551,7 @@ def called_names(source: str) -> set[str]:
 BROWSER_METHODS = frozenset(
     {
         "Array.from",
+        "Array.isArray",
         "JSON.parse",
         "JSON.stringify",
         "Math.max",
@@ -560,7 +567,6 @@ BROWSER_METHODS = frozenset(
         "document.querySelectorAll",
         "window.addEventListener",
         "window.close",
-        "window.confirm",
         "window.history.back",
         "window.localStorage.getItem",
         "window.localStorage.setItem",

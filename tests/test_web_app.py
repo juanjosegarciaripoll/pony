@@ -32,6 +32,7 @@ from tui_helpers import (
     make_tmp_paths,
     seed_message,
 )
+from web_helpers import form_fields, link_to
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
 from pony.web import WebServices, build_web_app
@@ -1525,6 +1526,74 @@ def test_the_folder_pane_shows_folders_the_mirror_has_not_materialised() -> None
 
     assert "Archive" in body
     assert "2019" in body
+
+
+def test_an_account_and_a_parent_folder_both_fold() -> None:
+    """The reader folds both, which is how a dozen accounts stay usable.
+
+    A ``<details>`` each, so a fold needs no script: the account's
+    heading is the summary, and a folder with folders under it keeps its
+    own row as the summary -- the name still opens the folder, the
+    twisty beside it shows or hides what is below.
+    """
+    from pony.domain import FolderSyncState
+
+    services, index = _services("web-folder-folds")
+    index.record_folder_sync_state(
+        state=FolderSyncState(
+            account_name="acct",
+            folder_name="Archive/2019",
+            uid_validity=1,
+            highest_uid=0,
+        ),
+    )
+
+    with _client(services) as client:
+        body = client.get(_mail()).text
+
+    # The account, open, and named so a fold can be remembered.
+    assert '<details class="account" data-fold="a:acct" open>' in body
+    assert "<summary><h2>" in body
+    # The parent folder, with the folder's own row as its summary.
+    assert '<details class="branch" data-fold="f:acct/Archive" open>' in body
+    assert '<summary><span class="folder synthetic' in body
+    # And a leaf has no fold of its own.
+    assert body.count("<details") == body.count("</details>")
+    assert body.count('data-fold="f:') == 1
+
+
+def test_an_address_in_a_body_opens_the_composer_and_not_the_desktop() -> None:
+    """A `mailto:` anchor hands the address to the wrong program.
+
+    Whatever the operating system has registered is not the mail
+    program the message is being read in, and the terminal routes the
+    same link to its own composer.  So the link is to ``/compose``,
+    built on the server: the pages work with the script switched off.
+    """
+    html = (
+        b"From: them@example.test\r\n"
+        b"To: you@example.test\r\n"
+        b"Subject: Invitation\r\n"
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b"\r\n"
+        b'<p>Write to <a href="mailto:ada@example.test?subject=Hi">Ada</a>.</p>\r\n'
+    )
+    services, index = _services("web-mailto", seed=(html,))
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        body = client.get(_message(message_id)).text
+
+    assert "mailto:" not in body
+    assert "Ada" in body
+    target = link_to(body, "ada@example.test")
+    assert target.startswith("/compose")
+    # And the composer it opens is prefilled with that address, on the
+    # account the mail arrived at.
+    with _client(services) as client:
+        form = client.get(target).text
+    assert form_fields(form, "#compose-form")["to"] == "ada@example.test"
+    assert form_fields(form, "#compose-form")["account"] == "acct"
 
 
 def test_the_body_keeps_the_anchor_text_an_html_message_chose() -> None:

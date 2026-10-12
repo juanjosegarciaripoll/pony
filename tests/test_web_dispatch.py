@@ -516,7 +516,18 @@ def test_escape_on_a_form_asks_before_throwing_the_typing_away() -> None:
     # Nothing is asked about a form nobody has touched.
     assert "state.formAtLoad" in leaving
     assert "formState(form)" in leaving
-    assert "window.confirm" in leaving
+    # Pony's own dialog, with Pony's own words on the buttons -- not
+    # `window.confirm`, which offers two buttons in the browser's
+    # locale and so could not put this question at all: it named Save
+    # draft as the way to keep the message while the modal covering
+    # that button was the only thing the user could reach.
+    assert "choose(" in leaving
+    assert 'value: "save"' in leaving
+    assert 'value: "discard"' in leaving
+    assert 'value: "cancel"' in leaving
+    # Saving means pressing the button that files the form, so what the
+    # server gets is what that button names.
+    assert "save.click()" in leaving
     # Said no, and the page stays where it is.
     assert "return;" in leaving.partition("window.history.back()")[0]
     # And the snapshot the comparison needs is taken when the page loads.

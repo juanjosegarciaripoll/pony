@@ -336,6 +336,62 @@ body {
   color: var(--fg);
 }
 
+/* An account folds, and so does a folder with folders under it: the
+   reader's tree does both, which is how a dozen accounts stay usable.
+   A <details> needs no script for it -- the triangle is the summary's
+   own, replaced here by one that sits inside the row rather than
+   outside it. */
+#folders summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+#folders summary::-webkit-details-marker {
+  display: none;
+}
+
+#folders details.account > summary h2::before {
+  content: "▾";
+  color: var(--fg-dim);
+}
+
+#folders details.account:not([open]) > summary h2::before {
+  content: "▸";
+}
+
+/* The folder's own row stays a row: the twisty is beside it, in the
+   same gutter every other row leaves empty, so the names line up
+   whether or not a folder has children. */
+#folders details.branch > summary {
+  display: flex;
+  align-items: baseline;
+}
+
+#folders details.branch > summary::before {
+  content: "▾";
+  flex: none;
+  /* The same gutter a row with no children leaves empty below, so a
+     folder's name starts in the same column either way. */
+  width: 1.5rem;
+  text-align: center;
+  color: var(--fg-dim);
+  padding-top: 0.2rem;
+}
+
+#folders details.branch:not([open]) > summary::before {
+  content: "▸";
+}
+
+#folders details.branch > summary > .folder {
+  flex: 1;
+  min-width: 0;
+  padding-left: 0;
+}
+
+#folders .tree li > .folder {
+  padding-left: 1.5rem;
+}
+
 /* The account's own unread total, which the dim folder counts should
    not be confused with. */
 #folders h2 .unread {
@@ -349,8 +405,12 @@ body {
   padding: 0;
 }
 
+/* Which folders descend from which, visible at a glance: the reader
+   draws guide lines down the tree, and a nested list is one line. */
 .tree .tree {
-  padding-left: 0.9rem;
+  margin-left: 0.9rem;
+  padding-left: 0;
+  border-left: 1px solid var(--border);
 }
 
 .folder {
@@ -1026,6 +1086,13 @@ dialog h2 {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+/* A question rather than a field's label: a halted sync describes what
+   it would delete over several lines before asking whether to. */
+#prompt .question {
+  max-width: 32rem;
+  white-space: pre-line;
 }
 
 /* ── A phone ────────────────────────────────────────────────── */

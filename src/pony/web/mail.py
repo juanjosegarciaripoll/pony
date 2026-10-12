@@ -159,11 +159,26 @@ def folder_pane(services: WebServices, selected: FolderRef | None) -> Raw:
             element(
                 "section",
                 element(
-                    "h2",
-                    element("span", account.name, class_="account-name"),
-                    element("span", str(total), class_="unread") if total else None,
+                    "details",
+                    element(
+                        "summary",
+                        element(
+                            "h2",
+                            element("span", account.name, class_="account-name"),
+                            element("span", str(total), class_="unread")
+                            if total
+                            else None,
+                        ),
+                    ),
+                    element(
+                        "ul",
+                        join(_folder_nodes(tree, selected, path=account.name)),
+                        class_="tree",
+                    ),
+                    class_="account",
+                    data_fold=f"a:{account.name}",
+                    open=True,
                 ),
-                element("ul", join(_folder_nodes(tree, selected)), class_="tree"),
             ),
         )
     return pane(
@@ -186,7 +201,17 @@ def _folder_classes(*, current: bool, quiet: bool) -> str:
 def _folder_nodes(
     nodes: tuple[FolderTreeNode, ...],
     selected: FolderRef | None,
+    *,
+    path: str,
 ) -> list[Raw]:
+    """One ``<li>`` per node, nested.
+
+    *path* is where these nodes hang -- the account's name, then a
+    label per level -- which is what a fold is remembered under.  The
+    labels rather than the stored folder name, because the server's
+    delimiter may be a dot and a synthetic level has no stored name of
+    its own at all.
+    """
     items: list[Raw] = []
     for node in nodes:
         # The folder's own unread count, as the reader's tree shows it;
@@ -222,12 +247,40 @@ def _folder_nodes(
                 class_="folder synthetic" + ("" if not quiet else " quiet"),
             )
         )
-        children = (
-            element("ul", join(_folder_nodes(node.children, selected)), class_="tree")
-            if node.children
-            else None
+        if not node.children:
+            items.append(element("li", body))
+            continue
+        # A folder with folders under it folds, as the reader's tree
+        # folds it: a <details> whose summary is the folder's own row,
+        # so a click on the name still opens the folder and a click on
+        # the twisty beside it shows or hides what is below.  No script
+        # is needed for that; `wireFolds` only remembers it across the
+        # next navigation, the way the reader's tree stays as it was
+        # left.
+        items.append(
+            element(
+                "li",
+                element(
+                    "details",
+                    element("summary", body),
+                    element(
+                        "ul",
+                        join(
+                            _folder_nodes(
+                                node.children,
+                                selected,
+                                path=f"{path}/{node.label}",
+                            ),
+                        ),
+                        class_="tree",
+                    ),
+                    class_="branch",
+                    data_fold=f"f:{path}/{node.label}",
+                    open=True,
+                ),
+                class_="branch",
+            ),
         )
-        items.append(element("li", body, children))
     return items
 
 
@@ -478,7 +531,7 @@ def reader_pane(services: WebServices, message: IndexedMessage) -> Raw:
                 rendered,
                 answerable=invitation is not None and invitation.can_reply,
             ),
-            element("pre", _body(rendered), class_="text"),
+            element("pre", _body(rendered, ref=ref), class_="text"),
         ),
     )
 
@@ -565,7 +618,7 @@ _FORMAT_TAGS = {
 }
 
 
-def _body(rendered: RenderedMessage) -> Raw:
+def _body(rendered: RenderedMessage, *, ref: MessageRef) -> Raw:
     """The message body, escaped, with its links and emphasis.
 
     Read from the renderer's styled body, the same projection the
@@ -573,6 +626,14 @@ def _body(rendered: RenderedMessage) -> Raw:
     emphasis is the one it marked, and the anchor text an HTML message
     chose survives.  Finding links again with a regex of our own gave
     the browser a different set from the terminal's.
+
+    An address goes to Pony's own composer rather than out as a
+    ``mailto:``, which would hand it to whatever the operating system
+    has registered -- not the mail program the message is being read
+    in.  The terminal routes the same link to its own composer; this is
+    a link to ``/compose``, so it works with the script off, and it
+    carries the message's own folder so the draft starts on the account
+    the mail arrived at.
     """
     styled = rendered.styled_body or rendered.body
     pieces: list[str | Raw] = []
@@ -587,7 +648,15 @@ def _body(rendered: RenderedMessage) -> Raw:
                 element(
                     "a",
                     segment.target,
-                    href=segment.target if web else f"mailto:{segment.target}",
+                    href=segment.target
+                    if web
+                    else urls.compose_url(
+                        mode="new",
+                        account=ref.account_name,
+                        folder=ref.folder_name,
+                        message_id=ref.id,
+                        to=segment.target,
+                    ),
                     rel="noopener noreferrer nofollow",
                     target="_blank" if web else None,
                 ),

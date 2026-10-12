@@ -185,19 +185,37 @@ async function ready(frame, what = "#rows .row") {
   throw new Error(`the page never started answering keys: ${what}`);
 }
 
+// Go somewhere and wait for *that* page. `ready` alone is not enough
+// when the selector also matches the page being left: the poll would
+// find the old document and return before the navigation committed.
+async function goTo(frame, url, what) {
+  const from = frame.contentWindow.location.href;
+  frame.contentWindow.location.assign(url);
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (frame.contentWindow.location.href !== from) break;
+    await sleep(25);
+  }
+  await ready(frame, what);
+}
+
 // Watch what the page asks the server to do, and answer as the server
-// would, so the steps after an action are the real ones.
+// would, so the steps after an action are the real ones.  *answer* may
+// be a function, for a server that answers the second request
+// differently from the first -- which is what holding an action for a
+// confirmation looks like from here.
 function intercept(win, answer) {
   const real = win.fetch.bind(win);
   win.fetch = async (url, options = {}) => {
     const where = String(url);
     if (!where.includes("/action/")) return real(url, options);
+    const body = options.body ? String(options.body) : "";
     report.posts.push({
       url: where,
       method: (options.method || "GET").toUpperCase(),
-      body: options.body ? String(options.body) : "",
+      body,
     });
-    return new win.Response(JSON.stringify(answer), {
+    const reply = typeof answer === "function" ? answer(body) : answer;
+    return new win.Response(JSON.stringify(reply), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -287,6 +305,92 @@ async function run() {
   await sleep(100);
   report.typedIntoField = report.posts.length - sofar;
   report.steps.push("typing");
+  out();
+
+  // An action the server holds for a confirmation. The question is
+  // Pony's, so the dialog has to be Pony's too: `window.confirm` wore
+  // the browser's own locale, and a browser told to block further
+  // dialogs answers it no without showing anything at all.
+  intercept(win, (body) =>
+    body.includes("confirm=1")
+      ? { changed: 1, notices: [{ text: "Trashed 1.", severity: "information" }] }
+      : {
+          changed: 0,
+          notices: [],
+          confirm: {
+            question: "This would delete 9 of 10 (90%).\\n\\nApply the sync anyway?",
+            fields: { confirm: "1" },
+          },
+        },
+  );
+  const beforeAsk = report.posts.length;
+  press(doc.body, "D", { shiftKey: true });
+  await sleep(300);
+  const prompt = doc.getElementById("prompt");
+  report.confirmOpen = Boolean(prompt && prompt.open);
+  report.confirmText = prompt ? prompt.textContent : "";
+  report.confirmButtons = prompt
+    ? Array.from(prompt.querySelectorAll("button")).map((b) => b.textContent)
+    : [];
+  // Escape is one of the answers, and it is no.
+  press(prompt.querySelector("form"), "Escape");
+  await sleep(200);
+  report.confirmRefusedPosts = report.posts.length - beforeAsk;
+  report.confirmClosed = Boolean(prompt && !prompt.open);
+  // Asked again, and answered with the reader's own accelerator.
+  press(doc.body, "D", { shiftKey: true });
+  await sleep(300);
+  press(prompt.querySelector("form"), "y");
+  await sleep(400);
+  report.confirmPosts = report.posts.slice(beforeAsk).map((post) => post.body);
+  report.confirmNotice = doc.getElementById("notices").textContent;
+  report.steps.push("confirm");
+  out();
+
+  // The folder tree: folded by a click, with the fold still there
+  // after the next navigation, and the hierarchy drawn rather than
+  // only indented.
+  const branch = doc.querySelector("#folders details.branch");
+  const line = doc.querySelector("#folders .tree .tree");
+  report.treeGuide = line
+    ? win.getComputedStyle(line).getPropertyValue("border-left-width")
+    : "";
+  // A parent's name starts where a leaf's name starts: the twisty sits
+  // in the gutter every row leaves empty.
+  const nameOf = (node) =>
+    node.querySelector(".folder-name").getBoundingClientRect().left;
+  report.nameEdges = [
+    nameOf(branch.querySelector("summary")),
+    nameOf(doc.querySelector('#folders .tree > li > .folder[data-folder="INBOX"]')),
+  ];
+  report.foldKey = branch.dataset.fold;
+  report.foldOpen = branch.open;
+  const branchHeight = () => branch.getBoundingClientRect().height;
+  const openHeight = branchHeight();
+  // Clicking the twisty -- the summary, but not the link in it -- shuts
+  // it; clicking the folder's own name would open the folder instead.
+  branch.querySelector("summary").click();
+  await sleep(200);
+  report.foldShut = !branch.open;
+  // Shut, the branch is its own row and nothing else.
+  report.foldHeights = [openHeight, branchHeight()];
+  // Choosing another folder is a new URL, so the tree is built again
+  // with everything open: either the fold is remembered or the click
+  // after it undoes it.
+  const listUrl = win.location.href;
+  await goTo(
+    frame,
+    doc.querySelector('#folders .folder[data-folder="Drafts"]').href,
+    "#folders details.branch",
+  );
+  report.foldedOn = frame.contentWindow.location.search;
+  report.foldRemembered = !frame.contentDocument.querySelector(
+    "#folders details.branch",
+  ).open;
+  // Back to the folder the rest of these steps use.
+  await goTo(frame, listUrl, "#rows .row");
+  doc = frame.contentDocument;
+  report.steps.push("tree");
   out();
 
   // Enter opens what the cursor is on, which is a page of its own.
@@ -413,6 +517,9 @@ def _report() -> dict[str, Any]:
         message_id="<browser-phish@example.com>",
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    # A folder under a folder, so the tree has a level to fold and a
+    # guide line to draw.
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Archive/2026")
     runtime = make_calendar_runtime(
         make_tmp_paths("browser-ux-cal"),
         account_name="personal",
@@ -567,6 +674,8 @@ def test_the_harness_got_all_the_way_through() -> None:
         "action",
         "button",
         "typing",
+        "confirm",
+        "tree",
         "open",
         "event-sync",
         "compose",
@@ -623,6 +732,38 @@ def test_a_key_acts_on_the_marks_and_then_clears_them() -> None:
     assert report["selectedAfter"] == report["cursor"][-1]
 
 
+def test_a_held_action_is_confirmed_in_ponys_own_dialog() -> None:
+    """The question is Pony's, so the dialog has to be Pony's too.
+
+    ``window.confirm`` renders the browser's locale -- a Spanish Chrome
+    offered "Aceptar" and "Cancelar" under Pony's English question --
+    and once a browser has been told to stop a page opening dialogs it
+    returns false with no UI at all, which on this path is a sync that
+    declines itself and says nothing.  So the page builds the dialog,
+    names the buttons after what they do as ``SyncConfirmScreen`` does,
+    takes the reader's own ``Y``/``N`` and Escape, and re-sends the
+    action only once the answer is yes.
+    """
+    report = _report()
+
+    assert report["confirmOpen"] is True
+    assert "Apply the sync anyway?" in report["confirmText"]
+    # The explanation is painted with the question, not behind it.
+    assert "9 of 10" in report["confirmText"]
+    # Named for what they do, in Pony's words and in this order.
+    assert report["confirmButtons"] == ["Proceed [Y]", "Cancel [N]"]
+    # Escape answered no: the dialog shut and nothing was re-sent.
+    assert report["confirmClosed"] is True
+    assert report["confirmRefusedPosts"] == 1
+    # Then asked again and answered with `Y`, which re-sends the same
+    # action with the field the server asked for.
+    asked, again, answered = report["confirmPosts"]
+    assert "confirm=1" not in asked
+    assert "confirm=1" not in again
+    assert "confirm=1" in answered
+    assert "Trashed 1." in report["confirmNotice"]
+
+
 def test_a_button_runs_the_action_a_key_would() -> None:
     """A tap on Sync, with no keyboard involved."""
     report = _report()
@@ -633,6 +774,37 @@ def test_a_button_runs_the_action_a_key_would() -> None:
 def test_a_press_into_the_search_field_is_left_to_the_field() -> None:
     """``D`` typed into a search box must not trash anything."""
     assert _report()["typedIntoField"] == 0
+
+
+def test_the_folder_tree_folds_and_shows_what_descends_from_what() -> None:
+    """Two differences from the reader, found by using the browser.
+
+    The reader folds an account and folds a parent folder, and draws
+    guide lines down the tree; the browser had no fold at all and
+    expressed nesting as ``padding-left`` and nothing else.  Both are
+    markup and stylesheet rather than script -- a ``<details>`` folds on
+    its own -- but a fold that the next click undid would be no fold, so
+    the script remembers it, as it remembers where each pane was
+    scrolled to.
+    """
+    report = _report()
+
+    # A nested list is drawn as a line, not only indented.
+    assert report["treeGuide"] not in {"", "0px"}
+    # A parent's name and a leaf's name start at the same place.
+    parent, leaf = report["nameEdges"]
+    assert parent == leaf
+    # The twisty shuts the fold, and what was under it is hidden.
+    assert report["foldKey"] == "f:acct/Archive"
+    assert report["foldOpen"] is True
+    assert report["foldShut"] is True
+    # Shut, the branch takes the height of its own row and no more.
+    opened, shut = report["foldHeights"]
+    assert shut < opened
+    # And it is still shut on the page the next click leads to, which
+    # is what the reader's tree does and a re-rendered page does not.
+    assert "folder=Drafts" in report["foldedOn"]
+    assert report["foldRemembered"] is True
 
 
 def test_enter_opens_the_row_the_cursor_is_on() -> None:

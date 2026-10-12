@@ -164,6 +164,48 @@ function restorePaneScroll() {
   }
 }
 
+// ── Which folders are folded ──────────────────────────────────
+//
+// A <details> opens and shuts with no script at all; what the script
+// adds is memory. Choosing a folder is a new URL, so the tree comes
+// back built from scratch with everything open, and a fold would be
+// undone by the very next click. The reader's tree stays as it was
+// left, so the folds are written down beside the pane positions and on
+// the same occasion -- `pagehide`, rather than on each toggle, because
+// what matters is the state the page is left in.
+const FOLDS = "pony.folds";
+
+function foldable() {
+  return document.querySelectorAll("[data-fold]");
+}
+
+function rememberFolds() {
+  const shut = [];
+  for (const fold of foldable()) {
+    if (!fold.open) shut.push(fold.dataset.fold);
+  }
+  try {
+    window.sessionStorage.setItem(FOLDS, JSON.stringify(shut));
+  } catch {
+    // A private window, or blocked site data, throws. A fold is a
+    // convenience and nothing depends on remembering it.
+  }
+}
+
+function restoreFolds() {
+  let shut = null;
+  try {
+    shut = JSON.parse(window.sessionStorage.getItem(FOLDS) || "null");
+  } catch {
+    return;
+  }
+  if (!Array.isArray(shut)) return;
+  const closed = new Set(shut);
+  for (const fold of foldable()) {
+    if (closed.has(fold.dataset.fold)) fold.open = false;
+  }
+}
+
 // The folder being read, without the message open in it.
 function folderParams() {
   const data = here();
@@ -260,6 +302,100 @@ function ask(question, { value = "", list = null, placeholder = "" } = {}) {
   });
 }
 
+// The same dialog, for a question answered by choosing rather than by
+// typing.  `window.confirm` could not put these questions at all: it
+// offers two buttons in the browser's own locale, so "Discard this
+// message? Use Save draft to keep it." named a control the modal was
+// covering and left dismissing the modal as one of the two answers.
+// Browsers also offer to block a page from opening more dialogs, after
+// which `confirm` returns false with no UI — a question nobody was
+// asked, answered no.
+//
+// So: Pony's words, Pony's buttons, and *which* answer was chosen
+// rather than a yes or a no, because the terminal screens that decide
+// the same things have three buttons (`SaveDraftScreen`) or name the
+// operation on them (`SyncConfirmScreen`).  Each choice is
+// `{ value, label, key }`; the first is the default, which Enter takes,
+// and the last is what Escape and a dismissed dialog mean.
+function choose(question, choices) {
+  const dialog = document.getElementById("prompt");
+  // Nowhere to ask is not permission to go ahead.
+  if (!dialog) return Promise.resolve(null);
+  const form = document.createElement("form");
+  const label = document.createElement("label");
+  // A question, not a field's label: a halted sync describes what it
+  // would delete over several lines before asking whether to.
+  label.className = "question";
+  label.textContent = question;
+  const buttons = document.createElement("div");
+  buttons.className = "invitation-answers";
+  const made = choices.map((choice, position) => {
+    const button = document.createElement("button");
+    button.type = position === 0 ? "submit" : "button";
+    if (position === 0) button.className = "primary";
+    button.textContent = choice.label;
+    button.dataset.choice = choice.value;
+    buttons.append(button);
+    return button;
+  });
+  form.append(label, buttons);
+  dialog.replaceChildren(form);
+
+  return new Promise((resolve) => {
+    let answered = false;
+    const finish = (answer) => {
+      if (answered) return;
+      answered = true;
+      dialog.close();
+      dialog.replaceChildren();
+      resolve(answer);
+    };
+    const refuse = () => finish(choices[choices.length - 1].value);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      finish(choices[0].value);
+    });
+    made.forEach((button, position) => {
+      button.addEventListener("click", (event) => {
+        if (button.type === "submit") return;
+        event.preventDefault();
+        finish(choices[position].value);
+      });
+    });
+    // The reader's own accelerators — Y to save, N to discard — and
+    // Escape for the last choice.  Nothing here reaches the page
+    // underneath: a modal dialog is open, and `D` in it must not trash
+    // the message the question is about.
+    form.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        refuse();
+        return;
+      }
+      const hit = choices.find(
+        (choice) => choice.key && choice.key === event.key.toLowerCase(),
+      );
+      if (hit) {
+        event.preventDefault();
+        finish(hit.value);
+      }
+    });
+    // The window's own close request, for a browser that does not
+    // deliver Escape as a key here.
+    dialog.addEventListener(
+      "cancel",
+      (event) => {
+        event.preventDefault();
+        refuse();
+      },
+      { once: true },
+    );
+    dialog.showModal();
+    made[0].focus();
+  });
+}
+
 // ── Server actions ─────────────────────────────────────────────
 
 // Actions whose label says "marked". They act on the marks and on
@@ -317,7 +453,14 @@ async function server(name, extra = {}) {
   // that would delete a large share of a folder is held until the user
   // has seen what it would do, exactly as the terminal holds it.
   if (outcome.confirm) {
-    if (!window.confirm(outcome.confirm.question)) return outcome;
+    // The notices above are already on the page: a native `confirm`
+    // blocked the paint, so the user was asked to decide with the
+    // explanation that goes with the question still unpainted.
+    const answer = await choose(outcome.confirm.question, [
+      { value: "proceed", label: "Proceed [Y]", key: "y" },
+      { value: "cancel", label: "Cancel [N]", key: "n" },
+    ]);
+    if (answer !== "proceed") return outcome;
     return server(name, { ...extra, ...outcome.confirm.fields });
   }
   if (outcome.changed > 0) {
@@ -537,17 +680,45 @@ function formState(form) {
   return parts.join("\n");
 }
 
+// What each form holds, and the button that files it.  All three keep
+// that button in the pane's heading with a `form` attribute naming the
+// form it submits; the compose form's also carries `save_draft`, which
+// is what tells the server to file the message rather than send it.
+const FORMS = {
+  "compose-form": { holds: "message", files: "Save draft" },
+  "event-form": { holds: "event", files: "Save" },
+  "contact-form": { holds: "contact", files: "Save" },
+};
+
+function saveButton(form) {
+  return (
+    document.querySelector(`button[name="save_draft"][form="${form.id}"]`) ||
+    document.querySelector(`button.primary[form="${form.id}"]`)
+  );
+}
+
 // Escape on a form used to be `window.history.back()` with no question
-// asked, so it threw away a half-written message. The terminal puts a
-// save-draft prompt here; this asks instead of saving, because a form
-// opened by mistake should not file anything, and an event form has no
-// draft to file at all.
-function leaveForm() {
+// asked, so it threw away a half-written message. The terminal asks
+// with `SaveDraftScreen`, which offers three answers, and so does this:
+// the question used to name Save draft as the way to keep the message
+// while the modal covering that button was the only thing the user
+// could reach.
+async function leaveForm() {
   const form = currentForm();
   if (form && state.formAtLoad !== null && formState(form) !== state.formAtLoad) {
-    const what = state.surface === "compose" ? "message" : "event";
-    const keep = state.surface === "compose" ? "Save draft" : "Save";
-    if (!window.confirm(`Discard this ${what}? Use ${keep} to keep it.`)) return;
+    const kind = FORMS[form.id] || { holds: "form", files: "Save" };
+    const save = saveButton(form);
+    const answer = await choose(`Discard this ${kind.holds}?`, [
+      ...(save ? [{ value: "save", label: `${kind.files} [Y]`, key: "y" }] : []),
+      { value: "discard", label: "Discard [N]", key: "n" },
+      { value: "cancel", label: "Cancel [Esc]" },
+    ]);
+    if (answer === "save" && save) {
+      // Submitted by that button, so the form carries what it names.
+      save.click();
+      return;
+    }
+    if (answer !== "discard") return;
   }
   window.history.back();
 }
@@ -978,10 +1149,14 @@ function start() {
   const form = currentForm();
   state.formAtLoad = form ? formState(form) : null;
   restorePaneScroll();
+  restoreFolds();
   // `pagehide` rather than `beforeunload`: it fires for an ordinary
   // navigation and does not keep the page out of the back/forward
   // cache.
-  window.addEventListener("pagehide", rememberPaneScroll);
+  window.addEventListener("pagehide", () => {
+    rememberPaneScroll();
+    rememberFolds();
+  });
   document.addEventListener("keydown", onKeyDown);
   // Clicking a row selects it, so the keyboard and the pointer agree
   // about what an action will act on.

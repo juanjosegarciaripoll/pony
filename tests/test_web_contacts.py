@@ -88,6 +88,26 @@ def test_the_list_can_be_filtered() -> None:
     assert "Search: ada" in body
 
 
+def test_the_list_leads_to_the_blank_form_without_a_keyboard() -> None:
+    """Keeping an address has to be reachable from the page itself.
+
+    The terminal has ``c`` for it and harvests a folder with ``H``; the
+    browser serves the same keys, and this is the control beside them --
+    so an address met in the browser can be kept without going to the
+    terminal.
+    """
+    from web_helpers import link_to
+
+    services, _store = _services("contacts-new-entry")
+
+    with _client(services) as client:
+        body = client.get("/contacts").text
+        blank = client.get(link_to(body, "New")).text
+
+    assert link_to(body, "New") == "/contacts/edit"
+    assert "New contact" in blank
+
+
 def test_an_empty_store_says_so() -> None:
     services, _store = _services("contacts-empty")
 
