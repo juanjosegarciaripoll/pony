@@ -402,14 +402,43 @@ async def _message_page(services: WebServices, request: Request) -> Response:
     )
 
 
+# The policy a message's own HTML is served under.
+#
+# ``default-src 'none'`` covers everything that falls back to it:
+# scripts, frames, plugins, fetches, fonts, remote images.  Three
+# directives do **not** fall back to it in CSP3 and so have to be named,
+# which is how a ``<form action=…><input name=pw>`` in a `text/html`
+# message came to submit successfully from Pony's own origin:
+#
+# * ``form-action`` — nothing a message renders may post anywhere, so a
+#   "re-enter your password" form has nowhere to send it.
+# * ``base-uri`` — a ``<base href>`` would otherwise re-point every
+#   relative URL on the page at the sender's server.
+# * ``frame-ancestors`` — no page may embed this one.
+#
+# Deliberately **no** ``sandbox``: this is a top-level page the reader
+# opened in a tab of its own, and a sandbox that withholds
+# ``allow-top-navigation`` kills every ordinary link in the message —
+# which is most of what a reader wants from the HTML version — while
+# granting it back reinstates the one thing a sandbox was wanted for.
+# So a ``<meta http-equiv="refresh">`` in a message can still take that
+# tab somewhere else; it is the tab the user opened for the message, it
+# carries no referrer, and nothing of Pony's is in it.
+MESSAGE_HTML_CSP = (
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
+    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
+
+
 async def _message_body(services: WebServices, request: Request) -> Response:
     """The message's own HTML, as a page of its own.
 
     Served with everything switched off: no scripts, no plugins, no
-    network. ``build_browser_html`` has already inlined the inline
-    images as data URIs, so there is nothing legitimate left to fetch.
-    It is a top-level page rather than a frame in the application,
-    because mail is hostile input and the reader shows text.
+    network, nowhere to post and nothing to re-base.
+    ``build_browser_html`` has already inlined the inline images as data
+    URIs, so there is nothing legitimate left to fetch.  It is a
+    top-level page rather than a frame in the application, because mail
+    is hostile input and the reader shows text.
     """
     raw = _raw_from(services, request)
     if isinstance(raw, Response):
@@ -417,9 +446,7 @@ async def _message_body(services: WebServices, request: Request) -> Response:
     return HTMLResponse(
         build_browser_html(raw),
         headers={
-            "Content-Security-Policy": (
-                "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
-            ),
+            "Content-Security-Policy": MESSAGE_HTML_CSP,
             "Referrer-Policy": "no-referrer",
         },
     )

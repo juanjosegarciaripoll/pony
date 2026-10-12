@@ -226,6 +226,68 @@ def test_a_message_body_is_served_with_everything_switched_off() -> None:
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
+def _phishing_message() -> bytes:
+    """A message whose HTML part asks for a password.
+
+    A script and a remote image are in here too, so one fixture covers
+    the whole policy: the form and the ``<base>`` are the two that do
+    *not* inherit from ``default-src``.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    message = MIMEMultipart("alternative")
+    message["From"] = "security@bank.test"
+    message["To"] = "you@example.com"
+    message["Subject"] = "Confirm your password"
+    message["Date"] = "Mon, 6 Oct 2025 09:00:00 +0000"
+    message["Message-ID"] = "<phish@bank.test>"
+    message.attach(
+        MIMEText(
+            "<html><head><base href='https://bank.test/'></head><body>"
+            "<form id='steal' action='https://bank.test/collect' method='post'>"
+            "<input name='pw' type='password'>"
+            "<button type='submit'>Confirm</button></form>"
+            "<script>document.title='run'</script>"
+            "<img src='https://bank.test/pixel.gif'>"
+            "</body></html>",
+            "html",
+            "utf-8",
+        ),
+    )
+    return message.as_bytes()
+
+
+def test_a_form_in_a_message_has_nowhere_to_post_and_nothing_to_rebase() -> None:
+    """``form-action`` and ``base-uri`` do not inherit from ``default-src``.
+
+    Which is how a ``<form action=…><input name=pw>`` in a `text/html`
+    message came to submit successfully, from Pony's own origin, one tab
+    from the mailbox.  The renderer passes the markup through, so the
+    header is what has to say no.
+    """
+    services, index = _services("web-body-phish", seed=(_phishing_message(),))
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.get(_message(message_id, path="/message/body"))
+
+    # The renderer really does pass the form through — the policy is not
+    # being asked about markup that was already stripped.
+    assert "<form" in response.text
+    policy = response.headers["content-security-policy"]
+    for directive in (
+        "form-action 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ):
+        assert directive in policy, directive
+    # And deliberately no `sandbox`: this is the tab the reader opened
+    # for the message, and a sandbox without `allow-top-navigation`
+    # would kill every link in it.
+    assert "sandbox" not in policy
+
+
 def test_a_message_can_be_downloaded_as_it_arrived() -> None:
     services, index = _services("web-raw")
     message_id = _only_message(index)

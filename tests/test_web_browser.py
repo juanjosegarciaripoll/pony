@@ -62,6 +62,46 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
+#: Where the message that tries to phish the reader is kept, so the
+#: list the rest of this file drives stays three rows long.
+HOSTILE = FolderRef(account_name="acct", folder_name="Hostile")
+
+
+def _phishing_message() -> bytes:
+    """A message whose HTML part reaches for everything it can.
+
+    Every reach is at ``/__sink`` on the very server that is serving the
+    message, so anything that got through arrives somewhere the test can
+    see rather than failing on DNS.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    message = MIMEMultipart("alternative")
+    message["From"] = "security@bank.test"
+    message["To"] = "you@example.com"
+    message["Subject"] = "Confirm your password"
+    message["Date"] = "Mon, 6 Oct 2025 09:00:00 +0000"
+    message["Message-ID"] = "<browser-phish@example.com>"
+    message.attach(
+        MIMEText(
+            "<html><head>"
+            "<base href='/__sink/'>"
+            "<link rel='stylesheet' href='/__sink?via=css'>"
+            "<script src='/__sink?via=script'></script>"
+            "</head><body>"
+            "<form id='steal' action='/__sink?via=form' method='post'>"
+            "<input name='pw' type='password' value='secret'>"
+            "<button type='submit'>Confirm your password</button></form>"
+            "<img src='/__sink?via=img'>"
+            "<script>document.title = 'script ran'</script>"
+            "</body></html>",
+            "html",
+            "utf-8",
+        ),
+    )
+    return message.as_bytes()
+
 
 #: Anything Chromium-shaped: the flags used here are its own.
 BROWSERS = (
@@ -297,6 +337,15 @@ def _report() -> dict[str, Any]:
             raw=plain_text(),
             message_id=f"<browser-{position}@example.com>",
         )
+    # In a folder of its own, so the list the rest of this file counts
+    # rows in stays three rows long.
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=HOSTILE,
+        raw=_phishing_message(),
+        message_id="<browser-phish@example.com>",
+    )
     services = WebServices(
         config=config,
         index=index,
@@ -305,6 +354,7 @@ def _report() -> dict[str, Any]:
     )
     app = build_web_app(services)
     first = index.list_folder_message_summaries(folder=INBOX)[0].message_ref.id
+    hostile = index.list_folder_message_summaries(folder=HOSTILE)[0].message_ref.id
     with TestClient(app) as client:
         keymap = client.get("/keymap.json").json()
 
@@ -321,8 +371,20 @@ def _report() -> dict[str, Any]:
         del request
         return HTMLResponse(page)
 
+    #: Anything the hostile message manages to send, which must be
+    #: nothing.  A route outside `pony.web`, like the harness itself.
+    sink: list[str] = []
+
+    async def collect(request: Request) -> Response:
+        sink.append(request.query_params.get("via", request.method))
+        return HTMLResponse("<p id='collected'>collected</p>")
+
     wrapper = Starlette(
-        routes=[Route("/__harness", harness), Mount("/", app=app)],
+        routes=[
+            Route("/__harness", harness),
+            Route("/__sink", collect, methods=["GET", "POST"]),
+            Mount("/", app=app),
+        ],
     )
     server = uvicorn.Server(
         uvicorn.Config(wrapper, host="127.0.0.1", port=0, log_level="warning"),
@@ -337,6 +399,15 @@ def _report() -> dict[str, Any]:
         assert server.started, "the test server never came up"
         port = server.servers[0].sockets[0].getsockname()[1]
         dom = _dump_dom(f"http://127.0.0.1:{port}/__harness", profile)
+        # The hostile message's own HTML, opened the way `w` opens it:
+        # a top-level page of its own, not a frame.  It cannot be framed
+        # — `frame-ancestors 'none'` says so — so this is a second run
+        # against the same server rather than a third iframe above.
+        hostile_dom = _dump_dom(
+            f"http://127.0.0.1:{port}/message/body"
+            f"?account=acct&folder=Hostile&id={hostile}",
+            profile,
+        )
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -346,6 +417,8 @@ def _report() -> dict[str, Any]:
     assert found is not None, f"the harness reported nothing:\n{dom[:2000]}"
     report: dict[str, Any] = json.loads(unescape(found.group(1)))
     assert "error" not in report, report
+    report["hostileDom"] = hostile_dom
+    report["sink"] = sorted(set(sink))
     return report
 
 
@@ -482,3 +555,30 @@ def test_quitting_stops_the_page_as_well_as_the_server() -> None:
     assert report["stopped"] == "1"
     assert "Pony Express has stopped" in report["quitNotice"]
     assert report["afterQuit"] == 0
+
+
+def test_a_hostile_message_reaches_nothing_from_ponys_own_origin() -> None:
+    """The policy ``/message/body`` is served under, enforced.
+
+    The message in the fixture reaches for a script, a stylesheet, a
+    remote image and a ``<base href>``, each aimed at a collector on the
+    very server that served it, and carries a password form.  Reading
+    the header proves what it says; this proves what Chromium does with
+    it.  Weaken ``default-src`` and this test fails on the script alone.
+
+    ``form-action`` is checked by the header assertion in
+    ``tests/test_web_app.py`` instead: a form cannot be submitted
+    without a click, and this page is opened as a top-level tab —
+    nothing in this program ever frames it — so there is nothing above
+    it to press the button.
+    """
+    report = _report()
+    dom = report["hostileDom"]
+
+    # Still on the message, not on the collector.
+    assert "Confirm your password" in dom
+    assert 'id="collected"' not in dom
+    # The script did not run: the title is still the message's own.
+    assert "<title>script ran</title>" not in dom
+    # And nothing the message asked for ever arrived.
+    assert report["sink"] == []

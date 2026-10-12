@@ -101,12 +101,13 @@ execute.
 | **Reply** | ++r++ | Open the composer, quoting and threading |
 | **Write** | ++c++ | A new message from this folder's account |
 
-**HTML version** opens a page of its own — never a frame inside the
-application — served with scripts, plugins and network access switched
-off. Inline images are already embedded, so there is nothing left for
-such a page to fetch. Attachments download with `nosniff`, which is what
-keeps a hostile byte string from being interpreted as something
-executable.
+**HTML version** opens a top-level page in a tab of its own — never a
+frame inside the application, and this front end has no frames at all —
+served with scripts, plugins and network access switched off, nowhere to
+post a form and no way to re-base a relative URL. Inline images are
+already embedded, so there is nothing left for such a page to fetch.
+Attachments download with `nosniff`, which is what keeps a hostile byte
+string from being interpreted as something executable.
 
 !!! tip "Printing"
     There is no PDF export here, and none is needed: ++ctrl+p++ opens
@@ -349,7 +350,7 @@ works.
 | **Token** | A fresh random token per run, in the URL once, then an `HttpOnly` `SameSite=strict` cookie for a year; compared in constant time |
 | **`--no-token`** | Serves without it, for an address that is already restricted to people who may read the mail |
 | **Where a request came from** | Anything that changes something is refused unless the browser says it came from Pony's own page, token or no token: `Sec-Fetch-Site` when it is sent, the `Origin` otherwise. A client that sends neither — curl, a script, a phone shortcut — is let through |
-| **Message HTML** | A page of its own, with `default-src 'none'`, images limited to the data URIs already inlined, and no referrer |
+| **Message HTML** | A top-level page of its own, opened in a separate tab (never a frame — there are none in this front end), with `default-src 'none'`, images limited to the data URIs already inlined, `form-action 'none'` and `base-uri 'none'` because neither falls back to `default-src`, `frame-ancestors 'none'`, and no referrer |
 | **Attachments** | Downloaded with `X-Content-Type-Options: nosniff` |
 | **The page itself** | One stylesheet and one script, no framework and no CDN: a tailnet has no reason to reach the public internet, and a front end that needs one stops working on a train |
 

@@ -10,9 +10,12 @@ author can forget.
 Everything that reaches :func:`element` as text is escaped.  Markup that
 is deliberately raw says so by passing :class:`Raw`, which is the only
 way to get an unescaped string into a document and therefore the only
-place to look when auditing for injection.  Message bodies never come
-through here at all: they are served into a sandboxed frame of their own
-(see :mod:`pony.web.app`), because mail is hostile input.
+place to look when auditing for injection.  A message's own HTML never
+comes through here at all: it is served as a top-level page of its own
+at ``/message/body``, which the reader opens in a separate tab with
+``noopener``, under the policy :data:`pony.web.app.MESSAGE_HTML_CSP`
+describes.  There is no frame anywhere in this front end, because mail
+is hostile input and the application's page is not the place for it.
 """
 
 from __future__ import annotations
