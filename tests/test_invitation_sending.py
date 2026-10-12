@@ -1,4 +1,11 @@
-"""Sending invitations out of the calendar, and completing their attendees."""
+"""Sending invitations out of the calendar, and completing their attendees.
+
+Sending lives in :mod:`pony.invitation_actions`, beside the inbound
+half: it was in ``pony.tui.calendar_host``, which imports Textual, so
+the browser could not reach it and inviting attendees from a browser
+invited nobody.  Completing an attendee's address still belongs to the
+host, because it is the host that has a contact store.
+"""
 
 from __future__ import annotations
 
@@ -16,11 +23,8 @@ from tui_helpers import (
 
 from chronos.domain import CalendarRef
 from pony.domain import Contact
-from pony.tui.calendar_host import (
-    _with_method,
-    contact_completer,
-    send_event_invitations,
-)
+from pony.invitation_actions import _with_method, send_event_invitations
+from pony.tui.calendar_host import contact_completer
 
 _START = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
 
@@ -331,3 +335,50 @@ def test_an_editor_without_a_completer_is_still_valid() -> None:
         on_save=lambda _draft: None,
     )
     assert screen._attendee_completer is None  # noqa: SLF001
+
+
+class SendingIsReachableWithoutATerminalTest(unittest.TestCase):
+    """The whole point of the move, stated as a test.
+
+    `send_event_invitations` sat in `pony.tui.calendar_host`, which
+    imports `textual.app.App`, so `pony.web` could not call it: the
+    browser must not import anything under a `tui` package, and
+    `tests/test_layering.py` enforces that.  Saving an event with
+    attendees from the browser therefore invited nobody, silently.
+    """
+
+    def test_it_is_importable_from_a_module_that_loads_no_textual(self) -> None:
+        import subprocess
+        import sys
+
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-c",
+                "import sys;"
+                " from pony.invitation_actions import send_event_invitations;"
+                " assert callable(send_event_invitations);"
+                " raise SystemExit(1 if 'textual' in sys.modules else 0)",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            result.stderr.decode(errors="replace") or "it dragged in textual",
+        )
+
+    def test_the_host_no_longer_carries_it(self) -> None:
+        import pony.tui.calendar_host as host
+
+        self.assertFalse(hasattr(host, "send_event_invitations"))
+        self.assertFalse(hasattr(host, "_with_method"))
+        self.assertFalse(hasattr(host, "InvitationDelivery"))
+
+    def test_the_terminal_still_calls_the_one_implementation(self) -> None:
+        """`tui/app.py` is a thin caller now, not a second copy."""
+        import pony.invitation_actions as actions
+        import pony.tui.app as app
+
+        self.assertIs(app.send_event_invitations, actions.send_event_invitations)

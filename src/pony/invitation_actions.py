@@ -22,8 +22,16 @@ from typing import TYPE_CHECKING
 from chronos.outcome import Notice, NoticeLog, Outcome, failure, info, warn
 
 from .accounts import resolve_smtp_password
+from .invitation import (
+    build_itip_message,
+    parse_invitation,
+    request_body,
+    request_subject,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from chronos.domain import CalendarRef
 
     from .calendar import CalendarRuntime
@@ -219,11 +227,128 @@ def replying_account(
     return candidates[0]
 
 
+# ----------------------------------------------------------------------
+# The outbound half: inviting people to an event of our own
+# ----------------------------------------------------------------------
+#
+# This lived in `pony.tui.calendar_host`, a module that imports
+# `textual.app.App`, although none of it touches a screen.  It was
+# therefore unreachable from `pony.web` -- the browser must not import
+# anything under a `tui` package, and `tests/test_layering.py` enforces
+# that -- so saving an event with attendees from the browser invited
+# nobody, silently, against what `docs/architecture.md` says happens.
+#
+# It belongs here, beside the inbound half: answering an invitation and
+# sending one are the same iTIP conversation seen from the two ends, and
+# both need an account, a password and an SMTP socket and nothing else.
+
+
+@dataclass(frozen=True, slots=True)
+class InvitationDelivery:
+    """What happened when an invitation was posted."""
+
+    sent_to: tuple[str, ...]
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def send_event_invitations(
+    *,
+    ics: bytes,
+    attendees: Sequence[str],
+    organizer: str | None,
+    summary: str,
+    is_update: bool,
+    account: AnyAccount,
+    password: str,
+    connect_timeout: int,
+) -> InvitationDelivery:
+    """Mail *ics* to *attendees* as a ``METHOD:REQUEST``.
+
+    The organizer is dropped from the recipients: they are the one
+    sending, and clients treat an invitation addressed to its own
+    organizer as a duplicate of the event they just created.
+    """
+    from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
+    from .smtp_sender import send_message as smtp_send
+
+    sender = account.email_address or account.username or ""
+    organizer_address = (organizer or sender).strip().lower()
+    recipients = tuple(
+        address for address in attendees if address.strip().lower() != organizer_address
+    )
+    if not recipients:
+        return InvitationDelivery(sent_to=())
+
+    invitation = parse_invitation(ics)
+    subject = request_subject(summary)
+    if is_update:
+        subject = f"Updated invitation: {summary}"
+    body = request_body(
+        summary,
+        starts_at=invitation.starts_at if invitation is not None else None,
+        ends_at=invitation.ends_at if invitation is not None else None,
+        location=invitation.location if invitation is not None else "",
+    )
+    message = build_itip_message(
+        from_address=sender,
+        to_addresses=recipients,
+        subject=subject,
+        body_text=body,
+        ics=_with_method(ics, "REQUEST"),
+        method="REQUEST",
+    )
+    assert account.smtp is not None
+    assert account.username is not None
+    try:
+        smtp_send(
+            smtp=account.smtp,
+            username=account.username,
+            password=password,
+            msg=message,
+            connect_timeout=connect_timeout,
+            connect_attempts=DEFAULT_CONNECT_ATTEMPTS,
+        )
+    except (SMTPError, ValueError) as exc:
+        return InvitationDelivery(sent_to=recipients, error=str(exc))
+    return InvitationDelivery(sent_to=recipients)
+
+
+def _with_method(ics: bytes, method: str) -> bytes:
+    """Return *ics* carrying ``METHOD:<method>``, adding it if absent.
+
+    The calendar writes its events without a METHOD — they are entries,
+    not scheduling messages.  Posting one as an invitation is exactly
+    what makes it a scheduling message, so the property is added on the
+    way out rather than stored.
+
+    It goes before the first subcomponent, not before the first VEVENT:
+    RFC 5545 puts the calendar's own properties ahead of its components,
+    and an event with a VTIMEZONE would otherwise take the METHOD after
+    that timezone block.
+    """
+    text = ics.decode("utf-8", errors="replace")
+    if "\nMETHOD:" in text or text.startswith("METHOD:"):
+        return ics
+    opening = text.find("BEGIN:VCALENDAR")
+    if opening < 0:
+        return ics
+    position = text.find("BEGIN:", opening + len("BEGIN:VCALENDAR"))
+    if position < 0:
+        return ics
+    return (text[:position] + f"METHOD:{method}\r\n" + text[position:]).encode("utf-8")
+
+
 __all__ = [
     "PARTSTAT_WORDS",
     "InvitationChoice",
+    "InvitationDelivery",
     "file_invitation",
     "replying_account",
     "reply_to_invitation",
     "respond_to_invitation",
+    "send_event_invitations",
 ]

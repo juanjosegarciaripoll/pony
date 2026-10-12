@@ -24,6 +24,7 @@ from ..accounts import resolve_smtp_password
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
+from ..invitation_actions import send_event_invitations
 from ..keymap import APPLICATION_KEYS, KeyBinding, Surface
 from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import resolve
@@ -36,11 +37,7 @@ from ..protocols import (
 from ..sync import MailSyncOutcome, MailSyncScheduler, build_sync_service
 from ..views import has_inbox_mail
 from .bindings import to_textual
-from .calendar_host import (
-    AlarmPoller,
-    build_calendar_services,
-    send_event_invitations,
-)
+from .calendar_host import AlarmPoller, build_calendar_services
 from .screens.main_screen import MainScreen
 from .terminal import (
     format_terminal_title,

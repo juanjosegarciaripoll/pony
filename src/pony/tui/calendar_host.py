@@ -43,13 +43,7 @@ from chronos.views import (
 
 from ..calendar import CalendarRuntime
 from ..compose_utils import format_display_address
-from ..domain import AnyAccount, AppConfig
-from ..invitation import (
-    build_itip_message,
-    parse_invitation,
-    request_body,
-    request_subject,
-)
+from ..domain import AppConfig
 from ..notifications import Notification, NotificationSource
 from ..protocols import ContactRepository
 from ..protocols import IndexRepository as MailIndexRepository
@@ -286,7 +280,6 @@ def mail_arrival_notification(
 
 __all__ = [
     "ALARM_LOOKBACK",
-    "InvitationDelivery",
     "EVENT_MARK",
     "MAIL_MARK",
     "NEXT_EVENT_HORIZON",
@@ -296,7 +289,6 @@ __all__ = [
     "mail_arrival_notification",
     "mail_status",
     "next_event_status",
-    "send_event_invitations",
 ]
 
 
@@ -344,102 +336,3 @@ def contact_completer(contacts: ContactRepository) -> AttendeeCompleter:
         return tuple(addresses)
 
     return complete
-
-
-@dataclass(frozen=True, slots=True)
-class InvitationDelivery:
-    """What happened when an invitation was posted."""
-
-    sent_to: tuple[str, ...]
-    error: str | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
-
-
-def send_event_invitations(
-    *,
-    ics: bytes,
-    attendees: Sequence[str],
-    organizer: str | None,
-    summary: str,
-    is_update: bool,
-    account: AnyAccount,
-    password: str,
-    connect_timeout: int,
-) -> InvitationDelivery:
-    """Mail *ics* to *attendees* as a ``METHOD:REQUEST``.
-
-    The organizer is dropped from the recipients: they are the one
-    sending, and clients treat an invitation addressed to its own
-    organizer as a duplicate of the event they just created.
-    """
-    from ..smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
-    from ..smtp_sender import send_message as smtp_send
-
-    sender = account.email_address or account.username or ""
-    organizer_address = (organizer or sender).strip().lower()
-    recipients = tuple(
-        address for address in attendees if address.strip().lower() != organizer_address
-    )
-    if not recipients:
-        return InvitationDelivery(sent_to=())
-
-    invitation = parse_invitation(ics)
-    subject = request_subject(summary)
-    if is_update:
-        subject = f"Updated invitation: {summary}"
-    body = request_body(
-        summary,
-        starts_at=invitation.starts_at if invitation is not None else None,
-        ends_at=invitation.ends_at if invitation is not None else None,
-        location=invitation.location if invitation is not None else "",
-    )
-    message = build_itip_message(
-        from_address=sender,
-        to_addresses=recipients,
-        subject=subject,
-        body_text=body,
-        ics=_with_method(ics, "REQUEST"),
-        method="REQUEST",
-    )
-    assert account.smtp is not None
-    assert account.username is not None
-    try:
-        smtp_send(
-            smtp=account.smtp,
-            username=account.username,
-            password=password,
-            msg=message,
-            connect_timeout=connect_timeout,
-            connect_attempts=DEFAULT_CONNECT_ATTEMPTS,
-        )
-    except (SMTPError, ValueError) as exc:
-        return InvitationDelivery(sent_to=recipients, error=str(exc))
-    return InvitationDelivery(sent_to=recipients)
-
-
-def _with_method(ics: bytes, method: str) -> bytes:
-    """Return *ics* carrying ``METHOD:<method>``, adding it if absent.
-
-    The calendar writes its events without a METHOD — they are entries,
-    not scheduling messages.  Posting one as an invitation is exactly
-    what makes it a scheduling message, so the property is added on the
-    way out rather than stored.
-
-    It goes before the first subcomponent, not before the first VEVENT:
-    RFC 5545 puts the calendar's own properties ahead of its components,
-    and an event with a VTIMEZONE would otherwise take the METHOD after
-    that timezone block.
-    """
-    text = ics.decode("utf-8", errors="replace")
-    if "\nMETHOD:" in text or text.startswith("METHOD:"):
-        return ics
-    opening = text.find("BEGIN:VCALENDAR")
-    if opening < 0:
-        return ics
-    position = text.find("BEGIN:", opening + len("BEGIN:VCALENDAR"))
-    if position < 0:
-        return ics
-    return (text[:position] + f"METHOD:{method}\r\n" + text[position:]).encode("utf-8")
