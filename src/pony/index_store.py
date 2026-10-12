@@ -843,6 +843,46 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             for r in rows
         }
 
+    def adopt_uid(
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        uid: int,
+        uid_validity: int,
+    ) -> bool:
+        """Give an existing handle-less row the handle its file carries.
+
+        Only a row with ``uid IS NULL`` is touched, so this cannot
+        renumber a row that already knows its handle.  Returns whether
+        one was adopted.
+
+        A rebuild needs this because a row may already exist without a
+        handle -- a rescan creates exactly that -- and skipping it left
+        the UID unrecovered while the folder watermark was still
+        stamped, so the index asserted an epoch it could not honour.
+        ``False`` also comes back when another row in the folder already
+        holds that UID, which is a duplicated handle on disk and the
+        caller's to report rather than this method's to resolve.
+        """
+        with self._use() as conn:
+            try:
+                cursor = conn.execute(
+                    "UPDATE messages SET uid = ?, uid_validity = ? "
+                    "WHERE account_name = ? AND folder_name = ? "
+                    "AND storage_key = ? AND uid IS NULL",
+                    (
+                        uid,
+                        uid_validity,
+                        folder.account_name,
+                        folder.folder_name,
+                        storage_key,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return cursor.rowcount > 0
+
     def list_folder_messages(
         self, *, folder: FolderRef, limit: int | None = None
     ) -> Sequence[IndexedMessage]:

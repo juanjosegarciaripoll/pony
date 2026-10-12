@@ -114,6 +114,68 @@ class ReindexFromMirrorTest(unittest.TestCase):
         self.assertEqual(state.uid_validity, 9)
         self.assertEqual(state.highest_uid, 2)
 
+    def test_a_rescan_first_still_recovers_every_handle(self) -> None:
+        """The obvious recovery order used to recover nothing at all.
+
+        `pony rescan` creates a row per file with no handle, because a
+        local rescan has no server to ask.  Reindex then skipped every
+        one of them as "already there" -- added 0, recovered 0 UIDs --
+        and stamped the folder watermark anyway, so the index asserted
+        an epoch with no UIDs under it and the next sync refetched the
+        whole folder it had just rebuilt.
+        """
+        from pony.storage_indexing import rescan_local_account
+
+        for uid in (3, 11, 7):
+            self._store(f"m{uid}", uid=uid, uid_validity=7)
+        rescan_local_account(
+            mirror_repository=self.mirror,
+            index_repository=self.index,
+            account_name="personal",
+        )
+        before = self.index.list_folder_messages(folder=INBOX)
+        self.assertEqual(3, len(before))
+        self.assertEqual([None, None, None], [row.uid for row in before])
+
+        result = self._reindex()
+
+        self.assertEqual(0, result.added)
+        self.assertEqual(3, result.adopted)
+        rows = self.index.list_folder_messages(folder=INBOX)
+        self.assertEqual([3, 7, 11], sorted(row.uid or 0 for row in rows))
+        # And the watermark the reindex stamps is one the index can
+        # honour now.
+        state = self.index.get_folder_sync_state(
+            account_name="personal",
+            folder_name="INBOX",
+        )
+        assert state is not None
+        self.assertEqual(7, state.uid_validity)
+        self.assertEqual(11, state.highest_uid)
+        self.assertEqual(
+            3,
+            self.index.count_uids_for_folder(
+                account_name="personal", folder_name="INBOX"
+            ),
+        )
+
+    def test_a_row_that_knows_its_handle_is_not_renumbered(self) -> None:
+        self._store("alpha", uid=42, uid_validity=7)
+        self._reindex()
+
+        # A second pass over the same file must not touch it, and a
+        # file whose name claims a different UID must not either.
+        self.assertFalse(
+            self.index.adopt_uid(
+                folder=INBOX,
+                storage_key=next(iter(self.mirror.list_messages(folder=INBOX))),
+                uid=99,
+                uid_validity=7,
+            )
+        )
+        (row,) = self.index.list_folder_messages(folder=INBOX)
+        self.assertEqual(42, row.uid)
+
     def test_running_it_twice_adds_nothing(self) -> None:
         self._store("alpha", uid=1, uid_validity=7)
 

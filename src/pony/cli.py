@@ -1542,7 +1542,7 @@ def run_reindex(
         if not accounts:
             raise SystemExit(f"No account named {account!r} in config.")
 
-    added = with_uid = local_only = states = 0
+    added = with_uid = local_only = states = adopted = 0
     for acc in accounts:
         print(f"Reindexing {acc.name} from {acc.mirror.path}...")
         result = reindex_account_from_mirror(
@@ -1555,10 +1555,12 @@ def run_reindex(
         with_uid += result.with_uid
         local_only += result.local_only
         states += result.states
+        adopted += result.adopted
 
     print(
         f"Reindex complete: {added} row(s) added "
         f"({with_uid} with a server handle, {local_only} local-only), "
+        f"{adopted} row(s) given back their handle, "
         f"{states} folder watermark(s) recovered.",
     )
     if local_only:

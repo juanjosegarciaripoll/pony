@@ -285,6 +285,10 @@ class ReindexResult:
     with_uid: int
     local_only: int
     states: int
+    # Rows that were already there without a handle and have one now.
+    # A rescan creates exactly those, and a rescan is the obvious thing
+    # to try first when the index is gone.
+    adopted: int = 0
 
 
 def reindex_account_from_mirror(
@@ -303,10 +307,16 @@ def reindex_account_from_mirror(
     the handle in the name: losing the index costs a local pass over the
     files, not a re-download of the mailbox.
 
-    Rows already present are left alone, so this is safe to repeat.  A
-    file with no handle in its name is indexed with ``uid = NULL`` —
-    which is the correct state for a message that exists only locally
-    and that the next sync should upload.
+    Rows already present keep their projection, but one with no handle
+    is given the one its file carries: a rescan creates handle-less rows
+    for the whole mirror, and a rescan is the obvious thing to try first
+    when the index is gone, so skipping them left the UIDs unrecovered
+    while the folder watermark was stamped anyway -- an index asserting
+    an epoch it could not honour, which sent the next sync to refetch
+    the folder it had just rebuilt.  A file with no handle in its name
+    is indexed with ``uid = NULL``, which is the correct state for a
+    message that exists only locally and that the next sync should
+    upload.
 
     Where a folder's files agree on a UIDVALIDITY, that epoch and the
     highest UID in it are written back as the folder's sync watermark,
@@ -319,7 +329,7 @@ def reindex_account_from_mirror(
     from .storage import uid_of
 
     folders = mirror_repository.list_folders(account_name=account_name)
-    added = with_uid = local_only = states = 0
+    added = with_uid = local_only = states = adopted = 0
     with index_repository.connection():
         for folder in folders:
             keys = list(mirror_repository.list_messages(folder=folder))
@@ -354,6 +364,13 @@ def reindex_account_from_mirror(
                         local_only += 1
                     else:
                         with_uid += 1
+                elif uid is not None and index_repository.adopt_uid(
+                    folder=folder,
+                    storage_key=key,
+                    uid=uid,
+                    uid_validity=epoch,
+                ):
+                    adopted += 1
                 if progress is not None and gate.due(done, final=done == total):
                     progress(folder.folder_name, done, total)
             if epoch:
@@ -376,6 +393,7 @@ def reindex_account_from_mirror(
         with_uid=with_uid,
         local_only=local_only,
         states=states,
+        adopted=adopted,
     )
 
 

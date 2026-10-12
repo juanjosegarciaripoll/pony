@@ -368,6 +368,17 @@ class IndexRepository(Protocol):
         """
         ...
 
+    def adopt_uid(
+        self,
+        *,
+        folder: FolderRef,
+        storage_key: str,
+        uid: int,
+        uid_validity: int,
+    ) -> bool:
+        """Give an existing ``uid IS NULL`` row the handle its file has."""
+        ...
+
     def search(
         self,
         *,
