@@ -134,49 +134,37 @@ class MessageAuthentication:
                 return "Sender not checked"
 
     def meaning(self) -> str:
-        """What the verdict does and does not mean, in plain words.
+        """What the verdict means, in one sentence.
 
         A shut lock is read as "safe", and this is the only place that
-        can say it is not: a domain's own mail authenticates perfectly
-        well, which is exactly what a convincing phishing domain relies
-        on.  Every front end shows this text, unabridged.
+        can say it means something narrower.
         """
         match self.verdict:
             case Authenticity.PASSED:
+                domain = self.from_domain or "the domain in From"
                 return (
-                    f"The domain {self.from_domain or 'in From'} really did sign "
-                    "this message, so it is not a forgery of that domain.\n\n"
-                    "That is not the same as the sender being trustworthy. "
-                    "Anyone can authenticate mail from a domain they own, and a "
-                    "convincing imitation of a bank is usually sent from a "
-                    "domain the attacker owns outright. Read the domain itself, "
-                    "not the lock."
+                    f"{domain} really did sign this message, which rules out "
+                    "a forgery of that domain but says nothing about whether "
+                    "its owner is honest."
                 )
             case Authenticity.UNALIGNED:
                 signer = self.signed_domain or "another domain"
+                claimed = self.from_domain or "the domain in From"
                 return (
-                    f"Something signed this message, but it was {signer}, not "
-                    f"{self.from_domain or 'the domain in From'}.\n\n"
-                    "A great deal of legitimate mail looks like this: "
-                    "newsletters and notifications are often sent by a service "
-                    "on the sender's behalf. So does phishing. Nothing here "
-                    "says which."
+                    f"Signed by {signer} rather than {claimed}, which is "
+                    "normal for mail a service sends on someone's behalf and "
+                    "is also what phishing looks like."
                 )
             case Authenticity.FAILED:
                 return (
-                    "The server that accepted this message checked, and the "
-                    "message did not pass.\n\n"
-                    "That can mean it was tampered with in transit, or was "
-                    "forwarded by something that rewrote it, or was forged. "
-                    "Treat anything it asks of you with suspicion."
+                    "The server that accepted this message checked and it did "
+                    "not pass, which can mean forgery, tampering in transit, "
+                    "or a forwarder that rewrote it."
                 )
             case Authenticity.UNKNOWN:
                 return (
-                    "The server that accepted this message said nothing about "
-                    "who sent it, so nothing is known either way.\n\n"
-                    "This is ordinary. Many mail servers do not add an "
-                    "Authentication-Results header at all, and a message "
-                    "without one is not suspicious by itself."
+                    "The server that accepted this message did not check, "
+                    "which is common and not suspicious by itself."
                 )
 
     def label(self) -> str:
@@ -202,9 +190,9 @@ class MessageAuthentication:
         if self.reporter:
             parts.append(f"reported by {self.reporter}")
         if self.extra_reports:
+            plural = "" if self.extra_reports == 1 else "s"
             parts.append(
-                f"{self.extra_reports} further report(s) in the message were "
-                "ignored, because only the receiving server's own is trustworthy"
+                f"ignored {self.extra_reports} other report{plural} the message carried"
             )
         return "; ".join(parts)
 

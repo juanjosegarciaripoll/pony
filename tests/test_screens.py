@@ -822,7 +822,7 @@ async def test_the_padlock_opens_a_panel_that_says_what_it_means() -> None:
         shown = " ".join(str(widget.content) for widget in panel.query(Static))
         assert "Sender confirmed" in shown
         assert "example.com confirmed by dkim+dmarc" in shown
-        assert "Anyone can authenticate mail from a domain they own" in shown
+        assert "says nothing about whether its owner is honest" in shown
         assert "reported by mx.example.org" in shown
 
         await pilot.press("escape")

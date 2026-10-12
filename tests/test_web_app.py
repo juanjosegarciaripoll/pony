@@ -339,7 +339,7 @@ def test_the_reader_states_who_vouched_for_the_message() -> None:
     assert "\U0001f512" in page
     assert "example.com confirmed by dkim+dmarc" in page
     # The padlock is read as "safe", so the panel says what it is not.
-    assert "Anyone can authenticate mail from a domain they own" in page
+    assert "says nothing about whether its owner is honest" in page
 
 
 def test_the_reader_marks_a_signature_from_another_domain() -> None:

@@ -809,11 +809,11 @@ def build_browser_html(raw_bytes: bytes) -> str:
     cc_row = f"<tr><td>Cc</td><td>{_html.escape(cc)}</td></tr>" if cc else ""
     # What the receiving server found about the sender, on the From row
     # because it is a statement about From.  A `<details>` needs no
-    # script, which this page has none of and must keep none of.
+    # script, which this page has none of and must keep none of -- so
+    # here, unlike in the application, the summary row is the only way
+    # to shut the panel again, which is why the headline sits in it.
     auth = parse_authentication(msg)
-    meaning = "".join(
-        f"<p>{_html.escape(para)}</p>" for para in auth.meaning().split("\n\n")
-    )
+    meaning = f"<p>{_html.escape(auth.meaning())}</p>"
     # With no report there is nothing to summarise and no method list:
     # the headline already says "not checked".
     summary = f"<p>{_html.escape(auth.label())}</p>" if auth.worth_showing else ""
@@ -824,9 +824,9 @@ def build_browser_html(raw_bytes: bytes) -> str:
     )
     sender_check = (
         f"<details class='sender-check sender-{auth.verdict.value}'>"
-        f"<summary title='{_html.escape(auth.headline())}'>{auth.icon}</summary>"
-        f"<p class='sender-headline'>{_html.escape(auth.headline())}</p>"
-        f"{summary}{meaning}{detail}"
+        f"<summary title='{_html.escape(auth.headline())}'>{auth.icon}"
+        f"<span class='sender-headline'>{_html.escape(auth.headline())}</span>"
+        f"</summary>{summary}{meaning}{detail}"
         "</details>"
     )
     header_block = f"""
@@ -877,15 +877,19 @@ table.headers td:first-child{{font-weight:bold;color:#555;
 table.headers details.sender-check{{display:inline-block;vertical-align:middle}}
 table.headers details.sender-check>summary{{display:inline;cursor:pointer;
                                            list-style:none}}
+table.headers details.sender-check:not([open])>summary span.sender-headline{{
+  display:none}}
+table.headers details.sender-check[open]>summary{{display:block;
+                                                 margin-bottom:.4em;
+                                                 font-weight:bold}}
 table.headers details.sender-check[open]{{display:block;margin-top:.5em;
                                          padding:.6em .8em;background:#fff;
                                          border:1px solid #ccc;border-radius:4px}}
 table.headers details.sender-check p{{margin:.4em 0;font-weight:normal}}
-table.headers details.sender-check p.sender-headline{{font-weight:bold}}
 table.headers details.sender-check p.sender-detail{{color:#777;font-size:.9em}}
-table.headers details.sender-passed p.sender-headline{{color:#0a6b2d}}
-table.headers details.sender-failed p.sender-headline{{color:#a30000}}
-table.headers details.sender-unaligned p.sender-headline{{color:#8a5a00}}
+table.headers details.sender-passed>summary span.sender-headline{{color:#0a6b2d}}
+table.headers details.sender-failed>summary span.sender-headline{{color:#a30000}}
+table.headers details.sender-unaligned>summary span.sender-headline{{color:#8a5a00}}
 hr.header-sep{{border:none;border-top:1px solid #ccc;margin:0}}
 .body-wrap{{padding:1em}}
 .attachments{{padding:.6em 1em;background:#fffbe6;

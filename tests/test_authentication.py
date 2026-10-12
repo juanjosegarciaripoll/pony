@@ -211,8 +211,13 @@ class RenderedTest(unittest.TestCase):
 
         self.assertIn("sender-check sender-passed", page)
         self.assertIn("\U0001f512", page)
+        # The heading is in the summary, so the shut panel is one
+        # character and the open one has a row that closes it again.
+        self.assertIn(
+            "<span class='sender-headline'>Sender confirmed</span></summary>", page
+        )
         self.assertIn("example.com confirmed by dkim+dmarc", page)
-        self.assertIn("Anyone can authenticate mail from a domain they own", page)
+        self.assertIn("says nothing about whether its owner is honest", page)
         # On the `From` row, because it is a statement about `From`.
         from_row = page[page.index("<td>From</td>") : page.index("<td>To</td>")]
         self.assertIn("sender-check", from_row)

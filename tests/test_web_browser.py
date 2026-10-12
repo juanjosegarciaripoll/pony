@@ -323,7 +323,9 @@ async function run() {
   await sleep(600);
   report.quitPosts = report.posts.slice(before).map((post) => post.url);
   report.stopped = doc.body.dataset.stopped || "";
-  report.quitNotice = doc.getElementById("notices").textContent;
+  // The stopped page *is* the notice now: the strip went with the
+  // rest of the application.
+  report.quitNotice = doc.body.textContent;
   const after = report.posts.length;
   press(doc.body, "A", { shiftKey: true });
   await sleep(200);

@@ -425,6 +425,22 @@ details.sender-check > summary {
   list-style: none;
 }
 
+/* Shut, the panel is one character.  Open, its first row is the
+   heading, which is also what closes it again. */
+details.sender-check:not([open]) > summary .sender-headline {
+  display: none;
+}
+
+details.sender-check[open] > summary {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+
+details.sender-check[open] > summary .sender-headline {
+  margin-left: 0.4rem;
+}
+
 details.sender-check > summary::-webkit-details-marker {
   display: none;
 }
@@ -443,24 +459,20 @@ details.sender-check p {
   margin: 0.4rem 0;
 }
 
-details.sender-check p.sender-headline {
-  font-weight: 600;
-}
-
 details.sender-check p.sender-detail {
   color: var(--fg-dim);
   font-size: 0.8rem;
 }
 
-details.sender-passed p.sender-headline {
+details.sender-passed > summary .sender-headline {
   color: var(--ok);
 }
 
-details.sender-failed p.sender-headline {
+details.sender-failed > summary .sender-headline {
   color: var(--error);
 }
 
-details.sender-unaligned p.sender-headline {
+details.sender-unaligned > summary .sender-headline {
   color: var(--warning);
 }
 
@@ -1073,4 +1085,28 @@ dialog h2 {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.15rem;
   }
+}
+
+/* What is left when `Q` stopped the server and the browser would not
+   close the tab.  A blank page and one instruction: the page behind it
+   answers nothing, and leaving it on screen would look like it did. */
+.stopped {
+  max-width: 28rem;
+  margin: 20vh auto 0;
+  padding: 1.6rem 1.8rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.stopped h1 {
+  margin: 0 0 0.6rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.stopped p {
+  margin: 0;
+  color: var(--fg-dim);
 }

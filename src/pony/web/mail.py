@@ -501,19 +501,25 @@ def _row_action(name: str, label: str) -> Raw:
 def _sender_check(auth: MessageAuthentication) -> Raw:
     """The padlock beside ``From``, and what it means when opened.
 
-    A ``<details>`` rather than a dialog: it needs no script, which
-    matters because this front end's script is a convenience and its
-    pages have to work without one.  ``L`` opens it from the keyboard,
-    through the shared keymap.
+    A ``<details>`` rather than a dialog, so the pages work with the
+    script switched off; ``L`` opens it from the keyboard through the
+    shared keymap, and the script closes it on a click anywhere inside.
+    The headline lives in the summary, hidden by CSS until the panel is
+    open, so the closed state is one character and the open state has a
+    heading that is also the way out.
     """
     return element(
         "details",
-        element("summary", auth.icon, title=auth.headline()),
-        element("p", auth.headline(), class_="sender-headline"),
+        element(
+            "summary",
+            auth.icon,
+            element("span", auth.headline(), class_="sender-headline"),
+            title=auth.headline(),
+        ),
         # With no report there is nothing to summarise: the headline
         # already says "not checked".
         element("p", auth.label()) if auth.worth_showing else None,
-        join(element("p", paragraph) for paragraph in auth.meaning().split("\n\n")),
+        element("p", auth.meaning()),
         element("p", auth.detail(), class_="sender-detail")
         if auth.worth_showing
         else None,

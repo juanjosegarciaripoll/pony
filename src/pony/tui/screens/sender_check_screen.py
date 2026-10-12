@@ -71,5 +71,9 @@ class SenderCheckScreen(DialogScreen):
     def on_button_pressed(self, _event: Button.Pressed) -> None:
         self.dismiss(True)
 
-    def action_cancel(self) -> None:
-        self.dismiss(True)
+    # Escape and `q` dismiss through `DialogScreen.action_cancel`, the
+    # path every other dialog here uses.  There is deliberately no
+    # `on_click`, though the browser's panel does close on a click
+    # anywhere inside it: dismissing this screen from a click handler
+    # leaves the application with work that never settles, and a modal
+    # that might wedge the reader is worse than one that wants Escape.

@@ -678,6 +678,28 @@ function openAttachment() {
 
 // ── Quitting ───────────────────────────────────────────────────
 
+// Replaces the page with the fact that there is no longer a server
+// behind it. Reached only when the tab could not be closed, which is
+// the ordinary case: a tab the user navigated to cannot be closed by
+// script. Measured on Chromium 154, `window.close()` does nothing
+// there, and neither does the old `window.open('', '_self').close()`
+// spelling; a tab opened by `window.open` does close. `pony web` hands
+// its URL to the system browser, so the tab is always the first kind.
+function showStopped() {
+  document.title = "Pony Express has stopped";
+  document.body.dataset.stopped = "1";
+  const panel = document.createElement("div");
+  panel.className = "stopped";
+  const heading = document.createElement("h1");
+  heading.textContent = "Pony Express has stopped";
+  const line = document.createElement("p");
+  line.textContent = "The server is no longer running — close this tab.";
+  panel.append(heading, line);
+  // Everything else goes: a folder tree and a message list that answer
+  // nothing are worse than a blank page, because they look alive.
+  document.body.replaceChildren(panel);
+}
+
 // `Q` means the same thing here as in the reader: stop Pony. Both
 // halves are needed — closing the tab alone leaves the process serving,
 // and stopping the process alone leaves a dead page on screen. The tab
@@ -686,13 +708,10 @@ async function quit() {
   const outcome = await server("quit");
   if (!outcome || outcome.changed === 0) return;
   state.quitting = true;
+  // Try to close first; `showStopped` is for when the browser refuses,
+  // and the timer never fires if the tab really went.
   window.close();
-  // A tab the user opened themselves cannot be closed by script, so
-  // say what happened instead of leaving a page that no longer works.
-  window.setTimeout(() => {
-    document.body.dataset.stopped = "1";
-    say("Pony Express has stopped. You can close this tab.", "warning");
-  }, 200);
+  window.setTimeout(showStopped, 200);
 }
 
 // ── Key dispatch ───────────────────────────────────────────────
@@ -876,7 +895,16 @@ function start() {
   // Clicking a row selects it, so the keyboard and the pointer agree
   // about what an action will act on.
   document.addEventListener("click", (event) => {
-    const row = event.target.closest && event.target.closest(".row");
+    if (!event.target.closest) return;
+    // A panel opened to be read is dismissed the same way, so a click
+    // anywhere inside it shuts it.  Not on the summary: that is the
+    // native toggle, and handling it here would fight it.
+    const panel = event.target.closest("details.sender-check[open]");
+    if (panel && !event.target.closest("summary")) {
+      panel.open = false;
+      return;
+    }
+    const row = event.target.closest(".row");
     if (row) select(row);
   });
   select(selectedRow());
