@@ -16,10 +16,12 @@ carries a token, so no path the page sends is ever opened.
 
 from __future__ import annotations
 
+import atexit
 import dataclasses
 import functools
 import re
 import secrets
+import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,46 +47,88 @@ from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, page, pane
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from chronos.outcome import Notice
 
-    from ..domain import AnyAccount, IndexedMessage
+    from ..domain import AnyAccount, AppConfig, IndexedMessage
     from .app import WebServices
 
 _TOKEN = re.compile(r"\A[0-9a-f]{16}\Z")
 
 
 @functools.cache
-def staging_dir() -> Path:
-    """Where uploaded attachments wait until the message is sent.
-
-    One directory per server process, made by the server rather than
-    named by a request: a token addresses a file inside it, so nothing
-    the page sends is ever used as a path.
-    """
+def _private_root() -> Path:
+    """The fallback staging root, made once per process."""
     return Path(tempfile.mkdtemp(prefix="pony-web-attachments-"))
 
 
-def stage_attachment(name: str, data: bytes) -> tuple[str, Path]:
+#: Roots an ``atexit`` hook has already been registered for, so a suite
+#: that builds a hundred applications registers one hook per directory
+#: rather than a hundred.
+_SWEPT: set[Path] = set()
+
+
+def staging_dir(config: AppConfig) -> Path:
+    """Where uploaded attachments wait until the message is sent.
+
+    Under ``data_dir``, which is the directory ``paths`` promises
+    everything Pony writes lives under and the one ``PONY_ROOT``
+    relocates: a ``tempfile.mkdtemp`` sat outside both, was never
+    removed by anything, and on a machine whose ``/tmp`` is a share of
+    RAM every half-finished forward stayed there until the next reboot.
+
+    Made by the server rather than named by a request — a token
+    addresses a file inside it, so nothing the page sends is ever used
+    as a path — and emptied when the process ends.
+    """
+    declared = config.data_dir
+    # A config with no data directory is only reachable by building one
+    # in code; a private directory of this process's own is still better
+    # than nothing, and it has to be the *same* one every time or a
+    # token staged by one request is unfindable by the next.
+    root = _private_root() if declared is None else declared / "web-attachments"
+    root.mkdir(parents=True, exist_ok=True)
+    if root not in _SWEPT:
+        _SWEPT.add(root)
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+    return root
+
+
+def stage_attachment(config: AppConfig, name: str, data: bytes) -> tuple[str, Path]:
     """Keep *data* for a later send; return its token and path."""
     token = secrets.token_hex(8)
-    folder = staging_dir() / token
+    folder = staging_dir(config) / token
     folder.mkdir(parents=True)
     path = folder / safe_attachment_filename(name)
     path.write_bytes(data)
     return token, path
 
 
-def staged_path(token: str) -> Path | None:
+def staged_path(config: AppConfig, token: str) -> Path | None:
     """The file *token* stands for, or None when there is no such file."""
     if not _TOKEN.match(token):
         return None
-    folder = staging_dir() / token
+    folder = staging_dir(config) / token
     if not folder.is_dir():
         return None
     files = sorted(folder.iterdir())
     return files[0] if files else None
+
+
+def release_staged(config: AppConfig, paths: Iterable[Path]) -> None:
+    """Drop the staged files *paths* name, this attempt being over.
+
+    Addressed by the directory each file sits in, which is the token's
+    own, so an upload and the copy of a forwarded message are let go the
+    same way.  Nothing let go of either before: four failed sends of one
+    forward left four whole copies of it behind.
+    """
+    root = staging_dir(config)
+    for path in paths:
+        folder = path.parent
+        if folder.parent == root and _TOKEN.match(folder.name):
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 # ----------------------------------------------------------------------
@@ -427,8 +471,12 @@ def parse_ref(value: str) -> MessageRef | None:
     )
 
 
-def form_from_fields(fields: Mapping[str, list[str]]) -> Form:
-    """What the browser posted, as a :class:`Form`."""
+def form_from_fields(config: AppConfig, fields: Mapping[str, list[str]]) -> Form:
+    """What the browser posted, as a :class:`Form`.
+
+    *config* says where the staging directory is, which is how a token
+    the page sends is turned back into a file.
+    """
 
     def one(name: str) -> str:
         values = fields.get(name, [])
@@ -449,13 +497,15 @@ def form_from_fields(fields: Mapping[str, list[str]]) -> Form:
         forward_of=parse_ref(one("forward_of")),
         answering=parse_ref(one("answering")),
         attachments=tuple(
-            (token, _staged_name(token)) for token in tokens if staged_path(token)
+            (token, _staged_name(config, token))
+            for token in tokens
+            if staged_path(config, token)
         ),
     )
 
 
-def _staged_name(token: str) -> str:
-    path = staged_path(token)
+def _staged_name(config: AppConfig, token: str) -> str:
+    path = staged_path(config, token)
     return path.name if path is not None else token
 
 
@@ -480,33 +530,39 @@ def send(services: WebServices, form: Form) -> Outcome:
     if extra is not None:
         return Outcome.refused(extra)
     try:
-        message = build_email_message(
-            from_address=_from_address(services, account),
+        try:
+            message = build_email_message(
+                from_address=_from_address(services, account),
+                to=form.to,
+                cc=form.cc,
+                bcc=form.bcc,
+                subject=form.subject,
+                body=form.body,
+                attachment_paths=list(attachments.paths),
+                markdown_mode=form.markdown,
+                in_reply_to=form.in_reply_to,
+                references=form.references,
+            )
+        except FileNotFoundError as missing:
+            return Outcome.refused(warn(f"Attachment is gone: {missing}"))
+        outcome = deliver_message(
+            services.mailboxes,
+            message,
+            account,
+            credentials=services.credentials,
+            contacts=services.contacts,
             to=form.to,
             cc=form.cc,
-            bcc=form.bcc,
-            subject=form.subject,
-            body=form.body,
-            attachment_paths=list(attachments),
-            markdown_mode=form.markdown,
-            in_reply_to=form.in_reply_to,
-            references=form.references,
+            connect_timeout=services.config.smtp_connect_timeout_seconds,
+            source_draft=_resolve(services, form.source),
+            # Replying marks what was replied to, here as in the terminal.
+            answering=_resolve(services, form.answering),
         )
-    except FileNotFoundError as missing:
-        return Outcome.refused(warn(f"Attachment is gone: {missing}"))
-    return deliver_message(
-        services.mailboxes,
-        message,
-        account,
-        credentials=services.credentials,
-        contacts=services.contacts,
-        to=form.to,
-        cc=form.cc,
-        connect_timeout=services.config.smtp_connect_timeout_seconds,
-        source_draft=_resolve(services, form.source),
-        # Replying marks what was replied to, here as in the terminal.
-        answering=_resolve(services, form.answering),
-    )
+    finally:
+        _let_go(services, attachments, sent=False)
+    if not outcome.blocked:
+        _let_go(services, attachments, sent=True)
+    return outcome
 
 
 def save_draft(services: WebServices, form: Form) -> Outcome:
@@ -517,25 +573,40 @@ def save_draft(services: WebServices, form: Form) -> Outcome:
     attachments, extra = _attachment_paths(services, form)
     if extra is not None:
         return Outcome.refused(extra)
-    message = build_email_message(
-        from_address=_from_address(services, account),
-        to=form.to,
-        cc=form.cc,
-        bcc=form.bcc,
-        subject=form.subject,
-        body=form.body,
-        attachment_paths=list(attachments),
-        markdown_mode=form.markdown,
-        in_reply_to=form.in_reply_to,
-        references=form.references,
-    )
-    return file_draft(
+    try:
+        message = build_email_message(
+            from_address=_from_address(services, account),
+            to=form.to,
+            cc=form.cc,
+            bcc=form.bcc,
+            subject=form.subject,
+            body=form.body,
+            attachment_paths=list(attachments.paths),
+            markdown_mode=form.markdown,
+            in_reply_to=form.in_reply_to,
+            references=form.references,
+        )
+    finally:
+        _let_go(services, attachments, sent=False)
+    outcome = file_draft(
         services.mailboxes,
         message.as_bytes(),
         account,
         # The draft this form was resumed from is replaced, not joined.
         source_draft=_resolve(services, form.source),
     )
+    # The bytes are in the mirror now, so the staged copies are spent.
+    if not outcome.blocked:
+        _let_go(services, attachments, sent=True)
+    return outcome
+
+
+def _let_go(services: WebServices, attachments: Attached, *, sent: bool) -> None:
+    """Drop what this attempt was holding, and nothing it still needs."""
+    if sent:
+        release_staged(services.config, attachments.uploaded)
+    elif attachments.forwarded is not None:
+        release_staged(services.config, (attachments.forwarded,))
 
 
 def _resolve(services: WebServices, ref: MessageRef | None) -> IndexedMessage | None:
@@ -556,23 +627,46 @@ def _from_address(services: WebServices, account: AnyAccount) -> str:
     return from_header(account, contacts=services.contacts)
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
+class Attached:
+    """The files a send carries, and which of them it is holding.
+
+    The two kinds have different lifetimes.  An upload belongs to the
+    form and has to survive a refused send, because the user will press
+    Send again with the same tokens.  The copy of a forwarded message is
+    written afresh on every attempt, so it is this attempt's and goes
+    with it either way.
+    """
+
+    uploaded: tuple[Path, ...] = ()
+    forwarded: Path | None = None
+
+    @property
+    def paths(self) -> tuple[Path, ...]:
+        if self.forwarded is None:
+            return self.uploaded
+        return (*self.uploaded, self.forwarded)
+
+
 def _attachment_paths(
     services: WebServices,
     form: Form,
-) -> tuple[tuple[Path, ...], Notice | None]:
+) -> tuple[Attached, Notice | None]:
     """Every file this message carries: staged uploads, then a forward."""
     paths: list[Path] = []
     for token, _name in form.attachments:
-        path = staged_path(token)
+        path = staged_path(services.config, token)
         if path is None:
-            return (), warn("One of the attachments expired — attach it again.")
+            return Attached(), warn(
+                "One of the attachments expired — attach it again.",
+            )
         paths.append(path)
+    forwarded: Path | None = None
     if form.forward_of is not None:
-        original = _forwarded_copy(services, form.forward_of)
-        if original is None:
-            return (), warn("The message being forwarded is no longer here.")
-        paths.append(original)
-    return tuple(paths), None
+        forwarded = _forwarded_copy(services, form.forward_of)
+        if forwarded is None:
+            return Attached(), warn("The message being forwarded is no longer here.")
+    return Attached(uploaded=tuple(paths), forwarded=forwarded), None
 
 
 def _forwarded_copy(services: WebServices, ref: MessageRef) -> Path | None:
@@ -586,6 +680,7 @@ def _forwarded_copy(services: WebServices, ref: MessageRef) -> Path | None:
     if raw is None:
         return None
     _token, path = stage_attachment(
+        services.config,
         forward_attachment_name(message.subject),
         raw,
     )
@@ -593,11 +688,13 @@ def _forwarded_copy(services: WebServices, ref: MessageRef) -> Path | None:
 
 
 __all__ = [
+    "Attached",
     "Form",
     "build_form",
     "compose_page",
     "form_from_fields",
     "parse_ref",
+    "release_staged",
     "save_draft",
     "send",
     "stage_attachment",

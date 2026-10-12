@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -390,13 +390,38 @@ async def _folders_fragment(services: WebServices, request: Request) -> Response
     return HTMLResponse(mail_view.folder_pane(services, _folder_from(request)))
 
 
+def _opened_by_a_reader(request: Request) -> bool:
+    """Whether somebody is really looking at this message.
+
+    ``GET /message`` marks it read, which is right when a person opened
+    it and wrong when a prefetcher, a link-preview bot or a cross-site
+    ``<img src>`` asked for it.  Browsers label all three: ``Sec-Purpose``
+    says ``prefetch``, and a request from some other page is not from
+    Pony's own.
+    """
+    purpose = request.headers.get("sec-purpose", "")
+    if "prefetch" in purpose or "prerender" in purpose:
+        return False
+    return _from_own_page(request)
+
+
 async def _message_page(services: WebServices, request: Request) -> Response:
     """The list with the message open beside (or below) it."""
     message = _message_from(services, request)
     if message is None:
         return PlainTextResponse("No such message.", status_code=404)
-    # Opening a message is what marks it read, as it is in the reader.
-    mailbox_actions.add_flag(services.mailboxes, message, MessageFlag.SEEN)
+    if _opened_by_a_reader(request):
+        # Opening a message is what marks it read, as it is in the
+        # reader, and this stays on the GET: reading mail is what the
+        # request is.  The write goes to the thread pool because it is a
+        # write -- SQLite and the mirror on the event loop stop every
+        # other request for as long as they take.
+        await run_in_threadpool(
+            mailbox_actions.add_flag,
+            services.mailboxes,
+            message,
+            MessageFlag.SEEN,
+        )
     return HTMLResponse(
         mail_view.mail_page(
             services,
@@ -488,9 +513,7 @@ async def _attachment(services: WebServices, request: Request) -> Response:
         payload.data,
         media_type=payload.content_type,
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="{_quotable(payload.filename)}"'
-            ),
+            "Content-Disposition": _content_disposition(payload.filename),
             # An attachment is the most hostile byte string the program
             # handles, and nothing should sniff it into something
             # executable.
@@ -499,9 +522,32 @@ async def _attachment(services: WebServices, request: Request) -> Response:
     )
 
 
-def _quotable(filename: str) -> str:
-    """A filename safe to put inside a quoted header parameter."""
-    return filename.replace('"', "").replace("\\", "").replace("\r", "")
+# What may stand in a quoted header parameter: printable ASCII, less the
+# quote and the backslash that would end it early.  Everything else —
+# a control character, a newline, or any of the Cyrillic in
+# `документ.pdf` — is replaced, and the real name travels in
+# ``filename*`` instead.
+_HEADER_SAFE = frozenset(
+    chr(code) for code in range(0x20, 0x7F) if chr(code) not in {'"', "\\"}
+)
+
+
+def _content_disposition(filename: str) -> str:
+    """``Content-Disposition`` for *filename*, as RFC 6266 spells it.
+
+    Starlette encodes a header as latin-1, so a name carrying anything
+    outside it — an ordinary Russian or Japanese attachment — raised
+    ``UnicodeEncodeError`` and the file could not be downloaded at all.
+    RFC 6266 answers that with two parameters: an ASCII ``filename=``
+    every client understands, and a percent-encoded ``filename*=`` that
+    carries the name the sender actually used.
+    """
+    plain = "".join(char if char in _HEADER_SAFE else "_" for char in filename)
+    encoded = quote(filename, safe="")
+    return (
+        f'attachment; filename="{plain or "attachment"}"; '
+        f"filename*=UTF-8''{encoded or 'attachment'}"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -528,7 +574,7 @@ async def _compose_page(services: WebServices, request: Request) -> Response:
 async def _compose_post(services: WebServices, request: Request) -> Response:
     """Send the form, or save it in Drafts, and say what happened."""
     context = ActionContext.of(services, await request.body())
-    form = compose_view.form_from_fields(dict(context.fields))
+    form = compose_view.form_from_fields(services.config, dict(context.fields))
     if context.first("save_draft"):
         outcome = compose_view.save_draft(services, form)
     else:
@@ -551,15 +597,47 @@ def _after_compose(form: compose_view.Form) -> str:
     )
 
 
+# The largest file this route will take.  Above it the upload is
+# refused rather than read, because it arrives as one byte string in
+# memory and most mail servers would reject the message anyway.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+
 async def _stage_attachment(services: WebServices, request: Request) -> Response:
     """Keep an uploaded file until the message it belongs to is sent."""
-    del services
     name = request.query_params.get("name", "attachment")
-    data = await request.body()
+    data = await _bounded_body(request)
+    if data is None:
+        megabytes = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+        return JSONResponse(
+            {"error": f"That file is larger than {megabytes} MB."},
+            status_code=413,
+        )
     if not data:
         return JSONResponse({"error": "That file is empty."}, status_code=400)
-    token, path = compose_view.stage_attachment(name, data)
+    token, path = compose_view.stage_attachment(services.config, name, data)
     return JSONResponse({"token": token, "name": path.name, "size": len(data)})
+
+
+async def _bounded_body(request: Request) -> bytes | None:
+    """The request body, or ``None`` when it is over the limit.
+
+    Read a chunk at a time and given up on rather than taken whole:
+    ``request.body()`` would hold whatever was sent in memory first and
+    ask questions afterwards, and the default ``TMPDIR`` it then writes
+    to is often a share of RAM.
+    """
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_ATTACHMENT_BYTES:
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_ATTACHMENT_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ----------------------------------------------------------------------
@@ -1047,6 +1125,7 @@ def _first_folder(services: WebServices) -> FolderRef | None:
 __all__ = [
     "Shutdown",
     "CLIENT_ACTIONS",
+    "MESSAGE_HTML_CSP",
     "NOTICE_COUNT_LIMIT",
     "NOTICE_LIMIT",
     "SERVER_ACTIONS",

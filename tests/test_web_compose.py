@@ -24,6 +24,7 @@ from tui_helpers import (
     make_tmp_paths,
     seed_message,
 )
+from web_helpers import form_fields
 
 from pony import delivery
 from pony.domain import FolderRef
@@ -31,19 +32,33 @@ from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
     from pony.index_store import SqliteIndexRepository
+    from pony.paths import AppPaths
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 
 
 def _services(label: str) -> tuple[WebServices, SqliteIndexRepository]:
     """An account whose Sent and Drafts both land in the one real folder."""
+    services, index, _paths = _services_and_paths(label)
+    return services, index
+
+
+def _services_and_paths(
+    label: str,
+) -> tuple[WebServices, SqliteIndexRepository, AppPaths]:
+    """The same, with the paths, for what cares where things are written."""
     paths = make_tmp_paths(label)
     account = dataclasses.replace(
         make_test_account(paths),
         sent_folder="INBOX",
         drafts_folder="INBOX",
     )
-    config = make_test_config(accounts=(account,))
+    config = dataclasses.replace(
+        make_test_config(accounts=(account,)),
+        # The real thing declares one, and the staging directory hangs
+        # off it; a config without one takes a different branch.
+        data_dir=paths.data_dir,
+    )
     index = make_index(paths)
     mirrors = make_mirrors(config)
     seed_message(
@@ -56,6 +71,7 @@ def _services(label: str) -> tuple[WebServices, SqliteIndexRepository]:
     return (
         WebServices(config=config, index=index, mirrors=mirrors, contacts=index),
         index,
+        paths,
     )
 
 
@@ -365,13 +381,160 @@ def test_an_empty_upload_is_refused() -> None:
     assert response.json()["error"] == "That file is empty."
 
 
+def test_an_upload_over_the_limit_is_refused_politely() -> None:
+    """It arrives as one byte string in memory, so it has to have a cap."""
+    from pony.web.app import MAX_ATTACHMENT_BYTES
+
+    services, _index = _services("compose-attachment-huge")
+
+    with _client(services) as client:
+        # Declared, which is how a browser sends it: refused without
+        # reading the body at all.
+        declared = client.post(
+            "/compose/attachment?name=big.bin",
+            content=b"x",
+            headers={"content-length": str(MAX_ATTACHMENT_BYTES + 1)},
+        )
+        # And when the size is not declared, by counting what arrives.
+        streamed = client.post(
+            "/compose/attachment?name=big.bin",
+            content=iter([b"x" * 4096] * ((MAX_ATTACHMENT_BYTES // 4096) + 2)),
+        )
+
+    for response in (declared, streamed):
+        assert response.status_code == 413
+        assert "larger than 25 MB" in response.json()["error"]
+
+
+def test_a_staged_upload_lives_under_the_data_directory() -> None:
+    """Not in ``$TMPDIR``, which is a share of RAM on many machines.
+
+    It used to be a ``tempfile.mkdtemp`` outside ``data_dir``, outside
+    ``PONY_ROOT``, and removed by nothing at all.
+    """
+    from pony.web.compose import staged_path
+
+    services, _index, paths = _services_and_paths("compose-staging-home")
+
+    with _client(services) as client:
+        token = client.post(
+            "/compose/attachment?name=notes.txt",
+            content=b"some notes",
+        ).json()["token"]
+
+    staged = staged_path(services.config, token)
+    assert staged is not None
+    assert staged.is_relative_to(paths.data_dir)
+
+
+def test_a_staged_upload_is_let_go_of_once_the_message_has_gone() -> None:
+    """Nothing removed them, so every upload stayed for the machine's life."""
+    from pony.web.compose import staged_path
+
+    services, _index = _services("compose-staging-released")
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **_kwargs: None),
+        _client(services) as client,
+    ):
+        token = client.post(
+            "/compose/attachment?name=notes.txt",
+            content=b"some notes",
+        ).json()["token"]
+        assert staged_path(services.config, token) is not None
+
+        client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "With a file",
+                "body": "Attached.",
+                "attachment": token,
+            },
+            follow_redirects=False,
+        )
+
+    assert staged_path(services.config, token) is None
+
+
+def test_a_refused_send_keeps_the_upload_for_the_next_attempt() -> None:
+    """The form comes back with the token in it, so the file has to stay."""
+    from pony.smtp_sender import SMTPError
+    from pony.web.compose import staged_path
+
+    services, _index = _services("compose-staging-kept")
+
+    def _refuse(**_kwargs: object) -> None:
+        raise SMTPError("nobody answered")
+
+    with (
+        patch.object(delivery, "smtp_send", _refuse),
+        _client(services) as client,
+    ):
+        token = client.post(
+            "/compose/attachment?name=notes.txt",
+            content=b"some notes",
+        ).json()["token"]
+        refused = client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "With a file",
+                "body": "Attached.",
+                "attachment": token,
+            },
+            follow_redirects=False,
+        )
+
+    assert refused.status_code == 200
+    assert staged_path(services.config, token) is not None
+
+
+def test_forwarding_twice_does_not_leave_two_copies_behind() -> None:
+    """The forwarded copy is written afresh each attempt, so it goes each time.
+
+    Four failed sends of one forward left four whole copies of the
+    message in the staging directory.
+    """
+    from pony.smtp_sender import SMTPError
+    from pony.web.compose import staging_dir
+
+    services, index = _services("compose-forward-copies")
+    message_id = _only_message(index)
+
+    def _refuse(**_kwargs: object) -> None:
+        raise SMTPError("nobody answered")
+
+    with (
+        patch.object(delivery, "smtp_send", _refuse),
+        _client(services) as client,
+    ):
+        form = client.get(
+            f"/compose?mode=forward&account=acct&folder=INBOX&id={message_id}",
+        ).text
+        fields = form_fields(form, "#compose-form")
+        for _attempt in range(3):
+            client.post(
+                "/compose",
+                data={**fields, "to": "you@example.test"},
+                follow_redirects=False,
+            )
+
+    assert list(staging_dir(services.config).iterdir()) == []
+
+
 def test_an_attachment_token_that_is_not_ours_is_not_opened() -> None:
     """A token addresses a file; it is not a path to one."""
     from pony.web.compose import staged_path
 
-    assert staged_path("../../etc/passwd") is None
-    assert staged_path("not-hex-at-all") is None
-    assert staged_path("0123456789abcdef") is None
+    services, _index = _services("compose-token")
+    config = services.config
+
+    assert staged_path(config, "../../etc/passwd") is None
+    assert staged_path(config, "not-hex-at-all") is None
+    assert staged_path(config, "0123456789abcdef") is None
 
 
 def test_a_send_whose_attachment_expired_says_so() -> None:
@@ -535,7 +698,12 @@ def test_only_a_draft_can_be_edited_as_one() -> None:
         sent_folder="Sent",
         drafts_folder="Drafts",
     )
-    config = make_test_config(accounts=(account,))
+    config = dataclasses.replace(
+        make_test_config(accounts=(account,)),
+        # The real thing declares one, and the staging directory hangs
+        # off it; a config without one takes a different branch.
+        data_dir=paths.data_dir,
+    )
     index = make_index(paths)
     mirrors = make_mirrors(config)
     seed_message(

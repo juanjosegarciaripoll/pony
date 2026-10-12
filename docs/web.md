@@ -151,14 +151,20 @@ the Markdown handling are not written twice.
 |---|---|---|
 | **Send** | ++ctrl+s++ | Send over SMTP and file the copy in Sent |
 | **Save draft** | — | File it in Drafts and come back later with ++e++ |
-| **Discard** | ++escape++ | Back to where the message was started from |
+| **Discard** | ++escape++ | Back to where the message was started from, after asking |
 | **Attach** | ++alt+a++ | Pick files; each is uploaded as it is chosen |
 | **Markdown** | ++alt+m++ | Render the body to `multipart/alternative` |
 
 A send that fails leaves the form up with everything you typed still in
-it, and says why. Attachments are uploaded as raw bytes to a staging
-area; the form then carries a token rather than a path, so nothing the
-page sends is ever opened as a file.
+it, and says why. ++escape++ on a form you have typed into asks before
+leaving it, and says to use Save draft; on a form you have only opened
+it leaves without a word. The same on the event form.
+
+Attachments are uploaded as raw bytes to a staging area under
+`data_dir`; the form then carries a token rather than a path, so nothing
+the page sends is ever opened as a file. A file over 25 MB is refused,
+and the staged copies are removed once the message has gone out — and
+when the server stops, whatever is left.
 
 !!! warning "No external editor"
     ++alt+e++ — edit the body in `$EDITOR` — is the one key the browser
@@ -177,6 +183,12 @@ marked** and **Merge marked**. Marking works as it does in the message
 list — ++m++, or a tap on the mark column — and a merge folds every
 marked record into the first of them, summing the message counts, as
 [Merging contacts](contacts.md#merging-contacts) describes.
+
+**Delete marked** and **Merge marked** act on the marks and on nothing
+else: with nothing marked they say so rather than taking the row the
+cursor happens to be on. Both ask before acting, because neither can be
+undone, and the merge names the record that will survive. So does
+deleting an event.
 
 The search field matches names, aliases and addresses. BBDB import and
 export stay on the command line (`pony contacts import|export`), as does

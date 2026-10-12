@@ -192,6 +192,32 @@ def test_opening_a_message_marks_it_read_and_shows_the_text() -> None:
     assert MessageFlag.SEEN in summary.local_flags
 
 
+def test_nothing_but_a_reader_marks_a_message_read() -> None:
+    """``GET /message`` writes, which is right for a person and wrong else.
+
+    A prefetch, a link-preview bot and a cross-site ``<img src>`` all
+    marked mail read, and the browser labels all three.
+    """
+    services, index = _services("web-message-prefetch")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        for headers in (
+            {"sec-purpose": "prefetch;anonymous-client-ip"},
+            {"sec-purpose": "prefetch;prerender"},
+            {"sec-fetch-site": "cross-site"},
+        ):
+            answered = client.get(_message(message_id), headers=headers)
+            assert answered.status_code == 200, headers
+            (summary,) = index.list_folder_message_summaries(folder=INBOX)
+            assert MessageFlag.SEEN not in summary.local_flags, headers
+
+        client.get(_message(message_id), headers={"sec-fetch-site": "same-origin"})
+
+    (summary,) = index.list_folder_message_summaries(folder=INBOX)
+    assert MessageFlag.SEEN in summary.local_flags
+
+
 def test_a_link_in_a_message_body_is_clickable_but_still_text() -> None:
     hostile = plain_text().replace(
         b"The room is booked from 14:00 to 15:30.",
@@ -316,6 +342,68 @@ def test_an_attachment_is_served_as_a_download_that_cannot_be_sniffed() -> None:
     assert response.content == b"%PDF-1.4 fake pdf content"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert 'filename="q1-report.pdf"' in response.headers["content-disposition"]
+
+
+def _cyrillic_attachment() -> bytes:
+    """A message whose attachment is named in a script latin-1 has not got."""
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "ivan@example.test"
+    message["To"] = "you@example.com"
+    message["Subject"] = "The report"
+    message["Date"] = "Mon, 6 Oct 2025 09:00:00 +0000"
+    message["Message-ID"] = "<cyrillic@example.test>"
+    message.set_content("See attached.")
+    message.add_attachment(
+        b"%PDF-1.4 fake",
+        maintype="application",
+        subtype="pdf",
+        filename="документ.pdf",
+    )
+    return message.as_bytes()
+
+
+def test_an_attachment_named_outside_latin_1_can_still_be_downloaded() -> None:
+    """Starlette encodes a header as latin-1, so the name has to be encoded.
+
+    ``документ.pdf`` raised ``UnicodeEncodeError`` and the attachment
+    could not be fetched at all.  RFC 6266 answers it with two
+    parameters: an ASCII one every client understands, and a
+    percent-encoded one carrying the real name.
+    """
+    services, index = _services(
+        "web-attachment-cyrillic", seed=(_cyrillic_attachment(),)
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.get(_message(message_id, path="/message/attachment", n=1))
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 fake"
+    disposition = response.headers["content-disposition"]
+    # An ASCII fallback, with nothing in it that could end the parameter.
+    assert 'filename="________.pdf"' in disposition
+    # And the name the sender used, encoded.
+    assert "filename*=UTF-8''%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82.pdf" in (
+        disposition
+    )
+
+
+def test_a_filename_cannot_end_the_header_parameter_it_sits_in() -> None:
+    """A quote, a backslash or a newline in a filename is a header, not a name."""
+    from pony.web.app import _content_disposition
+
+    built = _content_disposition('ev"il\\\r\nX-Spoofed: yes.txt')
+
+    # No line break to start a header of its own, and no quote or
+    # backslash to end the parameter early — three characters `_quotable`
+    # stripped and a fourth, the newline, that it let through.
+    assert "\r" not in built
+    assert "\n" not in built
+    assert built.count('"') == 2
+    assert "\\" not in built.partition("filename*=")[0]
 
 
 def test_asking_for_an_attachment_that_is_not_there() -> None:
