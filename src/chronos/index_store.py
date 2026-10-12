@@ -152,6 +152,16 @@ END;
 # list is never the thing that fails.
 _MAX_SQL_PARAMETERS = 400
 
+# How many writes an open transaction may accumulate before it commits
+# and a new one begins.  Bounded because an unbounded transaction grows
+# the WAL until throughput collapses, and loses everything it has done
+# if the process is killed; in bounded steps a long rebuild stays both
+# fast and resumable.
+_COMMIT_EVERY_WRITES = 500
+
+# How long a second writer waits for the lock before giving up.
+_BUSY_TIMEOUT_MS = 5000
+
 _COMPONENT_COLUMNS = (
     "account_name",
     "calendar_name",
@@ -192,81 +202,222 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE calendar_sync_state ADD COLUMN calendar_url TEXT")
 
 
-class SqliteIndexRepository:
-    """SQLite-backed projection of every component in the local mirror.
+class ThreadLocalSqlite:
+    """One SQLite connection per thread, with per-thread transaction state.
 
-    Connections are per-thread. The TUI runs sync on a worker thread
-    while the UI thread keeps reading from the index for view
-    refreshes; sqlite3's default `check_same_thread=True` rejects
-    cross-thread access on a shared connection. WAL mode plus
-    `busy_timeout` lets multiple connections (one per thread) talk to
-    the same file safely. We open `check_same_thread=False` so that
-    `close()` — which the TUI calls on app exit, from a thread that
-    didn't necessarily open every cached connection — doesn't itself
-    trip the same guard.
+    Whether a transaction is open, and how much work it has accumulated,
+    describes *one flow of control*.  Held on the object instead, it is
+    shared by every thread that reaches the repository: a write made
+    while another thread's batch was open joined that transaction and
+    was discarded when the other thread rolled back, while its own
+    caller was told it had succeeded.  So the connection and the write
+    counter both live in ``threading.local()``, and re-entrancy is read
+    off the connection itself (``in_transaction``) rather than from a
+    depth counter two threads can decrement out of order.
+
+    Two ways in, because the two have to behave differently:
+
+    ``transaction()`` is a block that happens all at once or not at
+    all.  Outside a transaction it opens one and commits on clean exit;
+    inside one it is a unit of work, fenced by a ``SAVEPOINT`` so a
+    caller that catches the failure of a single operation and carries
+    on -- which is what a sync does, per operation -- keeps everything
+    the block did before it.  Every ``commit_every`` writes the open
+    transaction commits and a new one begins: an unbounded transaction
+    grows the WAL until throughput collapses, and loses all of its work
+    if the process is killed.
+
+    ``statement()`` is one call that stands alone.  Outside a
+    transaction it opens none: in SQLite's autocommit mode the
+    statement *is* the transaction, which is both atomic and, unlike a
+    deferred ``BEGIN``, retried by the busy handler when another
+    connection holds the write lock.  Inside a transaction it is a unit
+    of that transaction, exactly as above.  A repository method that
+    issues more than one statement therefore asks for a
+    ``transaction()``, not a ``statement()``.
+
+    What is left is writer contention: one connection writes at a time,
+    so a write that lands while a long batch holds the lock waits for
+    ``_BUSY_TIMEOUT_MS`` and then fails with "database is locked".
+    Readers are unaffected -- in WAL a reader never waits for a writer
+    -- and a batch that commits every ``commit_every`` writes gives the
+    waiter its openings.  ``BEGIN IMMEDIATE``, rather than a deferred
+    ``BEGIN``, is what puts the wait in the busy handler at all: a
+    transaction that reads before it writes (every write here does, via
+    the FTS triggers) is refused the upgrade outright, because SQLite
+    will not risk the deadlock.
+
+    Connections are opened ``check_same_thread=False`` so that
+    ``close()`` can reach the ones other threads opened.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        commit_every: int = _COMMIT_EVERY_WRITES,
+        immediate: bool = True,
+    ) -> None:
         self._path = path
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._commit_every = commit_every
+        self._begin = "BEGIN IMMEDIATE" if immediate else "BEGIN"
         self._local = threading.local()
-        # Mirror of every connection we hand out, so `close()` can
-        # walk them. Guarded by `_connections_lock` because the
-        # registration happens on whatever thread first asks for a
-        # connection.
+        # Every connection handed out, so close() can walk them, with
+        # the generation it was handed out in: a connection a previous
+        # close() shut must not be handed back to the thread that
+        # cached it, which would see "Cannot operate on a closed
+        # database" instead.
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
-        # Open + run the schema once on the constructing thread; the
-        # `CREATE … IF NOT EXISTS` statements are idempotent, so
-        # connections opened later don't need to re-run them.
-        conn = self._open_connection()
-        conn.executescript(_SCHEMA)
-        _migrate_schema(conn)
+        self._generation = 0
 
-    def _open_connection(self) -> sqlite3.Connection:
-        existing = cast(sqlite3.Connection | None, getattr(self._local, "conn", None))
-        if existing is not None:
-            return existing
+    def conn(self) -> sqlite3.Connection:
+        """This thread's connection, opened on first use."""
+        cached = cast(sqlite3.Connection | None, getattr(self._local, "conn", None))
+        if cached is not None:
+            if self._local.generation == self._generation:
+                return cached
+            # A close() has been through since.  A thread in the middle
+            # of a transaction keeps the connection holding it -- the
+            # rest of its block has to land on the same one, and
+            # close() left it open for exactly that.  Anything else
+            # takes a fresh connection, because its own may be shut.
+            with contextlib.suppress(sqlite3.ProgrammingError):
+                if cached.in_transaction:
+                    return cached
         conn = sqlite3.connect(
-            self._path, isolation_level=None, check_same_thread=False
+            self._path,
+            isolation_level=None,
+            check_same_thread=False,
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        self._local.conn = conn
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         with self._connections_lock:
+            self._local.conn = conn
+            self._local.generation = self._generation
+            self._local.writes = 0
             self._connections.append(conn)
         return conn
 
-    @property
-    def _conn(self) -> sqlite3.Connection:
-        return self._open_connection()
-
     @contextmanager
-    def connection(self) -> Generator[sqlite3.Connection]:
-        conn = self._open_connection()
+    def transaction(self) -> Generator[sqlite3.Connection]:
+        """Yield this thread's connection inside a transaction.
+
+        Re-entrant: the outermost call owns the transaction, and an
+        inner one is a unit of work within it.
+        """
+        conn = self.conn()
         if conn.in_transaction:
-            yield conn
+            with self._unit(conn):
+                yield conn
             return
-        conn.execute("BEGIN")
+        self._local.writes = 0
+        conn.execute(self._begin)
         try:
             yield conn
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-        else:
-            conn.execute("COMMIT")
+        conn.execute("COMMIT")
+
+    @contextmanager
+    def statement(self) -> Generator[sqlite3.Connection]:
+        """Yield this thread's connection for one standalone call."""
+        conn = self.conn()
+        if conn.in_transaction:
+            with self._unit(conn):
+                yield conn
+            return
+        yield conn
+
+    @contextmanager
+    def _unit(self, conn: sqlite3.Connection) -> Generator[None]:
+        """One operation inside an already-open transaction."""
+        before = conn.total_changes
+        conn.execute("SAVEPOINT unit")
+        try:
+            yield
+        except BaseException:
+            conn.execute("ROLLBACK TO unit")
+            conn.execute("RELEASE unit")
+            raise
+        conn.execute("RELEASE unit")
+        if conn.total_changes == before:
+            # A read.  Counting reads made "commit every N writes" mean
+            # "every N calls", so a second thread merely listing a
+            # folder could end a sync's transaction mid-folder.
+            return
+        writes = cast(int, getattr(self._local, "writes", 0)) + 1
+        if writes < self._commit_every:
+            self._local.writes = writes
+            return
+        conn.execute("COMMIT")
+        conn.execute(self._begin)
+        self._local.writes = 0
 
     def close(self) -> None:
+        """Release the connections, leaving a live batch to its owner.
+
+        Closing a connection another thread is working through raises
+        ``ProgrammingError`` *there*, mid-write, so a connection with a
+        transaction open is left for the thread that owns it: its own
+        block commits it, and a later ``close()`` reaps the handle.
+        Everything idle is closed, and the generation bump makes every
+        thread open a fresh connection rather than reach for one this
+        call has shut.
+        """
         with self._connections_lock:
+            self._generation += 1
+            busy: list[sqlite3.Connection] = []
             for conn in self._connections:
+                if conn.in_transaction:
+                    busy.append(conn)
+                    continue
                 with contextlib.suppress(sqlite3.Error):
                     conn.close()
-            self._connections.clear()
-        # Drop the thread-local cache too so a subsequent call on
-        # this repository (uncommon but possible in tests) reopens
-        # fresh connections instead of returning closed handles.
-        self._local = threading.local()
+            self._connections = busy
+
+
+class SqliteIndexRepository:
+    """SQLite-backed projection of every component in the local mirror.
+
+    Connections are per-thread, through ``ThreadLocalSqlite``: the TUI
+    runs sync on a worker thread while the UI thread keeps reading from
+    the index for view refreshes, and sqlite3's default
+    `check_same_thread=True` rejects cross-thread access on a shared
+    connection.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Deferred, not immediate: every read in this class goes
+        # through connection() too, and a read that took the write lock
+        # would queue the UI behind a sync.  Splitting those call sites
+        # is what the mail index did; until the calendar's are, a
+        # calendar write that collides with one fails fast rather than
+        # waiting.
+        self._db = ThreadLocalSqlite(path, immediate=False)
+        # Open + run the schema once on the constructing thread; the
+        # `CREATE … IF NOT EXISTS` statements are idempotent, so
+        # connections opened later don't need to re-run them.
+        conn = self._db.conn()
+        conn.executescript(_SCHEMA)
+        _migrate_schema(conn)
+
+    @contextmanager
+    def connection(self) -> Generator[sqlite3.Connection]:
+        """Yield this thread's connection inside a transaction.
+
+        Re-entrant.  See ``ThreadLocalSqlite.scope`` for what the
+        nesting promises and what the bounded commit gives up.
+        """
+        with self._db.transaction() as conn:
+            yield conn
+
+    def close(self) -> None:
+        self._db.close()
 
     def upsert_component(self, component: StoredComponent) -> None:
         row = _component_to_row(component)

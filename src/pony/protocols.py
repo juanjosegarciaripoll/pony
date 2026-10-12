@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 
@@ -187,16 +187,31 @@ class MirrorRepository(Protocol):
 class IndexRepository(Protocol):
     """Interface for metadata index implementations."""
 
-    @contextlib.contextmanager
-    def connection(self) -> Generator[None]:
-        """Hold a single connection for a batch of operations.
+    def connection(self) -> AbstractContextManager[None]:
+        """Hold one transaction across a batch of operations.
 
-        Implementations that support connection reuse should override this
-        to keep one connection open for the duration of the block and
-        commit on clean exit.  The default is a no-op (each call uses its
-        own connection as before).
+        What an implementation has to promise:
+
+        * Every repository call made **on this thread** inside the block
+          lands in one transaction, and the block's clean exit is what
+          commits it.
+        * An exception out of the block rolls back what that transaction
+          still holds, and raises.  It is allowed to have committed
+          earlier parts of the block already -- a long batch has to
+          commit as it goes or it grows without bound -- so this is "the
+          tail of the block is undone", not "the block is undone".
+        * A nested block is a unit of work inside the outer one, and may
+          fail and be caught without taking the outer block's work with
+          it.  Only the outermost block ends the transaction.
+        * Another thread's calls are not in this transaction, and this
+          block can neither commit nor roll back their work.
+
+        It is abstract because there is no safe default: a no-op body
+        type-checks and then silently drops every one of those promises,
+        which is how an implementation would come to report a half-done
+        mailbox operation as done.
         """
-        yield
+        ...
 
     def initialize(self) -> None:
         """Create required schema if it does not exist."""

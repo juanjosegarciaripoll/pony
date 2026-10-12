@@ -6,11 +6,12 @@ import contextlib
 import dataclasses
 import json
 import sqlite3
-import threading
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
+
+from chronos.index_store import ThreadLocalSqlite
 
 from .contact_merge import merged_contact
 from .contact_naming import clean_display_name, split_display_name
@@ -258,18 +259,13 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
 class SqliteIndexRepository(IndexRepository, ContactRepository):
     """Persist indexed metadata and sync state in SQLite.
 
-    **One repository owns one connection, and every call goes through
-    it.**  That is what lets a front end read the database while
-    something else is writing to it: the reader and the writer are the
-    same connection, so a long rebuild is visible as it progresses
-    rather than appearing as an empty mailbox until it commits.  It used
-    to open a connection per call, which gave each thread its own WAL
-    snapshot — the UI could not see a sync's work until the sync
-    finished, and a 14-minute local rescan therefore looked like a lost
-    index.
-
-    Access is serialised on a re-entrant lock.  Statements are short, so
-    a reader waits for a statement and not for a transaction.
+    **One connection per thread, and one transaction per thread with
+    it.**  Transaction state describes a flow of control, so it is held
+    in ``threading.local()``: a shared one let a write made on the UI
+    thread join a sync's open transaction, report success, and then be
+    thrown away by the sync's rollback — and let a failed statement on
+    either side discard up to ``_BATCH_COMMIT_ROWS`` of the other's
+    applied work.
 
     For bulk work (syncing a folder, rescanning an archive) callers wrap
     a block in::
@@ -283,59 +279,25 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     transaction grows the WAL until throughput collapses, and loses
     everything it has done if the process is killed; committing in
     bounded steps keeps a long rebuild both fast and resumable.  On
-    exception whatever is uncommitted is rolled back.  Nesting is safe —
-    only the outermost ``connection()`` block ends the batch.
+    exception whatever that transaction still holds is rolled back.
+    Nesting is safe, and so is a nested block that raises and is caught:
+    each one is fenced by a ``SAVEPOINT``, so a sync that logs a failed
+    operation and moves to the next keeps what it already did.
 
-    The connection stays open for the life of the repository.  Nothing
-    else in this process may open the same file: a second connection
-    reintroduces the second snapshot this design exists to remove.
+    The bound is also what keeps a rebuild *visible*.  A reader on
+    another thread has its own connection, so it sees a batch's work
+    only once committed — in steps of ``_BATCH_COMMIT_ROWS`` rows, not
+    after the whole 14-minute rescan, which is what made a single
+    shared connection look attractive in the first place.
     """
 
     def __init__(self, *, database_path: Path) -> None:
         self._database_path = database_path
-        self._lock = threading.RLock()
-        self._conn_held: sqlite3.Connection | None = None
-        # Depth of nested connection() blocks, and how many writes the
-        # current batch has accumulated since its last commit.
-        self._batch_depth = 0
-        self._batch_writes = 0
+        self._db = ThreadLocalSqlite(database_path, commit_every=_BATCH_COMMIT_ROWS)
 
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
-
-    def _open_connection(self) -> sqlite3.Connection:
-        """Open a fresh connection with WAL mode and a busy timeout."""
-        # No journal-file recovery here.  Deleting a -wal discards every
-        # transaction committed since the last checkpoint — in WAL mode
-        # that is where committed data lives — and SQLite recovers a
-        # crash-left journal correctly on its own.  The guard could not
-        # fire anyway: connect() is lazy, so a database that cannot be
-        # opened raises on the first statement below, not here.
-        # check_same_thread=False because the connection is shared: the
-        # lock below, not the thread it was created on, is what keeps
-        # access serialised.
-        conn = sqlite3.connect(
-            self._database_path,
-            timeout=10,
-            check_same_thread=False,
-        )
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        # Per-connection, and SQLite ignores it while a transaction is
-        # open — so setting it inside a method that runs within a
-        # ``connection()`` block did nothing, and deleting a contact
-        # there left its emails and aliases behind as orphan rows that
-        # made the address permanently unclaimable.
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
-
-    def _owned(self) -> sqlite3.Connection:
-        """The one connection this repository works through."""
-        with self._lock:
-            if self._conn_held is None:
-                self._conn_held = self._open_connection()
-            return self._conn_held
 
     def __del__(self) -> None:
         # A repository that goes out of scope without close() still has
@@ -345,54 +307,47 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             self.close()
 
     def close(self) -> None:
-        """Close the owned connection, committing what it holds."""
-        with self._lock:
-            conn, self._conn_held = self._conn_held, None
-            self._batch_depth = 0
-            self._batch_writes = 0
-        if conn is not None:
-            with contextlib.suppress(sqlite3.Error):
-                conn.commit()
-            conn.close()
+        """Release this repository's connections.
+
+        Safe to call while another thread is mid-batch: that thread's
+        connection is left for it to commit, and no thread is handed a
+        connection this call has closed.  Nothing in ``src/pony`` calls
+        it yet — the mail index relies on ``__del__``.
+        """
+        self._db.close()
 
     @contextlib.contextmanager
     def connection(self) -> Generator[None]:
         """Hold one transaction across a batch of operations.
 
-        Commits when the block exits cleanly, rolls back on exception,
-        and commits along the way every ``_BATCH_COMMIT_ROWS`` writes so
-        the transaction never grows without bound.
+        Commits when the block exits cleanly, rolls back what the
+        transaction still holds on exception, and commits along the way
+        every ``_BATCH_COMMIT_ROWS`` writes so the transaction never
+        grows without bound — which also means an exception cannot undo
+        what an earlier bounded commit already wrote.
 
-        Reentrant: nested blocks are no-ops — only the outermost one
-        ends the batch.
+        Reentrant: nested blocks are units of work inside the
+        outermost one, which is what ends the batch.
         """
-        conn = self._owned()
-        with self._lock:
-            self._batch_depth += 1
-            outermost = self._batch_depth == 1
-        if not outermost:
-            try:
-                yield
-            finally:
-                with self._lock:
-                    self._batch_depth -= 1
-            return
-        try:
+        with self._db.transaction():
             yield
-            with self._lock:
-                conn.commit()
-        except BaseException:
-            with self._lock:
-                conn.rollback()
-            raise
-        finally:
-            with self._lock:
-                self._batch_depth = 0
-                self._batch_writes = 0
+
+    @contextlib.contextmanager
+    def _use_atomic(self) -> Generator[sqlite3.Connection]:
+        """Yield this thread's connection for a call that writes twice.
+
+        A ``_use()`` call runs in autocommit when no batch is open,
+        which is right for one statement and wrong for several: a
+        method that reads and then deletes what it read, or writes
+        three tables, has to land all at once or not at all.  Inside a
+        batch this is the same unit of work ``_use()`` is.
+        """
+        with self._db.transaction() as conn:
+            yield conn
 
     @contextlib.contextmanager
     def _use(self) -> Generator[sqlite3.Connection]:
-        """Yield the owned connection, holding the lock for the call.
+        """Yield this thread's connection for the duration of one call.
 
         Outside a batch the statement is committed when it completes, as
         a single-statement call expects.  Inside one, the commit is the
@@ -400,34 +355,16 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         ``_BATCH_COMMIT_ROWS`` writes commits here and starts a new
         transaction, so a long rebuild stays bounded and resumable.
         """
-        conn = self._owned()
-        with self._lock:
-            batched = self._batch_depth > 0
-            try:
-                yield conn
-            except BaseException:
-                conn.rollback()
-                if batched:
-                    # The batch is finished: its caller sees the
-                    # exception and connection() will not commit.
-                    self._batch_writes = 0
-                raise
-            if not batched:
-                conn.commit()
-                return
-            self._batch_writes += 1
-            if self._batch_writes >= _BATCH_COMMIT_ROWS:
-                conn.commit()
-                self._batch_writes = 0
-
-    def _connect(self) -> sqlite3.Connection:
-        """Legacy alias — delegates to ``_open_connection``."""
-        return self._open_connection()
+        with self._db.statement() as conn:
+            yield conn
 
     def initialize(self) -> None:
         """Create or migrate the schema, refusing DBs we cannot upgrade."""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._use() as conn:
+        # One transaction for the whole thing: the v2 -> v3 migration
+        # rewrites the messages table in several statements and a
+        # half-applied rewrite is not a schema anything can read.
+        with self._use_atomic() as conn:
             version_row = conn.execute("PRAGMA user_version").fetchone()
             version = int(version_row[0]) if version_row is not None else 0
             has_messages = (
@@ -681,7 +618,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         the caller can clean up the corresponding mirror files.
         """
         cutoff = (datetime.now(tz=UTC) - timedelta(days=retention_days)).isoformat()
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             rows = conn.execute(
                 """
                 SELECT account_name, folder_name, storage_key
@@ -740,7 +677,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         active_folders: frozenset[str],
     ) -> list[str]:
         """Remove sync/server state for folders not in *active_folders*."""
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT folder_name FROM folder_sync_state
@@ -975,7 +912,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         Uses a single UPDATE so no Python-level row materialisation is
         needed even for large folders.  Returns the number of rows changed.
         """
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             conn.execute(
                 """
                 UPDATE messages
@@ -1312,7 +1249,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         if not remap:
             return 0
         changed = 0
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             for old_key, new_key in remap.items():
                 if old_key == new_key:
                     continue
@@ -1342,7 +1279,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         server is then genuinely local-only and is pushed, which is the
         non-destructive answer.
         """
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             # Every row, whatever its status: a stale UID must not
             # accidentally match one in the new epoch, and a TRASHED row
             # needs re-adopting before its deletion can be pushed.
@@ -1378,7 +1315,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         """Insert or update a contact record.  Returns the saved contact."""
         now = datetime.now(tz=UTC)
         updated_at = contact.updated_at.isoformat()
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             if contact.id is not None:
                 conn.execute(
                     """
@@ -1575,7 +1512,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         was deleted between marking and merging, and neither is a reason
         to fail.
         """
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             target = self._load_contact_or_none(conn, target_id)
             if target is None:
                 raise KeyError(f"contact not found: {target_id}")
@@ -1641,7 +1578,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
     def harvest_contacts(self, messages: Iterable[IndexedMessage]) -> None:
         """Bulk-harvest addresses from *messages*."""
-        with self._use() as conn:
+        with self._use_atomic() as conn:
             for message in messages:
                 _harvest_message_contacts(conn, message)
 

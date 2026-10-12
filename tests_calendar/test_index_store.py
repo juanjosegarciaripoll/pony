@@ -507,13 +507,10 @@ class CrossThreadAccessTest(unittest.TestCase):
         thread = threading.Thread(target=warm_up)
         thread.start()
         thread.join()
-        # Should not raise.
+        # Should not raise, and neither should the second close the
+        # cleanup in setUp makes: every connection it handed out is
+        # already shut, and nothing is handed a closed one again.
         self.repo.close()
-        # Re-add cleanup as a no-op so the addCleanup(close) in setUp
-        # doesn't trip over double-close. close() now resets the
-        # thread-local cache, so a subsequent call would just open
-        # fresh connections — but we don't want that side effect.
-        self.repo._connections.clear()  # type: ignore[attr-defined]
 
 
 class AlarmRepositoryTest(unittest.TestCase):

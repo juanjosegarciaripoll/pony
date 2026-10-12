@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import threading
+import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1142,13 +1144,16 @@ class SearchSemanticsTest(unittest.TestCase):
         self.assertEqual(self._find(repo, "archived"), {"Archived thing"})
 
 
-class OneConnectionPerRepositoryTest(unittest.TestCase):
-    """The repository owns its connection and channels access through it.
+class OneConnectionPerThreadTest(unittest.TestCase):
+    """A thread's transaction is its own, and reaches no other thread.
 
-    A reader and a writer used to hold different connections, so each had
-    its own WAL snapshot: a long sync or rescan was invisible to the
-    front end until it committed, which is what made a running rebuild
-    look like an empty mailbox.
+    Batch state used to be held on the repository, so two threads shared
+    one transaction and one depth counter: a write made while a sync's
+    batch was open joined that transaction, reported success, and was
+    discarded by the sync's rollback.  Each thread now has its own
+    connection, so the only work it can commit or roll back is its own
+    -- and the bounded commit is what keeps a long rebuild visible to
+    the other threads as it goes.
     """
 
     def setUp(self) -> None:
@@ -1161,23 +1166,160 @@ class OneConnectionPerRepositoryTest(unittest.TestCase):
     def _insert(self, name: str) -> None:
         self.repo.insert_message(message=_make_message(name, subject=name))
 
-    def test_a_reader_sees_a_batch_that_has_not_committed(self) -> None:
+    def test_a_reader_sees_a_batch_once_it_commits(self) -> None:
         folder = FolderRef(account_name="personal", folder_name="INBOX")
-        seen: list[int] = []
+        during: list[int] = []
+
+        def count() -> None:
+            during.append(len(self.repo.list_folder_messages(folder=folder)))
 
         with self.repo.connection():
             self._insert("during the batch")
-            # Another thread, mid-batch: it goes through the same
-            # connection, so the row is there to be read.
-            reader = threading.Thread(
-                target=lambda: seen.append(
-                    len(self.repo.list_folder_messages(folder=folder)),
-                ),
-            )
+            reader = threading.Thread(target=count)
             reader.start()
             reader.join(timeout=10)
 
-        self.assertEqual(seen, [1])
+        after = len(self.repo.list_folder_messages(folder=folder))
+        # Mid-batch the other thread has its own connection and its own
+        # snapshot, so it does not see the uncommitted row.  What keeps a
+        # rebuild visible is the bounded commit, not a shared
+        # transaction -- see test_a_long_batch_commits_as_it_goes.
+        self.assertEqual(during, [0])
+        self.assertEqual(after, 1)
+
+    def test_one_thread_cannot_roll_back_another_threads_write(self) -> None:
+        """The defect this design exists to remove, in its own terms."""
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        batch_open = threading.Event()
+        failed: list[BaseException] = []
+
+        def writer() -> None:
+            # A plain single write, with no batch of its own, while the
+            # other thread holds one open.  It waits for that thread's
+            # transaction rather than joining it.
+            batch_open.wait(timeout=10)
+            try:
+                self._insert("thread B")
+            except BaseException as exc:  # noqa: BLE001 - reported, not raised
+                failed.append(exc)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        with contextlib.suppress(RuntimeError), self.repo.connection():
+            self._insert("thread A")
+            batch_open.set()
+            # Long enough for the other thread to be inside its write.
+            time.sleep(0.2)
+            raise RuntimeError("thread A's folder failed")
+        thread.join(timeout=10)
+
+        self.assertEqual(failed, [])
+        subjects = {m.subject for m in self.repo.list_folder_messages(folder=folder)}
+        # B's write returned normally, so it has to still be there; A's
+        # rollback may only take A's own row with it.
+        self.assertEqual(subjects, {"thread B"})
+
+    def test_a_failed_statement_keeps_the_rest_of_its_batch(self) -> None:
+        """A sync logs a failed operation and carries on with the next."""
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+        with self.repo.connection():
+            self._insert("first")
+            self.repo.insert_message(
+                message=_make_message("<u7@x>", subject="holds uid 7", uid=7),
+            )
+            with contextlib.suppress(sqlite3.IntegrityError):
+                # One operation fails; the batch is not what failed, and
+                # up to _BATCH_COMMIT_ROWS rows of applied work must not
+                # go down with it.
+                self.repo.insert_message(
+                    message=_make_message("<dup@x>", subject="uid 7 again", uid=7),
+                )
+            self._insert("second")
+
+        subjects = {m.subject for m in self.repo.list_folder_messages(folder=folder)}
+        self.assertEqual(subjects, {"first", "holds uid 7", "second"})
+
+    def test_batches_on_two_threads_queue_instead_of_colliding(self) -> None:
+        """Two batches are two transactions, taken one after the other.
+
+        A shared depth counter made the second entrant a no-op inside
+        the first one's transaction, and an out-of-order exit left the
+        counter at ``-1``, after which no block committed or rolled
+        back for the life of the process.
+        """
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        start = threading.Barrier(3, timeout=10)
+        errors: list[BaseException] = []
+
+        def batch(name: str) -> None:
+            try:
+                start.wait()
+                with self.repo.connection():
+                    self._insert(f"{name} outer")
+                    with self.repo.connection():
+                        self._insert(f"{name} inner")
+            except BaseException as exc:  # noqa: BLE001 - reported, not raised
+                errors.append(exc)
+
+        threads = [threading.Thread(target=batch, args=(n,)) for n in ("one", "two")]
+        for thread in threads:
+            thread.start()
+        start.wait(timeout=10)
+        for thread in threads:
+            thread.join(timeout=15)
+
+        self.assertEqual(errors, [])
+        subjects = {m.subject for m in self.repo.list_folder_messages(folder=folder)}
+        self.assertEqual(
+            subjects,
+            {"one outer", "one inner", "two outer", "two inner"},
+        )
+        # And a batch opened afterwards still commits.
+        with self.repo.connection():
+            self._insert("afterwards")
+        self.assertEqual(len(self.repo.list_folder_messages(folder=folder)), 5)
+
+    def test_reads_do_not_count_toward_the_commit_interval(self) -> None:
+        """ "Commit every N writes" used to mean "every N calls"."""
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+        with contextlib.suppress(RuntimeError), self.repo.connection():
+            self._insert("the only write")
+            for _ in range(_BATCH_COMMIT_ROWS + 10):
+                self.repo.list_folder_messages(folder=folder)
+            raise RuntimeError("killed")
+
+        # Nothing committed along the way, so the rollback takes the one
+        # write with it.
+        self.assertEqual(self.repo.list_folder_messages(folder=folder), ())
+
+    def test_close_is_safe_while_another_thread_holds_a_batch(self) -> None:
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        in_batch = threading.Event()
+        closed = threading.Event()
+        errors: list[BaseException] = []
+
+        def batch() -> None:
+            try:
+                with self.repo.connection():
+                    self._insert("mid-batch")
+                    in_batch.set()
+                    closed.wait(timeout=10)
+                    self._insert("after the close")
+            except BaseException as exc:  # noqa: BLE001 - reported, not raised
+                errors.append(exc)
+
+        thread = threading.Thread(target=batch)
+        thread.start()
+        self.assertTrue(in_batch.wait(timeout=10))
+        self.repo.close()
+        closed.set()
+        thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        subjects = {m.subject for m in self.repo.list_folder_messages(folder=folder)}
+        self.assertEqual(subjects, {"mid-batch", "after the close"})
 
     def test_a_long_batch_commits_as_it_goes(self) -> None:
         """A killed rebuild keeps what it had done, minus the last batch."""

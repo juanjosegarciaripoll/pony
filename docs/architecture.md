@@ -173,10 +173,14 @@ fails is logged and skipped rather than failing the action.
 SQLite-backed metadata store implementing `IndexRepository` and
 `ContactRepository`. All message state lives in a single unified `messages`
 table (no separate server-state table). The `connection()` context manager
-provides batched transactions with thread-local reuse and reentrant nesting.
+provides batched transactions: one connection and one transaction per thread,
+reentrant nesting where an inner block is a savepoint-fenced unit of work, and
+a commit every 500 writes so a long rebuild stays bounded and resumable. See
+[Synchronization → Performance](synchronization.md#performance) for what that
+does and does not promise.
 
-Tables: `messages`, `contacts`, `contact_emails`, `contact_aliases`,
-`folder_sync_state`, `encrypted_passwords`.
+Tables: `messages`, `messages_fts`, `contacts`, `contacts_fts`,
+`contact_emails`, `contact_aliases`, `folder_sync_state`, `credentials`.
 
 ### Sync (`pony.sync`, `pony.imap_client`)
 

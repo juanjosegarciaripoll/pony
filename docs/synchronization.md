@@ -56,11 +56,28 @@ config (see [Configuration](configuration.md)). Within each folder:
 
 ### Performance
 
-Sync operations use batched SQLite transactions -- all database writes for a
-folder are grouped into a single transaction rather than committing after each
-message. This significantly reduces I/O overhead when syncing large mailboxes.
-The transaction batching is automatic; the `connection()` context manager
-handles nesting and rollback on errors transparently.
+Sync operations use batched SQLite transactions rather than committing after
+each message, which is most of the I/O a large mailbox costs. What the batch
+promises is narrower than "the folder, all at once":
+
+- A batch belongs to **one thread**. Each thread holds its own connection and
+  its own transaction, so the sync can neither commit nor discard a write the
+  UI made while it was running, and nor can the UI discard the sync's.
+- A batch **commits as it goes**, every 500 writes. An unbounded transaction
+  grows the write-ahead log until throughput collapses, and loses everything
+  it has done if the process is killed. So an error part-way through rolls
+  back the tail of the batch -- whatever the open transaction still holds --
+  and not the part already committed. Each sync operation is independently
+  meaningful, which is what makes that acceptable: the next pass re-plans
+  from the index as it now stands.
+- A **nested** `connection()` block is a unit of work inside the outer one,
+  fenced by a savepoint. A single operation can fail, be logged, and be
+  skipped -- which is what the execution loop does -- without taking the rest
+  of the batch with it. Only the outermost block ends the transaction.
+- One connection writes at a time. A reader never waits for a writer (that is
+  what WAL mode buys), but a *write* that lands while a long batch holds the
+  lock waits for it, and gives up with "database is locked" if the batch
+  outlasts the busy timeout.
 
 ---
 
