@@ -317,7 +317,13 @@ class ThreadLocalSqlite:
         try:
             yield conn
         except BaseException:
-            conn.execute("ROLLBACK")
+            # Suppressed, not reported: SQLite rolls the transaction
+            # back itself on a disk-full or I/O error, and then ROLLBACK
+            # raises "no transaction is active" — which would be the
+            # exception the caller sees instead of the one that
+            # actually went wrong.
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
 
@@ -339,8 +345,11 @@ class ThreadLocalSqlite:
         try:
             yield
         except BaseException:
-            conn.execute("ROLLBACK TO unit")
-            conn.execute("RELEASE unit")
+            # Same here, and for the same reason: whatever the caller
+            # is about to catch is more use than a failure to unwind.
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK TO unit")
+                conn.execute("RELEASE unit")
             raise
         conn.execute("RELEASE unit")
         if conn.total_changes == before:
