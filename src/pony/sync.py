@@ -533,7 +533,15 @@ _MASS_DELETE_MIN = 5
 # much: ``uid IS NULL`` cannot tell "composed here" from "on the server,
 # handle lost".  The absolute ceiling catches the big case, the ratio
 # catches small folders.
-_MASS_PUSH_THRESHOLD = 0.20
+#
+# The ratio is half the folder, not a fifth.  Filing a sent copy sets
+# ``uid IS NULL`` too, so a fifth of a small folder is reached by
+# ordinary use -- six sent copies against a 25-message Sent folder --
+# and a halted folder is *skipped* by every unattended path, which
+# would leave those copies unuploaded until someone ran an interactive
+# sync.  The state this halt exists for is a folder that lost its
+# epoch, where the share is near all of it.
+_MASS_PUSH_THRESHOLD = 0.50
 _MASS_PUSH_MIN = 5
 _MASS_PUSH_ABSOLUTE = 50
 

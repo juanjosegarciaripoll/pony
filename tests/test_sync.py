@@ -3777,17 +3777,43 @@ class MassPushRatioOnEveryPathTestCase(unittest.TestCase):
         service.sync()
         # Nothing changed on the server, so this is the fast path: no
         # FETCH, no fresh UID or flag information.
-        self._compose(index, mirror, 5)
+        self._compose(index, mirror, 8)
         session.call_log.clear()
 
         plan = service.plan()
         (folder_plan,) = plan.accounts[0].folders
-        self.assertEqual(folder_plan.pending_push_count, 5)
+        self.assertEqual(folder_plan.pending_push_count, 8)
         self.assertEqual(folder_plan.known_total, 10)
         self.assertTrue(folder_plan.needs_confirmation)
 
         service.sync()
         self.assertNotIn("append:INBOX", session.call_log)
+
+    def test_half_a_folder_is_the_line_and_not_over_it(self) -> None:
+        # Past the minimum, so the ratio arm really is consulted -- and
+        # not over it.  Every sent copy filed locally carries
+        # uid IS NULL until it is uploaded, so a small Sent folder
+        # reaches a large share of itself through ordinary use, and a
+        # halted folder is skipped by the background pass, the browser's
+        # Sync button and ctrl+g: flagging this would strand the copies
+        # until someone ran an interactive sync.
+        service, index, mirror, session = self._ten_on_the_server()
+        service.sync()
+        self._compose(index, mirror, 5)
+        session.call_log.clear()
+
+        plan = service.plan()
+        (folder_plan,) = plan.accounts[0].folders
+        from pony.sync import PushAppendOp
+
+        appends = [op for op in folder_plan.ops if isinstance(op, PushAppendOp)]
+        self.assertEqual(len(appends), 5)
+        self.assertEqual(folder_plan.known_total, 10)
+        self.assertFalse(folder_plan.needs_confirmation)
+
+        service.sync()
+        self.assertIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 15)
 
     def test_a_couple_of_drafts_are_still_ordinary_composing(self) -> None:
         service, index, mirror, session = self._ten_on_the_server()
