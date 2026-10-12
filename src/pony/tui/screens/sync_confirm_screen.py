@@ -193,16 +193,32 @@ class SyncConfirmScreen(DialogScreen):
             self.dismiss(False)
 
     def on_key(self, event: object) -> None:
+        """Proceed, or back out.
+
+        Backing out works while planning too.  It used to return early
+        on ``_planning``, which swallowed ``escape``, ``q`` and ``n``
+        alike — and if anything had gone wrong with the plan arriving,
+        the only key left that did anything was the application's
+        ++shift+q++, which quits.  There is nothing to interrupt while a
+        plan is being drawn up: the worker's result is simply dropped.
+
+        ``_syncing`` is different, and still refuses: a half-applied
+        sync is not something this dialog can abandon.
+        """
         from textual.events import Key
 
         if not isinstance(event, Key):
             return
-        if self._syncing or self._planning:
+        if self._syncing:
+            return
+        if event.key in ("n", "escape", "q"):
+            event.stop()
+            self.dismiss(False)
+            return
+        if self._planning:
             return
         if event.key == "y":
             self._enter_syncing()
-        elif event.key in ("n", "escape", "q"):
-            self.dismiss(False)
 
     def _enter_syncing(self) -> None:
         self._syncing = True

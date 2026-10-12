@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -23,6 +24,7 @@ from pony.domain import (
     MessageStatus,
     MirrorConfig,
 )
+from pony.index_store import SqliteIndexRepository
 from pony.protocols import MirrorRepository
 from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
 from pony.tui.screens.compose_screen import ComposeScreen
@@ -174,9 +176,9 @@ async def test_copy_move_and_folder_creation_error_guards() -> None:
         assert current is not None
         missing = FolderRef(account_name="missing", folder_name="Archive")
 
-        screen._copy_to_folder([current], folder, missing)
-        screen._move_to_folder([current], folder, folder)
-        screen._move_to_folder([current], folder, missing)
+        screen._copy_to_folder([current], missing)
+        screen._move_to_folder([current], folder)
+        screen._move_to_folder([current], missing)
         screen._create_folder("missing", "Fictional")
 
         mirror = screen._mirrors["acct"]
@@ -271,7 +273,7 @@ async def test_cross_account_move_from_a_local_source_deletes_the_original() -> 
         screen = _main(app)
         msg = list(index.list_folder_messages(folder=source))[0]
 
-        screen._move_to_folder([msg], source, target)
+        screen._move_to_folder([msg], target)
         await pilot.pause()
 
     # Target gained the message; the local source row is gone outright
@@ -887,3 +889,156 @@ def _numbered_message(index: int) -> bytes:
     message["Message-ID"] = f"<numbered-{index}@example.com>"
     message.set_content("body")
     return message.as_bytes()
+
+
+def _searchable(subject: str, folder: str) -> bytes:
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "acct@example.com"
+    message["Subject"] = subject
+    message["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+    message["Message-ID"] = f"<{folder}-{subject}@example.com>"
+    message.set_content("zzqneedle in the body")
+    return message.as_bytes()
+
+
+def _search_across_two_folders(
+    label: str,
+) -> tuple[Any, SqliteIndexRepository]:
+    """An account with one hit in INBOX and one in Work, both on screen."""
+    inbox = FolderRef(account_name="acct", folder_name="INBOX")
+    work = FolderRef(account_name="acct", folder_name="Work")
+    account = make_test_account(make_tmp_paths(label), archive_folder="Archive")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label=f"{label}-app",
+        accounts=(account,),
+    )
+    for name in ("Work", "Archive"):
+        mirrors["acct"].create_folder(account_name="acct", folder_name=name)
+    for folder in (inbox, work):
+        seed_message(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=folder,
+            raw=_searchable("zzqhit", folder.folder_name),
+            message_id=f"<{folder.folder_name}-zzqhit@example.com>",
+        )
+    return app, index
+
+
+async def test_marks_spanning_folders_are_each_archived_from_their_own() -> None:
+    """One source folder for all of them left half the marks behind.
+
+    Reproduced before the fix: the INBOX row became PENDING_MOVE in
+    Archive, the Work row stayed ACTIVE in Work, and the user got
+    "Failed to move message in local mirror." beside "Archived to
+    Archive." — with the marks cleared, so there was nothing to retry.
+    """
+    app, index = _search_across_two_folders("main-archive-spanning")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        tree = screen.query_one(FolderPanel)
+        tree.move_cursor(tree.root.children[0])
+        await pilot.pause()
+        panel = screen.query_one(MessageListPanel)
+        screen._run_search("zzqneedle")
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert panel.row_count == 2
+
+        # Mark both rows, from two different folders.
+        panel.move_cursor(row=0)
+        panel.action_mark_down()
+        panel.action_mark_down()
+        await pilot.pause()
+        assert len(panel.marked_summaries()) == 2
+
+        screen.action_archive()
+        await pilot.pause()
+
+    archived = list(
+        index.list_folder_messages(
+            folder=FolderRef(account_name="acct", folder_name="Archive"),
+        ),
+    )
+    assert len(archived) == 2
+    assert {row.local_status for row in archived} == {MessageStatus.PENDING_MOVE}
+    for name in ("INBOX", "Work"):
+        left = list(
+            index.list_folder_messages(
+                folder=FolderRef(account_name="acct", folder_name=name),
+            ),
+        )
+        # The row moves to Archive rather than staying behind; what
+        # matters is that *neither* source folder kept its message.
+        assert left == []
+    # One report, not two contradicting each other.
+    assert not any("Failed to move" in m for m in messages)
+    assert sum("Archived to Archive" in m for m in messages) == 1
+
+
+async def test_an_action_on_a_search_hit_keeps_the_search_on_screen() -> None:
+    """Triage from a search used to mean one search per message."""
+    app, _index = _search_across_two_folders("main-search-survives")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        tree = screen.query_one(FolderPanel)
+        tree.move_cursor(tree.root.children[0])
+        await pilot.pause()
+        panel = screen.query_one(MessageListPanel)
+        screen._run_search("zzqneedle")
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert panel.in_search
+        assert panel.row_count == 2
+
+        # Flagging a hit is the cheapest action that repaints the list.
+        screen.action_toggle_flagged()
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert panel.in_search
+        assert str(panel.border_title).startswith("Search: zzqneedle")
+        assert panel.row_count == 2
+
+        # And an archive, which removes a row from its folder, leaves the
+        # remaining hit listed rather than dropping back to the folder.
+        screen.action_archive()
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert panel.in_search
+
+
+async def test_leaving_the_search_stops_an_action_from_re_running_it() -> None:
+    app, _index = _search_across_two_folders("main-search-exit")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        tree = screen.query_one(FolderPanel)
+        tree.move_cursor(tree.root.children[0])
+        await pilot.pause()
+        panel = screen.query_one(MessageListPanel)
+        screen._run_search("zzqneedle")
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        screen.on_message_list_panel_search_exit_requested(
+            MessageListPanel.SearchExitRequested(),
+        )
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert screen._search is None
+        assert not panel.in_search
+        screen.action_toggle_flagged()
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert not panel.in_search

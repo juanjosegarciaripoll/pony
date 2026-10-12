@@ -114,7 +114,11 @@ async def test_plan_error_dismisses_modal_and_notifies() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _main(app)
-        app.push_screen(SyncConfirmScreen.planning())
+        modal = SyncConfirmScreen.planning()
+        # `action_sync` is what normally hands the screen its dialog;
+        # these tests push one themselves, so they hand it over too.
+        screen._sync_screen = modal
+        app.push_screen(modal)
         await pilot.pause()
         screen._on_plan_complete(
             _worker(
@@ -140,6 +144,7 @@ async def test_nonempty_plan_is_shown_for_confirmation() -> None:
         screen = _main(app)
         modal = SyncConfirmScreen.planning()
         modal.show_plan = Mock()
+        screen._sync_screen = modal
         app.push_screen(modal)
         await pilot.pause()
         screen._on_plan_complete(
@@ -196,6 +201,7 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         modal = SyncConfirmScreen.planning()
         modal.update_progress = Mock()
         modal.dismiss = Mock()
+        screen._sync_screen = modal
         app.push_screen(modal)
         await pilot.pause()
 
@@ -214,6 +220,7 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         assert messages[-1] == "Sync failed: fictional execution failure"
 
         modal.dismiss.reset_mock()
+        screen._sync_screen = modal
         screen._on_exec_complete(
             _worker(
                 name="sync-exec",
@@ -368,3 +375,143 @@ async def test_starting_the_exec_worker_without_a_plan_is_a_noop() -> None:
         await pilot.pause()
 
         screen.run_worker.assert_not_called()
+
+
+async def test_the_plan_still_reaches_the_dialog_under_the_help_screen() -> None:
+    """`f1` over the modal used to strand it with no way out.
+
+    `DialogScreen` does not refuse app-level keys, so `f1` pushes help
+    on top of the sync dialog.  The completion handlers asked whether
+    `self.app.screen` *was* the dialog — false with help in front — so
+    the plan never arrived, nothing dismissed anything, and the
+    scheduler's slot stayed claimed for the rest of the session.
+    """
+    from pony.tui.screens.help_screen import HelpScreen
+
+    app, *_ = build_pony_app(label="main-sync-plan-under-help")
+    plan = SyncPlan(
+        accounts=(AccountSyncPlan(account_name="acct", folders=(), creates=("New",)),)
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        modal = SyncConfirmScreen.planning()
+        modal.show_plan = Mock()
+        screen._sync_screen = modal
+        app.push_screen(modal)
+        await pilot.pause()
+        app.push_screen(HelpScreen())
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+
+        screen._on_plan_complete(
+            _worker(name="sync-plan", state=_State.SUCCESS, result=plan)
+        )
+        await pilot.pause()
+
+        modal.show_plan.assert_called_once_with(plan)
+        # And progress still lands on the dialog, not on whatever is on top.
+        info = ProgressInfo("Scanning", current=1, total=2)
+        modal.update_progress = Mock()
+        screen._sync_progress(info)
+        modal.update_progress.assert_called_once_with(info)
+
+
+async def test_a_sync_that_fails_under_the_help_screen_still_closes() -> None:
+    """Popping what is above it first is what makes the dialog closable.
+
+    ``Screen.dismiss`` pops the *top* of the stack, so dismissing the
+    dialog with help in front would close the help screen and fire the
+    dialog's callback — leaving the modal behind and the slot claimed.
+    """
+    from pony.tui.screens.help_screen import HelpScreen
+
+    app, *_ = build_pony_app(label="main-sync-fail-under-help")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen.action_sync = Mock()  # type: ignore[method-assign]
+        modal = SyncConfirmScreen.planning()
+        screen._sync_screen = modal
+        app.push_screen(modal)
+        await pilot.pause()
+        app.push_screen(HelpScreen())
+        await pilot.pause()
+
+        screen._on_plan_complete(
+            _worker(
+                name="sync-plan",
+                state=_State.ERROR,
+                error=RuntimeError("fictional planning failure"),
+            )
+        )
+        await pilot.pause()
+
+        # Both screens are gone and the reader is back.
+        assert isinstance(app.screen, MainScreen)
+        assert modal not in app.screen_stack
+        assert screen._sync_screen is None
+
+    assert messages == ["Sync planning failed: fictional planning failure"]
+
+
+async def test_escape_backs_out_of_the_dialog_while_it_is_still_planning() -> None:
+    """`on_key` returned early on `_planning`, swallowing every way out."""
+    app, *_ = build_pony_app(label="main-sync-escape-planning")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = SyncConfirmScreen.planning()
+        app.push_screen(modal)
+        await pilot.pause()
+        assert app.screen is modal
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert isinstance(app.screen, MainScreen)
+
+
+async def test_a_dialog_that_is_already_syncing_refuses_to_be_abandoned() -> None:
+    """A half-applied sync is not something this dialog can walk away from."""
+    app, *_ = build_pony_app(label="main-sync-escape-syncing")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = SyncConfirmScreen.planning()
+        app.push_screen(modal)
+        await pilot.pause()
+        modal._planning = False
+        modal._syncing = True
+
+        await pilot.press("escape")
+        await pilot.press("q")
+        await pilot.pause()
+
+        assert app.screen is modal
+
+
+async def test_a_failed_background_sync_still_repaints_the_list() -> None:
+    """A rolled-back run leaves the list claiming state the server lost."""
+    from chronos.scheduler import SyncOutcome
+
+    app, *_ = build_pony_app(label="main-sync-failed-repaint")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._refresh_after_sync = Mock()  # type: ignore[method-assign]
+
+        screen.on_sync_finished(
+            SyncOutcome(
+                result=None,
+                error=RuntimeError("fictional failure"),
+                manual=True,
+            ),
+        )
+        await pilot.pause()
+
+        screen._refresh_after_sync.assert_called_once()

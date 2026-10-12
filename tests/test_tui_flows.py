@@ -599,7 +599,7 @@ async def test_copy_to_folder() -> None:
         screen = app.screen
         assert isinstance(screen, MainScreen)
         msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
-        screen._copy_to_folder(msgs, folder, drafts)  # noqa: SLF001
+        screen._copy_to_folder(msgs, drafts)  # noqa: SLF001
 
     source_rows = list(index.list_folder_messages(folder=folder))
     drafts_rows = list(index.list_folder_messages(folder=drafts))
@@ -2641,7 +2641,7 @@ async def test_move_to_folder_direct() -> None:
         assert isinstance(screen, MainScreen)
         msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
         # Call _move_to_folder directly
-        screen._move_to_folder(msgs, folder, archive)  # noqa: SLF001
+        screen._move_to_folder(msgs, archive)  # noqa: SLF001
 
     # Row should be moved to Archive folder
     from pony.domain import MessageStatus
@@ -2688,7 +2688,7 @@ async def test_move_cross_account_direct() -> None:
         screen = app.screen
         assert isinstance(screen, MainScreen)
         msgs = [m for m in [index.get_message(message_ref=source_ref)] if m]
-        screen._move_to_folder(msgs, folder1, folder2)  # noqa: SLF001
+        screen._move_to_folder(msgs, folder2)  # noqa: SLF001
 
     # Check that a message was created in acct2/INBOX
     dest_msgs = list(index.list_folder_messages(folder=folder2))
@@ -3036,7 +3036,7 @@ async def test_move_cross_account_unreadable_source_is_reported() -> None:
         assert isinstance(screen, MainScreen)
         msg = index.get_message(message_ref=source_ref)
         assert msg is not None
-        screen._move_to_folder([msg], folder1, folder2)
+        screen._move_to_folder([msg], folder2)
 
     assert any("Could not read source message" in n for n in notifications)
     assert len(index.list_folder_messages(folder=folder2)) == 0
@@ -3058,7 +3058,7 @@ async def test_move_cross_account_unwritable_target_is_reported() -> None:
         assert isinstance(screen, MainScreen)
         msg = index.get_message(message_ref=source_ref)
         assert msg is not None
-        screen._move_to_folder([msg], folder1, folder2)
+        screen._move_to_folder([msg], folder2)
 
     assert any("Failed to write copy to INBOX" in n for n in notifications)
     # Source row survives so the user can retry.
@@ -3105,7 +3105,7 @@ async def test_move_from_read_only_folder_is_refused() -> None:
         assert isinstance(screen, MainScreen)
         msg = index.get_message(message_ref=source_ref)
         assert msg is not None
-        screen._move_to_folder([msg], folder1, folder2)
+        screen._move_to_folder([msg], folder2)
 
     assert any("read-only folder" in n for n in notifications)
     assert len(index.list_folder_messages(folder=folder2)) == 0
@@ -3328,7 +3328,7 @@ async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
         assert isinstance(screen, MainScreen)
         msg = index.get_message(message_ref=source_ref)
         assert msg is not None
-        screen._move_to_folder([msg], folder1, folder2)  # noqa: SLF001
+        screen._move_to_folder([msg], folder2)  # noqa: SLF001
 
     assert any("excluded from sync" in n for n in notifications)
     assert len(index.list_folder_messages(folder=folder2)) == 0
@@ -3351,7 +3351,7 @@ async def test_move_to_a_read_only_target_is_refused() -> None:
         assert isinstance(screen, MainScreen)
         msg = index.get_message(message_ref=source_ref)
         assert msg is not None
-        screen._move_to_folder([msg], folder1, folder2)  # noqa: SLF001
+        screen._move_to_folder([msg], folder2)  # noqa: SLF001
 
     assert any("is read-only" in n for n in notifications)
     assert len(index.list_folder_messages(folder=folder2)) == 0
@@ -3383,7 +3383,7 @@ async def test_copy_reports_an_unreadable_source_and_skips_it() -> None:
             raise OSError("mirror unreadable")
 
         mirrors["acct"].get_message_bytes = _boom  # type: ignore[method-assign]
-        screen._copy_to_folder([msg], folder, drafts)  # noqa: SLF001
+        screen._copy_to_folder([msg], drafts)  # noqa: SLF001
 
     assert any("Could not read source message" in n for n in notifications)
     assert len(index.list_folder_messages(folder=drafts)) == 0
@@ -3415,7 +3415,7 @@ async def test_copy_reports_an_unwritable_target_and_skips_it() -> None:
             raise OSError("target full")
 
         mirrors["acct"].store_message = _boom  # type: ignore[method-assign]
-        screen._copy_to_folder([msg], folder, drafts)  # noqa: SLF001
+        screen._copy_to_folder([msg], drafts)  # noqa: SLF001
 
     assert any("Failed to write copy to Drafts" in n for n in notifications)
     assert len(index.list_folder_messages(folder=drafts)) == 0

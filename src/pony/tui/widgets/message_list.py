@@ -68,9 +68,11 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     # The bottom border doubles as the resize handle for this pane.
     DRAG_EDGE = "bottom"
 
+    # In the table's own order, so `tests/test_keymap.py` can compare the
+    # whole list rather than a set and notice an extra entry.
     BINDINGS = [
-        *MOTION_BINDINGS,
         *MARK_BINDINGS,
+        *MOTION_BINDINGS,
     ]
 
     @dataclass
@@ -250,13 +252,33 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
             return None
         return min(restore_row, len(summaries) - 1)
 
+    @property
+    def in_search(self) -> bool:
+        """True while the rows on screen are search results, not a folder.
+
+        The screen has to know: a list action that reloaded the folder
+        would drop out of search, so triaging a result set meant running
+        the search again for every message.
+        """
+        return self._in_search
+
     def load_search_results(
-        self, messages: list[IndexedMessage], query_raw: str
+        self,
+        messages: list[IndexedMessage],
+        query_raw: str,
+        *,
+        restore_row: int | None = None,
+        restore_key: str | None = None,
     ) -> None:
         """Replace the table contents with search results.
 
         Search still returns full ``IndexedMessage`` objects; project
         them down to summaries here so the panel state is uniform.
+
+        *restore_row* and *restore_key* mean what they do in
+        :meth:`load_folder`: they are what lets the screen re-run a
+        search after an action without throwing the cursor back to the
+        top of the hit list.
         """
         self._in_search = True
         self._marked.clear()
@@ -271,6 +293,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         msgs.sort(key=lambda m: m.received_at, reverse=True)
         summaries = [summary_of(m) for m in msgs]
         self._summaries = summaries
+        self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
         self._load_worker = self._stream_rows(summaries)
         if not msgs:
             self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"

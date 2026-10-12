@@ -606,6 +606,54 @@ def resolve_messages(
     return resolved
 
 
+def group_by_folder(
+    messages: Sequence[IndexedMessage],
+) -> dict[FolderRef, list[IndexedMessage]]:
+    """*messages* split by the folder each one is actually in.
+
+    Every folder-scoped operation here — move, archive, copy — takes a
+    *source* and applies it to all the messages it is given.  A front
+    end showing search results can have the user mark rows from several
+    folders at once, and handing the first row's folder to all of them
+    moved the ones that matched and reported a mirror failure for the
+    rest, with the marks cleared so there was nothing to retry.  So the
+    caller loops over this instead of guessing, and the first key is the
+    folder the first message is in, which keeps the common single-folder
+    case reporting in the order the rows were marked.
+    """
+    grouped: dict[FolderRef, list[IndexedMessage]] = {}
+    for msg in messages:
+        folder = FolderRef(
+            account_name=msg.message_ref.account_name,
+            folder_name=msg.message_ref.folder_name,
+        )
+        grouped.setdefault(folder, []).append(msg)
+    return grouped
+
+
+def merge_outcomes(outcomes: Sequence[Outcome]) -> Outcome:
+    """One report for an operation that ran once per folder.
+
+    The user asked for one thing and should hear about it once, so
+    notices with the same text and severity collapse — two folders
+    archived into the same Archive would otherwise say "Archived to
+    Archive." twice.  Anything that differs is kept in the order it was
+    produced, because a failure in one folder is exactly what must not
+    be swallowed by a success in another.
+    """
+    changed = 0
+    notices: list[Notice] = []
+    seen: set[Notice] = set()
+    for outcome in outcomes:
+        changed += outcome.changed
+        for notice in outcome.notices:
+            if notice in seen:
+                continue
+            seen.add(notice)
+            notices.append(notice)
+    return Outcome(changed=changed, notices=tuple(notices))
+
+
 def _mirror_pair(
     mailboxes: Mailboxes,
     source: FolderRef,
@@ -636,7 +684,9 @@ __all__ = [
     "check_move_policy",
     "copy_messages",
     "create_folder",
+    "group_by_folder",
     "mark_folder_read",
+    "merge_outcomes",
     "move_messages",
     "resolve_messages",
     "retire_message",

@@ -87,6 +87,24 @@ from ..widgets.message_view import MessageViewPanel
 if TYPE_CHECKING:
     from ...calendar import CalendarRuntime
     from ..app import MailSyncHost
+    from .sync_confirm_screen import SyncConfirmScreen
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SearchContext:
+    """What it takes to run the user's search again.
+
+    A list action used to reload the open folder, which exits search
+    mode, so triaging a result set was one search per message — archive,
+    trash, flag, mark-unread, move and replying all did it.  The browser
+    keeps the query in its URL; this is the terminal's equivalent, and
+    it carries the scope as well as the words because the scope came
+    from where the tree cursor happened to be.
+    """
+
+    raw: str
+    account_name: str
+    folder: FolderRef | None
 
 
 class MainScreen(Screen[None]):
@@ -176,8 +194,15 @@ class MainScreen(Screen[None]):
         # invitation into.
         self._calendar = calendar
         self._current_folder_ref: FolderRef | None = None
+        # The search the list is showing, so an action can repaint it
+        # instead of dropping back to the folder (see `_repaint_list`).
+        self._search: SearchContext | None = None
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
+        # The sync dialog itself, rather than "whatever is on top of the
+        # stack": `f1` over the modal puts the help screen there, and the
+        # completion handlers then found no dialog to show the plan in.
+        self._sync_screen: SyncConfirmScreen | None = None
         # True while the foreground flow holds the scheduler's slot, so
         # the periodic thread defers instead of opening a second session.
         self._holds_sync_slot = False
@@ -301,6 +326,9 @@ class MainScreen(Screen[None]):
     ) -> None:
         event.stop()
         self._current_folder_ref = event.folder_ref
+        # Opening a folder is leaving the search, so an action in it must
+        # not re-run one.
+        self._search = None
         self._folder_context = (
             f"{event.folder_ref.account_name}/{event.folder_ref.folder_name}"
         )
@@ -456,6 +484,7 @@ class MainScreen(Screen[None]):
             return
         msg_list = self.query_one(MessageListPanel)
         msg_list.exit_search()
+        self._search = None
         if self._current_folder_ref is not None:
             msg_list.load_folder(
                 self._current_folder_ref,
@@ -527,11 +556,19 @@ class MainScreen(Screen[None]):
         screen = SyncConfirmScreen.planning(
             on_confirm=self._start_sync_worker,
         )
+        # Held, not looked up: `f1` over the modal pushes the help
+        # screen on top of it, and the completion handlers used to ask
+        # whether `self.app.screen` *was* the dialog — false with help in
+        # front, so planning never showed its plan, nothing dismissed
+        # anything, and the scheduler slot stayed claimed for the rest of
+        # the session.
+        self._sync_screen = screen
 
         def _on_dismiss(result: bool | None) -> None:
             # Every way out of the foreground flow ends with this dialog
             # being dismissed — cancelled, nothing to sync, planning
             # failed, or executed — so this is where the slot goes back.
+            self._sync_screen = None
             self._release_sync_slot()
             if result is False:
                 self.app.notify("Sync cancelled.")  # pyright: ignore[reportUnknownMemberType]
@@ -577,13 +614,27 @@ class MainScreen(Screen[None]):
         elif worker.name == "sync-exec":
             self._on_exec_complete(worker)  # pyright: ignore[reportUnknownArgumentType]
 
+    def _dismiss_sync_screen(self, result: bool | None) -> None:
+        """Close the sync dialog, whatever is in front of it.
+
+        ``Screen.dismiss`` pops the *top* of the stack, so with the help
+        screen over the modal it would close the help screen and fire
+        the dialog's callback.  Anything above the dialog is popped
+        first, which also brings the sync result back into view.
+        """
+        screen = self._sync_screen
+        if screen is None:
+            return
+        self._sync_screen = None
+        if screen not in self.app.screen_stack:  # pyright: ignore[reportUnknownMemberType]
+            return
+        screen.pop_until_active()
+        screen.dismiss(result)
+
     def _on_plan_complete(self, worker: Worker[SyncPlan]) -> None:
         """Planning finished — show the confirm screen or report error."""
-        from .sync_confirm_screen import SyncConfirmScreen
-
         if worker.state == worker.state.ERROR:
-            if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-                self.app.screen.dismiss(None)  # pyright: ignore[reportUnknownMemberType]
+            self._dismiss_sync_screen(None)
             err = worker.error
             msg = str(err) if err else "unknown error"
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
@@ -594,19 +645,16 @@ class MainScreen(Screen[None]):
 
         plan: SyncPlan | None = worker.result
         if plan is None or plan.is_empty():
-            if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-                self.app.screen.dismiss(None)  # pyright: ignore[reportUnknownMemberType]
+            self._dismiss_sync_screen(None)
             self.app.notify("Nothing to sync.")  # pyright: ignore[reportUnknownMemberType]
             return
 
         self._sync_plan = plan
-        if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-            self.app.screen.show_plan(plan)  # pyright: ignore[reportUnknownMemberType]
+        if self._sync_screen is not None:
+            self._sync_screen.show_plan(plan)
 
     def _on_exec_complete(self, worker: Worker[SyncResult]) -> None:
         """Execution finished — dismiss screen and refresh."""
-        from .sync_confirm_screen import SyncConfirmScreen
-
         if worker.state == worker.state.ERROR:
             err = worker.error
             msg = str(err) if err else "unknown error"
@@ -614,9 +662,9 @@ class MainScreen(Screen[None]):
         else:
             self.app.notify(describe_sync_result(worker.result))  # pyright: ignore[reportUnknownMemberType]
             self._announce_new_mail(worker.result)
-        if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-            dismiss_result = True if worker.state == worker.state.SUCCESS else None
-            self.app.screen.dismiss(dismiss_result)  # pyright: ignore[reportUnknownMemberType]
+        self._dismiss_sync_screen(
+            True if worker.state == worker.state.SUCCESS else None,
+        )
 
     def set_companion_status(self, text: str) -> None:
         """Show *text* beside the open folder, or drop it when empty.
@@ -657,10 +705,8 @@ class MainScreen(Screen[None]):
 
     def _sync_progress(self, info: ProgressInfo) -> None:
         """Update the sync screen's status (called from worker thread)."""
-        from .sync_confirm_screen import SyncConfirmScreen
-
-        if isinstance(self.app.screen, SyncConfirmScreen):  # pyright: ignore[reportUnknownMemberType]
-            self.app.screen.update_progress(info)  # pyright: ignore[reportUnknownMemberType]
+        if self._sync_screen is not None:
+            self._sync_screen.update_progress(info)
 
     def _scheduler(self) -> MailSyncScheduler | None:
         """The periodic sync, which the application owns.
@@ -738,11 +784,14 @@ class MainScreen(Screen[None]):
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 f"Background sync failed: {outcome.error}", severity="error"
             )
+            # Still repaint: a failed run has rolled back, and a list
+            # left showing the state it rolled back from is a list that
+            # lies about what is on the server.
+            self.call_after_refresh(self._refresh_after_sync)
             return
-        if outcome.result is None:
-            return
-        self.app.notify(describe_sync_result(outcome.result))  # pyright: ignore[reportUnknownMemberType]
-        self._announce_new_mail(outcome.result)
+        if outcome.result is not None:
+            self.app.notify(describe_sync_result(outcome.result))  # pyright: ignore[reportUnknownMemberType]
+            self._announce_new_mail(outcome.result)
         self.call_after_refresh(self._refresh_after_sync)
 
     # ------------------------------------------------------------------
@@ -833,8 +882,6 @@ class MainScreen(Screen[None]):
         self.app.push_screen(SearchDialogScreen(), _on_query)  # pyright: ignore[reportUnknownMemberType]
 
     def _run_search(self, raw: str) -> None:
-        from ...search_parser import parse_query
-
         folder_panel = self.query_one(FolderPanel)
         account_name, folder_ref = folder_panel.get_search_scope()
         if account_name is None:
@@ -843,18 +890,50 @@ class MainScreen(Screen[None]):
             )
             return
 
-        query = parse_query(raw)
-        results = list(self._index.search(query=query, account_name=account_name))
-        if folder_ref is not None:
+        self._search = SearchContext(
+            raw=raw,
+            account_name=account_name,
+            folder=folder_ref,
+        )
+        self._show_search_results(keep_cursor=False)
+        self.query_one(MessageListPanel).focus()
+
+    def _show_search_results(self, *, keep_cursor: bool = True) -> None:
+        """Run :attr:`_search` again and put its hits in the list.
+
+        Called both by the search dialog and by every action that
+        changes a row, which is what keeps the result set on screen
+        instead of dropping back to the open folder.
+
+        *keep_cursor* follows the message the cursor was on, which is
+        what an action wants and a fresh search does not: the row the
+        cursor sat on in the folder it came from means nothing in a hit
+        list.
+        """
+        from ...search_parser import parse_query
+
+        search = self._search
+        if search is None:
+            return
+        query = parse_query(search.raw)
+        results = list(
+            self._index.search(query=query, account_name=search.account_name),
+        )
+        if search.folder is not None:
             results = [
                 m
                 for m in results
-                if m.message_ref.folder_name == folder_ref.folder_name
+                if m.message_ref.folder_name == search.folder.folder_name
             ]
 
         msg_list = self.query_one(MessageListPanel)
-        msg_list.load_search_results(results, raw)
-        msg_list.focus()
+        summary = msg_list.get_selected_summary() if keep_cursor else None
+        msg_list.load_search_results(
+            results,
+            search.raw,
+            restore_row=msg_list.effective_cursor_row if keep_cursor else None,
+            restore_key=None if summary is None else str(summary.message_ref.id),
+        )
 
     # ------------------------------------------------------------------
     # Goto folder
@@ -885,10 +964,10 @@ class MainScreen(Screen[None]):
 
     def _refresh_after_sync(self) -> None:
         self._refresh_folder_indicators()
-        if self._current_folder_ref is not None:
-            # A background sync can land at any moment; it must not move
-            # the cursor out from under someone reading their mail.
-            self._reload_keeping_cursor(self._current_folder_ref)
+        # A background sync can land at any moment; it must not move the
+        # cursor out from under someone reading their mail, and it must
+        # not throw away a search they are triaging either.
+        self._repaint_list()
 
     # ------------------------------------------------------------------
     # Contextual action gating
@@ -979,15 +1058,36 @@ class MainScreen(Screen[None]):
             show_recipients=self._in_sent_folder(folder_ref),
         )
 
-    def _reload_folder(self, folder_ref: FolderRef) -> None:
-        self._reload_keeping_cursor(folder_ref)
+    def _repaint_list(self) -> None:
+        """Reload whatever the list is showing, keeping the cursor.
+
+        The list shows either one folder or a set of search results, and
+        an action has to leave it showing the same one.  Reloading the
+        open folder unconditionally — which archive, trash, flag,
+        mark-unread, move and replying all did — exits search mode, so
+        triaging from a search was one search per message.
+
+        Nor is the folder to reload the *source* the action was given:
+        in a search the marks can come from anywhere, and reloading one
+        of their folders left the panel and the screen disagreeing about
+        which folder is open, with the From/To column chosen from the
+        wrong one.
+        """
+        if self.query_one(MessageListPanel).in_search:
+            self._show_search_results()
+        elif self._current_folder_ref is not None:
+            self._reload_keeping_cursor(self._current_folder_ref)
+
+    def _refresh_after_list_action(self) -> None:
+        """Repaint the list, the open message and the folder counts."""
+        self._repaint_list()
         self._refresh_view_after_reload()
         self._refresh_folder_indicators()
 
     def _refresh_view_after_reload(self) -> None:
         """Sync the message view to the current cursor row.
 
-        After ``_reload_folder`` the row that was open may have been
+        After ``_repaint_list`` the row that was open may have been
         removed (archive/trash/move) or its content may have shifted.
         Without this the view pane keeps showing the stale message.
         """
@@ -1046,7 +1146,15 @@ class MainScreen(Screen[None]):
 
         The shape every list action shares: resolve what the cursor and
         the marks point at, hand it to the model, say what came back and
-        reload the folder it happened in.
+        repaint.
+
+        *act* takes a source folder, and in search results the marks can
+        span folders, so it runs once per folder rather than once with
+        the first row's folder standing in for all of them.  Doing it
+        the other way archived the rows that happened to match and
+        reported "Failed to move message in local mirror." for the rest,
+        in the same breath as "Archived to Archive." — and cleared the
+        marks, so there was nothing left to retry.
         """
         targets = self._targets()
         if not targets:
@@ -1054,11 +1162,13 @@ class MainScreen(Screen[None]):
         messages = self._resolve_targets(targets)
         if not messages:
             return
-        source = self._folder_ref_from_summary(targets[0])
-        outcome = act(messages, source)
+        outcomes = [
+            act(group, source)
+            for source, group in mailbox_actions.group_by_folder(messages).items()
+        ]
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(source)
-        self._report(outcome)
+        self._refresh_after_list_action()
+        self._report(mailbox_actions.merge_outcomes(outcomes))
 
     def set_flag(self, flag: MessageFlag, *, present: bool) -> None:
         """Add or remove *flag* on every target message and refresh."""
@@ -1141,15 +1251,18 @@ class MainScreen(Screen[None]):
         self,
         *,
         verb: str,
-        on_chosen: collections.abc.Callable[
-            [list[IndexedMessage], FolderRef, FolderRef], None
-        ],
+        on_chosen: collections.abc.Callable[[list[IndexedMessage], FolderRef], None],
     ) -> None:
         """Resolve the marked messages and prompt for a destination folder.
 
         Shared skeleton for :meth:`action_copy` / :meth:`action_move`: gathers
         the targets, opens :class:`PickFolderScreen` titled with *verb*, and on
-        a non-cancel dismissal invokes ``on_chosen(messages, source, target)``.
+        a non-cancel dismissal invokes ``on_chosen(messages, target)``.
+
+        The source folder names the dialog and is what it excludes from
+        the list, so it is the folder under the cursor — but it is not
+        passed on, because in search results the marks can come from
+        several folders and only each message knows which is its own.
         """
         summaries = self._targets()
         if not summaries:
@@ -1171,19 +1284,21 @@ class MainScreen(Screen[None]):
         def _on_dismiss(target: FolderRef | None) -> None:
             if target is None:
                 return
-            on_chosen(messages, source_ref, target)
+            on_chosen(messages, target)
 
         self.app.push_screen(screen, _on_dismiss)  # type: ignore[arg-type] # pyright: ignore[reportUnknownMemberType]
 
     def _copy_to_folder(
         self,
         targets: list[IndexedMessage],
-        source: FolderRef,
         target: FolderRef,
     ) -> None:
-        """Copy every *targets* row from *source* into *target*."""
-        outcome = mailbox_actions.copy_messages(
-            self._mailboxes, targets, source, target
+        """Copy every *targets* row from its own folder into *target*."""
+        outcome = mailbox_actions.merge_outcomes(
+            [
+                mailbox_actions.copy_messages(self._mailboxes, group, source, target)
+                for source, group in mailbox_actions.group_by_folder(targets).items()
+            ],
         )
         self.query_one(MessageListPanel).clear_marks()
         self._report(outcome)
@@ -1217,15 +1332,17 @@ class MainScreen(Screen[None]):
     def _move_to_folder(
         self,
         targets: list[IndexedMessage],
-        source: FolderRef,
         target: FolderRef,
     ) -> None:
-        """Move every *targets* row from *source* into *target*."""
-        outcome = mailbox_actions.move_messages(
-            self._mailboxes, targets, source, target
+        """Move every *targets* row out of its own folder into *target*."""
+        outcome = mailbox_actions.merge_outcomes(
+            [
+                mailbox_actions.move_messages(self._mailboxes, group, source, target)
+                for source, group in mailbox_actions.group_by_folder(targets).items()
+            ],
         )
         self.query_one(MessageListPanel).clear_marks()
-        self._reload_folder(source)
+        self._refresh_after_list_action()
         self._report(outcome)
 
     # ------------------------------------------------------------------
@@ -1447,12 +1564,7 @@ class MainScreen(Screen[None]):
             # The reply itself marked the original answered; this is
             # only the repaint that makes the mark visible.
             if result:
-                self._reload_folder(
-                    FolderRef(
-                        account_name=msg.message_ref.account_name,
-                        folder_name=msg.message_ref.folder_name,
-                    ),
-                )
+                self._refresh_after_list_action()
 
         self._open_composer(
             reply_draft(
@@ -1536,7 +1648,7 @@ class MainScreen(Screen[None]):
             # here is the repaint.
             if result is None:
                 return
-            self._reload_folder(folder_ref)
+            self._refresh_after_list_action()
 
         self._open_composer(
             resumed_draft(
