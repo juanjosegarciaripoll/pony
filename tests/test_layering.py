@@ -87,6 +87,7 @@ _BACKEND_MODULES = (
     # `http.server` only, no Starlette, and no widget tree either.
     "pony.browser_preview",
     "pony.html_policy",
+    "pony.handoff",
     "pony.web",
 )
 

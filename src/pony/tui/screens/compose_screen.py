@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 import subprocess
-import tempfile
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -40,6 +39,7 @@ from ...domain import (
     AppConfig,
     IndexedMessage,
 )
+from ...handoff import handoff_path
 from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
 from ...protocols import (
@@ -730,17 +730,18 @@ class ComposeScreen(Screen[bool]):
         body_area = self.query_one("#body-area", TextArea)
         current_text = body_area.text
 
-        with tempfile.NamedTemporaryFile(
-            suffix=".txt", delete=False, mode="w", encoding="utf-8"
-        ) as f:
-            f.write(current_text)
-            tmppath = Path(f.name)
+        # Under the data directory, and removed whatever happens: a
+        # draft left in the system temporary directory is the message
+        # the user was writing, kept where nothing clears it.
+        tmppath = handoff_path(".txt")
+        tmppath.write_text(current_text, encoding="utf-8")
+        try:
+            with self.app.suspend():  # pyright: ignore[reportUnknownMemberType]
+                subprocess.run([editor, str(tmppath)], check=False)  # noqa: S603
 
-        with self.app.suspend():  # pyright: ignore[reportUnknownMemberType]
-            subprocess.run([editor, str(tmppath)], check=False)  # noqa: S603
-
-        new_text = tmppath.read_text(encoding="utf-8")
-        tmppath.unlink(missing_ok=True)
+            new_text = tmppath.read_text(encoding="utf-8")
+        finally:
+            tmppath.unlink(missing_ok=True)
         body_area.load_text(new_text)
 
     def action_add_attachment(self) -> None:

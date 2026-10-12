@@ -766,7 +766,7 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
     from pony.tui.widgets.message_view import MessageViewPanel
 
     monkeypatch.setattr(
-        "pony.tui.screens.eml_viewer_screen.tempfile.NamedTemporaryFile",
+        "pony.tui.screens.eml_viewer_screen.handoff_path",
         MagicMock(side_effect=OSError("fictional open failure")),
     )
     app = _make_host(
@@ -774,6 +774,15 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
         corpus.multipart_mixed_attachment(),
         downloads_dir=tmp_path,
     )
+    notifications: list[str] = []
+    original_notify = app.notify
+
+    def _capture(msg: str, **kw: object) -> None:
+        notifications.append(msg)
+        original_notify(msg, **kw)  # type: ignore[arg-type]
+
+    app.notify = _capture  # type: ignore[method-assign]
+
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = app.screen
@@ -783,6 +792,10 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
         panel.save_attachment = MagicMock(side_effect=OSError("fictional save failure"))
         screen.action_save_attachment("1")
         await pilot.pause()
+
+    # The test is named for reporting them, so it checks that it did.
+    assert any("fictional open failure" in note for note in notifications)
+    assert any("fictional save failure" in note for note in notifications)
 
 
 # ===========================================================================

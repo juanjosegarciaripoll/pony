@@ -58,6 +58,7 @@ src/pony/
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
   html_policy.py       # the headers a message's own HTML is shown under
   browser_preview.py   # serves that HTML to the browser over loopback
+  handoff.py           # files written only for an external program to open
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
   search_parser.py     # query language parser

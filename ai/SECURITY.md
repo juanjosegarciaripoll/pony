@@ -141,9 +141,14 @@ second surface.  What stands between them:
   nothing on a top-level page.  `tests/test_html_policy.py` asserts the
   token list, and under `PONY_BROWSER_UI=1` loads a refreshing page in a
   real browser both with the policy and without it.
-- **Not covered:** the attachment viewer still writes
-  `pony-attachment-*` with `delete=False`, because an external viewer
-  needs a real file to open.  Serving cannot answer that one.
+- An external viewer needs a real file, which serving cannot answer, so
+  `handoff.py` answers it instead: the file goes under `data_dir`, in a
+  directory emptied on first use of each run and removed at exit.
+  Emptying on first use is what covers a run that was killed, since an
+  `atexit` hook does not fire then.  Only the extension comes from the
+  message — a viewer is chosen by it — and the name is Pony's own, so
+  no attachment filename is ever used as a path.  The external editor's
+  draft moved there too, and is now removed in a `finally`.
 
 **`tui/screens/main_screen.py`**
 

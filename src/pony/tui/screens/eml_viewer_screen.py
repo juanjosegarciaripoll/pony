@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from ...domain import ViewerRule
+from ...handoff import handoff_path
 from ...message_renderer import extract_attachment
 from ..terminal import (
     launch_file,
@@ -179,13 +179,12 @@ class EmlViewerScreen(Screen[None]):
             else:
                 suffix = Path(payload.filename).suffix
                 try:
-                    with tempfile.NamedTemporaryFile(
-                        delete=False,
-                        suffix=suffix,
-                        prefix="pony-attachment-",
-                    ) as f:
-                        f.write(payload.data)
-                        path = Path(f.name)
+                    # Under the data directory, in a directory emptied
+                    # once per run: a viewer needs a real file, and the
+                    # ones this used to leave in the system temporary
+                    # directory were never removed by anything.
+                    path = handoff_path(suffix)
+                    path.write_bytes(payload.data)
                     # The default viewer may run in this terminal and alter
                     # input modes.  Textual's suspend context restores them.
                     with suspend_for_external_program(self.app):

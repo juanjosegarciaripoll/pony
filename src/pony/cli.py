@@ -44,6 +44,7 @@ from .domain import (
     MessageStatus,
 )
 from .fixture_flow import run_fixture_ingest
+from .handoff import activate as activate_handoff
 from .imap_client import ImapAuthError, ImapSession
 from .index_store import (
     ContactEmailConflictError,
@@ -580,6 +581,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The calendar keeps its files inside the same data directory; it is
     # hosted, so it is told where rather than resolving one of its own.
     activate_calendar(paths.calendar_dir)
+    # Files handed to an external viewer go there too, rather than into
+    # the system temporary directory where nothing removed them.
+    activate_handoff(paths.data_dir)
     if profile:
         try:
             claim_profile(paths.data_dir, profile)
