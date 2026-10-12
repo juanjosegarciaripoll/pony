@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -33,11 +34,27 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from chronos.domain import SyncResult as CalendarSyncResult
+    from chronos.outcome import Notice
 
     from ..calendar import CalendarRuntime
-    from ..sync import ImapSyncService, MailSyncScheduler
+    from ..sync import ImapSyncService, MailSyncScheduler, SyncPlan
 
 _log = logging.getLogger(__name__)
+
+# How long a halted plan is kept while the question about it is out.
+# Long enough for somebody to read what it would delete and decide;
+# short enough that it is not applied against a server that has moved
+# on since.  Past it the answer plans again and says so.
+HELD_PLAN_SECONDS = 300.0
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldPlan:
+    """A plan waiting on an answer, and the folders it halted on."""
+
+    plan: SyncPlan
+    halted: frozenset[str]
+    at: float
 
 
 @dataclass(slots=True)
@@ -54,15 +71,25 @@ class SyncGate:
     calendar: CalendarRuntime | None = None
     scheduler: MailSyncScheduler | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # The plan a halt is waiting on an answer about.  Kept because the
+    # answer has to apply to the plan the question described.
+    _held: _HeldPlan | None = field(default=None, repr=False)
 
     def mail(self, *, confirmed: bool = False) -> Reply:
         """Fetch and push mail, or say why nothing was fetched.
 
-        Planned and executed in two steps, under one claim, because the
-        plan may trip the mass-deletion halt: then nothing is applied
-        and the page is handed the question to ask.  Answering it
-        re-plans with *confirmed*, which is the browser's version of the
-        terminal's dialog -- the engine's own gate, not a second one.
+        Planned and executed in two steps, because the plan may trip the
+        mass-deletion halt: then nothing is applied and the page is
+        handed the question to ask.
+
+        The plan is *held* across that question, and answering applies
+        the plan the question described.  Re-planning on the answer
+        meant the user agreed to one described mass deletion and a
+        freshly computed one was applied -- and it cost a second full
+        IMAP pass to compute.  The slot is released while the question
+        is out, because a server cannot hold it for however long a
+        person takes to read; the held plan expires after
+        :data:`HELD_PLAN_SECONDS` rather than being applied cold.
 
         Blocks for as long as the sync does, so the caller runs it off
         the event loop.
@@ -75,11 +102,21 @@ class SyncGate:
             )
         if not self._claim():
             return Reply(Outcome.refused(info("Sync already running.")))
+        stale: Notice | None = None
         try:
-            plan = self.service.plan()
-            halted = plan.folders_needing_confirmation()
+            held = self._take_held() if confirmed else None
+            if confirmed and held is None:
+                stale = warn(
+                    "The plan you were shown has expired, so this is a fresh one.",
+                )
+            if held is None:
+                plan = self.service.plan()
+                halted = plan.folders_needing_confirmation()
+            else:
+                plan, halted = held.plan, held.halted
             if halted and not confirmed:
                 reason = describe_halt(plan)
+                self._held = _HeldPlan(plan=plan, halted=halted, at=time.monotonic())
                 return Reply(
                     Outcome(changed=0, notices=(warn(reason),)),
                     confirm=Confirmation(
@@ -93,16 +130,18 @@ class SyncGate:
             return Reply(Outcome.refused(failure(f"Sync failed: {exc}")))
         finally:
             self._release()
-        return Reply(
-            Outcome(
-                changed=_changed(result),
-                notices=(
-                    info(
-                        describe_sync_result(result),
-                    ),
-                ),
-            ),
-        )
+        notices = [info(describe_sync_result(result))]
+        if stale is not None:
+            notices.insert(0, stale)
+        return Reply(Outcome(changed=_changed(result), notices=tuple(notices)))
+
+    def _take_held(self) -> _HeldPlan | None:
+        """The plan the question described, if it is still worth applying."""
+        held = self._held
+        self._held = None
+        if held is None or time.monotonic() - held.at > HELD_PLAN_SECONDS:
+            return None
+        return held
 
     def calendars(self) -> Outcome:
         """Sync the calendar, which takes its own cross-process lock."""
@@ -162,19 +201,27 @@ def _changed(result: object) -> int:
 
 
 def _calendar_outcome(results: Sequence[CalendarSyncResult]) -> Outcome:
-    """What a calendar sync did, in one line, plus anything that failed."""
+    """What a calendar sync did, in one line, plus anything it has to say.
+
+    ``notes`` are things that went neither wrong nor unremarked — a
+    collision between a local edit and a server change, resolved one way
+    or the other.  This dropped them, so a conflict the terminal shows
+    for thirty seconds as a warning was silently swallowed here.
+    """
     added = sum(result.components_added for result in results)
     updated = sum(result.components_updated for result in results)
     removed = sum(result.components_removed for result in results)
     errors = [error for result in results for error in result.errors]
+    notes = [note for result in results for note in result.notes]
     notices = [
         info(
             f"Calendar sync complete.  +{added} added, "
             f"{updated} updated, {removed} removed",
         ),
     ]
+    notices.extend(warn(note) for note in notes)
     notices.extend(failure(error) for error in errors)
     return Outcome(changed=added + updated + removed, notices=tuple(notices))
 
 
-__all__ = ["SyncGate"]
+__all__ = ["HELD_PLAN_SECONDS", "SyncGate"]

@@ -585,6 +585,40 @@ def test_a_calendar_sync_error_is_reported() -> None:
     assert "the server refused the credentials" in texts
 
 
+def test_a_resolved_conflict_is_reported_rather_than_swallowed() -> None:
+    """``notes`` is what the terminal shows for thirty seconds as a warning.
+
+    A collision between a local edit and a server change, resolved one
+    way or the other: it did not make the sync a failure and it did not
+    reach the page either, because this was the one of four copies of
+    the sentence that dropped them.
+    """
+    from unittest.mock import patch
+
+    from chronos.domain import SyncResult
+
+    services, _runtime = _services("cal-sync-notes")
+    result = SyncResult(
+        account_name=ACCOUNT,
+        calendars_synced=1,
+        components_added=0,
+        components_updated=1,
+        components_removed=0,
+        errors=(),
+        notes=("kept your edit to 'Design review'; the server's copy differed",),
+    )
+
+    with (
+        patch("chronos.cli.build_sync_runner", return_value=lambda: (result,)),
+        _client(services) as client,
+    ):
+        response = client.post("/action/sync_calendar", data={})
+
+    notices = response.json()["notices"]
+    assert notices[1]["text"].startswith("kept your edit")
+    assert notices[1]["severity"] == "warning"
+
+
 def test_syncing_a_calendar_that_is_not_configured_says_so() -> None:
     services, _runtime = _services("cal-sync-none")
     bare = dataclasses.replace(services, calendar=None)

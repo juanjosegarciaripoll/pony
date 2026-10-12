@@ -957,6 +957,65 @@ def test_answering_the_halt_applies_it_to_the_halted_folders() -> None:
     assert kwargs["confirmed_folders"] == frozenset({"INBOX"})
 
 
+def test_the_sync_applied_is_the_sync_that_was_described() -> None:
+    """Answering used to re-plan, and apply the *new* plan.
+
+    So the user agreed to one described mass deletion and a freshly
+    computed one was applied, and a confirmed sync cost two full IMAP
+    passes instead of one.  The terminal plans once and executes that
+    same object; so does this.
+    """
+    services, _index = _services("web-sync-held-plan")
+    described = _plan(halted=True)
+    later = _plan(halted=True)
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.side_effect = [described, later]
+        service.execute.return_value = _result()
+        with _client(services) as client:
+            asked = client.post("/action/sync", data={})
+            assert "confirm" in asked.json()
+            answered = client.post("/action/sync", data={"confirm": "1"})
+
+    assert answered.json()["changed"] == 3
+    # Planned once, for the question. The answer applied that plan.
+    assert service.plan.call_count == 1
+    (applied,), _kwargs = service.execute.call_args
+    assert applied is described
+
+
+def test_a_plan_nobody_answered_in_time_is_not_applied_cold() -> None:
+    """A server cannot hold a plan for however long a person takes."""
+    import itertools
+
+    from pony.web.syncing import HELD_PLAN_SECONDS
+
+    services, _index = _services("web-sync-stale-plan")
+    described = _plan(halted=True)
+    later = _plan(halted=True)
+
+    with (
+        patch.object(services.sync, "service") as service,
+        # The clock moves past the limit between the question and the
+        # answer, which is what a person taking their time looks like.
+        patch(
+            "pony.web.syncing.time.monotonic",
+            side_effect=itertools.count(0.0, HELD_PLAN_SECONDS + 1),
+        ),
+    ):
+        service.plan.side_effect = [described, later]
+        service.execute.return_value = _result()
+        with _client(services) as client:
+            client.post("/action/sync", data={})
+            answered = client.post("/action/sync", data={"confirm": "1"})
+
+    body = answered.json()
+    assert "expired" in body["notices"][0]["text"]
+    assert service.plan.call_count == 2
+    (applied,), _kwargs = service.execute.call_args
+    assert applied is later
+
+
 def test_an_unhalted_sync_is_never_asked_about() -> None:
     services, _index = _services("web-sync-quiet")
 

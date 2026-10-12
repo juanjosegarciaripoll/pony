@@ -333,11 +333,15 @@ index that lost its UIDs.
 Apply the sync anyway?
 ```
 
-**Nothing is applied until you agree.** Answering yes re-runs the sync
-with that folder confirmed; answering no leaves everything as it was,
-and the other folders are unaffected either way. The guard itself is
-described under [Mail Synchronization → Mass-deletion
-protection](synchronization.md#mass-deletion-protection).
+**Nothing is applied until you agree, and what you agreed to is what is
+applied.** The plan behind the question is kept, so answering yes runs
+*that* plan rather than working out a new one — the same way the
+terminal holds its plan across its dialog. Answering no leaves
+everything as it was, and the other folders are unaffected either way.
+A plan nobody answers within five minutes is dropped rather than applied
+against a server that has moved on; the next answer plans afresh and
+says so. The guard itself is described under [Mail Synchronization →
+Mass-deletion protection](synchronization.md#mass-deletion-protection).
 
 The Calendar tab syncs the calendar instead, which takes a lock of its
 own so a `pony calendar sync` elsewhere cannot collide with it.
