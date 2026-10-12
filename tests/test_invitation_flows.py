@@ -232,6 +232,38 @@ async def test_the_key_says_so_when_no_calendar_has_been_synced() -> None:
         assert any("sync the calendar first" in m.lower() for m in messages), messages
 
 
+async def test_a_second_answer_is_refused_while_the_first_is_in_flight() -> None:
+    """Cancelling the worker does not stop the thread it is waiting on.
+
+    `@work(exclusive=True)` around `asyncio.to_thread` cancels the
+    *worker*; the reply already inside the SMTP conversation keeps
+    going. So two trips through the dialog would file the event twice
+    and answer the organizer twice, and there is no cancellation point
+    to offer instead -- the honest answer is that it is already
+    happening.
+    """
+    folder = FolderRef("acct", "INBOX")
+    runtime = _calendar_with_one_calendar("inv-reentrant")
+    app, *_ = build_pony_app(
+        label="inv-reentrant",
+        seed=((folder, _invitation_mail()),),
+        calendar=runtime,
+    )
+    async with app.run_test() as pilot:
+        await _open_first_message(pilot)
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        screen._answering_invitation = True  # noqa: SLF001
+
+        await pilot.press("i")
+        await pilot.pause()
+
+        # No dialog, and a word about why.
+        assert isinstance(app.screen, MainScreen)
+        messages = [n.message for n in app._notifications]  # noqa: SLF001
+        assert any("Still answering" in m for m in messages), messages
+
+
 async def test_the_key_opens_the_dialog() -> None:
     folder = FolderRef("acct", "INBOX")
     runtime = _calendar_with_one_calendar("inv-dialog")

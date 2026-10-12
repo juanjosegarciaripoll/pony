@@ -389,8 +389,14 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         """Move to the first unread message after the current row.
 
         Returns the summary, or ``None`` if no unread message follows.
+
+        From :attr:`effective_cursor_row`, not from `cursor_row`: while
+        a reload is still streaming the real cursor is at 0 and the row
+        it is heading for may not exist yet, and this is reached by
+        ++space++ -- which is exactly what a reader presses while the
+        rows after a trash are still arriving.
         """
-        start = self.cursor_row + 1
+        start = self.effective_cursor_row + 1
         for i in range(start, len(self._summaries)):
             summary = self._summaries[i]
             if MessageFlag.SEEN not in summary.local_flags:
@@ -447,8 +453,15 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self._repaint_header()
 
     def move_cursor_by(self, delta: int) -> FolderMessageSummary | None:
-        """Move the row cursor by *delta* (±1) and return the new summary."""
-        new_row = self.cursor_row + delta
+        """Move the row cursor by *delta* (±1) and return the new summary.
+
+        Relative to :attr:`effective_cursor_row`, for the same reason
+        `move_cursor_to_next_unread` is: ++n++ and ++p++ during a
+        reload moved from row 0 rather than from the row the reload is
+        restoring to, so the message that opened was the second in the
+        folder.
+        """
+        new_row = self.effective_cursor_row + delta
         if new_row < 0 or new_row >= len(self._summaries):
             return None
         self.move_cursor(row=new_row)

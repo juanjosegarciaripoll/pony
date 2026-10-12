@@ -88,6 +88,34 @@ class IngestFailureTestCase(unittest.TestCase):
         inbox = [s for s in states if s.folder_name == "INBOX"]
         self.assertEqual(inbox, [], "a failed folder must not be watermarked")
 
+    def test_a_write_that_failed_after_its_row_holds_the_watermark(self) -> None:
+        """The bytes are queued, the row is written, and then the disk says no.
+
+        `store_message_async` hands the write to a pool and returns the
+        filename, so the index row is written while the bytes are still
+        in flight. The flush came *after* the transaction, so the
+        watermark was already recorded: the next sync would start past a
+        UID whose message never reached the disk, and nothing but
+        `pony doctor` would ever notice. The flush is inside the
+        transaction now, before the watermark.
+        """
+        service, index, mirror, _session = _setup(
+            server_folders={"INBOX": _server_message(1, "Deferred")}
+        )
+
+        def _boom() -> None:
+            raise OSError("disk full")
+
+        mirror.flush_writes = _boom  # type: ignore[method-assign]
+
+        service.sync()
+
+        # The op itself succeeded -- the failure is the write's, later.
+        self.assertEqual(len(index.list_folder_messages(folder=_PERSONAL_INBOX)), 1)
+        states = index.list_folder_sync_states(account_name="personal")
+        inbox = [state for state in states if state.folder_name == "INBOX"]
+        self.assertEqual(inbox, [], "a folder whose writes failed is not done")
+
 
 class BatchFetchFailureTestCase(unittest.TestCase):
     """The batched FETCH is best-effort; a failure degrades, not aborts."""

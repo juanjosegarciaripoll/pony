@@ -10,6 +10,7 @@ repository would not exercise the streaming loader.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 
 from corpus import plain_text
@@ -890,6 +891,47 @@ async def test_moving_leaves_the_cursor_where_it_was() -> None:
         after = panel.get_selected_summary()
         assert after is not None
         assert after.message_ref.id != before.message_ref.id
+
+
+async def test_n_and_space_move_from_where_the_cursor_is_going() -> None:
+    """Mid-reload, `cursor_row` is 0 and the destination is pending.
+
+    `effective_cursor_row` exists for exactly that window -- its
+    docstring says every caller asking "which message is selected" has
+    to see the destination -- and these two read `cursor_row` instead.
+    They are reached by ++n++, ++p++ and ++space++, which is what a
+    reader presses right after a trash, while the rows are still
+    arriving.
+    """
+    app, *_ = build_pony_app(
+        label="cursor-mid-reload",
+        seed=[(_INBOX, _dated_message(f"subject {i}")) for i in range(6)],
+    )
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        rows = [summary.message_ref.id for summary in panel._summaries]  # noqa: SLF001
+        # The state `_load_rows` is in between two batches: the real
+        # cursor has not moved yet and the row it is heading for is
+        # recorded.
+        panel._pending_cursor = 3  # noqa: SLF001
+        assert panel.cursor_row == 0
+        assert panel.effective_cursor_row == 3
+
+        stepped = panel.move_cursor_by(1)
+        assert stepped is not None
+        assert stepped.message_ref.id == rows[4]
+
+        panel._pending_cursor = 3  # noqa: SLF001
+        # Everything after the pending row is read, so there is nothing
+        # to jump to; from row 0 it would have found row 1.
+        for index in (4, 5):
+            panel._summaries[index] = dataclasses.replace(  # noqa: SLF001
+                panel._summaries[index],  # noqa: SLF001
+                local_flags=frozenset({MessageFlag.SEEN}),
+            )
+        assert panel.move_cursor_to_next_unread() is None
 
 
 async def test_a_marked_multi_row_action_keeps_the_cursor_on_its_message() -> None:

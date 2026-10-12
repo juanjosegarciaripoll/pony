@@ -2047,6 +2047,27 @@ class ImapSyncService:
                         )
                     )
 
+            # The bytes before the watermark that says they are here.
+            # Mirror writes are queued to a pool and the index rows that
+            # name them are written as each op runs, so this is the only
+            # point at which a failed write can still hold this folder's
+            # watermark back -- otherwise the next sync starts after a
+            # UID whose message was never written to disk, and nothing
+            # but `pony doctor` would ever notice.
+            #
+            # Rows already committed by an intermediate batch commit can
+            # still name a file that failed; that is what batching
+            # costs, and the integrity scan is what finds it. What this
+            # buys is that the folder is re-synced rather than skipped.
+            try:
+                mirror.flush_writes()
+            except Exception:
+                had_failure = True
+                logger.exception(
+                    "Mirror writes failed for %s/%s — holding the watermark",
+                    account.name,
+                    folder_name,
+                )
             if not plan.is_new and not had_failure:
                 self._index.record_folder_sync_state(
                     state=FolderSyncState(
@@ -2066,6 +2087,10 @@ class ImapSyncService:
                     folder_name,
                 )
 
+        # Nothing is queued by this point -- the flush above is inside
+        # the transaction, before the watermark -- so this is the mbox
+        # backend's commit of its own pending marks, which `flush_writes`
+        # is also the name for there.
         mirror.flush_writes()
 
         return FolderSyncResult(

@@ -206,6 +206,11 @@ class MainScreen(Screen[None]):
         # True while the foreground flow holds the scheduler's slot, so
         # the periodic thread defers instead of opening a second session.
         self._holds_sync_slot = False
+        # True while an invitation reply is in flight. The worker is
+        # exclusive, but cancelling it does not stop the thread it is
+        # waiting on, and filing an event and answering its organizer
+        # twice is not something to find out about afterwards.
+        self._answering_invitation = False
         self._ui_state_path = ui_state_path
         self._pane_sizes = load_pane_sizes(ui_state_path)
 
@@ -824,6 +829,15 @@ class MainScreen(Screen[None]):
 
         from .invitation_screen import InvitationScreen
 
+        if self._answering_invitation:
+            # `@work(exclusive=True)` cancels the *worker*, not the
+            # thread it is waiting on: a second trip through the dialog
+            # would file the event and answer the organizer a second
+            # time while the first reply is still in the SMTP
+            # conversation. There is no cancellation point to offer, so
+            # the honest answer is to say it is already happening.
+            self.app.notify("Still answering the last invitation.")
+            return
         invitation = self.query_one(MessageViewPanel).invitation
         if invitation is None:
             self.app.notify("This message carries no invitation.")
@@ -872,15 +886,22 @@ class MainScreen(Screen[None]):
             self._config,
             arrived_on=(None if summary is None else summary.message_ref.account_name),
         )
-        outcome = await asyncio.to_thread(
-            respond_to_invitation,
-            invitation,
-            choice,
-            calendar=self._calendar,
-            account=None if isinstance(found, Notice) else found,
-            config=self._config,
-            credentials=self._credentials,
-        )
+        self._answering_invitation = True
+        try:
+            outcome = await asyncio.to_thread(
+                respond_to_invitation,
+                invitation,
+                choice,
+                calendar=self._calendar,
+                account=None if isinstance(found, Notice) else found,
+                config=self._config,
+                credentials=self._credentials,
+            )
+        finally:
+            # Even if the worker is cancelled: the thread it was waiting
+            # on keeps going either way, and the flag is what stops a
+            # second answer being sent on top of it.
+            self._answering_invitation = False
         self._report(outcome)
 
     # ------------------------------------------------------------------
@@ -2020,14 +2041,26 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(ContactBrowserScreen(self._contacts))  # pyright: ignore[reportUnknownMemberType]
 
-    def harvest_folder_contacts(self) -> None:
-        """Harvest To/Cc contacts from every message in the current folder."""
-        if self._current_folder_ref is None:
+    @work(exclusive=True, group="harvest-contacts")
+    async def harvest_folder_contacts(self) -> None:
+        """Harvest To/Cc contacts from every message in the current folder.
+
+        Off the event loop, because it materialises the whole folder --
+        every row, not a summary -- and then writes a contact per
+        address it has not seen. On a folder of any size the reader
+        froze for the duration with no indication of why.
+        """
+        folder = self._current_folder_ref
+        if folder is None:
             return
-        self._report(
-            harvest_folder(
-                self._contacts,
-                self._index.list_folder_messages(folder=self._current_folder_ref),
-                self._current_folder_ref.folder_name,
-            ),
-        )
+        contacts = self._contacts
+        index = self._index
+
+        def _harvest() -> Outcome:
+            return harvest_folder(
+                contacts,
+                index.list_folder_messages(folder=folder),
+                folder.folder_name,
+            )
+
+        self._report(await asyncio.to_thread(_harvest))

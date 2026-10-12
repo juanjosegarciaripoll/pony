@@ -47,16 +47,29 @@ class _WriteQueue:
 
     pool: concurrent.futures.ThreadPoolExecutor | None = None
     futures: list[concurrent.futures.Future[int]] = field(default_factory=list)
+    #: A write that failed while the queue was being drained to make
+    #: room, kept until `flush_writes` can raise it.  Raising it from
+    #: `_drain_pending` blamed whichever message happened to be being
+    #: stored at the time, which is never the one that failed.
+    failure: BaseException | None = None
 
 
 def _finish_writes(writes: _WriteQueue) -> None:
-    """Wait for every queued write, raising the first failure."""
+    """Wait for every queued write, raising the first failure.
+
+    A failure noticed earlier, while the queue was being drained to
+    make room for another write, is raised here too: this is the call
+    whose contract is "every write is on disk, or you are told".
+    """
     futures, writes.futures = writes.futures, []
-    if not futures:
-        return
-    done, _ = concurrent.futures.wait(futures)
-    for future in done:
-        future.result()  # raises if the write failed
+    earlier, writes.failure = writes.failure, None
+    if futures:
+        done, _ = concurrent.futures.wait(futures)
+        for future in done:
+            if earlier is None:
+                earlier = future.exception()
+    if earlier is not None:
+        raise earlier
 
 
 def _release_writes(writes: _WriteQueue) -> None:
@@ -190,9 +203,18 @@ class MaildirMirrorRepository(MirrorRepository):
         return filename
 
     def _drain_pending(self, *, keep: int) -> None:
-        """Wait, oldest first, until at most *keep* writes are in flight."""
+        """Wait, oldest first, until at most *keep* writes are in flight.
+
+        A failure is kept rather than raised: this runs inside
+        ``store_message_async``, so raising it here reported the failure
+        against the message being stored now instead of the one that
+        actually failed.  ``flush_writes`` is where a caller asks
+        whether the writes landed, and it is where it is told.
+        """
         while len(self._writes.futures) > keep:
-            self._writes.futures.pop(0).result()
+            failed = self._writes.futures.pop(0).exception()
+            if failed is not None and self._writes.failure is None:
+                self._writes.failure = failed
 
     def flush_writes(self) -> None:
         """Wait for all pending async writes to complete.

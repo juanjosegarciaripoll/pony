@@ -356,13 +356,27 @@ async def _index_page(services: WebServices, request: Request) -> Response:
 
 
 async def _mail_page(services: WebServices, request: Request) -> Response:
+    """The reader: folders, the list, and a message if one is open.
+
+    Rendered in the thread pool, not on the event loop.  The row list is
+    one unpaginated SQL read plus a string build per row -- 618 ms and
+    2.4 MB for 8,000 rows, measured -- and on the loop that is the whole
+    server stopped for the duration: the other tab, an upload in
+    flight, the sync's own requests.  The thread does not make the page
+    faster; it makes the wait this request's own.  (Pagination is the
+    thing that would make it faster, and is not attempted here.)
+    """
     folder = _folder_from(request)
+    query = request.query_params.get("q", "")
+    notices = _notices(request)
     return HTMLResponse(
-        mail_view.mail_page(
-            services,
-            folder=folder,
-            query=request.query_params.get("q", ""),
-            notices=_notices(request),
+        await run_in_threadpool(
+            lambda: mail_view.mail_page(
+                services,
+                folder=folder,
+                query=query,
+                notices=notices,
+            ),
         ),
     )
 
@@ -376,18 +390,30 @@ async def _rows_fragment(services: WebServices, request: Request) -> Response:
     the next action works off.
     """
     identifier = request.query_params.get("id", "")
+    folder = _folder_from(request)
+    open_id = int(identifier) if identifier.isdigit() else None
+    query = request.query_params.get("q", "")
     return HTMLResponse(
-        mail_view.rows(
-            services,
-            _folder_from(request),
-            open_id=int(identifier) if identifier.isdigit() else None,
-            query=request.query_params.get("q", ""),
+        # In the thread pool for the same reason the whole page is: this
+        # is the whole list again, and `refresh()` asks for it after
+        # every action.
+        await run_in_threadpool(
+            lambda: mail_view.rows(
+                services,
+                folder,
+                open_id=open_id,
+                query=query,
+            ),
         ),
     )
 
 
 async def _folders_fragment(services: WebServices, request: Request) -> Response:
-    return HTMLResponse(mail_view.folder_pane(services, _folder_from(request)))
+    folder = _folder_from(request)
+    return HTMLResponse(
+        # Every folder of every account, with an unread count each.
+        await run_in_threadpool(lambda: mail_view.folder_pane(services, folder)),
+    )
 
 
 def _opened_by_a_reader(request: Request) -> bool:
@@ -406,7 +432,11 @@ def _opened_by_a_reader(request: Request) -> bool:
 
 
 async def _message_page(services: WebServices, request: Request) -> Response:
-    """The list with the message open beside (or below) it."""
+    """The list with the message open beside (or below) it.
+
+    The render is the list again plus this message's own MIME parsing,
+    so it goes to the thread pool with the rest.
+    """
     message = _message_from(services, request)
     if message is None:
         return PlainTextResponse("No such message.", status_code=404)
@@ -422,16 +452,21 @@ async def _message_page(services: WebServices, request: Request) -> Response:
             message,
             MessageFlag.SEEN,
         )
+    folder = FolderRef(
+        account_name=message.message_ref.account_name,
+        folder_name=message.message_ref.folder_name,
+    )
+    query = request.query_params.get("q", "")
+    notices = _notices(request)
     return HTMLResponse(
-        mail_view.mail_page(
-            services,
-            folder=FolderRef(
-                account_name=message.message_ref.account_name,
-                folder_name=message.message_ref.folder_name,
+        await run_in_threadpool(
+            lambda: mail_view.mail_page(
+                services,
+                folder=folder,
+                message=message,
+                query=query,
+                notices=notices,
             ),
-            message=message,
-            query=request.query_params.get("q", ""),
-            notices=_notices(request),
         ),
     )
 
@@ -446,10 +481,14 @@ async def _message_body(services: WebServices, request: Request) -> Response:
     top-level page rather than a frame in the application, because mail
     is hostile input and the reader shows text.
     """
-    raw = _raw_from(services, request)
+    # Reading the file and rebuilding the message's HTML are both the
+    # thread pool's work: a message with inlined images is megabytes of
+    # it, and the event loop is the whole server.
+    raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
         return raw
-    return HTMLResponse(build_browser_html(raw), headers=dict(MESSAGE_HTML_HEADERS))
+    html = await run_in_threadpool(build_browser_html, raw)
+    return HTMLResponse(html, headers=dict(MESSAGE_HTML_HEADERS))
 
 
 async def _message_raw(services: WebServices, request: Request) -> Response:
@@ -463,10 +502,12 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
     """
     from ..message_renderer import proposed_filename, render_message
 
-    raw = _raw_from(services, request)
+    raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
         return raw
-    name = proposed_filename(render_message(raw), suffix=".eml")
+    name = await run_in_threadpool(
+        lambda: proposed_filename(render_message(raw), suffix=".eml"),
+    )
     return Response(
         raw,
         media_type="message/rfc822",
@@ -476,13 +517,15 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
 
 async def _attachment(services: WebServices, request: Request) -> Response:
     """One attachment's bytes, by the index the reader lists it under."""
-    raw = _raw_from(services, request)
+    raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
         return raw
     index = request.query_params.get("n", "")
     if not index.isdigit():
         return PlainTextResponse("Which attachment?", status_code=400)
-    payload = extract_attachment(raw, int(index))
+    # Parsing a multipart message to find part N is the one piece of
+    # work here that grows with the attachment.
+    payload = await run_in_threadpool(extract_attachment, raw, int(index))
     if payload is None:
         return PlainTextResponse("No such attachment.", status_code=404)
     return Response(

@@ -373,6 +373,52 @@ def test_an_unchecked_message_gets_an_open_padlock() -> None:
     assert "sender-check sender-passed" not in page
 
 
+async def test_a_slow_page_does_not_stop_the_other_tab() -> None:
+    """Rendering ran on the event loop, so one page froze the server.
+
+    8,000 rows cost 618 ms and 2.4 MB, and `refresh()` asks for the
+    whole list again after every action — during which the other tab,
+    an upload in flight and the sync's own requests all waited. The
+    render is the thread pool's work now, so a slow page is this
+    request's wait and nobody else's.
+    """
+    import asyncio
+    import threading
+
+    import httpx
+
+    from pony.web import mail as mail_view
+
+    services, _index = _services("web-threaded-render")
+    rendering = threading.Event()
+    finish = threading.Event()
+    real_page = mail_view.mail_page
+
+    def _slow(*args: object, **kwargs: object) -> str:
+        rendering.set()
+        assert finish.wait(10), "the quick request never came back"
+        return real_page(*args, **kwargs)  # type: ignore[arg-type]
+
+    app = build_web_app(services)
+    transport = httpx.ASGITransport(app=app)
+    with patch.object(mail_view, "mail_page", _slow):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://pony.test",
+        ) as client:
+            slow = asyncio.ensure_future(client.get(_mail()))
+            # Waited for off the loop, so a render that blocked it would
+            # never let this resume.
+            assert await asyncio.to_thread(rendering.wait, 10)
+            quick = await client.get("/keymap.json")
+            finish.set()
+            rendered = await slow
+
+    assert quick.status_code == 200
+    assert rendered.status_code == 200
+    assert "Tuesday meeting confirmed" in rendered.text
+
+
 def test_a_message_can_be_downloaded_as_it_arrived() -> None:
     services, index = _services("web-raw")
     message_id = _only_message(index)
