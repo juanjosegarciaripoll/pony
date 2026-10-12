@@ -5,7 +5,7 @@ file.  Mail keys stay at the top level, where they always were, and the
 calendar's own settings live under ``[calendar]`` with
 ``[[calendar.accounts]]`` holding its CalDAV accounts::
 
-    config_version = 2
+    config_version = {CONFIG_VERSION}
     [[accounts]]            # mail
     name = "work"
     ...
@@ -43,7 +43,15 @@ from chronos.paths import active
 from chronos.storage import VdirMirrorRepository
 
 from .config import ConfigError, read_raw_config
+from .domain import CONFIG_VERSION
 from .paths import resolve
+
+# The example above quotes the schema version the loader actually
+# accepts rather than a copy of it.  The copy it used to hold said 2
+# after `CONFIG_VERSION` went to 3, so the file this module documented
+# was one `read_raw_config` refuses.
+if __doc__ is not None:
+    __doc__ = __doc__.replace("{CONFIG_VERSION}", str(CONFIG_VERSION))
 
 CALENDAR_SECTION = "calendar"
 

@@ -563,3 +563,77 @@ class TextCalendarAttachmentProjectionTest(unittest.TestCase):
         )
         msg = _project(raw)
         self.assertTrue(msg.has_attachments)
+
+
+class DeclaredCharsetTest(unittest.TestCase):
+    """The preview is decoded in the charset the part declares.
+
+    ``body_preview`` is what the FTS index is built from, so a message
+    read in the wrong charset is not merely mojibake in the list -- it
+    cannot be found by its own words.
+    """
+
+    def test_a_latin_1_body_is_decoded_as_latin_1(self) -> None:
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"To: me@example.com\r\n"
+            b"Subject: Saludos\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID: <latin1@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=iso-8859-1\r\n"
+            b"\r\n" + "Niño café".encode("iso-8859-1") + b"\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.body_preview, "Niño café")
+
+    def test_a_quoted_charset_in_a_multipart_part_is_honoured(self) -> None:
+        body = "Grüße".encode("iso-8859-15")
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"To: me@example.com\r\n"
+            b"Subject: Hallo\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID: <latin9@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/mixed; boundary="b"\r\n'
+            b"\r\n"
+            b"--b\r\n"
+            b'Content-Type: text/plain; charset="iso-8859-15"\r\n'
+            b"\r\n" + body + b"\r\n"
+            b"--b--\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.body_preview, "Grüße")
+
+    def test_a_charset_no_codec_knows_falls_back_to_utf_8(self) -> None:
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"To: me@example.com\r\n"
+            b"Subject: Hello\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID: <nonsense@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=x-nonexistent-9000\r\n"
+            b"\r\n"
+            b"caf\xc3\xa9\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.body_preview, "café")
+
+    def test_a_nul_in_the_body_does_not_reach_the_index(self) -> None:
+        """Legal in SQLite text, and a terminator to nearly everything
+        that later reads one."""
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"To: me@example.com\r\n"
+            b"Subject: Hello\r\n"
+            b"Date: Fri, 11 Apr 2026 10:00:00 +0000\r\n"
+            b"Message-ID: <nul@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"before\x00after\r\n"
+        )
+        msg = _project(raw)
+        self.assertEqual(msg.body_preview, "beforeafter")

@@ -3180,7 +3180,8 @@ def run_account_add(
         name = account_name or "my-account"
         print(
             f"# Add this block to {config_file}\n"
-            f"# (The file itself must start with `config_version = 2`.)\n"
+            f"# (The file itself must start with"
+            f" `config_version = {CONFIG_VERSION}`.)\n"
             f"[[accounts]]\n"
             f'name             = "{name}"\n'
             f'email_address    = "you@example.com"\n'

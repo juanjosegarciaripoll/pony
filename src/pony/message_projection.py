@@ -166,6 +166,16 @@ _CTE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The ``charset`` parameter of a Content-Type, quoted or bare.  Read off
+# the raw header block for the same reason the CTE is: this projection
+# never builds an ``email.message.Message``, because parsing a whole
+# message to index one preview line is what made the first rescan of a
+# large account take minutes.
+_CHARSET_RE = re.compile(
+    rb'charset\s*=\s*"?([A-Za-z0-9_.:+-]+)"?',
+    re.IGNORECASE,
+)
+
 # Safety cap applied to the final collapsed body text.  Protects against
 # pathological emails (e.g. multi-megabyte log dumps pasted into a message)
 # without silently truncating ordinary mail.
@@ -187,7 +197,35 @@ def _decode_part_body(part_headers: bytes, raw_body: bytes) -> str:
     else:
         decoded = raw_body
 
-    return decoded.decode("utf-8", errors="replace")
+    return _decode_text(decoded, part_headers)
+
+
+def _decode_text(decoded: bytes, part_headers: bytes) -> str:
+    """*decoded* as text, in the charset the part says it is in.
+
+    Reading an ``iso-8859-1`` message as UTF-8 does not merely make the
+    list column ugly (``Ni?o caf?`` where the reader shows
+    ``Niño café``): ``body_preview`` is what the full-text index is built
+    from, so the message becomes unfindable by its own words.  Every
+    other decoder in the program consults ``get_content_charset`` --
+    :mod:`pony.message_renderer`, :mod:`pony.compose_utils` -- and this
+    is the same rule applied to headers that have not been through
+    ``email.parser``.
+
+    A charset the codec registry does not know, or one the bytes do not
+    honour, falls back to UTF-8, which is also what a part declaring no
+    charset at all gets.  NUL is dropped either way: it is legal in a
+    SQLite text value and truncates almost everything that later reads
+    one.
+    """
+    match = _CHARSET_RE.search(part_headers)
+    if match is not None:
+        charset = match.group(1).decode("ascii", errors="replace")
+        try:
+            return decoded.decode(charset, errors="replace").replace("\x00", "")
+        except LookupError:
+            pass
+    return decoded.decode("utf-8", errors="replace").replace("\x00", "")
 
 
 def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
