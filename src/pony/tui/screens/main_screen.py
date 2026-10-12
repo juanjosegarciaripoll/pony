@@ -903,9 +903,31 @@ class MainScreen(Screen[None]):
         """
         return shows_recipient(self._config, folder_ref)
 
-    def _in_drafts_folder(self) -> bool:
-        ref = self._current_folder_ref
+    def _cursor_message_is_draft(self) -> bool:
+        """True when the row under the cursor is itself a draft.
+
+        Not "is the open folder Drafts": search results span folders and
+        leave ``_current_folder_ref`` pointing at whatever was last
+        selected in the tree, so the open folder says nothing about the
+        row.  Editing a message is a *replacement* — the original is
+        retired once the new version is saved — so asking the folder
+        made ``e`` live on a received message and then destroyed it.
+        """
+        ref = self._cursor_message_folder()
         return ref is not None and holds_drafts(self._config, ref)
+
+    def _cursor_message_folder(self) -> FolderRef | None:
+        """The folder the row under the cursor actually lives in."""
+        from textual.css.query import NoMatches
+
+        try:
+            panel = self.query_one(MessageListPanel)
+        except NoMatches:
+            return None
+        summary = panel.get_selected_summary()
+        if summary is None:
+            return None
+        return self._folder_ref_from_summary(summary)
 
     def check_action(
         self,
@@ -913,7 +935,7 @@ class MainScreen(Screen[None]):
         parameters: tuple[object, ...],
     ) -> bool | None:
         if action == "edit_draft":
-            return self._in_drafts_folder()
+            return self._cursor_message_is_draft()
         return super().check_action(action, parameters)
 
     # ------------------------------------------------------------------
@@ -1471,20 +1493,34 @@ class MainScreen(Screen[None]):
         )
 
     def compose_from_draft(self) -> None:
-        """Open a draft message for editing in ComposeScreen."""
+        """Open a draft message for editing in ComposeScreen.
+
+        The message's own folder decides whether it is a draft, because
+        resuming one retires it: handed a received message, this would
+        mark that mail trashed and let the next sync expunge it from the
+        server.  :func:`pony.delivery.file_draft` refuses the same thing
+        a second time — this is the half that keeps the composer from
+        opening at all.
+        """
         msg = self.get_current_message()
         if msg is None:
             return
         accounts = self._sendable_or_notify("Composing")
         if accounts is None:
             return
-        mirror = self._mirrors.get(msg.message_ref.account_name)
-        if mirror is None:
-            return
         folder_ref = FolderRef(
             account_name=msg.message_ref.account_name,
             folder_name=msg.message_ref.folder_name,
         )
+        if not holds_drafts(self._config, folder_ref):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"{folder_ref.folder_name} is not a Drafts folder.",
+                severity="warning",
+            )
+            return
+        mirror = self._mirrors.get(msg.message_ref.account_name)
+        if mirror is None:
+            return
         try:
             raw = mirror.get_message_bytes(
                 folder=folder_ref,

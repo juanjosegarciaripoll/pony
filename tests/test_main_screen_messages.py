@@ -25,7 +25,9 @@ from pony.domain import (
 )
 from pony.protocols import MirrorRepository
 from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
+from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.main_screen import MainScreen
+from pony.tui.widgets.folder_panel import FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 
 
@@ -423,30 +425,105 @@ async def test_mark_all_read_without_an_open_folder_is_a_noop() -> None:
 
 
 async def test_the_configured_drafts_folder_is_recognised() -> None:
-    """Draft detection prefers the account's configured folder name."""
+    """Draft detection prefers the account's configured folder name.
+
+    The question is asked about the message under the cursor, not about
+    the open folder, so the row has to be in the configured folder for
+    ``e`` to be live.
+    """
     paths = make_tmp_paths("main-drafts-folder")
     account = dataclasses.replace(make_test_account(paths), drafts_folder="Entwuerfe")
-    app, *_ = build_pony_app(
+    app, _cfg, _paths, index, mirrors = build_pony_app(
         label="main-drafts-folder-app",
         accounts=(account,),
     )
+    for name in ("Entwuerfe", "Drafts"):
+        mirrors["acct"].create_folder(account_name="acct", folder_name=name)
+        seed_message(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=FolderRef(account_name="acct", folder_name=name),
+            raw=plain_text(),
+            message_id=f"<{name}@example.com>",
+        )
 
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
 
-        screen._current_folder_ref = FolderRef(
-            account_name="acct", folder_name="Entwuerfe"
+        for name, expected in (("Entwuerfe", True), ("Drafts", False)):
+            panel.load_folder(FolderRef(account_name="acct", folder_name=name))
+            await panel.wait_for_load_complete()
+            await pilot.pause()
+            assert screen.check_action("edit_draft", ()) is expected
+
+        # Nothing under the cursor is not a draft either.
+        panel.load_folder(FolderRef(account_name="acct", folder_name="Sent"))
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert screen.check_action("edit_draft", ()) is False
+
+
+async def test_edit_draft_is_dead_on_a_search_hit_from_another_folder() -> None:
+    """`e` retires what it opens, so it must ask the row, not the folder.
+
+    Opening Drafts, moving the tree cursor to the account node and
+    searching leaves ``_current_folder_ref`` pointing at Drafts while the
+    hits span folders.  Asking the folder made ``e`` live on an INBOX
+    hit, and the composer then retired that received mail — index row
+    TRASHED, expunged server-side on the next sync.
+    """
+    inbox = FolderRef(account_name="acct", folder_name="INBOX")
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="main-edit-draft-search",
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    for folder in (inbox, drafts):
+        seed_message(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=folder,
+            raw=plain_text(),
+            message_id=f"<{folder.folder_name}-hit@example.com>",
         )
-        assert screen._in_drafts_folder() is True
 
-        screen._current_folder_ref = FolderRef(
-            account_name="acct", folder_name="Drafts"
-        )
-        assert screen._in_drafts_folder() is False
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
+        # The tree cursor on the account node is what makes the search
+        # account-wide; the open folder is still Drafts, and `_run_search`
+        # never touches it.
+        tree = screen.query_one(FolderPanel)
+        tree.move_cursor(tree.root.children[0])
+        await pilot.pause()
+        screen._current_folder_ref = drafts
+        screen._run_search("Tuesday")
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert screen._current_folder_ref == drafts
 
-        screen._current_folder_ref = None
-        assert screen._in_drafts_folder() is False
+        by_folder = {
+            row: panel._summaries[row].message_ref.folder_name
+            for row in range(len(panel._summaries))
+        }
+        assert set(by_folder.values()) == {"INBOX", "Drafts"}
+
+        for row, folder_name in by_folder.items():
+            panel.move_cursor(row=row)
+            await pilot.pause()
+            assert screen.check_action("edit_draft", ()) is (folder_name == "Drafts")
+
+        # And the refusal holds even when the action is called directly,
+        # which is the half a stale footer cannot protect.
+        inbox_row = next(row for row, name in by_folder.items() if name == "INBOX")
+        panel.move_cursor(row=inbox_row)
+        await pilot.pause()
+        screen.compose_from_draft()
+        await pilot.pause()
+        assert not isinstance(app.screen, ComposeScreen)
 
 
 async def test_search_without_a_folder_or_account_selected_warns() -> None:

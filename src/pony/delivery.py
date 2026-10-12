@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from chronos.outcome import Notice, Outcome, failure, info, warn
 
 from .domain import FolderRef, IndexedMessage, MessageFlag, MessageRef
-from .folder_utils import find_folder
+from .folder_utils import holds_drafts, resolve_folder
 from .mailbox_actions import Mailboxes, add_flag, retire_message
 from .message_projection import project_rfc822_message
 from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
@@ -61,9 +61,9 @@ def file_message(
     """Store *raw* in the account's *folder_hint* folder and index it.
 
     *override* is the folder named in the account's configuration, used
-    in preference to looking one up; without it the hint is matched
-    against the folders the mirror actually has, which is what finds a
-    server's localised ``Sent`` or ``Drafts``.
+    in preference to looking one up; without it the hint is resolved
+    through :func:`pony.folder_utils.resolve_folder`, which is what
+    finds a server's localised ``Sent`` or ``Drafts``.
 
     The inserted row has no UID, which is what makes sync append it to
     the server on its next run.
@@ -87,7 +87,7 @@ def file_message(
     folder_names = [
         ref.folder_name for ref in mirror.list_folders(account_name=account.name)
     ]
-    folder_name = override or find_folder(folder_names, folder_hint)
+    folder_name = override or resolve_folder(folder_names, folder_hint)
     if folder_name is None:
         return FiledMessage(
             None,
@@ -124,6 +124,51 @@ def file_message(
     return FiledMessage(stored, Outcome(changed=1))
 
 
+def _retire_source_draft(
+    mailboxes: Mailboxes,
+    source_draft: IndexedMessage,
+) -> Notice | None:
+    """Retire the draft a message was resumed from, or say why not.
+
+    Retiring is a deletion: the index row goes ``TRASHED`` and, for a
+    message the server already knows, the next sync expunges it there
+    too.  Whether that is the right thing to do is a question about the
+    message, so the folder *it* is in answers it rather than whatever
+    folder a front end happened to have open — a screen that asked the
+    open folder instead made ``e`` live on a received message in a
+    search result and then destroyed it.
+
+    Returns ``None`` when the draft was retired, and the notice to show
+    when it was left alone.  Refusing rather than raising is deliberate:
+    by the time :func:`deliver_message` reaches here the message has
+    already been sent, so there is nothing left to abort.
+    """
+    folder = FolderRef(
+        account_name=source_draft.message_ref.account_name,
+        folder_name=source_draft.message_ref.folder_name,
+    )
+    if not holds_drafts(mailboxes.config, folder):
+        _log.error(
+            "Refusing to retire %s/%s id=%s: not a Drafts folder",
+            folder.account_name,
+            folder.folder_name,
+            source_draft.message_ref.id,
+        )
+        return warn(
+            f"{folder.folder_name} is not a Drafts folder,"
+            " so the message in it was left alone.",
+        )
+    retire_message(
+        mailboxes,
+        source_draft,
+        folder,
+        # A draft that reached the server has to go there too, or the
+        # next sync brings the old version back.
+        expunge_on_server=source_draft.uid is not None,
+    )
+    return None
+
+
 def file_draft(
     mailboxes: Mailboxes,
     raw: bytes,
@@ -137,6 +182,11 @@ def file_draft(
     retiring *source_draft* the folder ends up holding both the old
     version and the new one, which is what the browser used to do and
     the terminal did not.
+
+    A *source_draft* that is not in a Drafts folder is not a draft at
+    all, and retiring it would destroy received mail.  The new copy is
+    still saved — the user's typing is theirs — and the original is left
+    where it is, with a notice saying so.
     """
     filed = file_message(
         mailboxes,
@@ -147,21 +197,13 @@ def file_draft(
     )
     if filed.message is None:
         return filed.outcome
-    if source_draft is not None:
-        retire_message(
-            mailboxes,
-            source_draft,
-            FolderRef(
-                account_name=source_draft.message_ref.account_name,
-                folder_name=source_draft.message_ref.folder_name,
-            ),
-            # A draft that reached the server has to go there too, or
-            # the next sync brings the old version back.
-            expunge_on_server=source_draft.uid is not None,
-        )
+    refused = (
+        None if source_draft is None else _retire_source_draft(mailboxes, source_draft)
+    )
+    extra = () if refused is None else (refused,)
     return Outcome(
         changed=filed.outcome.changed,
-        notices=(*filed.outcome.notices, info("Saved in Drafts.")),
+        notices=(*filed.outcome.notices, info("Saved in Drafts."), *extra),
     )
 
 
@@ -234,7 +276,9 @@ def deliver_message(
     then retire the draft, flag what was answered, file the Sent copy
     and harvest the addresses.  *source_draft* is the draft the message
     was composed *from*, which a successful send also retires — the
-    pre-send copy this function files is a different row.  *answering*
+    pre-send copy this function files is a different row, and one that
+    is not in a Drafts folder is not retired at all (see
+    :func:`_retire_source_draft`).  *answering*
     is the message being replied to, which a successful send marks
     answered; doing it here is what keeps the mark from depending on
     which front end sent the reply.
@@ -297,21 +341,17 @@ def deliver_message(
     )
     if answering is not None:
         add_flag(mailboxes, answering, MessageFlag.ANSWERED)
-    if source_draft is not None:
-        retire_message(
-            mailboxes,
-            source_draft,
-            FolderRef(
-                account_name=source_draft.message_ref.account_name,
-                folder_name=source_draft.message_ref.folder_name,
-            ),
-            # A draft that was synced has a UID, and the server's copy
-            # has to go too, or the next sync brings it back.
-            expunge_on_server=source_draft.uid is not None,
-        )
+    refused = (
+        None if source_draft is None else _retire_source_draft(mailboxes, source_draft)
+    )
+    extra = () if refused is None else (refused,)
     return Outcome(
         changed=filed.changed + 1,
-        notices=(*filed.notices, info(f"Message sent to {to} via {host}.")),
+        notices=(
+            *filed.notices,
+            info(f"Message sent to {to} via {host}."),
+            *extra,
+        ),
     )
 
 

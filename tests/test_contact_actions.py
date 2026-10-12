@@ -824,3 +824,181 @@ def test_listing_contacts_sorts_by_surname_and_filters_by_query() -> None:
 
     assert [c.last_name for c in everyone] == ["Alpha", "Zeta"]
     assert [c.first_name for c in filtered] == ["Ada"]
+
+
+def _with_drafts_folder(label: str) -> tuple[Mailboxes, AccountConfig]:
+    """An account with a real Drafts folder beside INBOX.
+
+    Filing a draft and retiring the message it was resumed from then
+    happen in two *different* folders, which is the arrangement the
+    "resume a received message" defect needs to be visible in.
+    """
+    paths = make_tmp_paths(label)
+    account = dataclasses.replace(
+        make_test_account(paths, password="secret"),
+        sent_folder="Sent",
+        drafts_folder="Drafts",
+    )
+    config = make_test_config(accounts=(account,))
+    mailboxes = Mailboxes(
+        config=config,
+        index=make_index(paths),
+        mirrors=make_mirrors(config),
+    )
+    mailboxes.mirrors["acct"].create_folder(  # type: ignore[union-attr]
+        account_name="acct",
+        folder_name="Drafts",
+    )
+    return mailboxes, account
+
+
+def test_file_draft_refuses_to_retire_a_message_that_is_not_a_draft() -> None:
+    """Retiring is a deletion, and INBOX mail is not a draft.
+
+    A screen that asked the *open* folder whether it held drafts — which
+    a search result leaves pointing anywhere — reached this call with a
+    received message and had it trashed, then expunged server-side on
+    the next sync.
+    """
+    from pony.domain import MessageStatus
+
+    mailboxes, account = _with_drafts_folder("file-draft-not-a-draft")
+    received = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="INBOX",
+        override="INBOX",
+    ).message
+    assert received is not None
+
+    outcome = delivery.file_draft(
+        mailboxes,
+        plain_text(),
+        account,
+        source_draft=received,
+    )
+
+    # The new draft was still saved: the user's typing is theirs.
+    assert outcome.changed == 1
+    assert [notice.text for notice in outcome.notices] == [
+        "Saved in Drafts.",
+        "INBOX is not a Drafts folder, so the message in it was left alone.",
+    ]
+    # And the received mail is exactly where it was.
+    survivor = mailboxes.index.get_message(message_ref=received.message_ref)
+    assert survivor is not None
+    assert survivor.local_status is not MessageStatus.TRASHED
+
+
+def test_deliver_message_leaves_a_non_draft_source_alone() -> None:
+    """The send still happens; what must not happen is the deletion."""
+    from pony.domain import MessageStatus
+
+    mailboxes, account = _with_drafts_folder("deliver-not-a-draft")
+    received = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="INBOX",
+        override="INBOX",
+    ).message
+    assert received is not None
+
+    with patch.object(delivery, "smtp_send", lambda **_kwargs: None):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="you@example.test",
+            connect_timeout=1.0,
+            source_draft=received,
+        )
+
+    assert not outcome.failed
+    assert any("is not a Drafts folder" in notice.text for notice in outcome.notices)
+    survivor = mailboxes.index.get_message(message_ref=received.message_ref)
+    assert survivor is not None
+    assert survivor.local_status is not MessageStatus.TRASHED
+
+
+def test_file_draft_retires_a_draft_from_a_localised_drafts_folder() -> None:
+    """`Borradores` is a Drafts folder, so resuming from it still works."""
+    from pony.domain import MessageStatus
+
+    paths = make_tmp_paths("file-draft-localised")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    mailboxes = Mailboxes(
+        config=config,
+        index=make_index(paths),
+        mirrors=make_mirrors(config),
+    )
+    mailboxes.mirrors["acct"].create_folder(  # type: ignore[union-attr]
+        account_name="acct",
+        folder_name="Borradores",
+    )
+    first = delivery.file_message(
+        mailboxes,
+        plain_text(),
+        account,
+        folder_hint="Drafts",
+        override=None,
+    ).message
+    assert first is not None
+    assert first.message_ref.folder_name == "Borradores"
+
+    outcome = delivery.file_draft(mailboxes, plain_text(), account)
+    assert [notice.text for notice in outcome.notices] == ["Saved in Drafts."]
+
+    outcome = delivery.file_draft(
+        mailboxes,
+        plain_text(),
+        account,
+        source_draft=first,
+    )
+    assert [notice.text for notice in outcome.notices] == ["Saved in Drafts."]
+    retired = mailboxes.index.get_message(message_ref=first.message_ref)
+    assert retired is None or retired.local_status is MessageStatus.TRASHED
+
+
+def test_record_sent_files_into_a_localised_sent_folder() -> None:
+    """`Enviados` is the Sent folder, so the sent copy has somewhere to go.
+
+    The message list already knew it was one — it asks
+    ``folder_utils.is_sent_folder`` — while filing asked for the English
+    word and found nothing, so a Spanish or German server left the user
+    with no local record of anything they had sent.
+    """
+    paths = make_tmp_paths("record-sent-localised")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    mailboxes = Mailboxes(
+        config=config,
+        index=make_index(paths),
+        mirrors=make_mirrors(config),
+    )
+    mailboxes.mirrors["acct"].create_folder(  # type: ignore[union-attr]
+        account_name="acct",
+        folder_name="Enviados",
+    )
+
+    outcome = delivery.record_sent(
+        mailboxes,
+        plain_text(),
+        account,
+        draft=None,
+        contacts=None,
+        recipients=(),
+    )
+
+    assert outcome.notices == ()
+    assert outcome.changed == 1
+    filed = list(
+        mailboxes.index.list_folder_messages(
+            folder=FolderRef(account_name="acct", folder_name="Enviados"),
+        ),
+    )
+    assert len(filed) == 1
