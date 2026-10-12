@@ -122,6 +122,34 @@ class Reply:
 type Action = Callable[[ActionContext], Outcome | Reply]
 
 
+# Actions whose label says "marked".  They act on the marks and on
+# nothing else, so the page must send the marks alone rather than
+# falling back to the cursor -- which, since the cursor starts on the
+# first row, meant that tapping "Delete marked" on a freshly loaded
+# contacts list deleted the first contact.  `static/pony.js` keeps the
+# same set, and `tests/test_web_dispatch.py` fails if the two differ.
+MARKED_ONLY_ACTIONS = frozenset({"delete_marked", "merge_marked"})
+
+
+def held_for_confirmation(
+    context: ActionContext,
+    question: str,
+) -> Reply | None:
+    """*question* for the user, or ``None`` once they have answered it.
+
+    The browser's spelling of the terminal's ``ConfirmScreen``, for an
+    operation that cannot be taken back: nothing happens, the page is
+    handed the question, and answering it re-sends the same action with
+    ``confirm`` added.  One helper so that every irreversible operation
+    asks the same way and none of them forgets to ask at all.
+    """
+    from chronos.outcome import Outcome
+
+    if context.first("confirm"):
+        return None
+    return Reply(Outcome(), confirm=Confirmation(question, {"confirm": "1"}))
+
+
 def parse_target(value: str) -> FolderRef | None:
     """``account/folder`` as the move and copy prompts spell it.
 
@@ -135,4 +163,12 @@ def parse_target(value: str) -> FolderRef | None:
     return FolderRef(account_name=account, folder_name=folder)
 
 
-__all__ = ["Action", "ActionContext", "Confirmation", "Reply", "parse_target"]
+__all__ = [
+    "MARKED_ONLY_ACTIONS",
+    "Action",
+    "ActionContext",
+    "Confirmation",
+    "Reply",
+    "held_for_confirmation",
+    "parse_target",
+]

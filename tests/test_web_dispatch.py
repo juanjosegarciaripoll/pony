@@ -57,6 +57,7 @@ from web_helpers import (
 from chronos.keymap import web_key
 from pony.domain import Contact, FolderRef
 from pony.web import WebServices, build_web_app
+from pony.web.actions import MARKED_ONLY_ACTIONS
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS
 from pony.web.layout import PageSurface, bindings_for
 
@@ -429,6 +430,35 @@ def test_a_press_into_a_field_belongs_to_the_field() -> None:
     assert "isContentEditable" in typing
 
 
+def test_escape_on_a_form_asks_before_throwing_the_typing_away() -> None:
+    """``Escape`` is the one key a field does not keep, so it has to ask.
+
+    ``cancel`` was ``window.history.back()`` and nothing else, so
+    Escape in a half-written message discarded it without a word.  The
+    terminal has a save-draft prompt for exactly this moment; the page
+    asks instead of saving, because a form opened by mistake should file
+    nothing and an event form has no draft to file.
+    """
+    source = script()
+
+    # Escape still reaches the dispatcher from inside a field, which is
+    # the whole reason this needs a question.
+    assert 'event.key !== "Escape"' in _function(source, "onKeyDown")
+    assert "cancel: leaveForm," in source
+    leaving = _function(source, "leaveForm")
+    # Nothing is asked about a form nobody has touched.
+    assert "state.formAtLoad" in leaving
+    assert "formState(form)" in leaving
+    assert "window.confirm" in leaving
+    # Said no, and the page stays where it is.
+    assert "return;" in leaving.partition("window.history.back()")[0]
+    # And the snapshot the comparison needs is taken when the page loads.
+    assert "state.formAtLoad = form ? formState(form) : null;" in _function(
+        source,
+        "start",
+    )
+
+
 # ----------------------------------------------------------------------
 # What the dispatcher asks the server for
 # ----------------------------------------------------------------------
@@ -485,6 +515,27 @@ def test_the_surface_every_page_declares_has_a_keymap_of_its_own() -> None:
 # ----------------------------------------------------------------------
 # A screen with no keyboard
 # ----------------------------------------------------------------------
+
+
+def test_the_bulk_actions_act_on_the_marks_and_not_on_the_cursor() -> None:
+    """Both sides of one rule, which is why the set is not written twice.
+
+    An action whose label says "marked" must refuse when nothing is
+    marked rather than taking the cursor -- which starts on the first
+    row, so "Delete marked" on a freshly loaded list deleted the first
+    contact.  The script decides what to send; the server decides what
+    to do with nothing.  A name in one set and not the other puts the
+    fallback back.
+    """
+    source = script()
+    listed = re.search(r"const markedOnly = new Set\(\[(.*?)\]\)", source, re.DOTALL)
+    assert listed is not None, "the script no longer names the marked-only actions"
+
+    assert set(re.findall(r'"([\w_]+)"', listed.group(1))) == set(MARKED_ONLY_ACTIONS)
+    assert set(SERVER_ACTIONS) >= MARKED_ONLY_ACTIONS
+    # And the body is built from the marks for those, not from targets().
+    builder = _function(source, "server")
+    assert "markedOnly.has(name)" in builder
 
 
 def test_every_button_that_names_an_action_goes_through_the_dispatcher() -> None:

@@ -27,6 +27,7 @@ from ..contact_actions import (
 from ..domain import Contact
 from ..views import contact_row
 from . import urls
+from .actions import held_for_confirmation
 from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, columns, page, pane
 
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from chronos.outcome import Notice
 
     from ..protocols import ContactRepository
-    from .actions import Action, ActionContext
+    from .actions import Action, ActionContext, Reply
     from .app import WebServices
 
 
@@ -293,25 +294,48 @@ def store_contact(
 # ----------------------------------------------------------------------
 
 
-def _delete_marked(context: ActionContext) -> Outcome:
+def _delete_marked(context: ActionContext) -> Outcome | Reply:
+    """Delete the marked contacts, once the user has said so.
+
+    Deleting a contact cannot be undone -- there is no trash for them,
+    as there is for mail -- so the terminal puts a ``ConfirmScreen`` in
+    front of this and so does the browser.
+    """
     contacts = context.services.contacts
     if contacts is None:
         return Outcome.refused(warn("No contact store is open."))
     marked = context.ids
     if not marked:
         return Outcome.refused(warn("Mark the contacts to delete."))
+    held = held_for_confirmation(
+        context,
+        f"Delete {len(marked)} contact(s)? This cannot be undone.",
+    )
+    if held is not None:
+        return held
     return delete_contacts(contacts, marked)
 
 
-def _merge_marked(context: ActionContext) -> Outcome:
+def _merge_marked(context: ActionContext) -> Outcome | Reply:
+    """Merge the marked contacts into one, once the user has said so."""
     from chronos.outcome import Notice
 
     contacts = context.services.contacts
     if contacts is None:
         return Outcome.refused(warn("No contact store is open."))
+    if not context.ids:
+        return Outcome.refused(warn("Mark the contacts to merge."))
     plan = plan_merge(contacts, context.ids)
     if isinstance(plan, Notice):
         return Outcome.refused(plan)
+    held = held_for_confirmation(
+        context,
+        f"Merge {plan.total} contacts into {plan.target_label}?\n"
+        f"Merging in: {', '.join(plan.source_labels)}.\n"
+        "Merging is irreversible.",
+    )
+    if held is not None:
+        return held
     return merge_contacts(contacts, plan)
 
 

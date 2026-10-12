@@ -33,6 +33,8 @@ from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pony.web.actions import MARKED_ONLY_ACTIONS
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -286,7 +288,12 @@ def dispatch(
         body["account"] = data["account"]
     if data.get("folder"):
         body["folder"] = data["folder"]
-    body["id"] = list(ids) if ids else _selected(page, data)
+    if action in MARKED_ONLY_ACTIONS:
+        # No fallback to the cursor: these act on the marks alone, and
+        # `server()` in `pony.js` sends nothing when there are none.
+        body["id"] = list(ids)
+    else:
+        body["id"] = list(ids) if ids else _selected(page, data)
     body.update(extra)
     response = client.post(f"/action/{action}", data=body)
     outcome = response.json()
@@ -299,6 +306,31 @@ def dispatch(
         ),
         confirm=outcome.get("confirm"),
     )
+
+
+def dispatch_agreeing(
+    client: TestClient,
+    page: str,
+    action: str,
+    *,
+    ids: Sequence[str] = (),
+    **extra: str,
+) -> Dispatched:
+    """Run *action*, saying yes to whatever it asks first.
+
+    An irreversible operation answers with a question instead of a
+    result, and ``server()`` in ``static/pony.js`` re-sends the same
+    action with the fields the question names once ``window.confirm``
+    has returned true.  This does the same, so a flow test walks the
+    whole of a delete or a merge rather than stopping at the question.
+    """
+    asked = dispatch(client, page, action, ids=ids, **extra)
+    if asked.confirm is None:
+        return asked
+    fields = asked.confirm.get("fields", {})
+    assert isinstance(fields, dict), fields
+    answered = {str(name): str(value) for name, value in fields.items()}
+    return dispatch(client, page, action, ids=ids, **extra, **answered)
 
 
 def _selected(page: str, data: dict[str, str]) -> list[str]:
@@ -522,6 +554,7 @@ __all__ = [
     "client_actions",
     "declared_names",
     "dispatch",
+    "dispatch_agreeing",
     "element_data",
     "fetched_paths",
     "form_fields",

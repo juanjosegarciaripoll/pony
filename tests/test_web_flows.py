@@ -44,6 +44,7 @@ from tui_helpers import (
 from web_helpers import (
     attribute_values,
     dispatch,
+    dispatch_agreeing,
     element_data,
     form_fields,
     form_target,
@@ -556,7 +557,19 @@ def test_an_event_is_created_from_the_calendar_and_deleted_again() -> None:
         assert form_fields(form, "#event-form")["summary"] == "Design review"
         button = element_data(form, "delete-event")
         assert button["uid"]
-        outcome = dispatch(
+        # Deleting an event asks first, as it does in the terminal.
+        asked = dispatch(
+            client,
+            form,
+            "delete_event",
+            uid=button["uid"],
+            cal=button["target"],
+        )
+        assert asked.changed == 0
+        assert "Design review" in str(asked.confirm)
+        assert "Design review" in client.get("/calendar").text
+
+        outcome = dispatch_agreeing(
             client,
             form,
             "delete_event",
@@ -642,7 +655,8 @@ def test_harvesting_a_folder_then_merging_two_of_the_contacts() -> None:
         marked = row_ids(contacts)
         assert len(marked) >= 2
 
-        merged = dispatch(client, contacts, "merge_marked", ids=marked[:2])
+        # Merging is irreversible, so it asks; the page says yes.
+        merged = dispatch_agreeing(client, contacts, "merge_marked", ids=marked[:2])
         assert merged.changed >= 1
 
         after = client.get("/contacts").text

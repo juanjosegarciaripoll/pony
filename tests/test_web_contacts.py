@@ -201,11 +201,32 @@ def test_marked_contacts_can_be_deleted() -> None:
     with _client(services) as client:
         response = client.post(
             "/action/delete_marked",
-            data={"id": [str(first), str(second)]},
+            # Answered, as the page answers it: the question comes back
+            # first and the same action is re-sent with `confirm`.
+            data={"id": [str(first), str(second)], "confirm": "1"},
         )
 
     assert response.json()["changed"] == 2
     assert store.list_all_contacts() == []
+
+
+def test_deleting_contacts_asks_first_and_changes_nothing_until_answered() -> None:
+    """Irreversible in the terminal behind a `ConfirmScreen`; here too."""
+    services, store = _services("contacts-delete-confirm")
+    first = _add(store, "Ada", "Lovelace", "ada@example.test")
+    second = _add(store, "Bob", "Alpha", "bob@example.test")
+
+    with _client(services) as client:
+        asked = client.post(
+            "/action/delete_marked",
+            data={"id": [str(first), str(second)]},
+        ).json()
+
+    assert asked["changed"] == 0
+    assert "cannot be undone" in asked["confirm"]["question"]
+    assert asked["confirm"]["fields"] == {"confirm": "1"}
+    # Nothing happened, which is the whole point of asking.
+    assert len(store.list_all_contacts()) == 2
 
 
 def test_deleting_with_nothing_marked_says_so() -> None:
@@ -225,7 +246,7 @@ def test_marked_contacts_can_be_merged_into_the_oldest() -> None:
     with _client(services) as client:
         response = client.post(
             "/action/merge_marked",
-            data={"id": [str(second), str(first)]},
+            data={"id": [str(second), str(first)], "confirm": "1"},
         )
 
     assert response.json()["changed"] == 2
@@ -244,6 +265,34 @@ def test_merging_one_contact_is_refused_with_a_reason() -> None:
     assert response.json()["notices"][0]["text"] == "Mark at least 2 contacts to merge."
 
 
+def test_merging_contacts_says_it_is_irreversible_before_doing_it() -> None:
+    """Which record survives is named in the question, as in the terminal."""
+    services, store = _services("contacts-merge-confirm")
+    first = _add(store, "Ada", "Lovelace", "ada@example.test")
+    second = _add(store, "A.", "Lovelace", "ada.l@example.test")
+
+    with _client(services) as client:
+        asked = client.post(
+            "/action/merge_marked",
+            data={"id": [str(second), str(first)]},
+        ).json()
+
+    assert asked["changed"] == 0
+    question = asked["confirm"]["question"]
+    assert "Merging is irreversible." in question
+    assert "Ada Lovelace" in question
+    assert len(store.list_all_contacts()) == 2
+
+
+def test_merging_with_nothing_marked_says_so() -> None:
+    services, _store = _services("contacts-merge-none")
+
+    with _client(services) as client:
+        response = client.post("/action/merge_marked", data={})
+
+    assert response.json()["notices"][0]["text"] == "Mark the contacts to merge."
+
+
 def test_the_list_offers_buttons_for_its_bulk_operations() -> None:
     """The keyboard has `D` and `M`; a phone needs something to tap."""
     services, store = _services("contacts-tools")
@@ -256,3 +305,27 @@ def test_the_list_offers_buttons_for_its_bulk_operations() -> None:
     assert 'data-action="merge_marked"' in body
     assert "/contacts/edit" in body
     assert 'type="search"' in body
+
+
+def test_tapping_delete_marked_on_a_fresh_list_deletes_nobody() -> None:
+    """The cursor starts on the first row, and must not stand in for a mark.
+
+    So "Delete marked" on a list nobody has marked anything in used to
+    delete the first contact, silently.  Both halves say no: the page
+    sends the marks alone for these two actions, and the action refuses
+    an empty set.
+    """
+    from web_helpers import dispatch
+
+    services, store = _services("contacts-fresh-delete")
+    _add(store, "Ada", "Lovelace", "ada@example.test")
+    _add(store, "Bob", "Alpha", "bob@example.test")
+
+    with _client(services) as client:
+        page = client.get("/contacts").text
+        # No `ids`: the page has just loaded and nothing is marked.
+        refused = dispatch(client, page, "delete_marked")
+
+    assert refused.changed == 0
+    assert refused.texts == ("Mark the contacts to delete.",)
+    assert len(store.list_all_contacts()) == 2

@@ -43,6 +43,7 @@ from chronos.views import (
 )
 
 from . import urls
+from .actions import held_for_confirmation
 from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, columns, page, pane
 
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
     from chronos.views import OccurrenceRow
 
     from ..calendar import CalendarRuntime
-    from .actions import Action, ActionContext
+    from .actions import Action, ActionContext, Reply
     from .app import WebServices
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -1095,7 +1096,13 @@ def _existing(
 # ----------------------------------------------------------------------
 
 
-def _delete_event(context: ActionContext) -> Outcome:
+def _delete_event(context: ActionContext) -> Outcome | Reply:
+    """Trash the event, once the user has said so.
+
+    The terminal asks before deleting an event and the browser did not,
+    which is the same operation reached two ways with the question on
+    only one of them.
+    """
     from chronos.event_actions import trash_event
 
     runtime = context.services.calendar
@@ -1108,6 +1115,12 @@ def _delete_event(context: ActionContext) -> Outcome:
     )
     if component is None:
         return Outcome.refused(warn("That event is no longer here."))
+    held = held_for_confirmation(
+        context,
+        f"Delete {component.summary or 'this event'}?",
+    )
+    if held is not None:
+        return held
     return trash_event(calendars_of(runtime), component, now=context.now)
 
 

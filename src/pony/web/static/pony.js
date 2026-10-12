@@ -25,6 +25,9 @@ const state = {
   // Set once `Q` has stopped the server: the page is a corpse after
   // that and must not keep acting as though it were live.
   quitting: false,
+  // What the page's form held when it loaded, for the Escape that
+  // leaves it. Null on a page with no form.
+  formAtLoad: null,
 };
 
 // ── Rows, selection and marks ──────────────────────────────────
@@ -207,6 +210,13 @@ function ask(question, { value = "", list = null, placeholder = "" } = {}) {
 
 // ── Server actions ─────────────────────────────────────────────
 
+// Actions whose label says "marked". They act on the marks and on
+// nothing else, so the cursor is not offered as a fallback: it starts
+// on the first row, so "Delete marked" on a freshly loaded contacts
+// list used to delete the first contact without a word.
+// `actions.MARKED_ONLY_ACTIONS` holds the same set on the server.
+const markedOnly = new Set(["delete_marked", "merge_marked"]);
+
 async function server(name, extra = {}) {
   const data = here();
   // `g` and ctrl+g mean "sync what I am looking at", and on the
@@ -223,7 +233,8 @@ async function server(name, extra = {}) {
   const body = new URLSearchParams();
   if (data.account) body.append("account", data.account);
   if (data.folder) body.append("folder", data.folder);
-  for (const id of targets()) body.append("id", id);
+  const over = markedOnly.has(name) ? Array.from(state.marked) : targets();
+  for (const id of over) body.append("id", id);
   for (const [key, value] of Object.entries(extra)) {
     if (value !== null && value !== undefined) body.append(key, value);
   }
@@ -401,9 +412,41 @@ function selectedEvent() {
   return { cal: `${parts[0]}/${parts[1]}`, uid: parts.slice(2).join("/") };
 }
 
+// ── Forms ──────────────────────────────────────────────────────
+
+function currentForm() {
+  return document.querySelector("form#compose-form, form#event-form, form#contact-form");
+}
+
 function submitForm() {
-  const form = document.querySelector("form#compose-form, form#event-form, form#contact-form");
+  const form = currentForm();
   if (form) form.requestSubmit();
+}
+
+// What the form holds, as one string, so Escape can tell a form someone
+// has typed into from one they only opened.
+function formState(form) {
+  const parts = [];
+  for (const field of form.elements) {
+    if (!field.name) continue;
+    parts.push(`${field.name}=${field.type === "checkbox" ? field.checked : field.value}`);
+  }
+  return parts.join("\n");
+}
+
+// Escape on a form used to be `window.history.back()` with no question
+// asked, so it threw away a half-written message. The terminal puts a
+// save-draft prompt here; this asks instead of saving, because a form
+// opened by mistake should not file anything, and an event form has no
+// draft to file at all.
+function leaveForm() {
+  const form = currentForm();
+  if (form && state.formAtLoad !== null && formState(form) !== state.formAtLoad) {
+    const what = state.surface === "compose" ? "message" : "event";
+    const keep = state.surface === "compose" ? "Save draft" : "Save";
+    if (!window.confirm(`Discard this ${what}? Use ${keep} to keep it.`)) return;
+  }
+  window.history.back();
 }
 
 // ── What each action does here ─────────────────────────────────
@@ -579,7 +622,7 @@ const clientActions = {
     }
     button.click();
   },
-  cancel: () => window.history.back(),
+  cancel: leaveForm,
   add_attachment: () => {
     const picker = document.getElementById("attach");
     if (picker) picker.click();
@@ -793,6 +836,8 @@ async function start() {
   wireEventDelete();
   wireAttachments();
   wireFolderToggle();
+  const form = currentForm();
+  state.formAtLoad = form ? formState(form) : null;
   document.addEventListener("keydown", onKeyDown);
   // Clicking a row selects it, so the keyboard and the pointer agree
   // about what an action will act on.

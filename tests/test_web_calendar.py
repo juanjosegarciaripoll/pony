@@ -431,12 +431,33 @@ def test_an_event_can_be_deleted_from_the_browser() -> None:
     with _client(services) as client:
         response = client.post(
             "/action/delete_event",
-            data={"uid": "gone@example.com"},
+            # Answered, as the page answers it.
+            data={"uid": "gone@example.com", "confirm": "1"},
         )
 
     assert response.json()["changed"] == 1
     (component,) = runtime.index.list_components_by_uid("gone@example.com")
     assert component.local_status.value == "trashed"
+
+
+def test_deleting_an_event_asks_first_and_changes_nothing_until_answered() -> None:
+    """The terminal confirms this; the browser deleted on the first press."""
+    start = _tomorrow_at(10)
+    services, runtime = _services(
+        "cal-delete-confirm",
+        events=(("ask@example.com", _ics("ask@example.com", start)),),
+    )
+
+    with _client(services) as client:
+        asked = client.post(
+            "/action/delete_event",
+            data={"uid": "ask@example.com"},
+        ).json()
+
+    assert asked["changed"] == 0
+    assert asked["confirm"]["fields"] == {"confirm": "1"}
+    (component,) = runtime.index.list_components_by_uid("ask@example.com")
+    assert component.local_status.value != "trashed"
 
 
 def test_deleting_an_event_that_is_gone_says_so() -> None:
