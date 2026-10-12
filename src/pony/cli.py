@@ -3061,7 +3061,10 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
         forwarded = ["--config", str(config_path), *forwarded]
     try:
         return calendar_cli.main(
-            forwarded, context_factory=_context, prog="pony calendar"
+            forwarded,
+            context_factory=_context,
+            prog="pony calendar",
+            hosted=True,
         )
     except ConfigError as error:
         print(f"error: {error}", file=sys.stderr)

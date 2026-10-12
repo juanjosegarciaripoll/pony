@@ -101,17 +101,31 @@ def main(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     prog: str = "chronos",
+    hosted: bool = False,
 ) -> int:
     """Run one calendar command.
 
     `prog` names the program in usage and error messages. Pony Express
     passes "pony calendar", which is how the user reached this parser
     when the calendar runs as part of it.
+
+    `hosted` says the calendar is running inside Pony, where the
+    configuration is Pony's file and the calendar's settings are a
+    table inside it.  The four commands that *edit* a configuration
+    then refuse, because neither thing they could do is right: writing
+    this parser's own flat schema into Pony's file would corrupt it,
+    and writing the calendar's standalone file -- which Pony never
+    reads -- reports a success that nothing acted on.
     """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     argv_for_parse = _rewrite_ics_shortcut(raw_argv)
+    hosted_refusal = _refuse_config_command(
+        argv_for_parse, hosted=hosted, prog=prog, err=err
+    )
+    if hosted_refusal is not None:
+        return hosted_refusal
     parser = _build_parser(prog)
     args = parser.parse_args(argv_for_parse)
     # `sync` defaults to INFO so the per-calendar / per-chunk progress
@@ -224,6 +238,41 @@ def _default_context_factory(config_path: Path | None) -> CliContext:
         stderr=sys.stderr,
         now=datetime.now(UTC),
     )
+
+
+# The commands that write a configuration file rather than read one.
+# Inside Pony there is no file of theirs to write -- see `main`.
+_CONFIG_FILE_COMMANDS = frozenset({"init", "account", "config", "oauth"})
+
+
+def _refuse_config_command(
+    argv: Sequence[str],
+    *,
+    hosted: bool,
+    prog: str,
+    err: TextIO,
+) -> int | None:
+    """``2`` when this command edits a config Pony does not keep here.
+
+    Read before the parser runs, so a command that cannot work is not
+    first asked to complete its arguments: ``pony calendar account add``
+    would otherwise demand ``--credential-backend`` and refuse after
+    being given it.
+    """
+    if not hosted:
+        return None
+    command = next((arg for arg in argv if arg in _SUBCOMMANDS), None)
+    if command not in _CONFIG_FILE_COMMANDS:
+        return None
+    err.write(
+        f"{prog} {command}: the calendar's settings live in Pony's"
+        " config.toml, under the [calendar] table, and this command writes"
+        " the calendar's own standalone file.\n"
+        "Edit the table instead: pony config edit\n"
+        "An OAuth account is authorized by the first `pony calendar sync`"
+        " that needs it.\n"
+    )
+    return 2
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"

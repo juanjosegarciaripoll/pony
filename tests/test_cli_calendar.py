@@ -130,6 +130,39 @@ class RunCalendarTest(unittest.TestCase):
             code = run_calendar(config_path=None, argv=["--config", str(path), "list"])
         self.assertEqual(0, code)
 
+    def test_a_command_that_edits_a_config_refuses_inside_pony(self) -> None:
+        """Neither file it could write is the right one.
+
+        `init`, `account`, `config` and `oauth` come from the days when
+        the calendar was a separate program. Without `--config` they
+        wrote `<data_dir>/calendar/config.toml`, which Pony never reads
+        -- so `account add` reported success and `calendar list` then
+        showed nothing. With `--config` forwarded they would write the
+        calendar's own flat schema into Pony's config file, which is
+        worse: that file is the mail client's too.
+        """
+        path = self._config()
+        before = path.read_text(encoding="utf-8")
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            code = run_calendar(
+                config_path=path,
+                argv=["account", "add", "--name", "work", "--url", "https://x/dav/"],
+            )
+
+        self.assertEqual(2, code)
+        message = err.getvalue()
+        self.assertIn("[calendar] table", message)
+        self.assertIn("pony config edit", message)
+        # And it wrote nothing anywhere.
+        self.assertEqual(before, path.read_text(encoding="utf-8"))
+
+    def test_the_commands_that_read_a_config_still_work_inside_pony(self) -> None:
+        path = self._config()
+        captured = io.StringIO()
+        with mock.patch("sys.stdout", captured):
+            self.assertEqual(0, run_calendar(config_path=path, argv=["list"]))
+
     def test_main_routes_the_calendar_command(self) -> None:
         path = self._config()
         captured = io.StringIO()

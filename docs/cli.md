@@ -140,12 +140,12 @@ dialog for that file.
 !!! warning "Configure calendar accounts by editing the file"
     `pony calendar` also carries `init`, `account add|list|rm`,
     `config edit` and `oauth authorize` from the days when the calendar was
-    a separate program. They read a configuration file of their own and
-    cannot parse Pony's unified one, so against it they fail with a
-    message about a mail account. Add, change and remove calendar accounts
-    by editing the `[calendar]` table — `pony config edit` — and let
-    `pony calendar sync` run the OAuth flow the first time an account
-    needs it.
+    a separate program. Each one *writes* a configuration file of its own,
+    which Pony does not read, so inside Pony all four refuse and say where
+    the settings actually live. Add, change and remove calendar accounts by
+    editing the `[calendar]` table — `pony config edit` — and let
+    `pony calendar sync` run the OAuth flow the first time an account needs
+    it. Standalone `chronos` still has them, and they still work there.
 
 ---
 
