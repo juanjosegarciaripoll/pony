@@ -1416,8 +1416,8 @@ class NewEventFlowTest(TuiFlowTestCase):
             # default end time lands exactly on 10:00, and east of about
             # UTC+13 the default end *date* rolls to the next day and stays
             # behind the start date set here. Either way the form refuses
-            # with "end must be after start" and the save silently does
-            # nothing.
+            # with "the event ends before it starts" and the save
+            # silently does nothing.
             edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
             edit.query_one("#edit-end-time", Select).value = "11:00"
             edit.action_save()
@@ -1502,8 +1502,14 @@ class NewEventFlowTest(TuiFlowTestCase):
             edit.action_save()
             await pilot.pause()
             self.assertIs(pilot.app.screen, edit)
+            # The sentence both front ends use: the rule is
+            # `all_day_form_bounds`', because the browser clamped the
+            # same typo and saved a one-day event.
+            from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+
             self.assertIn(
-                "before start", str(edit.query_one("#edit-error", Label).render())
+                ENDS_BEFORE_IT_STARTS,
+                str(edit.query_one("#edit-error", Label).render()),
             )
 
     async def test_new_event_can_invite_attendees(self) -> None:
@@ -2718,7 +2724,10 @@ class EditScreenValidationTest(TuiFlowTestCase):
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
-            self.assertEqual(edit._error, "summary is required")
+            from chronos.event_actions import NEEDS_A_SUMMARY
+
+            # One sentence for the rule, which the browser shows too.
+            self.assertEqual(edit._error, NEEDS_A_SUMMARY)
 
     async def test_save_with_invalid_date_shows_error(self) -> None:
         services = self.services()
@@ -2752,7 +2761,11 @@ class EditScreenValidationTest(TuiFlowTestCase):
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
-            self.assertEqual(edit._error, "end must be after start")
+            from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+
+            # The sentence is the one both front ends use, which is why
+            # it is a constant in `event_actions` and not a string here.
+            self.assertEqual(edit._error, ENDS_BEFORE_IT_STARTS)
 
     async def test_cancel_pops_screen(self) -> None:
         services = self.services()

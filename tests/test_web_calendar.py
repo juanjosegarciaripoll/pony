@@ -771,6 +771,43 @@ def test_an_all_day_event_from_the_browser_is_stored_as_dates() -> None:
     assert is_all_day_span(component.dtstart, component.dtend)
 
 
+def test_an_all_day_span_that_ends_before_it_starts_is_refused() -> None:
+    """The browser clamped it and saved a different event.
+
+    `all_day_form_bounds` did `max(first, last)`, so a form the terminal
+    refused outright came back from the browser as a one-day event on
+    the start date — the same typo, two answers. The rule is in
+    `event_actions` now, in one wording, and the browser reports it as
+    the refusal it is.
+    """
+    from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+
+    services, runtime = _services("cal-all-day-backwards")
+
+    with _client(services) as client:
+        response = client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Backwards holiday",
+                "starts": "2026-05-17T00:00",
+                "ends": "2026-05-15T00:00",
+                "all_day": "1",
+            },
+        )
+
+    assert ENDS_BEFORE_IT_STARTS in response.text
+    stored = [
+        found
+        for found in runtime.index.list_calendar_components(
+            CalendarRef(ACCOUNT, CALENDAR),
+        )
+        if found.summary == "Backwards holiday"
+    ]
+    assert stored == []
+
+
 def test_an_all_day_event_survives_being_opened_and_saved_again() -> None:
     services, runtime = _services("cal-all-day-round-trip")
 

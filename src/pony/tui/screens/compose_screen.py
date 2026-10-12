@@ -33,7 +33,7 @@ from ...compose_utils import (
 )
 from ...composer import DraftSpec, from_header
 from ...contact_actions import contact_for_address
-from ...delivery import deliver_message, file_draft
+from ...delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
 from ...domain import (
     AnyAccount,
     AppConfig,
@@ -576,7 +576,9 @@ class ComposeScreen(Screen[bool]):
 
         to = self._collect_field(TO_CONTAINER)
         if not to:
-            self.notify("'To' field is required.", severity="error")
+            # The sentence `delivery` uses, because the rule is its
+            # own: this check is the form's courtesy, not a second rule.
+            self.notify(NEEDS_A_RECIPIENT, severity="error")
             self._first_input(TO_CONTAINER).focus()
             return
 

@@ -1,4 +1,9 @@
-"""Tests for SaveMessageScreen and its filename-generation helpers."""
+"""Tests for SaveMessageScreen and the filename proposals it offers.
+
+The proposals themselves are `pony.message_renderer`'s: the browser
+names a downloaded message with the same function, which is why it is
+not in this screen's module any more.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +11,13 @@ import unittest
 
 import corpus
 
-from pony.message_renderer import render_message
-from pony.tui.screens.save_message_screen import (
-    SaveItem,
-    SaveMessageScreen,
-    _proposed_attachment_filename,
-    _proposed_body_filename,
-    _subject_slug,
+from pony.message_renderer import (
+    proposed_attachment_filename,
+    proposed_filename,
+    render_message,
+    subject_slug,
 )
+from pony.tui.screens.save_message_screen import SaveItem, SaveMessageScreen
 
 # ---------------------------------------------------------------------------
 # Unit tests — pure helpers
@@ -22,16 +26,16 @@ from pony.tui.screens.save_message_screen import (
 
 class SubjectSlugTest(unittest.TestCase):
     def test_spaces_become_hyphens(self) -> None:
-        self.assertEqual(_subject_slug("Hello World"), "hello-world")
+        self.assertEqual(subject_slug("Hello World"), "hello-world")
 
     def test_non_alphanum_stripped(self) -> None:
-        self.assertEqual(_subject_slug("Re: Q3 report!"), "re-q3-report")
+        self.assertEqual(subject_slug("Re: Q3 report!"), "re-q3-report")
 
     def test_empty_subject_returns_fallback(self) -> None:
-        self.assertEqual(_subject_slug(""), "message")
+        self.assertEqual(subject_slug(""), "message")
 
     def test_long_subject_truncated(self) -> None:
-        slug = _subject_slug("a" * 200)
+        slug = subject_slug("a" * 200)
         self.assertLessEqual(len(slug), 50)
 
 
@@ -39,7 +43,7 @@ class ProposedBodyFilenameTest(unittest.TestCase):
     def test_includes_date_and_slug(self) -> None:
         raw = corpus.plain_text()
         rendered = render_message(raw)
-        name = _proposed_body_filename(rendered)
+        name = proposed_filename(rendered, suffix=".md")
         self.assertTrue(name.endswith(".md"))
         self.assertIn("2026", name)
 
@@ -56,17 +60,17 @@ class ProposedBodyFilenameTest(unittest.TestCase):
             attachments=(),
             raw_bytes=b"",
         )
-        name = _proposed_body_filename(rendered)
+        name = proposed_filename(rendered, suffix=".md")
         self.assertTrue(name.endswith(".md"))
         self.assertNotIn("_", name[:4])  # no leading date-underscore
 
 
 class ProposedAttachmentFilenameTest(unittest.TestCase):
     def test_uses_given_filename(self) -> None:
-        self.assertEqual(_proposed_attachment_filename("report.pdf", 1), "report.pdf")
+        self.assertEqual(proposed_attachment_filename("report.pdf", 1), "report.pdf")
 
     def test_fallback_for_empty_filename(self) -> None:
-        self.assertEqual(_proposed_attachment_filename("", 2), "attachment-2")
+        self.assertEqual(proposed_attachment_filename("", 2), "attachment-2")
 
 
 # ---------------------------------------------------------------------------

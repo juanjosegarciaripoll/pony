@@ -383,6 +383,12 @@ def test_a_message_can_be_downloaded_as_it_arrived() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("message/rfc822")
     assert b"Subject: Tuesday meeting confirmed" in response.content
+    # Named after the message, as the terminal's save dialog proposes:
+    # every download was `message.eml`, so three saved messages were
+    # told apart by the browser's own numbering and nothing else.
+    disposition = response.headers["content-disposition"]
+    assert "tuesday-meeting-confirmed.eml" in disposition
+    assert "message.eml" not in disposition
 
 
 def test_an_attachment_is_served_as_a_download_that_cannot_be_sniffed() -> None:

@@ -292,15 +292,13 @@ class OneSanitiserForEveryRouteTest(unittest.TestCase):
 
     def test_every_route_produces_the_same_name(self) -> None:
         """The regression this consolidation exists to prevent."""
-        from pony.tui.screens.save_message_screen import (
-            safe_attachment_filename as dialog_sanitiser,
-        )
+        from pony.message_renderer import proposed_attachment_filename
 
         hostile = "../../re<port>.pdf"
         expected = safe_attachment_filename(hostile)
 
-        # The save dialog imports the same function…
-        self.assertEqual(dialog_sanitiser(hostile), expected)
+        # The save dialog proposes a name through the same function…
+        self.assertEqual(proposed_attachment_filename(hostile, 1), expected)
         # …and so does the reader's save path, via unique_destination.
         self.assertEqual(unique_destination(self.tmp, hostile).name, expected)
 

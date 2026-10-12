@@ -716,6 +716,43 @@ async def test_goto_folder_moves_the_tree_cursor() -> None:
         assert screen._current_folder_ref == target
 
 
+async def test_goto_offers_a_folder_that_has_no_directory_yet() -> None:
+    """The list came from the mirrors, and misses two kinds of folder.
+
+    A folder the server has but this host has not materialised, and one
+    that has messages with no directory on disk. The tree beside it
+    shows both, because the tree asks `folder_unread_counts`; the goto
+    dialog asked the mirror and offered neither.
+    """
+    from pony.domain import FolderSyncState
+    from pony.tui.screens.goto_folder_screen import GotoFolderScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-goto-unmaterialised",
+        seed=[(folder, plain_text())],
+    )
+    index.record_folder_sync_state(
+        state=FolderSyncState(
+            account_name="acct",
+            folder_name="Synced/Elsewhere",
+            uid_validity=1,
+            highest_uid=0,
+        ),
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        _main(app).action_goto_folder()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, GotoFolderScreen)
+        offered = {ref.folder_name for ref in dialog._folders}
+
+    assert "Synced/Elsewhere" in offered
+    assert "INBOX" in offered
+
+
 async def test_trashing_records_when_it_happened() -> None:
     """``trashed_at`` drives both retention and the sync planner.
 

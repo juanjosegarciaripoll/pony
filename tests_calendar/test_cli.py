@@ -1219,6 +1219,44 @@ class RmCommandTest(CliTestCase):
         code = self._run(["rm", "missing@example.com"])
         self.assertEqual(code, 1)
 
+    def test_rm_refuses_a_uid_two_calendars_hold(self) -> None:
+        """It trashed both, where `trash_event` takes one component.
+
+        The same UID is in two calendars whenever an invitation is filed
+        twice or a copy is made by hand, and `rm <uid>` does not say
+        which. `show` and `edit` refuse that and name the calendars;
+        this used to delete the lot.
+        """
+        for calendar in ("work", "home"):
+            self._run(
+                [
+                    "add",
+                    "--account",
+                    "personal",
+                    "--calendar",
+                    calendar,
+                    "--summary",
+                    "Twice",
+                    "--start",
+                    "2026-05-01T12:00:00+00:00",
+                    "--uid",
+                    "twice@example.com",
+                ]
+            )
+
+        code = self._run(["rm", "twice@example.com"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("ambiguous uid", self.stderr.getvalue())
+        self.assertIn("personal/work", self.stderr.getvalue())
+        self.assertIn("personal/home", self.stderr.getvalue())
+        for calendar in ("work", "home"):
+            component = self.index.get_component(
+                ComponentRef("personal", calendar, "twice@example.com"),
+            )
+            assert component is not None
+            self.assertEqual(component.local_status, LocalStatus.ACTIVE)
+
 
 class DoctorCommandTest(CliTestCase):
     def test_doctor_reports_ok_on_clean_state(self) -> None:

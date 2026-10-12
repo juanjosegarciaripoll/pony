@@ -959,13 +959,25 @@ class MainScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def action_goto_folder(self) -> None:
+        """Offer every folder there is, not every folder on disk.
+
+        The list came from the mirrors alone, which misses a folder the
+        server has but this host has not materialised and a folder that
+        has messages without a directory -- both of which the tree
+        beside it shows, because the tree asks
+        `mailbox_actions.folder_unread_counts`. So does this now.
+        """
         from .goto_folder_screen import GotoFolderScreen
 
-        folders: list[FolderRef] = []
-        for account in self._config.accounts:
-            mirror = self._mirrors.get(account.name)
-            if mirror is not None:
-                folders.extend(mirror.list_folders(account_name=account.name))
+        mailboxes = self._mailboxes
+        folders: list[FolderRef] = [
+            FolderRef(account_name=account.name, folder_name=folder_name)
+            for account in self._config.accounts
+            for folder_name in mailbox_actions.folder_unread_counts(
+                mailboxes,
+                account.name,
+            )
+        ]
 
         def _on_folder(ref: FolderRef | None) -> None:
             if ref is not None:
@@ -1714,10 +1726,9 @@ class MainScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
-        from ...message_renderer import build_browser_html
+        from ...message_renderer import build_browser_html, proposed_filename
         from ..pdf_export import export_pdf_in_thread
         from .save_folder_picker_screen import SaveFolderPickerScreen
-        from .save_message_screen import _proposed_body_filename
 
         msg = self.get_current_message()
         if msg is None:
@@ -1738,7 +1749,7 @@ class MainScreen(Screen[None]):
             return
         rendered = render_message(raw)
         html = build_browser_html(raw)
-        filename = Path(_proposed_body_filename(rendered)).with_suffix(".pdf").name
+        filename = proposed_filename(rendered, suffix=".pdf")
 
         def _on_folder(dest: Path | None) -> None:
             if dest is None:

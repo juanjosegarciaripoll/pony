@@ -37,6 +37,13 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+#: What both front ends say about a message with nowhere to go.  The
+#: rule belongs with sending rather than with either form: the composer
+#: said "'To' field is required." and the browser "A message needs at
+#: least one recipient.", and `deliver_message` refuses it either way
+#: so a third front end cannot forget to ask.
+NEEDS_A_RECIPIENT = "A message needs at least one recipient."
+
 
 @dataclass(frozen=True, slots=True)
 class FiledMessage:
@@ -158,7 +165,9 @@ def _retire_source_draft(
             f"{folder.folder_name} is not a Drafts folder,"
             " so the message in it was left alone.",
         )
-    retire_message(
+    # A notice when the mirror file outlived the row, which is the one
+    # thing retiring can half-do; `None` when it went cleanly.
+    return retire_message(
         mailboxes,
         source_draft,
         folder,
@@ -166,7 +175,6 @@ def _retire_source_draft(
         # next sync brings the old version back.
         expunge_on_server=source_draft.uid is not None,
     )
-    return None
 
 
 def file_draft(
@@ -228,8 +236,9 @@ def record_sent(
     """
     from .contact_actions import harvest_addresses
 
+    notices: list[Notice] = []
     if draft is not None:
-        retire_message(
+        left_behind = retire_message(
             mailboxes,
             draft,
             FolderRef(
@@ -240,6 +249,8 @@ def record_sent(
             # moments ago for exactly this eventuality.
             expunge_on_server=False,
         )
+        if left_behind is not None:
+            notices.append(left_behind)
     filed = file_message(
         mailboxes,
         raw,
@@ -250,7 +261,9 @@ def record_sent(
     harvested = harvest_addresses(contacts, *recipients)
     return Outcome(
         changed=filed.outcome.changed + harvested.changed,
-        notices=filed.outcome.notices,
+        # The draft's own notice first, because it is about the message
+        # the user was looking at a moment ago.
+        notices=(*notices, *filed.outcome.notices),
     )
 
 
@@ -289,6 +302,12 @@ def deliver_message(
     ``(attempt, total)`` before each connection attempt so a UI can say
     which try it is waiting on.
     """
+    if not to.strip():
+        # The rule, not the form's: the composer said "'To' field is
+        # required." and the browser said "A message needs at least one
+        # recipient.", which is one rule in two wordings -- and nothing
+        # stopped a third front end from forgetting it entirely.
+        return Outcome.refused(warn(NEEDS_A_RECIPIENT))
     if account.smtp is None or account.username is None:
         return Outcome.refused(
             failure(f"Account {account.name!r} has no SMTP server configured."),
@@ -386,6 +405,7 @@ def resolve_send_password(
 
 
 __all__ = [
+    "NEEDS_A_RECIPIENT",
     "FiledMessage",
     "deliver_message",
     "file_message",

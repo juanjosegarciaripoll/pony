@@ -1245,14 +1245,26 @@ def cmd_edit(
 
 
 def cmd_rm(ctx: CliContext, *, uid: str) -> int:
+    """Trash the event *uid* names, in the one calendar that holds it.
+
+    A UID can be in two calendars at once -- the same invitation filed
+    twice, a copy made by hand -- and `trash_event` takes one component
+    for exactly that reason.  Trashing every match is not what `rm <uid>`
+    asks for, and it is not what `show` or `edit` do with the same
+    ambiguity: they refuse and name the calendars, so that the answer is
+    the user's.
+    """
     matches = _find_by_uid(ctx, uid)
     if not matches:
         ctx.stderr.write(f"not found: {uid}\n")
         return 1
-    calendars = _calendars(ctx)
-    for component in matches:
-        trash_event(calendars, component, now=ctx.now)
-    ctx.stdout.write(f"trashed {len(matches)}\n")
+    if len(matches) > 1:
+        ctx.stderr.write(f"ambiguous uid {uid!r} matches multiple calendars:\n")
+        for match in matches:
+            ctx.stderr.write(f"  {match.ref.account_name}/{match.ref.calendar_name}\n")
+        return 2
+    trash_event(_calendars(ctx), matches[0], now=ctx.now)
+    ctx.stdout.write("trashed 1\n")
     return 0
 
 

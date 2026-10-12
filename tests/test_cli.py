@@ -4438,3 +4438,75 @@ class WebQuitWiringTest(unittest.TestCase):
         self.assertFalse(server.should_exit)
         self.assertTrue(services.shutdown.request())  # type: ignore[attr-defined]
         self.assertTrue(server.should_exit)
+
+    def test_a_local_account_is_rescanned_before_the_server_opens(self) -> None:
+        """It was not, so the browser served a stale index indefinitely.
+
+        A local account has no sync step: its mirror is the only source
+        of truth, and the terminal reconciles the index against it at
+        startup. The server read whatever the index last knew, for as
+        long as it was up, with no command that would notice.
+        """
+        import sys
+        import types
+        from unittest.mock import patch
+
+        import pony.web as web_module
+        from pony.domain import FolderRef
+        from pony.index_store import SqliteIndexRepository
+        from pony.storage import MboxMirrorRepository
+
+        class _FakeServer:
+            def __init__(self, config: object) -> None:
+                self.config = config
+                self.should_exit = False
+
+            def run(self) -> None:
+                return None
+
+        fake_uvicorn = types.ModuleType("uvicorn")
+        fake_uvicorn.Config = lambda app, **kwargs: {"app": app, **kwargs}  # type: ignore[attr-defined]
+        fake_uvicorn.Server = _FakeServer  # type: ignore[attr-defined]
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = isolated_paths()
+            paths.ensure_runtime_dirs()
+            archive = isolated_data_dir() / "web-rescan-mbox"
+            archive.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                sample_config_toml()
+                + f"""
+
+[[accounts]]
+name = "Archive"
+account_type = "local"
+email_address = "archive@example.com"
+
+[accounts.mirror]
+path = '{archive}'
+format = "mbox"
+""",
+                encoding="utf-8",
+            )
+            # A message put in the mirror behind the index's back, which
+            # is what every edit of a local tree looks like.
+            mirror = MboxMirrorRepository(account_name="Archive", root_dir=archive)
+            folder = FolderRef(account_name="Archive", folder_name="INBOX")
+            mirror.create_folder(account_name="Archive", folder_name="INBOX")
+            mirror.store_message(folder=folder, raw_message=corpus.plain_text())
+            mirror.flush_writes()
+
+            with (
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch.object(web_module, "build_web_app", lambda services: services),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                rc = run_cli_ret("--config", str(config_path), "web", "--port", "0")
+
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            index.initialize()
+            rows = index.list_folder_messages(folder=folder)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(rows), 1)

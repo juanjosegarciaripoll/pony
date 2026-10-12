@@ -224,6 +224,20 @@ def parse_attendees(raw: str) -> tuple[str, ...]:
     return normalize_attendee_emails(values)
 
 
+#: What both front ends say about an event with no summary.  The rule
+#: is the same one in both -- an event is identified by what it says it
+#: is -- and each front end had its own sentence for it, one of them
+#: not even a sentence.
+NEEDS_A_SUMMARY = "An event needs a summary."
+
+#: What both front ends say about a span that ends before it begins.
+#: The sentence is here because the rule is: the terminal showed "end
+#: must not be before start" inline, while the browser clamped the same
+#: typo with `max()` and saved a different event -- one form refused
+#: what the other quietly changed.
+ENDS_BEFORE_IT_STARTS = "The event ends before it starts."
+
+
 def all_day_form_bounds(first: date, last: date | None) -> tuple[datetime, datetime]:
     """Stored bounds for the dates an all-day form holds.
 
@@ -233,10 +247,17 @@ def all_day_form_bounds(first: date, last: date | None) -> tuple[datetime, datet
     exclusive.  Both front ends read their form through this, because
     handing ``save_event`` the raw local values instead stores the
     previous day east of UTC.
+
+    Raises ``ValueError`` for a span that ends before it begins, which
+    is the answer :func:`parse_attendees` gives a bad address and
+    reaches the user the same way: inline in the terminal, as a refusal
+    notice in the browser.
     """
     from chronos.mutations import all_day_bounds
 
-    return all_day_bounds(first, max(first, last) if last is not None else first)
+    if last is not None and last < first:
+        raise ValueError(ENDS_BEFORE_IT_STARTS)
+    return all_day_bounds(first, last if last is not None else first)
 
 
 def all_day_form_dates(
@@ -504,6 +525,8 @@ def _store(
 
 
 __all__ = [
+    "ENDS_BEFORE_IT_STARTS",
+    "NEEDS_A_SUMMARY",
     "Calendars",
     "EditDraft",
     "SavedEvent",

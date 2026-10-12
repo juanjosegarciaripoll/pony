@@ -15,6 +15,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path, PurePath, PureWindowsPath
 
@@ -117,6 +118,55 @@ def attachment_display_name(part: EmailMessage) -> str:
     content_type = part.get_content_type()
     subtype = content_type.split("/")[-1] if "/" in content_type else content_type
     return _INLINE_ATTACHMENT_FILENAMES.get(content_type, f"attachment.{subtype}")
+
+
+# How long a subject may be in a proposed filename, in characters.
+_SLUG_MAX = 50
+
+# What a slug may hold: word characters, a hyphen, a dot.
+_SLUG_UNSAFE_RE = re.compile(r"[^\w\-.]")
+
+
+def subject_slug(subject: str) -> str:
+    """A subject line as the readable middle of a filename.
+
+    Lower case, hyphens for spaces, nothing a filesystem or a shell has
+    to be told about, and no ``..`` that could act as a parent
+    directory.  Distinct from :func:`_safe_filename_stem`, which keeps
+    the text as it was written, and from
+    :func:`safe_attachment_filename`, which cleans a name the sender
+    chose and must keep its extension.
+    """
+    slug = _SLUG_UNSAFE_RE.sub("", subject.lower().replace(" ", "-"))
+    # Collapse multi-dot runs so `..` cannot act as a parent reference.
+    slug = re.sub(r"\.{2,}", ".", slug)
+    return slug[:_SLUG_MAX] or "message"
+
+
+def proposed_filename(rendered: RenderedMessage, *, suffix: str) -> str:
+    """What to call a file holding *rendered*: ``<date>_<subject><suffix>``.
+
+    The proposal both front ends make when a message is saved: the
+    terminal offers it in the save dialog as ``.md``, the browser puts
+    it in the ``Content-Disposition`` of the raw download as ``.eml``.
+    It lived in the save dialog's module, which is why the browser
+    offered every message as ``message.eml`` -- three saved messages
+    and the names were the browser's own numbering.
+    """
+    slug = subject_slug(rendered.subject) if rendered.subject else "message"
+    stamp = ""
+    if rendered.date:
+        try:
+            stamp = parsedate_to_datetime(rendered.date).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            stamp = ""
+    return f"{stamp}_{slug}{suffix}" if stamp else f"{slug}{suffix}"
+
+
+def proposed_attachment_filename(filename: str, index: int) -> str:
+    """A sanitized attachment name, or a numeric fallback."""
+    safe = safe_attachment_filename(filename) if filename else ""
+    return safe or f"attachment-{index}"
 
 
 def _safe_filename_stem(text: str, fallback: str = "message") -> str:

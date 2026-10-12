@@ -512,6 +512,34 @@ def _sendable(
     )
 
 
+def test_a_message_with_nowhere_to_go_is_refused_by_the_send_itself() -> None:
+    """One rule, in one place, in one wording.
+
+    The composer said "'To' field is required." and the browser "A
+    message needs at least one recipient." — the same rule, twice, and
+    nothing in the send path stopped a front end that forgot to ask.
+    """
+    mailboxes, account = _sendable("delivery-no-recipient")
+    sent: list[object] = []
+
+    with patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)):
+        outcome = delivery.deliver_message(
+            mailboxes,
+            _outgoing(),
+            account,
+            credentials=None,
+            contacts=None,
+            to="   ",
+            connect_timeout=1.0,
+        )
+
+    assert sent == []
+    assert [notice.text for notice in outcome.notices] == [
+        delivery.NEEDS_A_RECIPIENT,
+    ]
+    assert not outcome.acted
+
+
 def test_deliver_message_drafts_then_sends_then_files_the_sent_copy() -> None:
     mailboxes, account = _sendable("deliver-happy")
     sent: list[object] = []

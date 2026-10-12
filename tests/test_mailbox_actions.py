@@ -547,17 +547,44 @@ def test_retire_trashes_a_synced_row_and_deletes_an_unsynced_one() -> None:
     assert _rows(mailboxes, INBOX) == []
 
 
-def test_retire_survives_a_mirror_that_cannot_delete() -> None:
-    """The index row is authoritative; a stray file is the scan's problem."""
+def test_retire_survives_a_mirror_that_cannot_delete_and_says_so() -> None:
+    """The index row is authoritative; a stray file is the scan's problem.
+
+    But it was a bare `suppress(Exception)` in a function returning
+    `None`, so no caller could report it even if it wanted to -- the
+    weakest contract in the five action modules. It comes back as a
+    notice now, and the two callers in `delivery` pass it on.
+    """
     mailboxes, _config = _build("actions-retire-failure")
     (message,) = _rows(mailboxes, INBOX)
     mailboxes.mirrors["acct"].delete_message = Mock(  # type: ignore[union-attr]
         side_effect=OSError("fictional delete failure"),
     )
 
-    mailbox_actions.retire_message(mailboxes, message, INBOX, expunge_on_server=False)
+    left_behind = mailbox_actions.retire_message(
+        mailboxes,
+        message,
+        INBOX,
+        expunge_on_server=False,
+    )
 
     assert _rows(mailboxes, INBOX) == []
+    assert left_behind is not None
+    assert left_behind.severity == "warning"
+    assert message.subject in left_behind.text
+    assert "still on disk" in left_behind.text
+    # And a retirement that went cleanly says nothing at all.
+    mailboxes2, _config2 = _build("actions-retire-clean")
+    (fine,) = _rows(mailboxes2, INBOX)
+    assert (
+        mailbox_actions.retire_message(
+            mailboxes2,
+            fine,
+            INBOX,
+            expunge_on_server=False,
+        )
+        is None
+    )
 
 
 # ----------------------------------------------------------------------

@@ -453,14 +453,24 @@ async def _message_body(services: WebServices, request: Request) -> Response:
 
 
 async def _message_raw(services: WebServices, request: Request) -> Response:
-    """The message as it arrived, for saving it somewhere else."""
+    """The message as it arrived, for saving it somewhere else.
+
+    Named the way the terminal's save dialog proposes a name -- date and
+    subject -- because the proposal is `message_renderer`'s now rather
+    than the dialog's.  Every message downloaded as ``message.eml``
+    before, so three of them were distinguished by the browser's own
+    numbering and nothing else.
+    """
+    from ..message_renderer import proposed_filename, render_message
+
     raw = _raw_from(services, request)
     if isinstance(raw, Response):
         return raw
+    name = proposed_filename(render_message(raw), suffix=".eml")
     return Response(
         raw,
         media_type="message/rfc822",
-        headers={"Content-Disposition": 'attachment; filename="message.eml"'},
+        headers={"Content-Disposition": _content_disposition(name)},
     )
 
 

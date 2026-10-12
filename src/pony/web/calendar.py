@@ -1048,6 +1048,8 @@ def calendars_of(runtime: CalendarRuntime) -> Calendars:
 def save(services: WebServices, form: EventForm) -> Outcome:
     """Store *form* as a new event or an edit of an existing one."""
     from chronos.event_actions import (
+        ENDS_BEFORE_IT_STARTS,
+        NEEDS_A_SUMMARY,
         EditDraft,
         all_day_form_bounds,
         parse_attendees,
@@ -1062,7 +1064,7 @@ def save(services: WebServices, form: EventForm) -> Outcome:
     if target is None:
         return Outcome.refused(warn("Choose a calendar."))
     if not form.summary.strip():
-        return Outcome.refused(warn("An event needs a summary."))
+        return Outcome.refused(warn(NEEDS_A_SUMMARY))
     starts = _parse_moment(form.starts)
     if starts is None:
         return Outcome.refused(warn("The start is not a date and time."))
@@ -1071,13 +1073,18 @@ def save(services: WebServices, form: EventForm) -> Outcome:
         # An all-day event is stored as UTC-midnight bounds with an
         # exclusive end, and the form's end date is the inclusive last
         # day.  Handing over the raw local values instead stores the
-        # previous day east of UTC.
-        starts, ends = all_day_form_bounds(
-            starts.date(),
-            ends.date() if ends is not None else None,
-        )
+        # previous day east of UTC.  It is also where a span that ends
+        # before it begins is refused, in the same words the terminal
+        # shows: this arm used to clamp it and save a one-day event.
+        try:
+            starts, ends = all_day_form_bounds(
+                starts.date(),
+                ends.date() if ends is not None else None,
+            )
+        except ValueError as backwards:
+            return Outcome.refused(warn(str(backwards)))
     elif ends is not None and ends <= starts:
-        return Outcome.refused(warn("The event ends before it starts."))
+        return Outcome.refused(warn(ENDS_BEFORE_IT_STARTS))
     try:
         attendees = parse_attendees(form.attendees)
     except ValueError as bad:

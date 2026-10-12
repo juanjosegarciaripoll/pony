@@ -16,6 +16,8 @@ from chronos.domain import (
     VEvent,
 )
 from chronos.event_actions import (
+    ENDS_BEFORE_IT_STARTS,
+    NEEDS_A_SUMMARY,
     EditDraft,
     all_day_form_bounds,
     all_day_form_dates,
@@ -274,7 +276,7 @@ class EventEditScreen(Screen[None]):
         summary_input: Input = self.query_one("#edit-summary", Input)
         summary = summary_input.value.strip()
         if not summary:
-            raise ValueError("summary is required")
+            raise ValueError(NEEDS_A_SUMMARY)
         start_date_input = self.query_one("#edit-start-date", DatePicker)
         start_date = _parse_date(start_date_input.value, "start date")
         end_date_input = self.query_one("#edit-end-date", DatePicker)
@@ -284,8 +286,11 @@ class EventEditScreen(Screen[None]):
             last_day = (
                 _parse_date(end_date_text, "end date") if end_date_text else start_date
             )
-            if last_day < start_date:
-                raise ValueError("end must not be before start")
+            # `all_day_form_bounds` is where a backwards span is
+            # refused, in the words both front ends use: this screen
+            # had its own check and the browser had none at all, so the
+            # same typo was an error here and a silently different
+            # event there.
             first, end = all_day_form_bounds(start_date, last_day)
             return self._draft(target, summary, first, end, all_day=True)
         start_time_select = self.query_one("#edit-start-time", Select)
@@ -303,7 +308,7 @@ class EventEditScreen(Screen[None]):
                 end_date, _parse_time(selected_end_time, "end time")
             ).astimezone()
             if dtend <= dtstart:
-                raise ValueError("end must be after start")
+                raise ValueError(ENDS_BEFORE_IT_STARTS)
         elif end_date_text:
             raise ValueError("end time is required when end date is set")
         return self._draft(target, summary, dtstart, dtend, all_day=False)

@@ -23,7 +23,6 @@ them.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -443,7 +442,14 @@ def _move_across_accounts(
     )
     if not landed:
         return False
-    retire_message(mailboxes, msg, source, expunge_on_server=source_is_imap)
+    left_behind = retire_message(
+        mailboxes,
+        msg,
+        source,
+        expunge_on_server=source_is_imap,
+    )
+    if left_behind is not None:
+        log.notices.append(left_behind)
     return True
 
 
@@ -453,7 +459,7 @@ def retire_message(
     folder: FolderRef,
     *,
     expunge_on_server: bool,
-) -> None:
+) -> Notice | None:
     """Take *message* out of *folder* now that it lives somewhere else.
 
     A copy that has landed elsewhere, or a draft that has been sent,
@@ -466,22 +472,35 @@ def retire_message(
     move asks whether the *account* has an IMAP side, while a sent draft
     asks whether that one row has a UID — so it arrives as
     *expunge_on_server* rather than being guessed here.
+
+    Deleting the mirror file is best effort, because the index row is
+    what the reader shows and `pony doctor`'s integrity scan finds a
+    stray file.  "Best effort" used to mean a bare
+    ``suppress(Exception)`` inside a function that returned ``None``,
+    though, so no caller *could* report it: the notice comes back
+    instead, for the caller to add to what it says.
     """
     if expunge_on_server:
         mailboxes.index.update_message(
             message=dataclasses.replace(message, local_status=MessageStatus.TRASHED),
         )
-        return
+        return None
+    left_behind: Notice | None = None
     mirror = mailboxes.mirror(message.message_ref.account_name)
     if mirror is not None:
-        # Best-effort delete: the index row is authoritative; a stray
-        # file will be picked up by the mirror integrity scan.
-        with contextlib.suppress(Exception):
+        try:
             mirror.delete_message(folder=folder, storage_key=message.storage_key)
+        except Exception:  # noqa: BLE001 — any backend may refuse
+            left_behind = warn(
+                f"{message.subject or '(no subject)'!r} is filed, but the old"
+                f" copy in {folder.folder_name} is still on disk."
+                " `pony doctor` lists it.",
+            )
         # Without this an mbox deletion is only queued: the message is
         # still in the file and comes back on the next read.
         flush_mirror(mirror)
     mailboxes.index.delete_message(message_ref=message.message_ref)
+    return left_behind
 
 
 def _duplicate_into(

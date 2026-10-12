@@ -124,15 +124,18 @@ class EmlViewerScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render this message to a PDF in a folder the user picks."""
-        from ...message_renderer import build_browser_html, render_message
+        from ...message_renderer import (
+            build_browser_html,
+            proposed_filename,
+            render_message,
+        )
         from ..pdf_export import export_pdf_in_thread
         from .save_folder_picker_screen import SaveFolderPickerScreen
-        from .save_message_screen import _proposed_body_filename
 
         raw = self._raw_bytes
         rendered = render_message(raw)
         html = build_browser_html(raw)
-        filename = Path(_proposed_body_filename(rendered)).with_suffix(".pdf").name
+        filename = proposed_filename(rendered, suffix=".pdf")
 
         def _on_folder(dest: Path | None) -> None:
             if dest is None:

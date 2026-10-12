@@ -39,7 +39,7 @@ from ..composer import (
     reply_draft,
     resumed_draft,
 )
-from ..delivery import deliver_message, file_draft
+from ..delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
 from ..domain import FolderRef, MessageRef
 from ..folder_utils import holds_drafts
 from ..message_renderer import render_message, safe_attachment_filename
@@ -554,7 +554,10 @@ def send(services: WebServices, form: Form) -> Outcome:
     the same call underneath.
     """
     if not form.to.strip():
-        return Outcome.refused(warn("A message needs at least one recipient."))
+        # `deliver_message` refuses it too, in these words; asking here
+        # keeps the form up with what was typed rather than letting the
+        # send path answer for a message it never had to build.
+        return Outcome.refused(warn(NEEDS_A_RECIPIENT))
     account = _account(services, form.account_name)
     if account is None:
         return Outcome.refused(warn("That account cannot send mail."))

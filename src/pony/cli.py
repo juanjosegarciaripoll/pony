@@ -1276,6 +1276,41 @@ def _rescan_local_with_cli_progress(
             )
 
 
+def rescan_local_accounts(
+    *,
+    paths: AppPaths,
+    config: AppConfig,
+    index: SqliteIndexRepository,
+    mirrors: dict[str, MirrorRepository],
+) -> None:
+    """Reconcile every local account's index against its mirror.
+
+    A local account has no sync step, so its mirror is the only source
+    of truth: a file added between sessions, a tree edited by another
+    program, a folder restored from a backup -- all of it reaches the
+    index here or not at all.  Both front ends run it before they open,
+    because both read the index and neither has another way to notice.
+    `pony web` did not, so a local-account user read a stale index for
+    as long as the server was up.
+
+    The folder-mtime cache is what keeps it cheap: a folder whose mtime
+    has not moved since the last run is skipped, so a cold archive
+    costs one `stat` per folder.
+    """
+    scan_state_path = paths.scan_state_file
+    scan_state_by_account = _load_scan_state(scan_state_path)
+    for account in config.accounts:
+        if not isinstance(account, LocalAccountConfig):
+            continue
+        _rescan_local_with_cli_progress(
+            mirror=mirrors[account.name],
+            index=index,
+            account_name=account.name,
+            scan_state=scan_state_by_account.setdefault(account.name, {}),
+        )
+    _save_scan_state(scan_state_path, scan_state_by_account)
+
+
 def _load_scan_state(path: Path) -> dict[str, ScanState]:
     """Read the per-account folder-mtime cache from disk.
 
@@ -2935,25 +2970,12 @@ def run_tui(
 
     mirrors = build_mirrors(config)
 
-    # Local accounts have no sync step, so their mirrors are the sole
-    # source of truth.  Reconcile the index against the mirror before
-    # the TUI opens — picks up files added since the last run and prunes
-    # rows whose file is gone, which covers a tree edited between
-    # sessions or restored from a backup.
-    # The folder-mtime cache lets us skip folders that haven't changed
-    # since last run, keeping startup fast on big cold archives.
-    scan_state_path = paths.scan_state_file
-    scan_state_by_account = _load_scan_state(scan_state_path)
-    for acc in config.accounts:
-        if isinstance(acc, LocalAccountConfig):
-            state = scan_state_by_account.setdefault(acc.name, {})
-            _rescan_local_with_cli_progress(
-                mirror=mirrors[acc.name],
-                index=index,
-                account_name=acc.name,
-                scan_state=state,
-            )
-    _save_scan_state(scan_state_path, scan_state_by_account)
+    rescan_local_accounts(
+        paths=paths,
+        config=config,
+        index=index,
+        mirrors=mirrors,
+    )
 
     effective_theme, err = _resolve_theme(theme, config.theme)
     if err is not None:
@@ -3030,6 +3052,15 @@ def run_web(
     index.initialize()
     credentials = build_credentials_provider(config, index)
     mirrors = build_mirrors(config)
+    # The same reconciliation the terminal does at startup, for the same
+    # reason: a local account's mirror is the only source of truth, and
+    # the server would otherwise serve whatever the index last knew.
+    rescan_local_accounts(
+        paths=paths,
+        config=config,
+        index=index,
+        mirrors=mirrors,
+    )
     calendar = _open_calendar_or_warn(config_path)
     scheduler = _web_mail_scheduler(
         config=config,
