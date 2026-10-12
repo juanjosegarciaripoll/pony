@@ -13,11 +13,14 @@
 # mirror paths resolve under it.
 #
 # profile (REQUIRED):
-# Which data directory this config owns.  On first use Pony writes
-# <data_dir>/profile.toml with this name; afterwards it refuses to run
-# any config whose profile differs from the one stamped there.  Two
-# configs may share a data directory only by declaring the same
-# profile, so sharing is a choice and not an accident.
+# The name this config claims the data directory under.  On first use
+# Pony writes <data_dir>/profile.toml with this name; afterwards it
+# refuses to run any config whose profile differs from the one stamped
+# there.  Two configs may share a data directory only by declaring the
+# same profile, so sharing is a choice and not an accident.  The check
+# is per directory, not per name: the same profile in two configs with
+# different data_dir values is accepted, and each directory keeps its
+# own stamp.
 #
 # Top-level options:
 # - use_utf8:          Enable Unicode characters in the TUI (e.g. 📎 for attachments).

@@ -14,8 +14,12 @@ title: Development
 ```bash
 git clone https://github.com/juanjosegarciaripoll/pony.git
 cd pony
-uv sync
+uv sync --group dev --extra web
 ```
+
+The `web` extra is not optional for development: the test suite covers both
+front ends, and `tests/test_web_app.py` imports `starlette.testclient`
+unguarded, so a plain `uv sync` leaves the suite unable to collect.
 
 ## Running
 

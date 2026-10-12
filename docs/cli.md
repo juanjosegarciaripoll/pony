@@ -154,18 +154,27 @@ summary of planned operations and asks for confirmation before making any
 changes. Progress bars track scanning and execution.
 
 ```
-pony sync [account] [--yes]
+pony sync [account] [--yes] [--dry-run]
 ```
 
 | Argument | Description |
 |---|---|
 | `account` | Optional: only sync this account |
-| `--yes` | Skip the confirmation prompt and execute immediately |
+| `--yes` | Skip the confirmation prompt and execute immediately. Folders held back by a [safety halt](synchronization.md#safety-halts) are confirmed too |
+| `--dry-run` | Print the plan and exit without executing it |
 
 ```
 pony sync
 pony sync Work --yes
+pony sync --dry-run
 ```
+
+`--dry-run` stops after the plan, so nothing is written: no index row, no
+mirror file, no server mutation. Planning itself is not free and not offline
+— it connects to the server, authenticates, issues `STATUS` per folder and,
+on the medium or slow path, `FETCH`es flags and `Message-ID` headers, and it
+reads the index to compare against. It is the way to see what a sync would do
+before letting it, which is worth doing after a `pony reindex`.
 
 ### Example output
 
@@ -341,9 +350,10 @@ pony local-summary
 
 ## `pony reset`
 
-Delete the index database and all local mirror data, giving you a clean slate
-for a full re-sync. **This is destructive.** The command asks for confirmation
-unless `--yes` is given. Works even without a valid config file.
+Delete the index database and the mirrors a server can refill, giving you a
+clean slate for a full re-sync. **This is destructive.** The command lists
+what it will delete and asks for confirmation unless `--yes` is given. Works
+even without a valid config file.
 
 ```
 pony reset [--account NAME] [--yes]
@@ -351,14 +361,57 @@ pony reset [--account NAME] [--yes]
 
 | Flag | Description |
 |---|---|
-| `--account NAME` | Reset only this account: drop its index rows and mirror directory; credentials and other accounts are untouched |
+| `--account NAME` | Reset only this account: drop its index rows and mirror directory; credentials and other accounts are untouched. Named this way, a local account's mirror *is* deleted |
 | `--yes` | Skip the confirmation prompt |
 
+A **local account** (`account_type = "local"`) has no server to re-fetch
+from, so its mirror is the only copy of that mail. Without `--account` the
+command keeps it, says which ones it kept, and reminds you that `pony rescan`
+re-indexes mail already on disk. `pony reset --account <name>` removes one on
+purpose, because then it was asked for by name.
+
+A mirror path that is not safe to delete — the data directory itself, a home
+directory, a filesystem root — is **refused**: the command prints the reason,
+deletes nothing, and exits with status 2, so fix `mirror.path` in the config
+first.
+
 !!! warning
-    Without `--account`, all locally mirrored mail and the SQLite index are
-    deleted. If the messages still exist on the server they will be re-fetched
-    on the next sync. Unsent drafts and messages deleted from the server are
+    Without `--account`, the SQLite index and every server-backed mirror are
+    deleted. Mail that still exists on the server is re-fetched on the next
+    sync. Unsent drafts, and messages that were deleted from the server, are
     lost.
+
+---
+
+## `pony reindex`
+
+Rebuild index rows from the mirror on disk, with no server and no download.
+A Maildir filename ends in `,V=<uidvalidity>,U=<uid>` — the handle the
+message was fetched with — so a lost or deleted index can be rebuilt from the
+files that are already there, each folder's watermark included.
+
+```
+pony reindex [--account NAME]
+```
+
+| Flag | Description |
+|---|---|
+| `--account NAME` | Only reindex one account |
+
+It reports how many rows it added, how many of those carried a server handle,
+how many are local-only, how many existing rows were given their handle back,
+and how many folder watermarks it recovered.
+
+A file whose name carries no handle — or one from a superseded UIDVALIDITY
+epoch — is indexed as **local-only**, which is exactly what makes the next
+sync upload it. That is right for a message composed here and wrong for a
+mirror whose filenames never carried handles, so the command says which case
+it saw, and a whole folder of such rows trips the mass-upload
+[safety halt](synchronization.md#safety-halts). Run `pony sync --dry-run` and
+read the plan before letting a sync proceed.
+
+An mbox mirror cannot carry handles at all — an mbox key is a position — so
+reindexing one produces local-only rows throughout.
 
 ---
 

@@ -7,14 +7,29 @@ Python 3.13, `uv`, `hatchling`.
 ## Quality gates
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
-uv run mypy src/
-uv run basedpyright src/
-uv run pytest
+uv run ruff check src tests tests_calendar
+uv run ruff format --check src tests tests_calendar
+uv run mypy
+uv run basedpyright src
+uv run python -m pytest
 ```
 
-`pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`; new code must keep combined statement+branch coverage at or above **85 %**. The gate is live — run `uv run python -m pytest` and never pass `--no-cov`. New code ships with tests; do not lower the threshold.
+`uv run mypy` with no path checks both packages from the `pyproject.toml`
+configuration; a path would check only part of the project.
+
+`pytest` runs with `--cov=pony --cov=chronos --cov-branch --cov-fail-under=85`
+over both suites (`tests/` and `tests_calendar/`); new code must keep combined
+statement+branch coverage at or above **85 %**. The gate is live — run
+`uv run python -m pytest` and never pass `--no-cov`. New code ships with
+tests; do not lower the threshold.
+
+The run is parallel: `addopts` carries `-n auto --dist loadfile`
+(pytest-xdist). `loadfile` keeps a whole file on one worker; plain
+`--dist load` would split a file's classes across workers.
+
+A development environment needs the web extra as well as the dev group,
+because the suite covers both front ends:
+`uv sync --group dev --extra web`.
 
 ## Typing
 
@@ -24,7 +39,7 @@ uv run pytest
 
 ## Testing
 
-- `unittest` (stdlib), run via `pytest`. Files: `tests/test_*.py`.
+- `unittest` (stdlib), run via `pytest`. Files: `tests/test_*.py` and `tests_calendar/test_*.py`.
 - **Live IMAP tests** in `tests/test_imap_live.py` skip unless `PONY_LIVE_IMAP=1`. They drive a real
   Dovecot via `scripts/dovecot_userspace.sh`, which installs it under `~/.cache` with no root and no
   system packages. They cover what a fake session cannot decide honestly: UID assignment, a genuine
@@ -51,8 +66,9 @@ uv run pytest
 
 ## Dependencies
 
-Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `tinymcp`. New deps need approval.
-Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage`, `pyinstrument`, `mkdocs-material`.
+Runtime (approved): `imapclient`, `textual`, `markdown-it-py`, `tinymcp`, `icalendar`, `python-dateutil`. New deps need approval.
+Optional extra `web` (approved): `starlette`, `uvicorn` — an extra, not a runtime dep, and nothing is added to it without asking.
+Dev (approved): `ruff`, `mypy`, `basedpyright`, `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-instafail`, `pytest-xdist`, `coverage`, `httpx`, `pyinstrument`, `types-python-dateutil`, `mkdocs-material`.
 
 ## Config
 

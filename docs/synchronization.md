@@ -168,15 +168,29 @@ folder, the next sync restores it (since the server still has it).
 
 ---
 
-## Mass-deletion protection
+## Safety halts
 
-If more than 20% of a folder's known messages disappear in a single sync
-(indicating a possible accidental mass-delete or server-side filter gone wrong),
-Pony **halts sync for that folder** and asks for explicit confirmation before
-proceeding. Other folders are synced normally.
+Two guards can **halt sync for one folder** and ask for explicit confirmation
+before it proceeds. Other folders are synced normally.
 
-In the TUI, the sync confirmation screen will highlight the affected folder.
-In headless mode (`pony sync --yes`), all folders are implicitly confirmed.
+- **Mass deletion (C-6).** More than 20% of the UIDs a folder is known to
+  hold disappeared in a single sync, in a folder known to hold at least five
+  of them. That is what an accidental mass-delete, or a server-side filter
+  gone wrong, looks like.
+- **Mass upload (C-7).** The pass would `APPEND` more than half the folder, or
+  50 messages outright, with at least five uploads either way. `uid IS NULL`
+  is the signal to upload, and it cannot tell "composed here" from "on the
+  server, handle lost", so a folder's worth of uploads is an index that lost
+  its UIDs rather than a user who wrote that much mail. A mirror rebuilt by
+  `pony reindex` whose filenames carried no handles looks exactly like this.
+
+A halt is answered where there is somebody to ask: the TUI's confirmation
+screen highlights the folder and **Proceed** applies it, the browser's Sync
+button turns the halt into a question and applies it on confirm, and on the
+command line `pony sync --yes`, or `y` at the interactive prompt, does the
+same. The paths with nobody to ask — periodic sync in either front end, and
+++ctrl+g++ — **skip** a halted folder and report it, so it stays unsynced
+until one of the paths above answers the question once.
 
 ---
 
@@ -250,8 +264,10 @@ the mirror bytes reach the server. **Archiving never destroys a message.**
 
 Each sync pass also performs housekeeping:
 
-- **Stale accounts**: if you remove an account from your config, its index
-  data (messages, sync watermarks) is purged on the next sync.
+- **Accounts the config no longer declares**: their index rows are **kept**.
+  An account missing from the config means the config changed, not that the
+  mail should go, so the sync logs a warning naming the account and the
+  `pony reset --account <name>` that removes it.
 - **Stale folders**: if a folder disappears from the server (renamed or
   deleted), its sync state is cleaned up.
 - **Expired trash**: trashed messages older than `trash_retention_days` are
@@ -310,10 +326,12 @@ wastes bandwidth and storage. The sync engine handles the duplicates safely
 
 ### Background sync
 
-In the TUI, ++ctrl+g++ starts a non-blocking background sync immediately. The
-background path auto-confirms every folder, including folders that trip the
-mass-deletion guard, and shows a spinner on the Folders panel title while it
-runs.
+In the TUI, ++ctrl+g++ starts a non-blocking background sync immediately. It
+shows a spinner on the Folders panel title while it runs. There is nobody to
+ask on this path, so it confirms every folder that is safe and **skips** any
+folder that tripped a safety halt, reporting it rather than waiving it. A
+halted folder therefore keeps being skipped until one of the paths that can
+ask confirms it once — see [Safety halts](#safety-halts).
 
 Periodic sync runs on a thread the application owns, not on a timer belonging
 to whichever screen is in front, so it keeps its cadence while you are looking
@@ -398,10 +416,25 @@ CREATE TABLE messages (
 CREATE UNIQUE INDEX ux_messages_uid
     ON messages (account_name, folder_name, uid)
     WHERE uid IS NOT NULL;
+CREATE INDEX ix_messages_account_folder
+    ON messages (account_name, folder_name);
+CREATE INDEX ix_messages_folder_received          -- the folder list view
+    ON messages (account_name, folder_name, received_at DESC);
+CREATE INDEX ix_messages_message_id
+    ON messages (account_name, message_id)
+    WHERE message_id != '';
+CREATE INDEX ix_messages_pending                  -- rows awaiting a push
+    ON messages (account_name, folder_name, sender, subject, received_at)
+    WHERE uid IS NULL;
+CREATE INDEX ix_messages_unseen                   -- unread counts per folder
+    ON messages (account_name, local_status, folder_name, local_flags);
 ```
 
 `MessageRef = (account_name, folder_name, id)`. The `folder_sync_state` table
-holds UIDVALIDITY, UIDNEXT, MESSAGES and HIGHESTMODSEQ as watermarks.
+holds UIDVALIDITY, the highest known UID, UIDNEXT and HIGHESTMODSEQ as
+watermarks. It has no message count: the one the fast path compares against
+`STATUS MESSAGES` is counted from the index rows that carry a UID
+(`count_uids_for_folder`).
 
 ### Per-folder path selection
 
@@ -431,6 +464,11 @@ A folder takes the cheapest path its watermarks allow:
    `MergeFlagsOp`.
 7. **C-6:** more than 20% of local UIDs gone (with at least 5 known) → flag for
    confirmation.
+
+C-7 is applied to every folder plan, whichever path produced it: more than
+half of `known_total` plus this pass's fetches would be a `PushAppendOp` or a
+`ReUploadOp`, or 50 of them outright, with at least 5 either way → flag for
+confirmation.
 
 There is no cross-folder Message-ID map. A server-side move across folders is
 seen as a delete in the source plus a fetch in the target.
@@ -466,6 +504,7 @@ sync adopts it via `FetchNewOp`.
 | **C-2** | Locally trashed, server has it in a read-only folder | Restore `ACTIVE`, pull flags |
 | **C-4** | UIDVALIDITY reset | Reset op, drop stale UID-bearing rows, refetch in the new epoch |
 | **C-6** | More than 20% of UIDs gone | Confirmation required |
+| **C-7** | Uploads would rewrite over half the folder, or 50 messages | Confirmation required |
 
 ### mbox storage keys
 

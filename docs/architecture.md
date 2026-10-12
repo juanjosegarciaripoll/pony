@@ -149,11 +149,14 @@ domain objects with no intermediate model layer.
 config declares — and derives every other from the second:
 `index_db_file`, `log_dir`, `scan_state_file`, `mcp_state_file` and
 `calendar_dir`, so none of them can point at a different directory than
-the rest. `paths.resolve()` is the single entry point; when no config
-declares a `data_dir` it falls back to platform convention (XDG on
-Linux/macOS, `APPDATA`/`LOCALAPPDATA` on Windows). `PONY_ROOT`, when
-set, contains all of it: `graft` strips a path's anchor and re-adds it
-as an ordinary component, because joining an absolute or
+the rest. `paths.resolve()` is the single entry point. A loaded config always
+declares `data_dir` — the loader refuses a file without one, and refuses a
+relative one — so the platform-convention fallback (XDG on Linux/macOS,
+`APPDATA`/`LOCALAPPDATA` on Windows) is what a run uses before or without a
+loadable config: where the default `config.toml` is looked for, and where
+`pony doctor`, `pony config edit` and `pony reset` work when there is none.
+`PONY_ROOT`, when set, contains all of it: `graft` strips a path's anchor
+and re-adds it as an ordinary component, because joining an absolute or
 drive-qualified path onto a root discards the root.
 
 Path values in the config support `~`, `$VAR`, and `%VAR%` expansion via
@@ -189,8 +192,9 @@ Tables: `messages`, `messages_fts`, `contacts`, `contacts_fts`,
 ### Sync (`pony.sync`, `pony.imap_client`)
 
 Two-pass IMAP sync engine: plan (read-only comparison) then execute (apply
-changes). Three-way flag merge with union policy. Mass-deletion protection
-triggers at 20% of a folder's UIDs. Progress callbacks (`ProgressInfo`)
+changes). Three-way flag merge with union policy. Two safety
+halts per folder: mass deletion at 20% of a folder's UIDs, and mass upload at
+half the folder or 50 messages. Progress callbacks (`ProgressInfo`)
 report per-folder scanning and per-operation execution.
 
 There is no pending-operations queue. A local mutation is recorded by
@@ -339,8 +343,10 @@ fields of a row, and the widget pads them into fixed-width columns,
 which is the only part of it that means anything in a terminal.
 
 Alongside the modal `g` sync flow there is a non-blocking background sync that
-auto-confirms every folder and shows a spinner on the `FolderPanel` border
-title. It does not belong to the screen: `PonyApp` owns a `PeriodicSync`
+shows a spinner on the `FolderPanel` border title. It has nobody to ask, so it
+confirms every folder that is safe and skips one that tripped a safety halt
+(see [Synchronization → Safety halts](synchronization.md#safety-halts)). It
+does not belong to the screen: `PonyApp` owns a `PeriodicSync`
 (see [Periodic sync](#periodic-sync)) that runs it on a thread of its own,
 config-gated by `background_sync_enabled` / `background_sync_interval_seconds`.
 `ctrl+g` asks that scheduler for a run now, which also starts the cadence if
@@ -352,9 +358,10 @@ guessed. The countdown repaints every 30 s and is rounded down to the same
 step, so the title never shows precision it has not got. A sync in flight
 outranks the countdown, so the spinner replaces it and it returns when the
 sync ends.
-`MessageListPanel.load_folder` runs the SQL fetch in a Textual worker and
-streams rows back to the UI thread in batches, so opening a 10k-row folder
-never freezes the event loop.
+`MessageListPanel.load_folder` makes one SQL call for the folder's row
+summaries and then streams their insertion into the `DataTable` from a Textual
+worker, in batches, so a 10k-row folder paints progressively instead of in one
+blocking burst. The fetch itself runs on the event loop and is not paginated.
 
 The correspondent column shows the sender, except in a Sent folder, where it
 shows the recipients: there the sender is the user on every row, and the To

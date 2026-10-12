@@ -340,8 +340,8 @@ terminal holds its plan across its dialog. Answering no leaves
 everything as it was, and the other folders are unaffected either way.
 A plan nobody answers within five minutes is dropped rather than applied
 against a server that has moved on; the next answer plans afresh and
-says so. The guard itself is described under [Mail Synchronization →
-Mass-deletion protection](synchronization.md#mass-deletion-protection).
+says so. The guards themselves are described under [Mail Synchronization →
+Safety halts](synchronization.md#safety-halts).
 
 The Calendar tab syncs the calendar instead, which takes a lock of its
 own so a `pony calendar sync` elsewhere cannot collide with it.

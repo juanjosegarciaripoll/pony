@@ -20,17 +20,18 @@ All v1 capabilities implemented and tested:
 - IMAP sync (two-pass plan/execute) and SMTP send (IMAP accounts and local accounts with `[smtp]`).
 - Maildir + mbox mirror backends, shared conformance suite. Mbox uses an mmap-based TOC builder with an on-disk sidecar so subsequent opens skip the rebuild.
 - SQLite+FTS5 index (diacritic/case-insensitive search) with covering index on `(account_name, folder_name, received_at DESC)`.
-- Three-pane Textual TUI: read, compose, search, contacts. Folder-open streams rows in batches via a Textual worker so opening 10k+-row folders never freezes the UI; the message list is single-column and CSS-driven (dim default, unread pops).
+- Three-pane Textual TUI: read, compose, search, contacts. Folder-open makes one SQL call for the folder's summaries and streams their insertion into the table in batches via a Textual worker, so a 10k+-row folder paints progressively; the message list is single-column and CSS-driven (dim default, unread pops).
 - Goto-folder (`G`) fuzzy jump, new-folder (`N`) creation on local and IMAP accounts, F1 keybinding cheatsheet, OSC-driven terminal title push/pop/restore.
 - BBDB-compatible contacts with import/export plus in-TUI create/edit/merge.
 - MCP server (read-only) on `tinymcp`: stdio standalone, or TCP-bridged to a running TUI via a per-session auth token.
 - PyInstaller standalone builds with platform installers.
 - TUI flow tests: 13 Pilot-driven tests in `tests/test_tui_flows.py`.
 - Textual theme selection via `theme` in `config.toml`, `--theme` CLI flag, and `--list-themes`.
-- Mass-deletion confirmation (`>20%` server-side) surfaced per-folder in CLI and TUI plans; `--yes` / `Y` applies them.
+- Two per-folder safety halts surfaced in the CLI, TUI and browser plans: mass deletion (`>20%` of known UIDs gone server-side) and mass upload (`APPEND`s over half the folder, or 50 outright). `--yes` / `Y` / the browser's confirm applies them; the paths with nobody to ask skip a halted folder.
 - Local-mirror rescan with mtime sidecar cache and a lean storage-key projection on cold scans.
 - Scoped `pony reset --account NAME` rebuild path.
-- Background/periodic sync: non-blocking `ctrl+g` run that auto-confirms every folder, plus a config-gated periodic thread (`background_sync_enabled` / `background_sync_interval_seconds`). Both halves schedule themselves through `chronos.scheduler.PeriodicSync`, owned by the application rather than by a screen, so the cadence does not depend on which subsystem is in front.
+- `pony reindex`: index rows and folder watermarks rebuilt from the mirror on disk, with no server, by reading each message's handle out of its Maildir filename (`,V=,U=`). A file whose name carries no handle, or one from a superseded epoch, is indexed as local-only, which is what makes the next sync upload it; a duplicate handle in one folder is reported and left unindexed.
+- Background/periodic sync: non-blocking `ctrl+g` run that confirms every safe folder and skips one that tripped a safety halt, plus a config-gated periodic thread (`background_sync_enabled` / `background_sync_interval_seconds`). Both halves schedule themselves through `chronos.scheduler.PeriodicSync`, owned by the application rather than by a screen, so the cadence does not depend on which subsystem is in front.
 - RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
 - Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
 - Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.
@@ -39,10 +40,7 @@ All v1 capabilities implemented and tested:
 
 ## Queue
 
-- **Rebuild-from-mirrors command.** Re-index from mirror bytes (no re-download) is missing. Blocked on synthetic Message-ID rework (below).
-- **Synthetic Message-ID rework.** Hash bakes UID (`sync.py`); synthetic IDs can't survive a rebuild.
 - **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump.
-- **Per-folder single-transaction sync** (idempotent re-sync covers failures now).
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.

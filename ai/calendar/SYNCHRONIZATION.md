@@ -64,14 +64,35 @@ occurrences(
 )
 ```
 
-Unique index:
+Indexes on `components`:
 ```
 CREATE UNIQUE INDEX ux_components_identity
   ON components(account_name, calendar_name, uid, COALESCE(recurrence_id, ''))
   WHERE href IS NOT NULL;
+
+CREATE INDEX ix_components_calendar
+  ON components(account_name, calendar_name);
+
+-- Every component lookup asks for one (account, calendar, uid); on the
+-- two-column index that is a scan of the whole calendar per lookup, which
+-- makes writing a calendar quadratic in its size.
+CREATE INDEX ix_components_calendar_uid
+  ON components(account_name, calendar_name, uid);
+
+CREATE INDEX ix_components_pending
+  ON components(account_name, calendar_name)
+  WHERE href IS NULL AND local_status = 'active';
+
+-- Serves `list_todos`, which the agenda calls on every render.  Partial, so
+-- the planner cannot reach for it when joining the events; the kind is a
+-- literal in that query because SQLite only matches a partial index when
+-- the query proves its WHERE, which a bound parameter does not.
+CREATE INDEX ix_components_todo
+  ON components(account_name, calendar_name, local_status, uid)
+  WHERE component_kind = 'VTODO';
 ```
 
-The `WHERE href IS NOT NULL` clause lets local-pending rows coexist with later server confirmations during the sync window.
+The `WHERE href IS NOT NULL` clause on the unique index lets local-pending rows coexist with later server confirmations during the sync window.
 
 ## 4. Calendar sync scope
 

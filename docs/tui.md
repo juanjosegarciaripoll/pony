@@ -307,9 +307,12 @@ Press ++g++ to start a sync without leaving the TUI.
    automatically.
 
 Press ++ctrl+g++ to start a background sync immediately. This path shows no
-confirmation screen, auto-confirms every folder, and shows a spinner on the
-Folders panel title while it runs. It also arms or restarts the periodic
-background-sync timer, so the next background run happens after
+confirmation screen and shows a spinner on the Folders panel title while it
+runs. With nobody to ask, it confirms every folder that is safe and skips one
+that tripped a safety halt — which then stays unsynced until a plan is
+confirmed with ++g++ (see [Mail Synchronization →
+Safety halts](synchronization.md#safety-halts)). It also arms or restarts
+the periodic background-sync timer, so the next background run happens after
 `background_sync_interval_seconds`.
 
 Set `background_sync_enabled = true` to arm that periodic timer as soon as the

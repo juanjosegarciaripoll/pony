@@ -147,10 +147,13 @@ inside it:
 Mirror directories are specified per-account and can live anywhere; a
 relative `mirror.path` resolves under `data_dir`.
 
-When no config declares one, the data directory follows platform
-convention — `~/.local/share/pony/` on Linux and macOS,
-`%LOCALAPPDATA%\pony\` on Windows — and `config.toml` is looked for in
-`~/.config/pony/` or `%APPDATA%\pony\`.
+`data_dir` is required: Pony refuses to load a config that omits it, or
+that gives a relative path. The platform-convention directory —
+`~/.local/share/pony/` on Linux and macOS, `%LOCALAPPDATA%\pony\` on
+Windows — is what a run uses when it has no config to read one from, which
+is the case for `pony doctor`, `pony config edit` and `pony reset` on a
+fresh install. `config.toml` itself is looked for in `~/.config/pony/` or
+`%APPDATA%\pony\`.
 
 The mirror is self-describing: a Maildir filename ends in
 `,V=<uidvalidity>,U=<uid>`, the handle the message was fetched with. So

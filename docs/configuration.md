@@ -34,11 +34,18 @@ profile = "default"
 `data_dir` is where the index lives, and what relative `mirror.path`
 values resolve under. It must be absolute.
 
-`profile` says which data directory this config owns. On first use Pony
-writes `<data_dir>/profile.toml` containing the name; from then on it
-refuses — before opening the index — to run any config whose `profile`
-differs from the stamped one. Two configs may share a data directory only
+`profile` is the name this config claims the data directory under. On first
+use Pony writes `<data_dir>/profile.toml` containing the name; from then on
+it refuses — before opening the index — to run any config whose `profile`
+differs from the stamped one. So two configs may share a data directory only
 by declaring the same profile.
+
+The check is per directory, not per name: the stamp guards the directory
+against a config that calls itself something else. It does not make the name
+unique. Two configs declaring the same `profile` with different `data_dir`s
+both stamp cleanly and run side by side, each on its own index — so give a
+scratch config a `data_dir` of its own rather than relying on the name to
+keep the two apart.
 
 To work against a scratch index, write a config with its own `data_dir`
 and `profile`; that is the whole mechanism.
