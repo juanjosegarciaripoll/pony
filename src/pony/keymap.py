@@ -47,6 +47,15 @@ class Surface(StrEnum):
     # something different there than in the message list: `n`/`p` walk
     # the tree rather than the rows under it.
     FOLDERS = "folders"
+    # The open message.  Its own surface for the same reason the tree
+    # is: `n`/`p` move to the next message rather than the next row,
+    # and `<`/`>` scroll it rather than jumping the list.  In the
+    # terminal the pane with focus decides which meaning applies; a
+    # browser has no focused pane, so it keeps the list's meaning and
+    # takes from here only the keys that cannot clash.
+    MESSAGE = "message"
+    # The dialog that answers an invitation.
+    INVITATION = "invitation"
     # The compose form.
     COMPOSE = "compose"
     # The contacts browser.
@@ -199,11 +208,52 @@ COMPOSE_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("alt+m", "toggle_markdown", "Markdown", Surface.COMPOSE, priority=True),
 )
 
+# The open message, which is a pane of the reader in the terminal and a
+# column of the page in the browser.  These were written into
+# `MessageView.BINDINGS`, so they existed in the terminal and nowhere
+# else: no footer, no help screen, no `/keymap.json`.
+MESSAGE_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding("q", "close_message", "Close message", Surface.MESSAGE),
+    KeyBinding("escape", "close_message", "Close message", Surface.MESSAGE, show=False),
+    KeyBinding("n", "next_message", "Next message", Surface.MESSAGE, show=False),
+    KeyBinding("p", "prev_message", "Prev message", Surface.MESSAGE, show=False),
+    # At the bottom of the message these go on to the next unread one,
+    # which is the whole reason `space` is worth binding.
+    KeyBinding("space", "page_down_or_next", "Page down", Surface.MESSAGE, show=False),
+    KeyBinding(
+        "pagedown",
+        "page_down_or_next",
+        "Page down",
+        Surface.MESSAGE,
+        show=False,
+    ),
+    KeyBinding("<", "scroll_home", "Top of message", Surface.MESSAGE, show=False),
+    KeyBinding(">", "scroll_end", "Bottom of message", Surface.MESSAGE, show=False),
+)
+
+# Answering an invitation.  A modal dialog in the terminal; in the
+# browser the same three answers are buttons on the message itself, so
+# nothing binds this surface there.
+INVITATION_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding("a", "respond('ACCEPTED')", "Accept", Surface.INVITATION, show=False),
+    KeyBinding(
+        "t",
+        "respond('TENTATIVE')",
+        "Tentative",
+        Surface.INVITATION,
+        show=False,
+    ),
+    KeyBinding("d", "respond('DECLINED')", "Decline", Surface.INVITATION, show=False),
+    KeyBinding("escape", "cancel", "Cancel", Surface.INVITATION, show=False),
+)
+
 MAIL_KEYMAP: tuple[KeyBinding, ...] = (
     *APPLICATION_KEYS,
     *READER_KEYS,
     *LIST_KEYS,
     *FOLDER_KEYS,
+    *MESSAGE_KEYS,
+    *INVITATION_KEYS,
     *PANE_KEYS,
     *CONTACT_KEYS,
     *COMPOSE_KEYS,
@@ -215,9 +265,11 @@ __all__ = [
     "COMPOSE_KEYS",
     "CONTACT_KEYS",
     "FOLDER_KEYS",
+    "INVITATION_KEYS",
     "LIST_KEYS",
     "MAIL_KEYMAP",
     "MARK_KEYS",
+    "MESSAGE_KEYS",
     "MOTION_KEYS",
     "PANE_KEYS",
     "READER_KEYS",

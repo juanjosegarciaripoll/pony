@@ -92,6 +92,8 @@ DOM_KEY_NAMES = frozenset(
         "Delete",
         "Enter",
         "Escape",
+        "PageDown",
+        "PageUp",
         "Tab",
         *(f"F{number}" for number in range(1, 13)),
     },
@@ -447,6 +449,39 @@ def test_a_key_the_browser_has_not_got_is_marked_rather_than_silent() -> None:
     assert "(terminal only)" in source
 
 
+def test_the_open_message_keys_the_browser_can_do_are_served() -> None:
+    """The message pane's surface reaches the browser, minus the clashes.
+
+    `q` and Escape close the open message and Space pages through it, as
+    they do in the reader.  `n`, `p`, `<` and `>` are the same keys the
+    list claims: the terminal picks by which pane has focus, a browser
+    has no focused pane, so the list's meaning is the one served and the
+    message's is dropped rather than shadowing it.
+    """
+    services, _runtime, _seeded = _services("dispatch-message-keys")
+
+    with TestClient(build_web_app(services)) as client:
+        reader = client.get("/keymap.json").json()["reader"]
+
+    served = {entry["key"]: entry["action"] for entry in reader}
+    assert served["q"] == "close_message"
+    assert served["Escape"] == "close_message"
+    assert served[" "] == "page_down_or_next"
+    assert served["PageDown"] == "page_down_or_next"
+    # The list's half of the four shared keys, and only that half.
+    assert served["n"] == "cursor_down"
+    assert served["p"] == "cursor_up"
+    assert served["<"] == "cursor_first"
+    assert served[">"] == "cursor_last"
+    actions = {entry["action"] for entry in reader}
+    assert {"next_message", "prev_message", "scroll_home", "scroll_end"}.isdisjoint(
+        actions,
+    )
+    # And both of the ones that are served can really be run.
+    implemented = client_actions(script())
+    assert {"close_message", "page_down_or_next"} <= implemented
+
+
 def test_the_dispatcher_implements_nothing_no_key_names() -> None:
     """A client action no key reaches is dead code, not a feature."""
     source = script()
@@ -771,17 +806,19 @@ def test_the_operations_with_no_button_are_the_ones_that_need_typing() -> None:
     """The documented gap, so that widening it is a deliberate act.
 
     Every other server action on a surface has a button on one of that
-    surface's own pages.  These do not, in four kinds:
+    surface's own pages.  These do not, in three kinds:
 
     * ``move``, ``copy`` and ``new_folder`` need a word typed before
       they can run at all — the folder to move to, the name to create.
     * ``mark_all_read`` and ``harvest_contacts`` act on the whole
       folder rather than on anything the page is pointing at.
-    * ``quit`` has no button on any page: a phone can open the front
-      end but cannot stop it without a keyboard.
     * ``delete_event`` is one tap further on — the event's own form
       carries the Delete button, because the server needs the uid and
       the calendar together and a bare action button cannot carry them.
+
+    ``quit`` was a fourth kind of its own — a phone could open the
+    front end and not stop it — and is now in the chrome beside Sync,
+    on every page, behind a question.
     """
     services, _runtime, seeded = _services("dispatch-gaps")
 
@@ -806,11 +843,39 @@ def test_the_operations_with_no_button_are_the_ones_that_need_typing() -> None:
             "copy",
             "new_folder",
             "harvest_contacts",
-            "quit",
         },
-        "contacts": {"quit"},
-        "calendar": {"quit", "delete_event"},
+        "calendar": {"delete_event"},
     }
+
+
+def test_the_quit_button_is_on_every_page_and_asks_first() -> None:
+    """A phone could open the front end and not stop it again.
+
+    It is in the chrome beside Sync now, where every page has it, and it
+    asks before acting: a tap is easier to do by accident than
+    ++shift+q++, and nothing on a phone can start the server again. The
+    key is left alone, as the reader's ++shift+q++ asks nothing either.
+    """
+    services, _runtime, seeded = _services("dispatch-quit-button")
+
+    with TestClient(build_web_app(services)) as client:
+        pages = _pages(client, seeded)
+
+    for surface, page in pages.items():
+        assert 'id="quit"' in page, surface
+        assert "quit" in actions(page), surface
+        assert 'data-confirm="Stop Pony Express?"' in page, surface
+        assert 'data-agree="Stop"' in page, surface
+
+    # And the dispatcher asks that question rather than posting at once,
+    # then runs the page's own half -- which stops the server *and*
+    # closes the tab, where posting the action alone left a dead page.
+    wiring = _function(script(), "wireActionButtons")
+    assert "dataset.confirm" in wiring
+    assert "dataset.agree" in wiring
+    assert "choose(" in wiring
+    assert 'if (answer !== "go") return;' in wiring
+    assert "clientActions[name]" in wiring
 
 
 def test_every_page_carries_its_own_keymap_so_no_press_is_dropped() -> None:

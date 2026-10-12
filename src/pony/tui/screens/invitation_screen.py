@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from typing import cast
 
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Label, Select
 
@@ -19,6 +18,7 @@ from ...invitation import (
     Invitation,
 )
 from ...invitation_actions import InvitationChoice
+from ..bindings import INVITATION_BINDINGS
 from .dialog_screen import DialogScreen
 
 
@@ -35,12 +35,10 @@ class InvitationScreen(DialogScreen[InvitationChoice | None]):
 
     DEFAULT_BUTTON_ID = "invitation-accept"
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        Binding("a", "respond('ACCEPTED')", "Accept", show=False),
-        Binding("t", "respond('TENTATIVE')", "Tentative", show=False),
-        Binding("d", "respond('DECLINED')", "Decline", show=False),
-    ]
+    # From `pony.keymap`'s INVITATION surface: the dialog's three
+    # answers are a part of the program a key is live on, so they
+    # belong in the table with the rest rather than in this file alone.
+    BINDINGS = list(INVITATION_BINDINGS)
 
     DEFAULT_CSS = """
     InvitationScreen #dialog {

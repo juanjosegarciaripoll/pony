@@ -183,6 +183,78 @@ def test_the_folder_tree_binds_the_folders_surface() -> None:
     assert tuple(expected) == FOLDER_BINDINGS
 
 
+def test_the_open_message_binds_its_own_surface() -> None:
+    """The pane's keys are in the table, with one named exception.
+
+    Twenty-eight bindings were written into the widget, so they existed
+    in the terminal and nowhere else: no footer, no help screen, no
+    ``/keymap.json``.  Eight of them are the pane's own vocabulary and
+    are now table entries; the twenty attachment digits stay in the
+    widget, because they differ only by the argument they carry and
+    their action lives on the screen.
+    """
+    from pony.keymap import MESSAGE_KEYS
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    from_table = to_textual(for_surface(MAIL_KEYMAP, Surface.MESSAGE))
+    assert from_table == to_textual(MESSAGE_KEYS)
+    assert list(MessageViewPanel.BINDINGS[: len(from_table)]) == from_table
+    # And what is left is the digits, and only the digits.
+    rest = [
+        binding
+        for binding in MessageViewPanel.BINDINGS[len(from_table) :]
+        if isinstance(binding, Binding)
+    ]
+    assert len(rest) == 20
+    assert {binding.key for binding in rest} == {
+        *(str(digit) for digit in range(10)),
+        *(f"ctrl+{digit}" for digit in range(10)),
+    }
+    assert all("attachment" in str(binding.action) for binding in rest)
+
+
+def test_the_panes_that_read_one_key_two_ways_say_which() -> None:
+    """The divergence is deliberate, so the table carries both meanings.
+
+    `n` is the next row with the list focused and the next message with
+    the message focused; `<` and `>` jump the list or scroll the
+    message.  The terminal resolves that by focus.  The table used to
+    hold only the list's half, which is why the message pane's keys
+    were invisible to everything but the pane.
+    """
+    from pony.keymap import LIST_KEYS, MESSAGE_KEYS
+
+    in_list = {binding.key: binding.action for binding in LIST_KEYS}
+    in_message = {binding.key: binding.action for binding in MESSAGE_KEYS}
+    shared = {
+        key: (in_list[key], in_message[key])
+        for key in in_list.keys() & in_message.keys()
+    }
+
+    assert shared == {
+        "n": ("cursor_down", "next_message"),
+        "p": ("cursor_up", "prev_message"),
+        "<": ("cursor_first", "scroll_home"),
+        ">": ("cursor_last", "scroll_end"),
+    }
+
+
+def test_the_invitation_dialog_binds_the_invitation_surface() -> None:
+    """Its three answers are a surface, not four lines in the screen."""
+    from pony.tui.screens.invitation_screen import InvitationScreen
+
+    expected = to_textual(for_surface(MAIL_KEYMAP, Surface.INVITATION))
+    assert list(InvitationScreen.BINDINGS) == expected
+    assert {
+        binding.key for binding in for_surface(MAIL_KEYMAP, Surface.INVITATION)
+    } == {
+        "a",
+        "t",
+        "d",
+        "escape",
+    }
+
+
 def test_the_message_list_binds_the_list_surface() -> None:
     from pony.tui.widgets.message_list import MessageListPanel
 
@@ -252,6 +324,78 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
     assert offenders == []
 
 
+#: Every class under ``pony.tui`` still allowed to bind a key the table
+#: does not have, and why.  A key that runs an *operation* belongs in
+#: `pony.keymap`, because both front ends offer the operations; a key
+#: that answers a question, moves a cursor inside a widget or edits text
+#: in a field belongs to the thing asking, and has no browser meaning to
+#: keep in step with.
+_LOCAL_BINDINGS = {
+    # The terminal's own interrupt conventions, which no page has.
+    "QuitAsksTheScreen": "ctrl+c and ctrl+q, as a terminal program ends",
+    # Answers to a question, not operations.
+    "ConfirmScreen": "y / n answer the question it asks",
+    "SaveDraftScreen": "y / n / q / escape answer the question it asks",
+    "PickFolderScreen": "enter / q answer the question it asks",
+    "SenderCheckScreen": "q dismisses the panel it is",
+    "HelpScreen": "escape / q dismiss the help itself",
+    "DialogScreen": "tab, shift+tab and copy are dialog plumbing",
+    "SyncConfirmScreen": "tab, shift+tab and copy are dialog plumbing",
+    "LinkActionScreen": "o / c answer which of the two it is to be",
+    "AddAttachmentScreen": "ctrl+l moves the focus inside the form",
+    "ContactEditScreen": "ctrl+s submits the form it is",
+    # A widget's own navigation and editing, which Textual gives every
+    # tree and every input and a browser gives natively.
+    "_DirOnlyTree": "a Tree's own cursor keys",
+    "AddressInput": "an Input's own editing chords",
+    # Named in the audit as the one set the table would make
+    # unreadable: ten keys differing only by their argument.
+    "MessageViewPanel": "the twenty attachment digits",
+}
+
+
+def test_every_key_bound_in_a_screen_is_in_the_table_or_named_here() -> None:
+    """A key written into a screen exists in the terminal and nowhere else.
+
+    Twenty-five sites carried ninety-five keys that no footer, no help
+    screen and no ``/keymap.json`` knew about -- the message pane's
+    eight, the folder tree's four, the invitation dialog's three. Those
+    are table entries now, and what is left is listed above with the
+    reason it is not an operation. A new hand-written binding fails
+    here rather than joining them quietly.
+    """
+    import importlib
+    import pkgutil
+
+    from textual.binding import Binding as TextualBinding
+
+    import pony.tui
+
+    known = {(binding.key, binding.action) for binding in MAIL_KEYMAP}
+    local: dict[str, set[str]] = {}
+    for info in pkgutil.walk_packages(pony.tui.__path__, "pony.tui."):
+        module = importlib.import_module(info.name)
+        for name in dir(module):
+            obj = getattr(module, name)
+            bindings = getattr(obj, "BINDINGS", None)
+            if not isinstance(bindings, list):
+                continue
+            if getattr(obj, "__module__", "") != info.name:
+                continue
+            for binding in bindings:
+                if not isinstance(binding, TextualBinding):
+                    continue
+                if (binding.key, binding.action) in known:
+                    continue
+                local.setdefault(name, set()).add(binding.key)
+
+    assert set(local) == set(_LOCAL_BINDINGS), sorted(
+        set(local) ^ set(_LOCAL_BINDINGS),
+    )
+    # The one that is a count rather than a vocabulary.
+    assert len(local["MessageViewPanel"]) == 20
+
+
 def test_the_help_screen_is_rendered_from_the_table() -> None:
     """It was a third hand-typed copy, and it contradicted itself on `N`."""
     from pony.tui.screens.help_screen import HelpScreen
@@ -264,6 +408,7 @@ def test_the_help_screen_is_rendered_from_the_table() -> None:
         Surface.READER,
         Surface.LIST,
         Surface.FOLDERS,
+        Surface.MESSAGE,
     )
     # Every one of the keys the hand-typed version had lost.
     actions = {binding.action for binding in shown}

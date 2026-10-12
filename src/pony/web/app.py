@@ -761,6 +761,8 @@ CLIENT_ACTIONS = frozenset(
     {
         "cursor_down",
         "cursor_up",
+        "close_message",
+        "page_down_or_next",
         "cursor_first",
         "cursor_last",
         "mark_down",

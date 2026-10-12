@@ -54,9 +54,17 @@ def bindings_for(surface: PageSurface) -> tuple[KeyBinding, ...]:
     application = for_surface(MAIL_KEYMAP, Surface.APPLICATION)
     match surface:
         case PageSurface.READER:
+            # The message's own surface comes last on purpose.  Its
+            # `n`, `p`, `<` and `>` are the same keys the list claims,
+            # resolved in the terminal by which pane has focus and here
+            # by `one_per_web_key` keeping the first -- the list's
+            # meaning, because a browser has no focused pane.  What is
+            # left of the surface is what a page can do with no focus to
+            # consult: close the open message, and page through it.
             return (
                 *application,
                 *for_surface(MAIL_KEYMAP, Surface.READER, Surface.LIST),
+                *for_surface(MAIL_KEYMAP, Surface.MESSAGE),
             )
         case PageSurface.COMPOSE:
             return for_surface(MAIL_KEYMAP, Surface.COMPOSE)
@@ -137,6 +145,19 @@ def page(
                         class_="action",
                         data_action="sync",
                         id="sync",
+                    ),
+                    # ++shift+q++, for the same screen that has no keys.
+                    # It asks first: a tap is easier to do by accident,
+                    # and nothing on a phone can start the server again.
+                    element(
+                        "button",
+                        "Quit",
+                        type="button",
+                        class_="action",
+                        data_action="quit",
+                        data_confirm="Stop Pony Express?",
+                        data_agree="Stop",
+                        id="quit",
                     ),
                     id="chrome",
                 ),

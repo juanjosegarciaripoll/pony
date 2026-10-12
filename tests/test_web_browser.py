@@ -347,6 +347,23 @@ async function run() {
   report.steps.push("confirm");
   out();
 
+  // The Quit button, which asks before it stops the program: the one
+  // control a tap must not run on the first press. Answered "no" here,
+  // because every step after this needs the server.
+  const quitting = report.posts.length;
+  doc.getElementById("quit").click();
+  await sleep(300);
+  const asking = doc.getElementById("prompt");
+  report.quitAsked = asking ? asking.textContent : "";
+  report.quitButtons = asking
+    ? Array.from(asking.querySelectorAll("button")).map((b) => b.textContent)
+    : [];
+  press(asking.querySelector("form"), "n");
+  await sleep(200);
+  report.quitRefusedPosts = report.posts.length - quitting;
+  report.steps.push("quit-button");
+  out();
+
   // The folder tree: folded by a click, with the fold still there
   // after the next navigation, and the hierarchy drawn rather than
   // only indented.
@@ -398,6 +415,19 @@ async function run() {
   await sleep(600);
   report.opened = frame.contentWindow.location.pathname;
   report.steps.push("open");
+  out();
+
+  // `q` closes the open message, as it does in the reader: back to the
+  // folder it was found in, not out of the program.
+  await ready(frame, "#reader");
+  press(frame.contentDocument.body, "q");
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (frame.contentWindow.location.pathname !== "/message") break;
+    await sleep(25);
+  }
+  report.closedTo =
+    frame.contentWindow.location.pathname + frame.contentWindow.location.search;
+  report.steps.push("close");
   out();
 
   // The event form is a calendar page too, whatever surface it
@@ -675,8 +705,10 @@ def test_the_harness_got_all_the_way_through() -> None:
         "button",
         "typing",
         "confirm",
+        "quit-button",
         "tree",
         "open",
+        "close",
         "event-sync",
         "compose",
         "quit",
@@ -776,6 +808,22 @@ def test_a_press_into_the_search_field_is_left_to_the_field() -> None:
     assert _report()["typedIntoField"] == 0
 
 
+def test_the_quit_button_asks_before_it_stops_anything() -> None:
+    """The browser's one irreversible tap.
+
+    ``quit`` had no button at all, so a phone could open the front end
+    and not stop it; the button is in the chrome now, and it asks,
+    because a tap is easier to do by accident than ++shift+q++ and
+    nothing on a phone can start the server again.
+    """
+    report = _report()
+
+    assert "Stop Pony Express?" in report["quitAsked"]
+    assert report["quitButtons"] == ["Stop [Y]", "Cancel [N]"]
+    # Said no with the reader's own `N`, and nothing was sent.
+    assert report["quitRefusedPosts"] == 0
+
+
 def test_the_folder_tree_folds_and_shows_what_descends_from_what() -> None:
     """Two differences from the reader, found by using the browser.
 
@@ -809,6 +857,20 @@ def test_the_folder_tree_folds_and_shows_what_descends_from_what() -> None:
 
 def test_enter_opens_the_row_the_cursor_is_on() -> None:
     assert _report()["opened"] == "/message"
+
+
+def test_q_closes_the_open_message_and_keeps_the_folder() -> None:
+    """The message pane's own keys reach the browser now.
+
+    They were written into ``MessageViewPanel.BINDINGS``, so they
+    existed in the terminal and nowhere else.  `q` is the one that most
+    obviously belongs on a page too, and it has to leave the folder
+    where it was: a plain "/mail" would lose the account, the folder and
+    the search the message was found in.
+    """
+    report = _report()
+
+    assert report["closedTo"] == "/mail?account=acct&folder=INBOX"
 
 
 def test_the_event_form_syncs_the_calendar_and_not_the_mail() -> None:

@@ -16,6 +16,11 @@ visible without anyone remembering this file.
 A handful of keys belong to a widget rather than to the table — Enter
 opens, the digits open attachments — and those are listed verbatim,
 under a heading that says as much.
+
+The open message is a surface of its own, so its keys come from the
+table like the rest; which of its meanings applies — ``n`` as "next
+message" or as "next row" — is decided by the pane that has focus, and
+the help lists both.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ _SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
                 "cursor_last",
                 "next_inbox",
                 "prev_inbox",
+                "next_message",
+                "prev_message",
                 "goto_folder",
                 "search",
             }
@@ -85,6 +92,10 @@ _SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
                 "attachments_save",
                 "mark_down",
                 "mark_up",
+                "close_message",
+                "page_down_or_next",
+                "scroll_home",
+                "scroll_end",
             }
         ),
     ),
@@ -130,8 +141,7 @@ _RIGHT_ORDER = ("Messages", "Mail & calendar", "This program", "Other")
 # what this whole file used to be.
 _WIDGET_KEYS: tuple[tuple[str, str], ...] = (
     ("Enter", "Open the row under the cursor"),
-    ("Esc / q", "Close the message, or leave a search"),
-    ("Space / PgDn", "Scroll the open message"),
+    ("Esc / q", "Leave a search, with no message open"),
     ("1-9 / 0", "Open attachment N / open all"),
     ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
     ("Drag border", "Resize a pane with the mouse"),
@@ -289,6 +299,7 @@ class HelpScreen(Screen[None]):
         Surface.READER,
         Surface.LIST,
         Surface.FOLDERS,
+        Surface.MESSAGE,
     )
 
     def __init__(self, *surfaces: Surface, **kwargs: object) -> None:

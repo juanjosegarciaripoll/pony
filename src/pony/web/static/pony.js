@@ -747,6 +747,29 @@ const clientActions = {
   quit: quit,
 
   // Mail
+  close_message: () => {
+    // What `q` does in the reader: the message goes, the folder and the
+    // search it was found in stay.
+    if (!here().message) return;
+    go(`/mail?${folderParams()}`);
+  },
+  // Space and PageDown, as the reader's message pane answers them:
+  // down the message, and on to the next unread one once there is no
+  // more of it to show.
+  page_down_or_next: () => {
+    const body = paneScroller("reader");
+    if (!body) return;
+    const more = body.scrollHeight - body.clientHeight - body.scrollTop;
+    if (more > 2) {
+      body.scrollTop += Math.max(body.clientHeight - 40, 40);
+      return;
+    }
+    const next = rows()
+      .slice(rows().indexOf(selectedRow()) + 1)
+      .find((row) => row.classList.contains("unread"));
+    const link = next && next.querySelector("a[href]");
+    if (link) window.location.assign(link.href);
+  },
   search: async () => {
     const data = here();
     const query = await ask("Search", { value: data.query || "" });
@@ -1035,8 +1058,29 @@ clientActions.select_span = (name) => {
 // operations. The name is the action; the dispatcher does the rest.
 function wireActionButtons() {
   for (const button of document.querySelectorAll("[data-action]")) {
-    button.addEventListener("click", () => {
-      void server(button.dataset.action, buttonFields(button));
+    button.addEventListener("click", async () => {
+      const name = button.dataset.action;
+      // A tap is easier to do by accident than a key is, and a button
+      // may say so: `data-confirm` is the question and `data-agree` the
+      // word on the button that goes ahead. The key for the same action
+      // is left alone -- ++shift+q++ in the reader asks nothing either.
+      if (button.dataset.confirm) {
+        const answer = await choose(button.dataset.confirm, [
+          { value: "go", label: `${button.dataset.agree || "Yes"} [Y]`, key: "y" },
+          { value: "cancel", label: "Cancel [N]", key: "n" },
+        ]);
+        if (answer !== "go") return;
+      }
+      // The same two halves `onKeyDown` chooses between: a button for
+      // an action the page performs itself must not be posted to the
+      // server instead. Quit is both -- the server stops and the tab
+      // goes with it -- and posting it alone left a dead page up.
+      const client = clientActions[name];
+      if (client) {
+        void client(name);
+        return;
+      }
+      void server(name, buttonFields(button));
     });
   }
 }

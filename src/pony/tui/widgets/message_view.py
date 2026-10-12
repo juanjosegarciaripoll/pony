@@ -27,6 +27,7 @@ from ...message_renderer import (
     save_one_attachment,
 )
 from ...protocols import MirrorRepository
+from ..bindings import MESSAGE_BINDINGS
 from ..terminal import suspend_for_external_program
 
 _log = logging.getLogger(__name__)
@@ -99,15 +100,16 @@ class MessageViewPanel(VerticalScroll):
     # below answers before the first one is loaded.
     _invitation: Invitation | None = None
 
+    # The pane's own keys come from `pony.keymap`'s MESSAGE surface, so
+    # they reach the footer, both help screens and `/keymap.json`
+    # instead of existing in this file alone.  The twenty attachment
+    # digits stay here: they are the one set the table would make
+    # unreadable -- ten of them differ only by the argument they carry,
+    # and the action lives on the screen rather than on this widget --
+    # and `tests/test_keymap.py` names them as the exception rather than
+    # letting a new hand-written binding in beside them.
     BINDINGS = [
-        Binding("q", "close", "Close"),
-        Binding("escape", "close", "Close", show=False),
-        Binding("n", "next_message", "Next", show=False),
-        Binding("p", "prev_message", "Prev", show=False),
-        Binding("space", "page_down_or_next", "Next page", show=False),
-        Binding("pagedown", "page_down_or_next", "Next page", show=False),
-        Binding("<", "scroll_home", "Top", show=False),
-        Binding(">", "scroll_end", "Bottom", show=False),
+        *MESSAGE_BINDINGS,
         Binding("0", "screen.open_attachment('0')", show=False),
         Binding("1", "screen.open_attachment('1')", show=False),
         Binding("2", "screen.open_attachment('2')", show=False),
@@ -149,7 +151,7 @@ class MessageViewPanel(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Static("", id="content")
 
-    def action_close(self) -> None:
+    def action_close_message(self) -> None:
         self.post_message(self.CloseRequested())
 
     def action_next_message(self) -> None:

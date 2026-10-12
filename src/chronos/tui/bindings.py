@@ -12,6 +12,7 @@ from textual.binding import Binding
 
 from chronos.keymap import (
     CALENDAR_KEYMAP,
+    DETAIL_KEYS,
     EDIT_KEYS,
     KEY_AGENDA_DAY,
     KEY_AGENDA_MONTH,
@@ -45,6 +46,7 @@ from chronos.keymap import (
     KEY_VIEW_AGENDA,
     KEY_VIEW_MONTH,
     KEY_VIEW_MONTH_ALT,
+    SEARCH_KEYS,
     VIEW_KEYS,
     KeyBinding,
     span_label,
@@ -81,17 +83,11 @@ def edit_bindings() -> list[BindingType]:
 
 
 def detail_bindings() -> list[BindingType]:
-    return [
-        Binding(KEY_BACK, "close", "Back"),
-        Binding(KEY_EDIT, "edit", "Edit"),
-    ]
+    return to_textual(DETAIL_KEYS)
 
 
 def search_bindings() -> list[BindingType]:
-    return [
-        Binding(KEY_OPEN, "submit", "Search"),
-        Binding(KEY_BACK, "cancel", "Cancel"),
-    ]
+    return to_textual(SEARCH_KEYS)
 
 
 __all__ = [

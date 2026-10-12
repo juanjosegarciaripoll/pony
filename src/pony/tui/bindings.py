@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING
 
 from textual.binding import Binding
 
-from ..keymap import FOLDER_KEYS, MARK_KEYS, MOTION_KEYS
+from ..keymap import (
+    FOLDER_KEYS,
+    INVITATION_KEYS,
+    MARK_KEYS,
+    MESSAGE_KEYS,
+    MOTION_KEYS,
+)
 
 if TYPE_CHECKING:
     from ..keymap import KeyBinding
@@ -47,11 +53,15 @@ def to_textual(bindings: tuple[KeyBinding, ...]) -> list[BindingType]:
 MARK_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MARK_KEYS))
 MOTION_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MOTION_KEYS))
 FOLDER_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(FOLDER_KEYS))
+MESSAGE_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MESSAGE_KEYS))
+INVITATION_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(INVITATION_KEYS))
 
 
 __all__ = [
     "FOLDER_BINDINGS",
+    "INVITATION_BINDINGS",
     "MARK_BINDINGS",
+    "MESSAGE_BINDINGS",
     "MOTION_BINDINGS",
     "BindingType",
     "to_textual",

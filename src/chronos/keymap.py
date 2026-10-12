@@ -40,6 +40,10 @@ class CalendarSurface(StrEnum):
     VIEW = "view"
     # The event form.
     EDIT = "edit"
+    # One event, opened to be read.
+    DETAIL = "detail"
+    # The box a search query is typed into.
+    SEARCH = "search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +119,8 @@ _WEB_KEY_NAMES = {
     "tab": "Tab",
     "backspace": "Backspace",
     "delete": "Delete",
+    "pagedown": "PageDown",
+    "pageup": "PageUp",
     "colon": ":",
     "f1": "F1",
     "f2": "F2",
@@ -332,12 +338,33 @@ EDIT_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding(KEY_BACK, "cancel", "Cancel", CalendarSurface.EDIT),
 )
 
-CALENDAR_KEYMAP: tuple[KeyBinding, ...] = (*VIEW_KEYS, *EDIT_KEYS)
+# The two small screens whose keys were written out in
+# `chronos.tui.bindings` from these same constants, so they existed in
+# the terminal and in no table: the browser has neither screen, but a
+# key that runs an operation belongs here either way.
+DETAIL_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding(KEY_BACK, "close", "Back", CalendarSurface.DETAIL),
+    KeyBinding(KEY_EDIT, "edit", "Edit", CalendarSurface.DETAIL),
+)
+
+SEARCH_KEYS: tuple[KeyBinding, ...] = (
+    KeyBinding(KEY_OPEN, "submit", "Search", CalendarSurface.SEARCH),
+    KeyBinding(KEY_BACK, "cancel", "Cancel", CalendarSurface.SEARCH),
+)
+
+CALENDAR_KEYMAP: tuple[KeyBinding, ...] = (
+    *VIEW_KEYS,
+    *EDIT_KEYS,
+    *DETAIL_KEYS,
+    *SEARCH_KEYS,
+)
 
 
 __all__ = [
     "CALENDAR_KEYMAP",
+    "DETAIL_KEYS",
     "EDIT_KEYS",
+    "SEARCH_KEYS",
     "KEY_AGENDA_DAY",
     "KEY_AGENDA_MONTH",
     "KEY_AGENDA_WEEK",
