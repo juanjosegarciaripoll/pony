@@ -42,18 +42,9 @@ from chronos.scheduler import SyncOutcome
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
 from chronos.tui.app import ChronosApp, TuiServices
-from chronos.tui.screens.agenda_screen import (
-    title_for as agenda_title,
-)
-from chronos.tui.screens.agenda_screen import (
-    window_for as agenda_window_for,
-)
 from chronos.tui.screens.confirm_screen import ConfirmScreen
-from chronos.tui.screens.day_view_screen import title_for as day_title
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
 from chronos.tui.screens.event_edit_screen import EventEditScreen
-from chronos.tui.screens.grid_view_screen import title_for as grid_title
-from chronos.tui.screens.grid_view_screen import window_for as grid_window_for
 from chronos.tui.screens.import_ics_screen import ImportIcsScreen
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
@@ -72,8 +63,10 @@ from chronos.views import (
     OccurrenceRow,
     RowEmphasis,
     ViewKind,
+    agenda_title,
     agenda_window,
     all_calendar_refs,
+    day_title,
     day_window,
     format_duration,
     format_event_row,
@@ -81,12 +74,19 @@ from chronos.views import (
     format_todo_row,
     gather_occurrences,
     gather_todos,
+    grid_title,
     in_progress_keys,
     is_in_progress,
     month_window,
     render_event_detail,
     search_components,
     week_window,
+)
+from chronos.views import (
+    agenda_mode_window as agenda_window_for,
+)
+from chronos.views import (
+    grid_window as grid_window_for,
 )
 from tests_calendar import corpus
 
@@ -2336,7 +2336,7 @@ class AlarmMessageTest(unittest.TestCase):
 
 class MonthGridHelpersTest(unittest.TestCase):
     def test_grid_dates_span_whole_weeks(self) -> None:
-        from chronos.tui.screens.month_view_screen import grid_dates
+        from chronos.views import grid_dates
 
         # Sep 2026 starts on a Tuesday: Mon 31 Aug .. Sun 4 Oct.
         self.assertEqual(grid_dates(date(2026, 9, 17)), (date(2026, 8, 31), 5))

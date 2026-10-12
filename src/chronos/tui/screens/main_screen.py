@@ -30,39 +30,12 @@ from chronos.outcome import Outcome
 from chronos.paths import active
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.tui.bindings import main_bindings
-from chronos.tui.screens.agenda_screen import (
-    rows_for as agenda_rows,
-)
-from chronos.tui.screens.agenda_screen import (
-    title_for as agenda_title,
-)
 from chronos.tui.screens.confirm_screen import ConfirmScreen
-from chronos.tui.screens.day_view_screen import (
-    rows_for as day_rows,
-)
-from chronos.tui.screens.day_view_screen import (
-    title_for as day_title,
-)
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
 from chronos.tui.screens.event_edit_screen import EventEditScreen
 from chronos.tui.screens.goto_screen import GotoScreen
-from chronos.tui.screens.grid_view_screen import (
-    DEFAULT_GRID_DAYS,
-)
-from chronos.tui.screens.grid_view_screen import (
-    rows_for as grid_rows,
-)
-from chronos.tui.screens.grid_view_screen import (
-    title_for as grid_title,
-)
 from chronos.tui.screens.help_screen import HelpScreen
 from chronos.tui.screens.import_ics_screen import ImportIcsScreen
-from chronos.tui.screens.month_view_screen import (
-    rows_for as month_rows,
-)
-from chronos.tui.screens.month_view_screen import (
-    title_for as month_title,
-)
 from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
 from chronos.tui.screens.sync_confirm_screen import SyncConfirmScreen
 from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
@@ -73,12 +46,21 @@ from chronos.tui.widgets.month_grid import MonthGrid
 from chronos.tui.widgets.sync_status import SyncStatus
 from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
 from chronos.views import (
+    DEFAULT_GRID_DAYS,
     AgendaWindow,
     CalendarSelection,
     OccurrenceRow,
     ViewKind,
+    agenda_rows,
+    agenda_title,
     all_calendar_refs,
+    day_rows,
+    day_title,
+    grid_rows,
+    grid_title,
     in_progress_keys,
+    month_rows,
+    month_title,
     step_viewed,
 )
 

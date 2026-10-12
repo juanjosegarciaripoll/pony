@@ -830,11 +830,155 @@ def month_buckets(
     return out
 
 
+# ----------------------------------------------------------------------
+# What each view is a view of
+# ----------------------------------------------------------------------
+#
+# These were four modules under `tui/screens/` named `*_view_screen.py`,
+# none of which held a `Screen` or imported Textual: they were window
+# arithmetic, a title and an index query, three per view.  So
+# `pony.web.calendar` could not reach them -- the browser must not
+# import anything under `chronos.tui` -- and reimplemented the
+# arithmetic line for line, with a title that worded it differently.
+# One copy each, here, where a second front end can ask.
+
+# Default multi-day grid width, used the first time the grid is opened.
+# The user then picks any width from 2 to 7 days live with the `2`-`7`
+# keys (the `1` key drops to the dedicated single-day view).
+DEFAULT_GRID_DAYS = 4
+
+
+def agenda_mode_window(viewed: date, mode: AgendaWindow) -> tuple[datetime, datetime]:
+    """The agenda's *mode* as a concrete range anchored at *viewed*.
+
+    Calendar-aligned for week and month (Mon-Sun, calendar month) so the
+    agenda label matches what users expect when they think "this week"
+    or "this month" -- not "the next 7/30 days".
+
+    Anchored on *viewed* rather than on today, so `n` / `p` actually
+    navigate: pressing `n` in Agenda Week shifts the agenda by 7 days,
+    the new *viewed* lands inside next week, and :func:`week_window`
+    snaps to that week's Monday.
+    """
+    if mode is AgendaWindow.DAY:
+        return day_window(viewed)
+    if mode is AgendaWindow.WEEK:
+        return week_window(viewed)
+    return month_window(viewed)
+
+
+def agenda_title(viewed: date, mode: AgendaWindow) -> str:
+    start, end = agenda_mode_window(viewed, mode)
+    label = {
+        AgendaWindow.DAY: "Day",
+        AgendaWindow.WEEK: "Week",
+        AgendaWindow.MONTH: "Month",
+    }[mode]
+    return f"Agenda · {label} · {start.date().isoformat()} – {end.date().isoformat()}"
+
+
+def agenda_rows(
+    *,
+    index: IndexRepository,
+    calendars: Sequence[CalendarRef],
+    selection: CalendarSelection,
+    viewed: date,
+    mode: AgendaWindow,
+) -> tuple[OccurrenceRow, ...]:
+    return gather_occurrences(
+        index=index,
+        calendars=calendars,
+        selection=selection,
+        window=agenda_mode_window(viewed, mode),
+    )
+
+
+def day_title(viewed: date) -> str:
+    return f"Day · {viewed.isoformat()}"
+
+
+def day_rows(
+    *,
+    index: IndexRepository,
+    calendars: Sequence[CalendarRef],
+    selection: CalendarSelection,
+    viewed: date,
+) -> tuple[OccurrenceRow, ...]:
+    return gather_occurrences(
+        index=index,
+        calendars=calendars,
+        selection=selection,
+        window=day_window(viewed),
+    )
+
+
+def grid_window(
+    viewed: date, days: int = DEFAULT_GRID_DAYS
+) -> tuple[datetime, datetime]:
+    # Anchored at local midnight (see `day_window`) so events at local
+    # 00:00-02:00 land in the right day for users not in UTC.
+    start = _local_midnight(viewed)
+    return start, start + timedelta(days=days)
+
+
+def grid_title(viewed: date, days: int = DEFAULT_GRID_DAYS) -> str:
+    end = viewed + timedelta(days=days - 1)
+    return f"Grid · {viewed.isoformat()} – {end.isoformat()}"
+
+
+def grid_rows(
+    *,
+    index: IndexRepository,
+    calendars: Sequence[CalendarRef],
+    selection: CalendarSelection,
+    viewed: date,
+    days: int = DEFAULT_GRID_DAYS,
+) -> tuple[OccurrenceRow, ...]:
+    return gather_occurrences(
+        index=index,
+        calendars=calendars,
+        selection=selection,
+        window=grid_window(viewed, days),
+    )
+
+
+def month_grid_window(viewed: date) -> tuple[datetime, datetime]:
+    """The whole six-week grid *viewed*'s month is drawn on.
+
+    Not :func:`month_window`, which is the calendar month: the grid
+    shows the tail of the previous month and the head of the next, and a
+    cell with no events in it is a cell that silently lost them.
+    """
+    first, weeks = grid_dates(viewed)
+    start = _local_midnight(first)
+    return start, start + timedelta(days=7 * weeks)
+
+
+def month_title(viewed: date) -> str:
+    return f"Month · {viewed:%B %Y}"
+
+
+def month_rows(
+    *,
+    index: IndexRepository,
+    calendars: Sequence[CalendarRef],
+    selection: CalendarSelection,
+    viewed: date,
+) -> tuple[OccurrenceRow, ...]:
+    return gather_occurrences(
+        index=index,
+        calendars=calendars,
+        selection=selection,
+        window=month_grid_window(viewed),
+    )
+
+
 __all__ = [
     "AgendaWindow",
     "CalendarSelection",
     "DEFAULT_AGENDA_DAYS",
     "DEFAULT_END_HOUR",
+    "DEFAULT_GRID_DAYS",
     "DEFAULT_START_HOUR",
     "EventRow",
     "IN_PROGRESS_MARK",
@@ -842,11 +986,16 @@ __all__ = [
     "RowEmphasis",
     "SLOT_MINUTES",
     "ViewKind",
+    "agenda_mode_window",
+    "agenda_rows",
+    "agenda_title",
     "agenda_window",
     "all_calendar_refs",
     "compute_hour_range",
     "day_column_label",
     "day_columns",
+    "day_rows",
+    "day_title",
     "day_window",
     "format_duration",
     "format_event_row",
@@ -857,11 +1006,17 @@ __all__ = [
     "gather_occurrences",
     "gather_todos",
     "grid_dates",
+    "grid_rows",
+    "grid_title",
+    "grid_window",
     "in_progress_keys",
     "is_full_day",
     "is_in_progress",
     "local_days",
     "month_buckets",
+    "month_grid_window",
+    "month_rows",
+    "month_title",
     "month_window",
     "render_event_detail",
     "search_components",
