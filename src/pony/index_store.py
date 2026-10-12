@@ -1572,10 +1572,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     ) -> Contact | None:
         """Load one contact on an existing connection, or None.
 
-        ``_load_contacts_by_ids`` goes through ``_use()``, which opens a
-        second connection when it is not already inside a
-        ``connection()`` block — and that one would not see this
-        transaction's uncommitted writes.
+        Reads the caller's connection directly, because the caller is
+        part-way through a transaction on it and is asking about a row
+        that transaction has written.  ``_load_contacts_by_ids`` would
+        answer correctly today -- a thread's calls share its one
+        connection -- but it is three queries to settle one row, and it
+        is one ``connection()`` away from being a different snapshot
+        again.
         """
         row = conn.execute(
             """
