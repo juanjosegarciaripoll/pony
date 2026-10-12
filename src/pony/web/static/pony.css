@@ -312,19 +312,36 @@ body {
   padding: 0.25rem 0;
 }
 
+/* One account per section, and the eye has to be able to find the
+   boundary: the terminal's folder panel gives each account a row of
+   its own, and a small grey uppercase line between runs of folders
+   did not read as one. */
 #folders section {
-  margin: 0 0 0.6rem;
+  margin: 0;
+  padding-bottom: 0.35rem;
+}
+
+#folders section + section {
+  border-top: 1px solid var(--border);
 }
 
 #folders h2 {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  margin: 0.4rem 0.6rem 0.2rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-sunken);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The account's own unread total, which the dim folder counts should
+   not be confused with. */
+#folders h2 .unread {
   color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .tree {
@@ -382,6 +399,13 @@ body {
 .account-name {
   color: var(--fg-dim);
   font-size: 0.75rem;
+}
+
+/* In the folder pane it names the section rather than annotating a
+   row, so it reads as a heading there. */
+#folders .account-name {
+  color: var(--fg);
+  font-size: inherit;
 }
 
 /* ── The reader ─────────────────────────────────────────────── */
