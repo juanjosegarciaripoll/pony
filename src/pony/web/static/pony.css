@@ -395,7 +395,12 @@ body {
   white-space: nowrap;
 }
 
-.unread {
+/* The unread count beside a folder.  Scoped to the folder pane
+   deliberately: a message row's `<li>` carries `unread` as well, as a
+   state rather than as a number, and a bare `.unread` rule reached it
+   -- so every unread row in the list inherited the monospace meant for
+   a count, and read as a different typeface instead of as bold. */
+#folders .unread {
   font-family: var(--mono);
   font-size: 0.75rem;
   color: var(--accent);
