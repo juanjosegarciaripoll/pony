@@ -39,9 +39,19 @@ from chronos.ical_parser import (
 )
 
 # Content types an invitation arrives as.  `text/calendar` is what RFC
-# 5546 specifies; `application/ics` is what several clients attach it as
-# instead, and the bytes inside are the same.
-CALENDAR_CONTENT_TYPES = frozenset({"text/calendar", "application/ics"})
+# 5546 specifies; the other three are what various clients attach it as
+# instead, and the bytes inside are the same.  All four belong here
+# rather than only in the front end that lists attachments: a spelling
+# this set does not know gets offered as a file to import and never as
+# an invitation to answer, which skips the reply to the organizer.
+CALENDAR_CONTENT_TYPES = frozenset(
+    {
+        "text/calendar",
+        "application/ics",
+        "text/x-vcalendar",
+        "application/x-ics",
+    },
+)
 
 # The participation statuses a reply can carry (RFC 5545 §3.2.12).
 PARTSTAT_ACCEPTED = "ACCEPTED"

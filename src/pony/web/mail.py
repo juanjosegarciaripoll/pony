@@ -564,14 +564,9 @@ def _body(rendered: RenderedMessage) -> Raw:
 # Attachments a calendar can read.  `pony.invitation` owns the question
 # -- it is the module that decides whether a message carries an
 # invitation at all -- so its answer is taken rather than written out
-# again here.  The two further spellings are ones some clients attach a
-# `.ics` as; a message using them gets the Import button but no
-# Accept/Decline block, because `extract_invitation` does not recognise
-# them.  Widening `CALENDAR_CONTENT_TYPES` is the real fix and belongs
-# in `pony/invitation.py`.
-_CALENDAR_TYPES = CALENDAR_CONTENT_TYPES | frozenset(
-    {"text/x-vcalendar", "application/x-ics"},
-)
+# again here, and a spelling it recognises is therefore always offered
+# as an invitation to answer rather than only as a file to import.
+_CALENDAR_TYPES = CALENDAR_CONTENT_TYPES
 
 
 def _is_calendar_file(attachment: AttachmentInfo) -> bool:

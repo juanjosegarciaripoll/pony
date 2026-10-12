@@ -182,15 +182,16 @@ def test_a_calendar_predicate_is_the_one_invitation_py_owns() -> None:
     """Two answers to "can the calendar read this?" is one too many.
 
     The web half had a four-member set of its own where
-    ``pony.invitation`` has two, so an invitation sent as
+    ``pony.invitation`` had two, so an invitation sent as
     ``text/x-vcalendar`` got the generic Import button and no answers.
-    The set is derived from that constant now, so widening it there
-    widens it here.
+    Both spellings live in that constant now and the web half is that
+    constant, so the two cannot drift apart again.
     """
     from pony.invitation import CALENDAR_CONTENT_TYPES
     from pony.web.mail import _CALENDAR_TYPES
 
-    assert CALENDAR_CONTENT_TYPES <= _CALENDAR_TYPES
+    assert _CALENDAR_TYPES == CALENDAR_CONTENT_TYPES
+    assert "text/x-vcalendar" in _CALENDAR_TYPES
 
 
 def test_an_invitation_with_no_calendar_configured_says_so() -> None:

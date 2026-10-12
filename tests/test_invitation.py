@@ -94,6 +94,23 @@ class FindCalendarPayloadTest(unittest.TestCase):
         assert payload is not None
         self.assertIn(b"design-review@example.com", payload)
 
+    def test_the_older_x_spellings_are_found_as_well(self) -> None:
+        # A client that attaches the invitation as `text/x-vcalendar` or
+        # `application/x-ics` is attaching the same bytes.  Not knowing
+        # the spelling meant the message was offered as a file to import
+        # and never as an invitation to answer, so the organizer never
+        # got a reply.
+        for maintype, subtype in (
+            ("text", "x-vcalendar"),
+            ("application", "x-ics"),
+        ):
+            with self.subTest(content_type=f"{maintype}/{subtype}"):
+                payload = find_calendar_payload(
+                    _message_with_calendar(maintype=maintype, content_subtype=subtype)
+                )
+                assert payload is not None
+                self.assertIn(b"design-review@example.com", payload)
+
     def test_unparseable_bytes_carry_none(self) -> None:
         self.assertIsNone(find_calendar_payload(b"\xff\xfe not a message"))
 
