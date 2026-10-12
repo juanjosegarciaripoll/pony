@@ -1945,6 +1945,51 @@ format = "mbox"
         self.assertIn("Archive", output)
         self.assertTrue((archive / "INBOX").exists())
 
+    def test_reset_clears_the_cache_that_would_hide_a_kept_mirror(self) -> None:
+        """Otherwise the kept mail is on disk and indexed by nothing.
+
+        The rescan skips a folder whose mtime has not moved, and the
+        reset leaves no index rows -- so the mirror it just promised to
+        keep showed up nowhere, `pony rescan` reported 0/0, and the TUI
+        opened empty.
+        """
+        import json as _json
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = isolated_paths()
+            paths.ensure_runtime_dirs()
+            state_path = paths.data_dir / "local_scan_state.json"
+            state_path.write_text(
+                _json.dumps({"Archive": {"INBOX": 1}}), encoding="utf-8"
+            )
+            archive = isolated_data_dir() / "archive-kept"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            config_path.write_text(
+                sample_config_toml()
+                + f"""
+
+[[accounts]]
+name = "Archive"
+account_type = "local"
+email_address = "archive@example.com"
+
+[accounts.mirror]
+path = '{archive}'
+format = "mbox"
+""",
+                encoding="utf-8",
+            )
+
+            output = run_cli("--config", str(config_path), "reset", "--yes")
+
+        self.assertIn("Clearing scan cache", output)
+        self.assertFalse(state_path.exists())
+        # And the advice names the command that actually indexes it:
+        # `pony sync` skips local accounts.
+        self.assertIn("pony rescan", output)
+        self.assertTrue((archive / "INBOX").exists())
+
     def test_reset_account_removes_a_local_mirror_when_named(self) -> None:
         """Naming it is asking for it."""
         with isolated_app_env(), temporary_config() as config_path:
@@ -3944,6 +3989,39 @@ class ReindexCommandTest(unittest.TestCase):
         assert state is not None
         self.assertEqual(state.uid_validity, 77)
         self.assertEqual(state.highest_uid, 9)
+
+    def test_a_mirror_with_no_handles_at_all_is_warned_about(self) -> None:
+        """The case that most needs the caution had it suppressed.
+
+        The warning was gated on `local_only and with_uid`, so a mirror
+        where *nothing* carried a handle -- any mirror written before
+        the handle went into the filename, which is the only reason to
+        reach for this command -- printed no caution at all, while
+        every message in it had become an upload candidate.
+        """
+        from pony.config import load_config
+        from pony.domain import FolderRef
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = isolated_paths()
+            paths.ensure_runtime_dirs()
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+            mirror = MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            )
+            # Stored without a uid: what a pre-handle mirror looks like.
+            mirror.store_message(folder=folder, raw_message=corpus.plain_text())
+
+            output = run_cli("--config", str(config_path), "reindex")
+
+        self.assertIn("1 row(s) added", output)
+        self.assertIn("0 with a server handle", output)
+        self.assertIn("will be uploaded by the next sync", output)
+        self.assertIn("No message carried a handle", output)
 
     def test_reindex_of_an_unknown_account_says_so(self) -> None:
         with (

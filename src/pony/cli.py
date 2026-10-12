@@ -1561,13 +1561,26 @@ def run_reindex(
         f"({with_uid} with a server handle, {local_only} local-only), "
         f"{states} folder watermark(s) recovered.",
     )
-    if local_only and with_uid:
+    if local_only:
+        # Not `local_only and with_uid`: the case that most needs
+        # saying is the one where *nothing* carried a handle, because
+        # then every message in the mirror is an upload candidate --
+        # and that is any mirror written before the handle was put in
+        # the filename.  Gating on with_uid kept the warning for the
+        # mixed case and silenced it for the wholesale one.
         print(
             "Messages indexed without a handle will be uploaded by the next"
             " sync, which is what a local-only message is for. If that is"
             " not what they are, run 'pony sync --dry-run' and look before"
             " proceeding.",
         )
+        if not with_uid:
+            print(
+                "No message carried a handle, so the next sync sees this"
+                " whole mirror as local mail. A mirror written before"
+                " handles were recorded in the filename looks exactly like"
+                " this; 'pony sync --dry-run' says what would happen.",
+            )
     return 0
 
 
@@ -2609,7 +2622,23 @@ def run_reset(
             t.unlink()
         print(" done.")
 
+    # The scan cache records an mtime per local folder, and the rescan
+    # skips any folder whose mtime has not moved -- so leaving it here
+    # left a kept local mirror indexed by nothing and invisible:
+    # `pony rescan` reported 0/0 and the TUI opened empty.
+    if paths.scan_state_file.exists():
+        print(f"Clearing scan cache {paths.scan_state_file} ...", end="", flush=True)
+        paths.scan_state_file.unlink()
+        print(" done.")
+
     print("Reset complete. Run 'pony sync' for a clean synchronization.")
+    if kept_local:
+        # `pony sync` skips local accounts, so the line above is not the
+        # whole answer for the mirrors this just kept.
+        print(
+            "For the kept local account(s), run 'pony rescan' to index the"
+            " mail that is already on disk.",
+        )
     return 0
 
 
