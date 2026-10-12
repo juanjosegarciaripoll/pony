@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import secrets
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Final
@@ -39,7 +41,12 @@ from urllib.parse import urlsplit
 
 from .html_policy import MESSAGE_HTML_HEADERS
 
-__all__ = ["PREVIEW_WINDOW_SECONDS", "close_preview", "serve_html"]
+__all__ = [
+    "PREVIEW_WINDOW_SECONDS",
+    "close_preview",
+    "document_server",
+    "serve_html",
+]
 
 # How long a served message stays fetchable.  Long enough that the
 # browser has started and the reader can reload the tab; short enough
@@ -106,28 +113,33 @@ class _PreviewHandler(BaseHTTPRequestHandler):
 class _Preview:
     """One served document: its server, its thread and its expiry."""
 
-    def __init__(self, html: str, window: float) -> None:
+    def __init__(self, html: str, window: float | None) -> None:
         token = secrets.token_urlsafe(32)
         self._server = _PreviewServer(html.encode("utf-8"), f"/{token}".encode("ascii"))
         host, port = self._server.server_address[:2]
         self.url = f"http://{host!s}:{port}/{token}"
         self._closed = False
-        self._expiry = threading.Timer(window, self.close)
-        self._expiry.daemon = True
+        # `None` is for a caller that closes the server itself when it is
+        # done, rather than one handing the URL to a browser and walking
+        # away from it.
+        self._expiry = None if window is None else threading.Timer(window, self.close)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             name="pony-preview",
             daemon=True,
         )
         self._thread.start()
-        self._expiry.start()
+        if self._expiry is not None:
+            self._expiry.daemon = True
+            self._expiry.start()
 
     def close(self) -> None:
         """Stop answering.  Safe to call twice, and from any thread."""
         if self._closed:
             return
         self._closed = True
-        self._expiry.cancel()
+        if self._expiry is not None:
+            self._expiry.cancel()
         self._server.shutdown()
         self._server.server_close()
 
@@ -158,4 +170,21 @@ def close_preview() -> None:
     with _lock:
         preview, _current = _current, None
     if preview is not None:
+        preview.close()
+
+
+@contextmanager
+def document_server(html: str) -> Iterator[str]:
+    """Serve *html* for the duration of the block, then stop.
+
+    Separate from the reader's preview on purpose: printing a message
+    must not withdraw the window the reader already has open.  Used by
+    :func:`pony.pdf_export.html_to_pdf`, which points the converter at
+    the URL so the document it renders arrives under the policy instead
+    of off the disk.
+    """
+    preview = _Preview(html, None)
+    try:
+        yield preview.url
+    finally:
         preview.close()

@@ -18,13 +18,16 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import unittest
 from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from pony.browser_preview import close_preview, serve_html
 from pony.html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
+from pony.pdf_export import find_converter, html_to_pdf
 
 BROWSERS = (
     "chromium",
@@ -178,3 +181,75 @@ class MetaRefreshInARealBrowserTest(unittest.TestCase):
 
         self.assertIn("PONY-LANDED", dom)
         self.assertNotIn("PONY-MESSAGE", dom)
+
+
+_GIF = bytes.fromhex(
+    "47494638396101000100800000ffffff00000021f90401000000002c00000000"
+    "010001000002024401003b"
+)
+
+
+class _Recorder(ThreadingHTTPServer):
+    """Notes every request a document makes while it is being printed."""
+
+    def __init__(self) -> None:
+        self.hits: list[str] = []
+        super().__init__(("127.0.0.1", 0), _Record)
+
+
+class _Record(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self) -> None:  # noqa: N802  (http.server's spelling)
+        server = self.server
+        assert isinstance(server, _Recorder)
+        server.hits.append(self.path)
+        self.send_response(200)
+        self.send_header("Content-Type", "image/gif")
+        self.send_header("Content-Length", str(len(_GIF)))
+        self.end_headers()
+        self.wfile.write(_GIF)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        """Quiet: the test reads the hit list, not the log."""
+
+
+def _prints_through_a_browser() -> bool:
+    converter = find_converter()
+    return converter is not None and converter.serves
+
+
+@unittest.skipUnless(
+    os.environ.get("PONY_BROWSER_UI") and _prints_through_a_browser(),
+    "opt-in: set PONY_BROWSER_UI=1 and have a Chromium on PATH",
+)
+class PrintingUnderThePolicyTest(unittest.TestCase):
+    """``ctrl+p`` renders the message too, so the policy has to reach it.
+
+    A converter handed a ``file://`` document applies no headers to it:
+    the message's scripts ran and its tracking pixel was fetched while
+    the PDF was being made.  The converter is pointed at the served page
+    instead, which is this.
+    """
+
+    def test_a_printed_message_fetches_nothing_and_runs_nothing(self) -> None:
+        recorder = _Recorder()
+        self.addCleanup(recorder.server_close)
+        self.addCleanup(recorder.shutdown)
+        threading.Thread(target=recorder.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{recorder.server_address[1]}"
+        html = (
+            "<!doctype html><html><body><p>PONY-PRINTED</p>"
+            f"<img src='{base}/tracking-pixel'>"
+            f"<script>fetch('{base}/script-ran')</script>"
+            "<script>document.write('<p>SCRIPT-WROTE-THIS</p>')</script>"
+            "</body></html>"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "message.pdf"
+            html_to_pdf(html, out)
+
+            self.assertTrue(out.exists())
+            self.assertGreater(out.stat().st_size, 1000)
+        self.assertEqual(recorder.hits, [])
