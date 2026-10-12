@@ -55,7 +55,7 @@ from web_helpers import (
 )
 
 from chronos.keymap import web_key
-from pony.domain import Contact, FolderRef
+from pony.domain import Contact, FolderRef, MessageRef
 from pony.web import WebServices, build_web_app
 from pony.web.actions import MARKED_ONLY_ACTIONS
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS
@@ -154,7 +154,38 @@ def _invitation() -> bytes:
     )
 
 
-def _services(label: str) -> tuple[WebServices, CalendarRuntime, int, int]:
+def _shared_calendar_file() -> bytes:
+    """A `.ics` somebody attached, with nobody to answer.
+
+    Not an invitation: no METHOD and no organizer, so the reader offers
+    it as a file to import rather than as a meeting to accept.
+    """
+    return (
+        b"From: bob@example.com\r\n"
+        b"To: acct@example.com\r\n"
+        b"Subject: Our schedule\r\n"
+        b'Content-Type: multipart/mixed; boundary="b1"\r\n'
+        b"\r\n"
+        b"--b1\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Here it is.\r\n"
+        b"--b1\r\n"
+        b'Content-Type: text/calendar; charset="utf-8"\r\n'
+        b'Content-Disposition: attachment; filename="schedule.ics"\r\n'
+        b"\r\n"
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        b"BEGIN:VEVENT\r\nUID:shared@example.com\r\nDTSTAMP:20260101T090000Z\r\n"
+        b"DTSTART:20260602T090000Z\r\nDTEND:20260602T100000Z\r\n"
+        b"SUMMARY:Our schedule\r\n"
+        b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        b"--b1--\r\n"
+    )
+
+
+def _services(
+    label: str,
+) -> tuple[WebServices, CalendarRuntime, dict[str, int]]:
     """Mail, contacts and a calendar, each with something in it."""
     paths = make_tmp_paths(label)
     account = dataclasses.replace(
@@ -178,6 +209,13 @@ def _services(label: str) -> tuple[WebServices, CalendarRuntime, int, int]:
         raw=_invitation(),
         message_id="<invite@example.com>",
     )
+    shared = seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=INBOX,
+        raw=_shared_calendar_file(),
+        message_id="<shared@example.com>",
+    )
     index.upsert_contact(
         contact=Contact(
             id=None,
@@ -200,10 +238,18 @@ def _services(label: str) -> tuple[WebServices, CalendarRuntime, int, int]:
         contacts=index,
         calendar=runtime,
     )
-    return services, runtime, plain.id, invited.id
+    return (
+        services,
+        runtime,
+        {
+            "plain": plain.id,
+            "invited": invited.id,
+            "shared": shared.id,
+        },
+    )
 
 
-def _pages(client: TestClient, plain: int, invited: int) -> dict[str, str]:
+def _pages(client: TestClient, seeded: dict[str, int]) -> dict[str, str]:
     """One page of every kind the front end serves, by a short name.
 
     The event form is reached through the agenda's own row link, so the
@@ -217,10 +263,16 @@ def _pages(client: TestClient, plain: int, invited: int) -> dict[str, str]:
     return {
         "list": client.get("/mail?account=acct&folder=INBOX").text,
         "message": client.get(
-            f"/message?account=acct&folder=INBOX&id={plain}",
+            f"/message?account=acct&folder=INBOX&id={seeded['plain']}",
         ).text,
         "invitation": client.get(
-            f"/message?account=acct&folder=INBOX&id={invited}",
+            f"/message?account=acct&folder=INBOX&id={seeded['invited']}",
+        ).text,
+        # A calendar file with nobody to answer, which is where the
+        # Import button lives: an invitation offers "File only" instead,
+        # because importing skips the reply to the organizer.
+        "shared_ics": client.get(
+            f"/message?account=acct&folder=INBOX&id={seeded['shared']}",
         ).text,
         "compose": client.get("/compose?mode=new&account=acct").text,
         "contacts": client.get("/contacts").text,
@@ -265,7 +317,7 @@ def test_the_served_keys_are_the_terminal_tables_for_that_surface() -> None:
     changed.  Two spellings of one key (a capital and its ``shift+``
     alias) are one key here, so the first wins.
     """
-    services, _runtime, _plain, _invited = _services("dispatch-tables")
+    services, _runtime, _seeded = _services("dispatch-tables")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
@@ -295,7 +347,7 @@ def test_no_served_key_is_one_a_press_could_never_produce() -> None:
     shift+m as ``M`` with the flag set.  A key spelled any other way is
     served, listed in the help, and dead.
     """
-    services, _runtime, _plain, _invited = _services("dispatch-spelling")
+    services, _runtime, _seeded = _services("dispatch-spelling")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
@@ -345,7 +397,7 @@ def test_every_available_key_is_an_action_the_page_can_really_run() -> None:
     """
     source = script()
     here = client_actions(source)
-    services, _runtime, _plain, _invited = _services("dispatch-available")
+    services, _runtime, _seeded = _services("dispatch-available")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
@@ -366,7 +418,7 @@ def test_every_available_key_is_an_action_the_page_can_really_run() -> None:
 def test_a_key_the_browser_has_not_got_is_marked_rather_than_silent() -> None:
     """One key is terminal-only, and the press says so."""
     source = script()
-    services, _runtime, _plain, _invited = _services("dispatch-unavailable")
+    services, _runtime, _seeded = _services("dispatch-unavailable")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
@@ -464,9 +516,82 @@ def test_escape_on_a_form_asks_before_throwing_the_typing_away() -> None:
 # ----------------------------------------------------------------------
 
 
+def test_every_url_the_module_builds_is_answered_with_what_it_asked_for() -> None:
+    """``urls`` says a route and its links cannot drift. They had, twice.
+
+    ``SEARCH = "/search"`` named a route that 404s and ``rows_url`` had
+    no callers at all, and nothing noticed either, because the one check
+    there was compared only the path in front of the ``?``.  So every
+    name in the module is walked here: a path constant has to be a route
+    the application serves, and a builder's URL has to come back
+    answered *with what it asked for* — which is what catches a renamed
+    query parameter, where the server happily answers 200 and shows the
+    wrong thing.
+    """
+    from pony.web import urls
+
+    services, _runtime, seeded = _services("dispatch-urls")
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    ref = MessageRef(account_name="acct", folder_name="INBOX", id=seeded["plain"])
+    routes = {
+        str(getattr(route, "path", "")) for route in build_web_app(services).routes
+    }
+
+    # Every path constant is a route.
+    for name in urls.__all__:
+        value = getattr(urls, name)
+        if isinstance(value, str) and value.startswith("/"):
+            assert value in routes, name
+
+    with TestClient(build_web_app(services)) as client:
+        # A folder link arrives at that folder, with the query kept.
+        listed = client.get(urls.mail_url(folder, q="meeting"))
+        assert listed.status_code == 200
+        assert page_data(listed.text)["account"] == "acct"
+        assert page_data(listed.text)["folder"] == "INBOX"
+        assert page_data(listed.text)["query"] == "meeting"
+        # A message link opens that message.
+        opened = client.get(urls.message_url(ref))
+        assert opened.status_code == 200
+        assert page_data(opened.text)["message"] == str(ref.id)
+        # The HTML version, the raw bytes and an attachment all resolve.
+        assert client.get(urls.body_url(ref)).status_code == 200
+        assert client.get(urls.raw_url(ref)).status_code == 200
+        assert client.get(urls.attachment_url(ref, 1)).status_code in {200, 404}
+        # The composer is prefilled from the message the link names.
+        writing = client.get(
+            urls.compose_url(
+                mode="reply",
+                account="acct",
+                folder="INBOX",
+                message_id=ref.id,
+            ),
+        )
+        assert writing.status_code == 200
+        assert "Re:" in form_fields(writing.text, "#compose-form")["subject"]
+        # The contacts list keeps its search, and the form its record.
+        searched = client.get(urls.contacts_url(q="ada"))
+        assert page_data(searched.text)["query"] == "ada"
+        assert client.get(urls.contact_form_url()).status_code == 200
+        # The calendar keeps the view it was asked for.
+        viewed = client.get(urls.calendar_url(view="month", date="2026-05-17"))
+        assert page_data(viewed.text)["view"] == "month"
+        assert page_data(viewed.text)["date"] == "2026-05-17"
+        # And the event form opens blank on the day it names.
+        blank = client.get(urls.event_form_url(date="2026-05-17"))
+        assert blank.status_code == 200
+        assert form_fields(blank.text, "#event-form")["starts"].startswith("2026-05-17")
+        # The fragment the script refetches, with the open row marked.
+        fragment = client.get(
+            f"{urls.ROWS}{urls.query(account='acct', folder='INBOX', id=ref.id)}",
+        )
+        assert fragment.status_code == 200
+        assert 'aria-selected="true"' in fragment.text
+
+
 def test_every_path_the_dispatcher_reaches_for_is_a_route() -> None:
     """A fetch to a path nobody serves is a feature that silently fails."""
-    services, _runtime, _plain, _invited = _services("dispatch-paths")
+    services, _runtime, _seeded = _services("dispatch-paths")
     routes = {
         str(getattr(route, "path", "")) for route in build_web_app(services).routes
     }
@@ -500,11 +625,11 @@ def test_the_surface_every_page_declares_has_a_keymap_of_its_own() -> None:
     ``data-surface`` the server does not serve answers to nothing at
     all — and a surface served for no page is a table nobody reads.
     """
-    services, _runtime, plain, invited = _services("dispatch-surfaces")
+    services, _runtime, seeded = _services("dispatch-surfaces")
 
     with TestClient(build_web_app(services)) as client:
         served = set(client.get("/keymap.json").json())
-        pages = _pages(client, plain, invited)
+        pages = _pages(client, seeded)
 
     declared = {page_data(page)["surface"] for page in pages.values()}
     assert declared <= served
@@ -541,10 +666,10 @@ def test_the_bulk_actions_act_on_the_marks_and_not_on_the_cursor() -> None:
 def test_every_button_that_names_an_action_goes_through_the_dispatcher() -> None:
     """Scanned off the pages, not kept in a list here."""
     source = script()
-    services, _runtime, plain, invited = _services("dispatch-buttons")
+    services, _runtime, seeded = _services("dispatch-buttons")
 
     with TestClient(build_web_app(services)) as client:
-        pages = _pages(client, plain, invited)
+        pages = _pages(client, seeded)
 
     named = {name for page in pages.values() for name in actions(page)}
     assert named
@@ -568,10 +693,10 @@ def test_the_operations_a_phone_needs_are_all_reachable_by_tapping() -> None:
     event and the view switcher in the calendar, and a search field in
     each list head.
     """
-    services, _runtime, plain, invited = _services("dispatch-touch")
+    services, _runtime, seeded = _services("dispatch-touch")
 
     with TestClient(build_web_app(services)) as client:
-        pages = _pages(client, plain, invited)
+        pages = _pages(client, seeded)
 
     assert actions(pages["message"]) >= {
         "archive",
@@ -631,11 +756,11 @@ def test_the_operations_with_no_button_are_the_ones_that_need_typing() -> None:
       carries the Delete button, because the server needs the uid and
       the calendar together and a bare action button cannot carry them.
     """
-    services, _runtime, plain, invited = _services("dispatch-gaps")
+    services, _runtime, seeded = _services("dispatch-gaps")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
-        tappable = _by_surface(_pages(client, plain, invited))
+        tappable = _by_surface(_pages(client, seeded))
 
     missing: dict[str, set[str]] = {}
     for surface, entries in served.items():
@@ -661,6 +786,44 @@ def test_the_operations_with_no_button_are_the_ones_that_need_typing() -> None:
     }
 
 
+def test_every_page_carries_its_own_keymap_so_no_press_is_dropped() -> None:
+    """It used to arrive in a request of its own, fired last.
+
+    ``start()`` attached ``keydown`` and *then* fetched the table, so
+    every key pressed before the answer landed matched nothing and was
+    dropped without a word.  The page carries it now, from the same
+    function ``/keymap.json`` is built from.
+    """
+    import json
+
+    source = script()
+    services, _runtime, seeded = _services("dispatch-inline-keymap")
+
+    with TestClient(build_web_app(services)) as client:
+        served = client.get("/keymap.json").json()
+        pages = _pages(client, seeded)
+
+    for name, page in pages.items():
+        found = re.search(
+            r'<script type="application/json" id="keymap">(.*?)</script>',
+            page,
+            re.DOTALL,
+        )
+        assert found is not None, name
+        carried = json.loads(found.group(1))
+        assert carried, name
+        # The same table the endpoint serves for that surface.
+        assert carried == served[page_data(page)["surface"]], name
+
+    # And the script reads it before it starts listening, rather than
+    # fetching it afterwards.
+    assert "/keymap.json" not in source
+    starting = _function(source, "start")
+    assert starting.index("state.keymap = pageKeymap()") < starting.index(
+        'document.addEventListener("keydown"',
+    )
+
+
 def test_the_actions_with_neither_a_key_nor_a_button_are_known() -> None:
     """One operation the browser can only be asked for by hand.
 
@@ -669,11 +832,11 @@ def test_the_actions_with_neither_a_key_nor_a_button_are_known() -> None:
     from no key and no button.  ``import_ics`` used to be here too and
     is now the Import button on a calendar attachment.
     """
-    services, _runtime, plain, invited = _services("dispatch-unreachable")
+    services, _runtime, seeded = _services("dispatch-unreachable")
 
     with TestClient(build_web_app(services)) as client:
         served = client.get("/keymap.json").json()
-        pages = _pages(client, plain, invited)
+        pages = _pages(client, seeded)
 
     reachable = {
         str(entry["action"]) for entries in served.values() for entry in entries

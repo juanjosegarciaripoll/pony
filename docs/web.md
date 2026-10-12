@@ -242,12 +242,15 @@ Invitations](tui.md#invitations) for what each answer means.
 
 ## The keyboard
 
-The browser does not have a keymap of its own. It fetches
-`/keymap.json`, which serves `pony.keymap` and `chronos.keymap` — the
-tables the Textual screens build their bindings from — one list per page,
-and matches `keydown` against it. A key cannot mean one thing in the
-terminal and another here, and the footer cannot advertise a key the
-page does not answer to.
+The browser does not have a keymap of its own. Every page carries the
+table for the page it is, served from `pony.keymap` and
+`chronos.keymap` — the tables the Textual screens build their bindings
+from — and `keydown` is matched against it. A key cannot mean one thing
+in the terminal and another here, and the footer cannot advertise a key
+the page does not answer to. It arrives in the page rather than in a
+request of its own, because a request leaves a window in which the page
+is listening and every press matches nothing. (`/keymap.json` serves
+every surface's table, for anything that wants the whole thing.)
 
 ++f1++ opens the full list for the page you are on. **A key the terminal
 has and the browser cannot do is listed and marked** rather than quietly

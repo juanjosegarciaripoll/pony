@@ -48,7 +48,6 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from chronos.keymap import web_key
 from chronos.outcome import Notice, Outcome, Severity, warn
 
 from .. import contact_actions, mailbox_actions
@@ -59,8 +58,8 @@ from . import compose as compose_view
 from . import contacts as contacts_view
 from . import mail as mail_view
 from . import urls
-from .actions import ActionContext, Reply
-from .layout import PageSurface, bindings_for
+from .actions import ActionContext, Reply, calendar_value, holds_form
+from .layout import PageSurface, keymap_rows
 from .syncing import SyncGate
 
 if TYPE_CHECKING:
@@ -579,9 +578,9 @@ async def _compose_post(services: WebServices, request: Request) -> Response:
         outcome = compose_view.save_draft(services, form)
     else:
         outcome = await run_in_threadpool(compose_view.send, services, form)
-    if outcome.blocked:
-        # Nothing was sent or filed, so the form stays up with what the
-        # user typed still in it, exactly as the composer screen does.
+    if holds_form(outcome):
+        # Something is wrong, so the form stays up with what the user
+        # typed still in it, exactly as the composer screen does.
         return HTMLResponse(
             compose_view.compose_page(services, form, notices=outcome.notices),
         )
@@ -682,12 +681,12 @@ async def _contact_save(services: WebServices, request: Request) -> Response:
         )
     context = ActionContext.of(services, await request.body())
     edit = contacts_view.edit_from_fields(dict(context.fields))
-    saved, outcome = contacts_view.store_contact(
+    _saved, outcome = contacts_view.store_contact(
         contacts,
         contact_id=context.integer("id"),
         edit=edit,
     )
-    if saved is None:
+    if holds_form(outcome):
         return HTMLResponse(
             contacts_view.contact_form_page(
                 services,
@@ -757,7 +756,7 @@ async def _event_save(services: WebServices, request: Request) -> Response:
     context = ActionContext.of(services, await request.body())
     form = calendar_view.form_from_fields(dict(context.fields))
     outcome = calendar_view.save(services, form)
-    if outcome.blocked:
+    if holds_form(outcome):
         return HTMLResponse(
             calendar_view.event_form_page(services, form, notices=outcome.notices),
         )
@@ -781,9 +780,7 @@ def _first_calendar(services: WebServices, request: Request) -> str:
         today=datetime.now(UTC).astimezone().date(),
     )
     chosen = view.selection.first_of(refs)
-    if chosen is None:
-        return ""
-    return f"{chosen.account_name}/{chosen.calendar_name}"
+    return "" if chosen is None else calendar_value(chosen)
 
 
 # ----------------------------------------------------------------------
@@ -863,46 +860,25 @@ CLIENT_ACTIONS = frozenset(
 
 
 async def _keymap(services: WebServices, request: Request) -> Response:
-    """The keymaps, by page surface, as the browser needs to match them.
+    """Every surface's keymap, for anything that wants the whole table.
 
-    ``available`` is what keeps the help honest: a key the terminal has
-    and the browser has not is listed and marked, rather than appearing
-    to work.
+    The page it is serving carries its own surface's copy inline, from
+    the same :func:`~pony.web.layout.keymap_rows`, so this is the table
+    rather than the page's working copy.
     """
     del services, request
     return JSONResponse(
-        {surface.value: _surface_keymap(surface) for surface in PageSurface},
+        {surface.value: keymap_rows(surface) for surface in PageSurface},
     )
 
 
-def _surface_keymap(surface: PageSurface) -> list[dict[str, object]]:
-    """One surface's bindings, one row per key the browser can see.
+def is_available(action: str) -> bool:
+    """Whether the browser can really run *action*.
 
-    Two spellings of one key in the table -- a bare capital and its
-    ``shift+`` alias -- are one key to a browser, so the second is
-    dropped rather than listed twice in the help and never matched.
+    Public because :mod:`pony.web.layout` renders the keymap into every
+    page and has to mark what the browser cannot do; the action tables
+    are assembled here.
     """
-    seen: set[str] = set()
-    rows: list[dict[str, object]] = []
-    for binding in bindings_for(surface):
-        key = web_key(binding.key)
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(
-            {
-                "key": key,
-                "action": binding.action,
-                "description": binding.description,
-                "surface": binding.surface,
-                "show": binding.show,
-                "available": _is_available(binding.action),
-            },
-        )
-    return rows
-
-
-def _is_available(action: str) -> bool:
     if action in SERVER_ACTIONS or action in CLIENT_ACTIONS:
         return True
     # `select_span(3)` and friends carry their argument in the name.
@@ -1133,4 +1109,5 @@ __all__ = [
     "TOKEN_COOKIE",
     "WebServices",
     "build_web_app",
+    "is_available",
 ]

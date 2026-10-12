@@ -26,6 +26,7 @@ from ..domain import FolderRef, MessageRef
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from chronos.domain import CalendarRef
     from chronos.outcome import Outcome
 
     from ..domain import IndexedMessage
@@ -131,6 +132,25 @@ type Action = Callable[[ActionContext], Outcome | Reply]
 MARKED_ONLY_ACTIONS = frozenset({"delete_marked", "merge_marked"})
 
 
+def holds_form(outcome: Outcome) -> bool:
+    """Whether a form must stay up with what the user typed still in it.
+
+    One rule for all three forms, because they had three.  Compose and
+    the event form tested :attr:`~chronos.outcome.Outcome.blocked`,
+    which is ``failed or not acted`` -- so a save that legitimately
+    changed nothing read as a failure and the form stayed up with
+    nothing to explain it.  The contact form tested whether a record
+    came back, which is a third thing again.
+
+    What a form needs to know is whether anything is *wrong*.  A
+    refusal is a warning rather than an error, deliberately, because
+    throwing away what somebody typed over a warning loses their work.
+    """
+    return outcome.failed or any(
+        notice.severity != "information" for notice in outcome.notices
+    )
+
+
 def held_for_confirmation(
     context: ActionContext,
     question: str,
@@ -163,12 +183,41 @@ def parse_target(value: str) -> FolderRef | None:
     return FolderRef(account_name=account, folder_name=folder)
 
 
+def calendar_value(ref: CalendarRef) -> str:
+    """``account/name``, as a chooser, a row and a form spell a calendar.
+
+    One spelling, because there were eleven: every ``<option>``, every
+    hidden field and every row that names a calendar went through its
+    own f-string, and five more places took them apart again with a
+    hand-written ``partition`` and a refusal message of their own.
+    """
+    return f"{ref.account_name}/{ref.calendar_name}"
+
+
+def parse_calendar(value: str) -> CalendarRef | None:
+    """The calendar *value* names, or ``None`` when it names none.
+
+    The same rule as :func:`parse_target`: only the first slash
+    separates, because a calendar name may contain one and an account
+    name may not.
+    """
+    from chronos.domain import CalendarRef
+
+    account, _, name = value.partition("/")
+    if not account or not name:
+        return None
+    return CalendarRef(account, name)
+
+
 __all__ = [
     "MARKED_ONLY_ACTIONS",
     "Action",
     "ActionContext",
     "Confirmation",
     "Reply",
+    "calendar_value",
     "held_for_confirmation",
+    "holds_form",
+    "parse_calendar",
     "parse_target",
 ]

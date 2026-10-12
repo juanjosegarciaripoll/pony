@@ -159,6 +159,40 @@ def test_the_reader_names_what_the_invitation_proposes() -> None:
     assert f'value="{ACCOUNT}/{CALENDAR}"' in body
 
 
+def test_an_invitation_is_not_also_offered_as_a_file_to_import() -> None:
+    """One set of bytes, one offer.
+
+    A ``text/calendar`` part counts as an attachment, so the same
+    invitation was offered twice — once to answer and once to import —
+    and importing files the event without answering the organizer,
+    which is the half that matters.
+    """
+    services, index = _services("web-invite-once", calendar=_calendar("web-once-cal"))
+
+    with _client(services) as client:
+        body = client.get(_message_url(index)).text
+
+    # The answers are there, so the invitation really is answerable.
+    assert 'data-answer="accept"' in body
+    # And the duplicate is not.
+    assert 'data-action="import_ics"' not in body
+
+
+def test_a_calendar_predicate_is_the_one_invitation_py_owns() -> None:
+    """Two answers to "can the calendar read this?" is one too many.
+
+    The web half had a four-member set of its own where
+    ``pony.invitation`` has two, so an invitation sent as
+    ``text/x-vcalendar`` got the generic Import button and no answers.
+    The set is derived from that constant now, so widening it there
+    widens it here.
+    """
+    from pony.invitation import CALENDAR_CONTENT_TYPES
+    from pony.web.mail import _CALENDAR_TYPES
+
+    assert CALENDAR_CONTENT_TYPES <= _CALENDAR_TYPES
+
+
 def test_an_invitation_with_no_calendar_configured_says_so() -> None:
     services, index = _services("web-invite-no-calendar")
 

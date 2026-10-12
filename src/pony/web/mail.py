@@ -26,11 +26,18 @@ from chronos.outcome import Notice, Outcome, failure, info, warn
 from .. import mailbox_actions
 from ..domain import FolderRef, MessageFlag
 from ..folder_utils import shows_recipient
+from ..invitation import CALENDAR_CONTENT_TYPES
 from ..mailbox_actions import folder_unread_counts
 from ..message_renderer import fmt_size, parse_styled_body, render_message
 from ..views import build_folder_tree, message_row, summary_of
 from . import urls
-from .actions import Action, ActionContext, parse_target
+from .actions import (
+    Action,
+    ActionContext,
+    calendar_value,
+    parse_calendar,
+    parse_target,
+)
 from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, columns, page, pane
 
@@ -463,7 +470,12 @@ def reader_pane(services: WebServices, message: IndexedMessage) -> Raw:
         body=fragment(
             _headers(rendered),
             _invitation_block(services, invitation),
-            _attachments(services, ref, rendered),
+            _attachments(
+                services,
+                ref,
+                rendered,
+                answerable=invitation is not None and invitation.can_reply,
+            ),
             element("pre", _body(rendered), class_="text"),
         ),
     )
@@ -549,10 +561,16 @@ def _body(rendered: RenderedMessage) -> Raw:
     return fragment(*pieces)
 
 
-# Attachments a calendar can read.  A `.ics` arrives with whichever of
-# these the sender's client felt like using.
-_CALENDAR_TYPES = frozenset(
-    {"text/calendar", "application/ics", "text/x-vcalendar", "application/x-ics"},
+# Attachments a calendar can read.  `pony.invitation` owns the question
+# -- it is the module that decides whether a message carries an
+# invitation at all -- so its answer is taken rather than written out
+# again here.  The two further spellings are ones some clients attach a
+# `.ics` as; a message using them gets the Import button but no
+# Accept/Decline block, because `extract_invitation` does not recognise
+# them.  Widening `CALENDAR_CONTENT_TYPES` is the real fix and belongs
+# in `pony/invitation.py`.
+_CALENDAR_TYPES = CALENDAR_CONTENT_TYPES | frozenset(
+    {"text/x-vcalendar", "application/x-ics"},
 )
 
 
@@ -566,10 +584,23 @@ def _attachments(
     services: WebServices,
     ref: MessageRef,
     rendered: RenderedMessage,
+    *,
+    answerable: bool = False,
 ) -> Raw | None:
+    """The attachment list, with an Import control where one helps.
+
+    *answerable* says the page is already showing this message's
+    invitation with Accept, Decline and Tentative on it.  A
+    ``text/calendar`` part counts as an attachment, so the same bytes
+    were being offered twice -- once as an invitation to answer and
+    once as a file to import -- and importing files the event without
+    answering the organizer, which is the half that matters.  The
+    block's own "File only" does the filing.  An ordinary shared `.ics`
+    with nobody to answer keeps its Import button.
+    """
     if not rendered.attachments:
         return None
-    targets = _calendar_targets(services)
+    targets = () if answerable else _calendar_targets(services)
     return element(
         "ul",
         join(
@@ -623,19 +654,10 @@ def _import_control(
     chooser_id = f"import-calendar-{attachment.index}"
     return element(
         "span",
-        element(
-            "select",
-            join(
-                element(
-                    "option",
-                    f"{ref.account_name}/{ref.calendar_name}",
-                    value=f"{ref.account_name}/{ref.calendar_name}",
-                )
-                for ref in targets
-            ),
-            name="calendar",
-            id=chooser_id,
-            aria_label="Calendar to import into",
+        calendar_chooser(
+            targets,
+            chooser_id=chooser_id,
+            label="Calendar to import into",
         ),
         element(
             "button",
@@ -647,6 +669,30 @@ def _import_control(
             data_calendar_from=chooser_id,
         ),
         class_="import-ics-control",
+    )
+
+
+def calendar_chooser(
+    targets: Sequence[CalendarRef],
+    *,
+    chooser_id: str,
+    label: str,
+) -> Raw:
+    """The ``<select>`` that names which calendar something goes into.
+
+    Built once rather than at each of the two places that offer the
+    choice -- importing a `.ics` attachment and answering an invitation
+    -- so a calendar is spelled one way whichever of them sent it.
+    """
+    return element(
+        "select",
+        join(
+            element("option", calendar_value(ref), value=calendar_value(ref))
+            for ref in targets
+        ),
+        name="calendar",
+        id=chooser_id,
+        aria_label=label,
     )
 
 
@@ -696,19 +742,10 @@ def _invitation_block(
         lines,
         element(
             "div",
-            element(
-                "select",
-                join(
-                    element(
-                        "option",
-                        f"{ref.account_name}/{ref.calendar_name}",
-                        value=f"{ref.account_name}/{ref.calendar_name}",
-                    )
-                    for ref in targets
-                ),
-                name="calendar",
-                id="invitation-calendar",
-                aria_label="Calendar to file this in",
+            calendar_chooser(
+                targets,
+                chooser_id="invitation-calendar",
+                label="Calendar to file this in",
             ),
             join(
                 element(
@@ -861,8 +898,6 @@ _PARTSTATS = {
 
 def _invitation(context: ActionContext) -> Outcome:
     """File the open message's invitation and answer the organizer."""
-    from chronos.domain import CalendarRef
-
     from ..invitation import extract_invitation
     from ..invitation_actions import (
         InvitationChoice,
@@ -886,8 +921,8 @@ def _invitation(context: ActionContext) -> Outcome:
     answer = context.first("answer", "file")
     if answer not in _PARTSTATS:
         return Outcome.refused(failure(f"{answer!r} is not an answer."))
-    account, _, name = context.first("calendar").partition("/")
-    if not account or not name:
+    chosen = parse_calendar(context.first("calendar"))
+    if chosen is None:
         return Outcome.refused(warn("Choose a calendar to file this in."))
     found = replying_account(
         services.config,
@@ -896,7 +931,7 @@ def _invitation(context: ActionContext) -> Outcome:
     return respond_to_invitation(
         invitation,
         InvitationChoice(
-            calendar=CalendarRef(account, name),
+            calendar=chosen,
             partstat=_PARTSTATS[answer],
         ),
         calendar=calendar,
@@ -926,6 +961,7 @@ MAIL_ACTIONS: dict[str, Action] = {
 
 __all__ = [
     "MAIL_ACTIONS",
+    "calendar_chooser",
     "folder_options",
     "folder_pane",
     "list_pane",

@@ -1,10 +1,13 @@
 // Keyboard dispatch for the browser front end.
 //
-// The keymap is not written here. It is fetched from /keymap.json, which
-// serves `pony.keymap` and `chronos.keymap` — the same tables the
-// Textual front end builds its bindings from — so a key cannot mean one
-// thing in the terminal and another here, and the help overlay cannot
-// advertise a key that does not exist.
+// The keymap is not written here. Every page carries its own surface's
+// table, served from `pony.keymap` and `chronos.keymap` — the same
+// tables the Textual front end builds its bindings from — so a key
+// cannot mean one thing in the terminal and another here, and the help
+// overlay cannot advertise a key that does not exist. It arrives in the
+// page rather than in a request of its own, because a request leaves a
+// window in which `keydown` is already listening and every press
+// matches nothing and is dropped.
 //
 // Three kinds of action:
 //   * client   — selection, navigation and overlays, done here
@@ -18,7 +21,6 @@
 "use strict";
 
 const state = {
-  keymaps: {},
   keymap: [],
   surface: "reader",
   marked: new Set(),
@@ -389,9 +391,24 @@ function calendarUrl(changes = {}) {
   if (changes.span || (params.get("view") === "grid" && data.span)) {
     params.set("span", changes.span || data.span);
   }
-  if (changes.window) params.set("window", changes.window);
-  if (data.query) params.set("q", data.query);
+  const window_ = changes.window || (params.get("view") === "agenda" && data.window);
+  if (window_) params.set("window", window_);
+  const query = changes.query === undefined ? data.query : changes.query;
+  if (query) params.set("q", query);
+  // Which calendars are shown. Prev, Next and Today kept the filter
+  // because the server built those links; `n`, `p`, `t`, `a`, `M` and
+  // a search built their own and dropped it, so pressing any of them
+  // silently widened the view back to every calendar.
+  for (const value of selectedCalendars()) params.append("cal", value);
   return `/calendar?${params}`;
+}
+
+function selectedCalendars() {
+  try {
+    return JSON.parse(here().cals || "[]") || [];
+  } catch {
+    return [];
+  }
 }
 
 function shiftedDate(days) {
@@ -403,13 +420,13 @@ function shiftedDate(days) {
 
 function selectedEvent() {
   const row = selectedRow();
-  if (!row || !row.dataset.id) return null;
-  // "account/calendar/uid", and a UID may itself contain slashes.
-  const parts = row.dataset.id.split("/");
-  if (parts.length < 3) return null;
+  if (!row || !row.dataset.uid || !row.dataset.cal) return null;
   // The calendar travels with the UID: the same UID can be mirrored
   // into two calendars, and the server must act on the one on screen.
-  return { cal: `${parts[0]}/${parts[1]}`, uid: parts.slice(2).join("/") };
+  // Both are read off the row rather than split out of its id, because
+  // a calendar name may contain a slash and so may a UID — this used
+  // to cut "account/holidays/2026/uid" in the wrong place.
+  return { cal: row.dataset.cal, uid: row.dataset.uid };
 }
 
 // ── Forms ──────────────────────────────────────────────────────
@@ -482,7 +499,11 @@ const clientActions = {
       return;
     }
     if (state.surface === "calendar") {
-      go(`${calendarUrl()}&${new URLSearchParams({ q: query })}`);
+      // Through `calendarUrl`, which already carries the view, the
+      // span, the window and the calendar filter. Pasting a second
+      // `q=` on the end left two, and the server reads the first --
+      // so a second search kept showing the results of the first.
+      go(calendarUrl({ query }));
       return;
     }
     const params = new URLSearchParams({
@@ -827,8 +848,10 @@ function wireFolderToggle() {
   });
 }
 
-async function start() {
+function start() {
   state.surface = document.body.dataset.surface || "reader";
+  // Before anything is wired, so no press can arrive unmatched.
+  state.keymap = pageKeymap();
   setPanes(panes());
   wireActionButtons();
   wireMarkTaps();
@@ -846,9 +869,17 @@ async function start() {
     if (row) select(row);
   });
   select(selectedRow());
-  const response = await fetch("/keymap.json");
-  state.keymaps = await response.json();
-  state.keymap = state.keymaps[state.surface] || [];
 }
 
-void start();
+// The surface's keymap, as the page carries it.
+function pageKeymap() {
+  const holder = document.getElementById("keymap");
+  if (!holder) return [];
+  try {
+    return JSON.parse(holder.textContent) || [];
+  } catch {
+    return [];
+  }
+}
+
+start();

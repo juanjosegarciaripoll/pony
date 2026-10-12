@@ -1193,6 +1193,62 @@ def test_the_sync_keys_mean_the_calendar_on_the_calendar_page() -> None:
 # ----------------------------------------------------------------------
 
 
+def test_the_footer_and_the_keymap_drop_a_repeated_key_the_same_way() -> None:
+    """One de-duplication, two callers; it was written twice, yesterday.
+
+    A surface can inherit the application keys and declare them again,
+    and a bare capital and its ``shift+`` spelling are one key to a
+    browser — so the footer listed "Q Quit" twice and the help offered a
+    key no press could reach.
+    """
+    from chronos.keymap import KeyBinding, web_key
+    from pony.web.layout import PageSurface, bindings_for, one_per_web_key
+
+    repeated = (
+        KeyBinding("shift+q", "quit", "Quit", "application"),
+        KeyBinding("Q", "quit", "Quit again", "application"),
+        KeyBinding("n", "cursor_down", "Next", "list"),
+    )
+
+    assert [binding.description for binding in one_per_web_key(repeated)] == [
+        "Quit",
+        "Next",
+    ]
+    # And every surface the front end serves is already clean of them.
+    for surface in PageSurface:
+        keys = [
+            web_key(binding.key) for binding in one_per_web_key(bindings_for(surface))
+        ]
+        assert len(keys) == len(set(keys)), surface
+
+
+def test_one_rule_decides_whether_a_form_stays_up() -> None:
+    """Compose, the event form and the contact form had three.
+
+    Two asked ``Outcome.blocked``, which is ``failed or not acted`` and
+    so reads a save that legitimately changed nothing as a failure; the
+    third asked whether a record came back.  What a form needs to know
+    is whether anything is *wrong*, and a refusal is deliberately a
+    warning rather than an error, because throwing away what somebody
+    typed over a warning loses their work.
+    """
+    from chronos.outcome import Notice, Outcome, failure, info, warn
+    from pony.web.actions import holds_form
+
+    # Something is wrong: the typing stays on screen.
+    assert holds_form(Outcome.refused(warn("An event needs a summary.")))
+    assert holds_form(Outcome(changed=0, notices=(failure("nobody answered"),)))
+    assert holds_form(Outcome(changed=1, notices=(failure("half of it failed"),)))
+    # It went through, or there was nothing to do: the form is done with.
+    assert not holds_form(Outcome(changed=1, notices=(info("Saved Ada."),)))
+    assert not holds_form(Outcome(changed=0, notices=(info("Nothing to change."),)))
+    assert not holds_form(Outcome())
+    # Which is where `blocked` and this part company.
+    unchanged = Outcome(changed=0, notices=(Notice("Nothing to change."),))
+    assert unchanged.blocked
+    assert not holds_form(unchanged)
+
+
 def test_a_link_leaves_out_what_has_no_value() -> None:
     from pony.web import urls
 

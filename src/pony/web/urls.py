@@ -9,7 +9,11 @@ are query parameters throughout, which works for every name a server
 can hand us.
 
 Every link in the front end is built here, so a route and the link to it
-cannot drift apart.
+cannot drift apart -- which it had twice over by the time anyone looked:
+a ``SEARCH = "/search"`` naming a route that 404s, and a ``rows_url``
+with no callers at all.  ``tests/test_web_dispatch.py`` now walks every
+constant and every builder in here against the running application, so
+neither a dead name nor a renamed query parameter can sit here quietly.
 """
 
 from __future__ import annotations
@@ -31,7 +35,6 @@ CONTACTS = "/contacts"
 CONTACT_FORM = "/contacts/edit"
 CALENDAR = "/calendar"
 EVENT_FORM = "/calendar/event"
-SEARCH = "/search"
 
 
 def query(**params: str | int | None) -> str:
@@ -48,14 +51,6 @@ def mail_url(folder: FolderRef | None, *, q: str = "") -> str:
     if folder is None:
         return MAIL
     return MAIL + query(
-        account=folder.account_name,
-        folder=folder.folder_name,
-        q=q or None,
-    )
-
-
-def rows_url(folder: FolderRef, *, q: str = "") -> str:
-    return ROWS + query(
         account=folder.account_name,
         folder=folder.folder_name,
         q=q or None,
@@ -149,7 +144,6 @@ __all__ = [
     "MESSAGE",
     "RAW",
     "ROWS",
-    "SEARCH",
     "attachment_url",
     "body_url",
     "calendar_url",
@@ -161,5 +155,4 @@ __all__ = [
     "message_url",
     "query",
     "raw_url",
-    "rows_url",
 ]

@@ -15,6 +15,7 @@ view can be linked to.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
@@ -43,7 +44,7 @@ from chronos.views import (
 )
 
 from . import urls
-from .actions import held_for_confirmation
+from .actions import calendar_value, held_for_confirmation, parse_calendar
 from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, columns, page, pane
 
@@ -75,12 +76,10 @@ class View:
 
     @property
     def selection(self) -> CalendarSelection:
-        from chronos.domain import CalendarRef
-
         refs = {
-            CalendarRef(account, name)
-            for account, _, name in (value.partition("/") for value in self.selected)
-            if account and name
+            parsed
+            for parsed in (parse_calendar(value) for value in self.selected)
+            if parsed is not None
         }
         return CalendarSelection(refs=frozenset(refs))
 
@@ -196,6 +195,14 @@ def calendar_page(
             "view": view.kind.value,
             "date": str(view.viewed),
             "span": str(view.span),
+            "window": view.window.value,
+            # Which calendars are shown, so a key that navigates keeps
+            # the filter. `View.at()` re-encodes it carefully for every
+            # link the server builds and the script dropped it on every
+            # one it built itself, silently resetting the view to "all
+            # calendars". JSON because a calendar name may contain
+            # anything a server likes, a space and a quote included.
+            "cals": json.dumps(sorted(view.selected)),
         },
         notices=notices,
     )
@@ -356,6 +363,29 @@ def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
                 ),
                 element("input", type="hidden", name="view", value=view.kind.value),
                 element("input", type="hidden", name="date", value=str(view.viewed)),
+                # The whole view, not half of it: searching used to
+                # reset the span, the agenda window and the calendar
+                # filter while Prev and Next kept all three.
+                element(
+                    "input",
+                    type="hidden",
+                    name="span",
+                    value=str(view.span),
+                )
+                if view.kind is ViewKind.GRID
+                else None,
+                element(
+                    "input",
+                    type="hidden",
+                    name="window",
+                    value=view.window.value,
+                )
+                if view.kind is ViewKind.AGENDA
+                else None,
+                join(
+                    element("input", type="hidden", name="cal", value=value)
+                    for value in sorted(view.selected)
+                ),
                 method="get",
                 action=urls.CALENDAR,
                 class_="search-form",
@@ -382,7 +412,7 @@ def _calendar_toggle(view: View, ref: CalendarRef) -> Raw:
     it, and clicking the last one off widens back out — the terminal's
     calendar panel, as links.
     """
-    value = f"{ref.account_name}/{ref.calendar_name}"
+    value = calendar_value(ref)
     shown = value in view.selected
     selected = view.selected - {value} if shown else view.selected | {value}
     toggled = View(
@@ -453,6 +483,8 @@ def _agenda_pane(
             ),
             class_=f"row agenda-row {projected.emphasis}",
             data_id=_event_id(row),
+            data_cal=calendar_value(row.component.ref.calendar),
+            data_uid=row.component.ref.uid,
         )
         for row, projected in (
             (row, format_event_row(row, today, now=now)) for row in rows
@@ -555,6 +587,8 @@ def _all_day_banner(
                         href=_event_link(row),
                         class_="event all-day",
                         data_id=_event_id(row),
+                        data_cal=calendar_value(row.component.ref.calendar),
+                        data_uid=row.component.ref.uid,
                     )
                     for row in rows
                 ),
@@ -604,6 +638,8 @@ def _day_column(
                 href=_event_link(row),
                 class_=" ".join(classes),
                 data_id=_event_id(row),
+                data_cal=calendar_value(row.component.ref.calendar),
+                data_uid=row.component.ref.uid,
                 style=f"top:{top:.4f}%;height:{height:.4f}%",
             ),
         )
@@ -714,6 +750,8 @@ def _month_cell(
                 href=_event_link(row),
                 class_="event",
                 data_id=_event_id(row),
+                data_cal=calendar_value(row.component.ref.calendar),
+                data_uid=row.component.ref.uid,
             )
             for row in shown
         ),
@@ -731,8 +769,15 @@ def _cell_time(row: OccurrenceRow, day: date) -> str:
 
 
 def _event_id(row: OccurrenceRow) -> str:
+    """What identifies a row to the page: the calendar and the UID.
+
+    The two travel separately as ``data-cal`` and ``data-uid`` as well,
+    because this one string cannot be taken apart again: a calendar name
+    may contain a slash and so may a UID, so the page used to split it
+    at the second slash and guess.
+    """
     ref = row.component.ref
-    return f"{ref.account_name}/{ref.calendar_name}/{ref.uid}"
+    return f"{calendar_value(ref.calendar)}/{ref.uid}"
 
 
 def _event_link(row: OccurrenceRow) -> str:
@@ -784,7 +829,7 @@ class EventForm:
             # midnight the all-day flag tells everything to ignore.
             first, last = all_day_form_dates(component.dtstart, dtend)
             return EventForm(
-                target=f"{ref.account_name}/{ref.calendar_name}",
+                target=calendar_value(ref.calendar),
                 summary=component.summary or "",
                 starts=f"{first}T00:00" if first else "",
                 ends=f"{last}T00:00" if last else "",
@@ -796,7 +841,7 @@ class EventForm:
                 uid=ref.uid,
             )
         return EventForm(
-            target=f"{ref.account_name}/{ref.calendar_name}",
+            target=calendar_value(ref.calendar),
             summary=component.summary or "",
             starts=_local_field(component.dtstart),
             # A VTodo has a due date rather than an end; the form only
@@ -894,10 +939,9 @@ def _event_fields(form: EventForm, targets: Sequence[CalendarRef]) -> Raw:
                 join(
                     element(
                         "option",
-                        f"{ref.account_name}/{ref.calendar_name}",
-                        value=f"{ref.account_name}/{ref.calendar_name}",
-                        selected=f"{ref.account_name}/{ref.calendar_name}"
-                        == form.target,
+                        calendar_value(ref),
+                        value=calendar_value(ref),
+                        selected=calendar_value(ref) == form.target,
                     )
                     for ref in targets
                 ),
@@ -1006,7 +1050,6 @@ def calendars_of(runtime: CalendarRuntime) -> Calendars:
 
 def save(services: WebServices, form: EventForm) -> Outcome:
     """Store *form* as a new event or an edit of an existing one."""
-    from chronos.domain import CalendarRef
     from chronos.event_actions import (
         EditDraft,
         all_day_form_bounds,
@@ -1018,8 +1061,8 @@ def save(services: WebServices, form: EventForm) -> Outcome:
     runtime = services.calendar
     if runtime is None:
         return Outcome.refused(warn("No calendar configured."))
-    account, _, name = form.target.partition("/")
-    if not account or not name:
+    target = parse_calendar(form.target)
+    if target is None:
         return Outcome.refused(warn("Choose a calendar."))
     if not form.summary.strip():
         return Outcome.refused(warn("An event needs a summary."))
@@ -1046,7 +1089,7 @@ def save(services: WebServices, form: EventForm) -> Outcome:
         _existing(services, uid=form.uid, target=form.target) if form.uid else None
     )
     draft = EditDraft(
-        target=CalendarRef(account, name),
+        target=target,
         summary=form.summary.strip(),
         dtstart=starts,
         dtend=ends,
@@ -1080,15 +1123,12 @@ def _existing(
     UID is unique within a calendar and not beyond it, so without it
     the lookup would pick an arbitrary copy.
     """
-    from chronos.domain import CalendarRef
     from chronos.event_actions import find_component
 
     runtime = services.calendar
     if runtime is None:
         return None
-    account, _, name = target.partition("/")
-    within = CalendarRef(account, name) if account and name else None
-    return find_component(runtime.index, uid, within=within)
+    return find_component(runtime.index, uid, within=parse_calendar(target))
 
 
 # ----------------------------------------------------------------------
@@ -1130,25 +1170,20 @@ def _import_ics(context: ActionContext) -> Outcome:
     The terminal reads a path; a browser has no path to offer, and
     uploading a file to be parsed is the same thing with an extra step.
     """
-    from chronos.domain import CalendarRef
     from chronos.event_actions import import_ics_bytes
 
     runtime = context.services.calendar
     if runtime is None:
         return Outcome.refused(warn("No calendar configured."))
-    account, _, name = context.first("target").partition("/")
-    if not account or not name:
+    into = parse_calendar(context.first("target"))
+    if into is None:
         return Outcome.refused(warn("Choose a calendar to import into."))
     payload = _ics_payload(context)
     if payload is None:
         return Outcome.refused(
             warn("Paste the iCalendar text, or open a message that carries one."),
         )
-    return import_ics_bytes(
-        calendars_of(runtime),
-        CalendarRef(account, name),
-        payload,
-    )
+    return import_ics_bytes(calendars_of(runtime), into, payload)
 
 
 def _ics_payload(context: ActionContext) -> bytes | None:

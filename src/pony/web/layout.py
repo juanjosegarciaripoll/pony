@@ -13,10 +13,11 @@ answer to.
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from chronos.keymap import CALENDAR_KEYMAP, CalendarSurface
+from chronos.keymap import CALENDAR_KEYMAP, CalendarSurface, web_key
 from chronos.keymap import for_surface as for_calendar_surface
 
 from ..keymap import MAIL_KEYMAP, Surface, for_surface
@@ -71,6 +72,28 @@ def bindings_for(surface: PageSurface) -> tuple[KeyBinding, ...]:
             )
         case PageSurface.EVENT:
             return for_calendar_surface(CALENDAR_KEYMAP, CalendarSurface.EDIT)
+
+
+def one_per_web_key(bindings: Iterable[KeyBinding]) -> list[KeyBinding]:
+    """*bindings* with every repeated key dropped, the first one kept.
+
+    A surface can inherit the application keys and declare them again
+    (the calendar's view surface does), and a bare capital and its
+    ``shift+`` spelling are one key to a browser.  Either way the second
+    can never be matched -- ``Array.find`` takes the first -- so listing
+    it would promise a key that does nothing.  The footer and
+    ``/keymap.json`` both need this, which is why it is not written
+    twice.
+    """
+    seen: set[str] = set()
+    kept: list[KeyBinding] = []
+    for binding in bindings:
+        key = web_key(binding.key)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(binding)
+    return kept
 
 
 def page(
@@ -133,8 +156,57 @@ def page(
                     join(element("option", value=name) for name in folders),
                     id="folder-names",
                 ),
+                _keymap_data(surface),
             ),
         ),
+    )
+
+
+def keymap_rows(surface: PageSurface) -> list[dict[str, object]]:
+    """*surface*'s bindings, one row per key the browser can see.
+
+    ``available`` is what keeps the help honest: a key the terminal has
+    and the browser has not is listed and marked, rather than appearing
+    to work.  One function behind both the copy in the page and the one
+    ``/keymap.json`` serves, so the two cannot drift.
+    """
+    # Deferred, because `app` is what assembles the action tables and it
+    # imports this module to build its pages.
+    from .app import is_available
+
+    return [
+        {
+            "key": web_key(binding.key),
+            "action": binding.action,
+            "description": binding.description,
+            "surface": binding.surface,
+            "show": binding.show,
+            "available": is_available(binding.action),
+        }
+        for binding in one_per_web_key(bindings_for(surface))
+    ]
+
+
+def _keymap_data(surface: PageSurface) -> Raw:
+    """The surface's keymap, in the page, for the script to read.
+
+    It used to arrive in a request of its own, fired last in ``start()``
+    while ``keydown`` was already listening, so every key pressed before
+    it landed matched nothing and was dropped without a word.  The
+    footer was already rendered from this same table server-side; the
+    script reads it from here now, and there is no window to lose a
+    press in.
+
+    ``<`` is escaped so no value could close this element early.  None
+    of them can today -- they are the keymap's own prose -- and the
+    escape costs nothing.
+    """
+    payload = json.dumps(keymap_rows(surface)).replace("<", "\\u003c")
+    return element(
+        "script",
+        Raw(payload),
+        type="application/json",
+        id="keymap",
     )
 
 
@@ -201,23 +273,12 @@ def _tabs(current: Tab) -> Raw:
 
 
 def _footer(bindings: tuple[KeyBinding, ...]) -> Raw:
-    """The keys worth advertising, in the table's own order."""
-    from chronos.keymap import web_key
+    """The keys worth advertising, in the table's own order.
 
-    # One row per key the browser can see.  A surface can inherit the
-    # application keys and declare them again (the calendar's view
-    # surface does), and a bare capital and its ``shift+`` spelling are
-    # one key here -- either way the footer listed "Q Quit" twice.
-    shown: list[KeyBinding] = []
-    seen: set[str] = set()
-    for binding in bindings:
-        if not binding.show:
-            continue
-        key = web_key(binding.key)
-        if key in seen:
-            continue
-        seen.add(key)
-        shown.append(binding)
+    The footer listed "Q Quit" twice until the de-duplication went in;
+    it is :func:`one_per_web_key` now, over the keys worth showing.
+    """
+    shown = one_per_web_key(binding for binding in bindings if binding.show)
     return element(
         "footer",
         join(
@@ -238,7 +299,9 @@ __all__ = [
     "Tab",
     "bindings_for",
     "columns",
+    "keymap_rows",
     "notice_list",
+    "one_per_web_key",
     "page",
     "pane",
 ]

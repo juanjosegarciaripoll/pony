@@ -21,6 +21,7 @@ from tui_helpers import (
     make_test_config,
     make_tmp_paths,
 )
+from web_helpers import form_fields, page_data
 
 from chronos.domain import CalendarRef
 from chronos.mutations import is_all_day_span
@@ -647,6 +648,41 @@ def test_several_calendars_can_be_shown_at_once() -> None:
     assert f"cal={ACCOUNT}%2Fhome" in narrowed.replace("&amp;", "&")
     assert "Planning review" in both
     assert both.count('class="folder current"') == 2
+
+
+def test_the_page_carries_the_whole_view_so_a_key_can_keep_it() -> None:
+    """Prev and Next kept the filter; `n`, `p`, `t`, `a` and `M` lost it.
+
+    Those build their own URL in ``static/pony.js`` from the page's own
+    ``data-*``, and the selection was not there to carry — so every one
+    of them silently widened the view back to every calendar.  The
+    search form had the same hole, plus the span and the window.
+    """
+    import json
+
+    start = _tomorrow_at(10)
+    services, runtime = _services(
+        "cal-carry-filter",
+        events=(("carry@example.com", _ics("carry@example.com", start)),),
+    )
+    (runtime.mirror.root / ACCOUNT / "home").mkdir(parents=True, exist_ok=True)
+    chosen = f"{ACCOUNT}/{CALENDAR}"
+
+    with _client(services) as client:
+        page = client.get(
+            f"/calendar?window=day&date={start.date()}&cal={chosen}",
+        ).text
+
+    data = page_data(page)
+    # What `calendarUrl()` reads, so every key it builds a link for
+    # carries the filter and the agenda window.
+    assert json.loads(data["cals"]) == [chosen]
+    assert data["window"] == "day"
+    # And the search form submits the same view rather than half of it.
+    fields = form_fields(page, ".search-form")
+    assert fields["cal"] == chosen
+    assert fields["window"] == "day"
+    assert fields["date"] == str(start.date())
 
 
 def test_each_agenda_window_asks_the_index_for_its_own_range() -> None:
