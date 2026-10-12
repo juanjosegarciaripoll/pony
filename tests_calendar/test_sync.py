@@ -465,6 +465,26 @@ class MassPushGuardTest(SyncTestCase):
         self.assertTrue(any("would be" in e for e in result.errors), result.errors)
         self.assertNotIn("put", [call[0] for call in self.session.calls])
 
+    def test_half_a_calendar_is_the_line_and_not_over_it(self) -> None:
+        # Past the minimum, so the ratio really is consulted -- and not
+        # over it.  Every event created locally is an href IS NULL row
+        # until it is pushed, so a morning's planning reaches a large
+        # share of a small calendar; and a halt here is terminal,
+        # because nothing offers the confirmation the guard asks for.
+        self._on_the_server(10)
+        self._run()
+        for n in range(5):
+            self._local_only(f"planned-{n}@example.com")
+
+        result = self._run()
+
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertFalse(result.errors)
+        self.assertEqual(
+            [call[0] for call in self.session.calls].count("put"),
+            5,
+        )
+
     def test_a_handful_of_new_events_still_goes_out(self) -> None:
         self._on_the_server(10)
         self._run()
@@ -480,9 +500,14 @@ class MassPushGuardTest(SyncTestCase):
         )
 
     def test_the_ratio_catches_a_small_calendar(self) -> None:
+        # Most of the calendar, on a calendar too small for the
+        # absolute ceiling to apply.  Not five of ten: that is a
+        # morning's planning, and halting it would strand the events
+        # for good, since nothing offers the confirmation the guard
+        # asks for.
         self._on_the_server(10)
         self._run()
-        for n in range(5):
+        for n in range(8):
             self._local_only(f"mine-{n}@example.com")
         self.session.calls.clear()
 

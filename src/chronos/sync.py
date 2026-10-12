@@ -55,7 +55,14 @@ _MASS_DELETION_MIN_BASELINE = 5
 # many events.  The absolute ceiling catches the big case, the ratio the
 # small calendar.  (C-7 through C-11 are taken in
 # `ai/calendar/SYNCHRONIZATION.md` §10; this is the next free number.)
-_MASS_PUSH_RATIO = 0.2
+#
+# The ratio is half the calendar, not a fifth, for the same reason the
+# mail half's is: every event created locally is an `href IS NULL` row
+# until it is pushed, so a fifth of a small calendar is reached by a
+# morning's planning -- and a halt here is *terminal*, because nothing
+# offers the confirmation this guard asks for (see §13).  Half a
+# calendar arriving as new resources is the shape of a lost index.
+_MASS_PUSH_RATIO = 0.5
 _MASS_PUSH_MIN = 5
 _MASS_PUSH_ABSOLUTE = 50
 
