@@ -917,3 +917,36 @@ def test_importing_an_attachment_that_is_not_there_says_so() -> None:
 
     assert response.json()["changed"] == 0
     assert "Paste the iCalendar text" in response.json()["notices"][0]["text"]
+
+
+def test_the_heading_is_the_calendars_own_words_for_the_view() -> None:
+    """The browser said these four titles a second time, differently.
+
+    `Month · April 2026` against `April 2026`, `Agenda · Week ·
+    2026-04-20 – 2026-04-26` against `Agenda · week from 20 Apr 2026`:
+    the same views, named twice, so changing one left the other. The
+    wording lives in `chronos.views` now and this asserts the page
+    carries it -- not that the helper calls it, which proves nothing
+    about what a reader sees.
+    """
+    from chronos.views import (
+        AgendaWindow,
+        agenda_title,
+        day_title,
+        grid_title,
+        month_title,
+    )
+
+    viewed = date(2026, 4, 20)
+    services, _runtime = _services("cal-heading")
+    expected = {
+        f"view=day&date={viewed}": day_title(viewed),
+        f"view=grid&span=7&date={viewed}": grid_title(viewed, 7),
+        f"view=month&date={viewed}": month_title(viewed),
+        f"window=week&date={viewed}": agenda_title(viewed, AgendaWindow.WEEK),
+    }
+
+    with _client(services) as client:
+        for query, title in expected.items():
+            body = client.get(f"/calendar?{query}").text
+            assert title in body, (query, title)

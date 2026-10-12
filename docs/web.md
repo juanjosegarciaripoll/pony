@@ -133,7 +133,7 @@ is marked — the same rule the TUI follows.
 
 ++shift+m++ and ++shift+y++ (move and copy) and ++shift+g++ (go to
 folder) open a prompt that completes against every `account/folder`
-pair the configuration knows about. ++shift+n++ creates a folder in the
+pair the configuration knows about. ++shift+f++ creates a folder in the
 local mirror; the next sync creates it on the server.
 
 ---
@@ -265,7 +265,7 @@ knowing is where the browser differs:
 | ++g++ / ++ctrl+g++ | Both fetch mail; a request is already out of the way of the page, so there is nothing for a second, quieter sync key to mean. On the Calendar tab, ++g++ syncs the calendar |
 | ++w++ / ++ctrl+p++ | Open the message's HTML in a new tab — the second one for printing |
 | ++s++ | Download the `.eml`; ++shift+o++ and ++shift+s++ download the first attachment |
-| ++slash++ ++shift+g++ ++shift+m++ ++shift+y++ ++shift+n++ | Search, go to a folder, move, copy, new folder: a one-line prompt, completing against every folder, where the terminal opens a dialog |
+| ++slash++ ++shift+g++ ++shift+m++ ++shift+y++ ++shift+f++ | Search, go to a folder, move, copy, new folder: a one-line prompt, completing against every folder, where the terminal opens a dialog |
 | ++ctrl+left++ ++ctrl+right++ ++ctrl+up++ ++ctrl+down++ | Resize the panes; the sizes are remembered per browser, because it is that window they describe |
 | ++enter++ | Open whatever the cursor is on |
 | ++alt+e++ | Not available: editing the body in `$EDITOR` needs a terminal |

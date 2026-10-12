@@ -207,7 +207,7 @@ read, flagged and answered state.
 | ++shift+a++ | Archive to the account's `archive_folder` (local move; pushed to server on next sync) |
 | ++shift+y++ | Copy the current message to another folder |
 | ++shift+m++ | Move the current message to another folder |
-| ++shift+n++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
+| ++shift+f++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
 
 Opening a message marks it read; there is no separate key for that.
 

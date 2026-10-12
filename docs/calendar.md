@@ -402,7 +402,7 @@ The right-hand end of the agenda's title row shows the state of the
 background sync:
 
 ```
- Grid · 2026-10-05 – 2026-10-08              Mail: 2 unread   ◷ 59:30
+ 05 Oct – 08 Oct 2026                       Mail: 2 unread   ◷ 59:30
 ```
 
 `◷ 59:30` is the time left until the next scheduled sync, rounded down to

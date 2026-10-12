@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from chronos.outcome import Outcome, warn
@@ -25,22 +25,26 @@ from chronos.views import (
     AgendaWindow,
     CalendarSelection,
     ViewKind,
-    agenda_window,
+    agenda_mode_window,
+    agenda_title,
     all_calendar_refs,
     compute_hour_range,
     day_column_label,
     day_columns,
+    day_title,
     day_window,
     format_event_row,
     full_day_rows,
     gather_occurrences,
     grid_dates,
+    grid_title,
+    grid_window,
     is_full_day,
     month_buckets,
-    month_window,
+    month_grid_window,
+    month_title,
     step_viewed,
     timed_day_minutes,
-    week_window,
 )
 
 from . import urls
@@ -244,25 +248,19 @@ def _search_window(now: datetime) -> tuple[datetime, datetime]:
     return now - OCCURRENCE_WINDOW_PAST, now + OCCURRENCE_WINDOW_FUTURE
 
 
+# Which range a view covers, and what it is called, are the calendar's
+# questions and not the browser's.  Both were written out a second time
+# here -- the windows line for line, the titles in different words --
+# until `chronos.views` took them; this half asks now.
 def _window(view: View) -> tuple[datetime, datetime]:
     match view.kind:
         case ViewKind.DAY:
             return day_window(view.viewed)
         case ViewKind.GRID:
-            start, _end = day_window(view.viewed)
-            return start, start + timedelta(days=view.span)
+            return grid_window(view.viewed, view.span)
         case ViewKind.MONTH:
-            first, weeks = grid_dates(view.viewed)
-            start = datetime.combine(first, time.min).astimezone()
-            return start, start + timedelta(days=7 * weeks)
-    match view.window:
-        case AgendaWindow.DAY:
-            return day_window(view.viewed)
-        case AgendaWindow.WEEK:
-            return week_window(view.viewed)
-        case AgendaWindow.MONTH:
-            return month_window(view.viewed)
-    return agenda_window(view.viewed)
+            return month_grid_window(view.viewed)
+    return agenda_mode_window(view.viewed, view.window)
 
 
 def _title(view: View) -> str:
@@ -270,13 +268,12 @@ def _title(view: View) -> str:
         return f"Search: {view.query}"
     match view.kind:
         case ViewKind.DAY:
-            return f"{view.viewed:%a %d %B %Y}"
+            return day_title(view.viewed)
         case ViewKind.GRID:
-            last = view.viewed + timedelta(days=view.span - 1)
-            return f"{view.viewed:%d %b} – {last:%d %b %Y}"
+            return grid_title(view.viewed, view.span)
         case ViewKind.MONTH:
-            return f"{view.viewed:%B %Y}"
-    return f"Agenda · {view.window.value} from {view.viewed:%d %b %Y}"
+            return month_title(view.viewed)
+    return agenda_title(view.viewed, view.window)
 
 
 def _nav(view: View, calendars: Sequence[CalendarRef]) -> Raw:
