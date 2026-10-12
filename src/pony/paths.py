@@ -210,6 +210,30 @@ def claim_profile(data_dir: Path, profile: str) -> None:
         )
 
 
+#: What `pony.spec` bundles beside the executable, and what the repo
+#: keeps at its root: the annotated configuration the docs point at.
+SAMPLE_CONFIG = "config-sample.toml"
+
+
+def sample_config_path() -> Path | None:
+    """Where the annotated sample configuration is, if it is here.
+
+    Two places, because there are two kinds of install: a PyInstaller
+    bundle carries it beside the executable (`pony.spec` adds it), and a
+    source checkout keeps it at the repository root.  An ordinary wheel
+    has neither, which is why this answers ``None`` rather than a path
+    that does not exist -- `pony config edit` used to look only at
+    ``<package>/../../config-sample.toml`` and silently take its
+    fallback branch everywhere else.
+    """
+    meipass: str | None = getattr(_sys, "_MEIPASS", None)
+    candidates: list[Path] = []
+    if getattr(_sys, "frozen", False) and meipass is not None:
+        candidates.append(Path(meipass) / SAMPLE_CONFIG)
+    candidates.append(Path(__file__).resolve().parents[2] / SAMPLE_CONFIG)
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def bundled_docs_path() -> Path | None:
     """Return path to bundled HTML docs when running as a PyInstaller binary.
 

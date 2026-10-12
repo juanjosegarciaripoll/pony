@@ -1,4 +1,4 @@
-"""Tests for pony.paths — PONY_ROOT, AppPaths and bundled_docs_path."""
+"""Tests for pony.paths — PONY_ROOT, AppPaths and the bundled files."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 from pony.paths import (
+    SAMPLE_CONFIG,
     AppPaths,
     bundled_docs_path,
     contain,
     graft,
     resolve,
+    sample_config_path,
     sandbox_root,
 )
 
@@ -53,6 +55,46 @@ class BundledDocsPathTest(unittest.TestCase):
         ):
             result = bundled_docs_path()
         self.assertIsNone(result)
+
+
+class SampleConfigPathTest(unittest.TestCase):
+    """Where the annotated sample is, in each kind of install.
+
+    ``pony config edit`` copies it into place for a first run, and it
+    used to look in one place only -- ``<package>/../../`` -- which is
+    the repository root and nothing else. In a bundle it sits beside the
+    executable (`pony.spec` puts it there); in an ordinary wheel it is
+    not shipped at all, and the answer has to be ``None`` rather than a
+    path that does not exist.
+    """
+
+    def test_a_checkout_finds_it_at_the_repository_root(self) -> None:
+        found = sample_config_path()
+
+        assert found is not None
+        self.assertEqual(found.name, SAMPLE_CONFIG)
+        self.assertTrue(found.is_file())
+
+    def test_a_bundle_finds_it_beside_the_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundled = Path(tmpdir) / SAMPLE_CONFIG
+            bundled.write_text("config_version = 3\n", encoding="utf-8")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "_MEIPASS", tmpdir, create=True),
+            ):
+                found = sample_config_path()
+
+        self.assertEqual(found, bundled)
+
+    def test_a_wheel_with_neither_says_so(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "_MEIPASS", tmpdir, create=True),
+            patch("pony.paths.Path.is_file", return_value=False),
+        ):
+            self.assertIsNone(sample_config_path())
 
 
 class AppPathsTest(unittest.TestCase):

@@ -762,12 +762,13 @@ class MainScreen(Screen[None]):
         )
 
     def action_background_sync(self) -> None:
-        """Run a non-blocking, auto-confirm-everything sync (``ctrl+g``).
+        """Run a non-blocking sync of what is safe (``ctrl+g``).
 
-        Unlike ``action_sync`` it shows no modal and assumes "yes" to every
-        confirmation, including the mass-deletion guard — ``sync()`` confirms
-        all folders internally.  A spinner on the FolderPanel border title is
-        the only visual clue.
+        Unlike ``action_sync`` it shows no modal, so there is nobody to
+        ask: ``sync()`` confirms every folder that tripped no safety
+        halt and *skips* the ones that did, reporting them as skipped.
+        A spinner on the FolderPanel border title is the only visual
+        clue.
 
         The manual trigger also starts the periodic cadence and counts the
         next run from here, which is how ``ctrl+g`` has always behaved even

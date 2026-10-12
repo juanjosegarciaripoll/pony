@@ -697,7 +697,9 @@ class UidValidityResetTestCase(unittest.TestCase):
         service.execute(
             plan,
             confirmed_folders=frozenset(
-                f.folder_name for a in plan.accounts for f in a.folders
+                (a.account_name, f.folder_name)
+                for a in plan.accounts
+                for f in a.folders
             ),
         )
 
@@ -1523,7 +1525,10 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
         folder_plan = plan.accounts[0].folders[0]
         self.assertEqual(folder_plan.pending_delete_count, 5)
         self.assertEqual(folder_plan.pending_delete_total, 10)
-        self.assertEqual(plan.folders_needing_confirmation(), frozenset({"INBOX"}))
+        self.assertEqual(
+            plan.folders_needing_confirmation(),
+            frozenset({("personal", "INBOX")}),
+        )
 
     def test_format_plan_detail_shows_confirm_stats(self) -> None:
         """format_plan_detail emits an explicit [CONFIRM: N of M (Z%)] suffix."""
@@ -1544,6 +1549,46 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
         plan = service.plan()
         text = format_plan_detail(plan)
         self.assertIn("[CONFIRM: would delete 5 of 10 (50%)]", text)
+
+    def test_a_confirmation_for_one_account_is_not_one_for_another(self) -> None:
+        """`INBOX` is not a key: every account has one.
+
+        The halted set was folder names alone, and it was handed back to
+        `execute` as the halts the user had waived -- so answering for
+        one account's INBOX applied the other's mass deletion too, in
+        the CLI, the dialog and the browser alike.
+        """
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<cross{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<cross{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, _, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+        for uid in range(1, 6):
+            del session.folders["INBOX"][uid]
+
+        plan = service.plan()
+        self.assertEqual(
+            plan.folders_needing_confirmation(),
+            frozenset({("personal", "INBOX")}),
+        )
+        # Somebody else's INBOX, answered: this one is still held.
+        result = service.execute(
+            plan,
+            confirmed_folders=frozenset({("work", "INBOX")}),
+        )
+
+        self.assertIn("INBOX", result.accounts[0].skipped_folders)
+        # This one's own, answered: the same plan goes through.
+        applied = service.execute(
+            plan,
+            confirmed_folders=frozenset({("personal", "INBOX")}),
+        )
+        self.assertNotIn("INBOX", applied.accounts[0].skipped_folders)
 
     def test_confirmed_folder_executes_deletes(self) -> None:
         """Passing the flagged folder via confirmed_folders applies deletes."""
@@ -3098,7 +3143,7 @@ class ExecuteFailureTestCase(unittest.TestCase):
         plan = service.plan()
         service.execute(
             plan,
-            confirmed_folders=frozenset({"INBOX"}),
+            confirmed_folders=frozenset({("personal", "INBOX")}),
             progress=lambda info: progress.append(info.message),
         )
 
@@ -3128,7 +3173,7 @@ class ExecuteFailureTestCase(unittest.TestCase):
         plan = service.plan()
         result = service.execute(
             plan,
-            confirmed_folders=frozenset({"INBOX"}),
+            confirmed_folders=frozenset({("personal", "INBOX")}),
             progress=lambda info: progress.append(info.message),
         )
 
@@ -3660,12 +3705,26 @@ class MassPushGuardTestCase(unittest.TestCase):
         (folder_plan,) = plan.accounts[0].folders
         self.assertTrue(folder_plan.needs_confirmation)
         self.assertEqual(folder_plan.pending_push_count, 6)
-        self.assertEqual(plan.folders_needing_confirmation(), frozenset({"INBOX"}))
+        self.assertEqual(
+            plan.folders_needing_confirmation(),
+            frozenset({("personal", "INBOX")}),
+        )
 
         # Unattended callers must not waive the halt for themselves.
-        service.sync()
+        result = service.sync()
         self.assertNotIn("append:INBOX", session.call_log)
         self.assertEqual(len(session.folders["INBOX"]), 6)
+        # And they must say that they left it: an unattended run that
+        # skipped the whole folder reported "Sync complete." and
+        # nothing else, so the folder stayed unsynced in silence.
+        (account_result,) = result.accounts
+        self.assertEqual(account_result.held_folders, ("INBOX",))
+        self.assertIn("INBOX", account_result.skipped_folders)
+        from pony.sync import describe_sync_result
+
+        said = describe_sync_result(result)
+        self.assertIn("Held for confirmation: personal/INBOX.", said)
+        self.assertIn("Run `pony sync`", said)
 
     def test_the_halt_is_described_in_the_plan_summary(self) -> None:
         service, index, _, _ = self._folder_of(6)
@@ -3738,7 +3797,7 @@ class MassPushGuardTestCase(unittest.TestCase):
         session.call_log.clear()
 
         plan = service.plan()
-        service.execute(plan, confirmed_folders=frozenset({"INBOX"}))
+        service.execute(plan, confirmed_folders=frozenset({("personal", "INBOX")}))
 
         self.assertNotIn("append:INBOX", session.call_log)
         self.assertEqual(len(session.folders["INBOX"]), 6)

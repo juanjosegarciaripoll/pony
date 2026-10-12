@@ -45,13 +45,14 @@ src/pony/
   credentials.py       # plaintext / env / command / encrypted backends
   storage.py           # Maildir and mbox mirror repositories
   index_store.py       # SQLite metadata index repository
-  storage_indexing.py  # mirror-to-index projection (rescan_local_account)
+  storage_indexing.py  # mirror-to-index projection: rescan, reindex, ingest
   message_projection.py# RFC 5322 parsing and metadata projection
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
   mailbox_ops.py       # index-row rewrites for local moves, copies and flags
   mailbox_actions.py   # archive / move / copy / trash / flags, over the stores
   delivery.py          # filing a message that has been written or sent
   contact_actions.py   # harvest, list, the form's fields, delete, merge
+  contact_merge.py     # what one record holds when two are combined
   invitation_actions.py# file an invitation, answer its organizer
   keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
@@ -589,6 +590,7 @@ src/chronos/
   keymap.py            # the keyboard vocabulary, and the calendar's keys
   views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
+  bootstrap.py         # the [calendar] template a first run writes
   cli.py mcp_server.py
   tui/
     app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS

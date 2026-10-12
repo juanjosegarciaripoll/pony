@@ -1093,7 +1093,7 @@ def test_answering_the_halt_applies_it_to_the_halted_folders() -> None:
 
     assert response.json()["changed"] == 3
     _plan_arg, kwargs = service.execute.call_args
-    assert kwargs["confirmed_folders"] == frozenset({"INBOX"})
+    assert kwargs["confirmed_folders"] == frozenset({("acct", "INBOX")})
 
 
 def test_the_sync_applied_is_the_sync_that_was_described() -> None:

@@ -383,13 +383,28 @@ def _move_in_place(
     target: FolderRef,
     log: NoticeLog,
 ) -> bool:
-    """Rename the mirror file, keep the row, mark it ``PENDING_MOVE``."""
+    """Rename the mirror file, keep the row, mark it ``PENDING_MOVE``.
+
+    A ``KeyError`` from the mirror means the file is no longer where the
+    index says it is, and in practice that means something else got
+    there first: a second browser tab, another window, a sync between
+    the two clicks.  Nothing is lost and nothing is Pony's fault, so it
+    is reported as what happened rather than as an internal failure --
+    "Failed to move message in local mirror" is true of a full disk too,
+    and the two need different answers from the reader.
+    """
     try:
         new_key = mirror.move_message_to_folder(
             folder=source,
             storage_key=msg.storage_key,
             target_folder=target.folder_name,
         )
+    except KeyError:
+        log.warn(
+            f"{msg.subject or '(no subject)'!r} has already moved"
+            " — nothing done. Sync, or reopen the folder, to see where.",
+        )
+        return False
     except Exception:  # noqa: BLE001
         log.failure("Failed to move message in local mirror.")
         return False

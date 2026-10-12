@@ -13,6 +13,7 @@ from textual.widgets import Button, Footer, Label, ProgressBar, Static
 from ...sync import (
     ProgressInfo,
     SyncPlan,
+    describe_halt,
     format_plan_detail,
     format_plan_summary,
 )
@@ -152,16 +153,25 @@ class SyncConfirmScreen(DialogScreen):
             self.query_one("#proceed", Button).focus()
 
     def _confirm_warning_text(self) -> str:
+        """Why the plan is held, in the words both front ends use.
+
+        `describe_halt` is the one description of a halt: it names the
+        account and folder, and says whether the folder would delete or
+        *upload*. This screen used to write its own, which said
+        deletions and percentages whatever the halt was -- so a folder
+        held for a mass upload, which is every folder of a freshly
+        reindexed mirror, was described to the terminal user as a
+        deletion of mail.
+        """
         if self._plan is None:
             return ""
-        flagged = self._plan.folders_needing_confirmation()
-        if not flagged:
+        reason = describe_halt(self._plan)
+        if not reason:
             return ""
         return (
-            "WARNING: one or more folders show large server-side deletions"
-            " (>20% of known messages). Review the lines marked"
-            " [CONFIRM: ...] above. Pressing Y will apply ALL deletions,"
-            " including those folders."
+            f"WARNING: {reason} Review the lines marked [CONFIRM: ...]"
+            " above. Pressing Y applies the plan, those folders"
+            " included."
         )
 
     def _proceed_label(self) -> str:

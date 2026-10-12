@@ -443,11 +443,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 WHERE message_id != ''
                 """
             )
-            # Covering index for unread_counts_by_folder: the query filters
-            # on (account_name, local_status) and groups by folder_name, with
-            # a LIKE filter on local_flags.  A covering index lets SQLite
-            # serve the query from the index B-tree alone (no heap reads),
-            # cutting the scan time on large accounts (100k+ rows) by ~30×.
+            # Covering index for the push planner's "what has no handle
+            # yet" question, which the sync asks once per folder and
+            # which `uid IS NULL` answers: partial, so it holds only
+            # the rows that are actually waiting, and carrying the
+            # columns the plan prints so the lookup needs no heap reads.
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS ix_messages_pending
@@ -457,6 +457,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     WHERE uid IS NULL
                 """
             )
+            # Covering index for unread_counts_by_folder: the query filters
+            # on (account_name, local_status) and groups by folder_name, with
+            # a LIKE filter on local_flags.  A covering index lets SQLite
+            # serve the query from the index B-tree alone (no heap reads),
+            # cutting the scan time on large accounts (100k+ rows) by ~30×.
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS ix_messages_unseen

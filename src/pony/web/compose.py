@@ -25,6 +25,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlencode
 
 from chronos.outcome import Outcome, warn
 
@@ -462,20 +463,43 @@ def _hidden(name: str, value: str) -> Raw | None:
 
 
 def _ref_value(ref: MessageRef | None) -> str:
+    """A message reference as one form field, spelled as the links are.
+
+    `urls` encodes a reference as three query parameters, and this is
+    the same three in the same encoding, so the front end has one way of
+    naming a message rather than two.  The fields were separated by
+    U+001F before, which works -- a browser submits it as ``%1F`` -- but
+    a raw control character in an attribute value is an HTML5 parse
+    error, and the compose form only started being submitted by a real
+    browser in `tests/test_web_browser.py`.
+    """
     if ref is None:
         return ""
-    return f"{ref.account_name}\x1f{ref.folder_name}\x1f{ref.id}"
+    return urlencode(
+        {
+            "account": ref.account_name,
+            "folder": ref.folder_name,
+            "id": str(ref.id),
+        },
+    )
 
 
 def parse_ref(value: str) -> MessageRef | None:
-    """A message reference as a hidden field carries it."""
-    parts = value.split("\x1f")
-    if len(parts) != 3 or not parts[2].isdigit():
+    """A message reference as a hidden field carries it.
+
+    Percent-encoded, so a folder called ``Archive&2024`` or one with a
+    ``=`` in it survives the round trip -- which is the reason the whole
+    front end addresses a message by query parameters rather than by
+    path segments.
+    """
+    fields = parse_qs(value)
+    identifier = fields.get("id", [""])[0]
+    if not identifier.isdigit():
         return None
     return MessageRef(
-        account_name=parts[0],
-        folder_name=parts[1],
-        id=int(parts[2]),
+        account_name=fields.get("account", [""])[0],
+        folder_name=fields.get("folder", [""])[0],
+        id=int(identifier),
     )
 
 

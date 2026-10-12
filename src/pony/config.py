@@ -201,7 +201,7 @@ def _parse_viewers(data: dict[str, object]) -> tuple[ViewerRule, ...]:
     return tuple(rules)
 
 
-def _parse_any_account(raw: object, *, data_dir: Path | None = None) -> AnyAccount:
+def _parse_any_account(raw: object, *, data_dir: Path) -> AnyAccount:
     """Dispatch to the correct account parser based on ``account_type``."""
     if not isinstance(raw, dict):
         raise ConfigError("each account must be an object")
@@ -217,7 +217,7 @@ def _parse_any_account(raw: object, *, data_dir: Path | None = None) -> AnyAccou
 def _parse_local_account(
     data: dict[str, object],
     *,
-    data_dir: Path | None = None,
+    data_dir: Path,
 ) -> LocalAccountConfig:
     smtp_raw = data.get("smtp")
     if smtp_raw is None:
@@ -255,7 +255,7 @@ def _parse_local_account(
 def _parse_imap_account(
     raw: object,
     *,
-    data_dir: Path | None = None,
+    data_dir: Path,
 ) -> AccountConfig:
     if not isinstance(raw, dict):
         raise ConfigError("each account must be an object")
@@ -408,7 +408,7 @@ def is_half_qualified(raw: str, *, flavour: type[PurePath] = PurePath) -> bool:
 def _parse_mirror(
     data: dict[str, object],
     *,
-    data_dir: Path | None,
+    data_dir: Path,
 ) -> MirrorConfig:
     path_str = _require_string(data, "path")
     # Expand environment variables (e.g. $HOME, %USERPROFILE%).
@@ -435,9 +435,10 @@ def _parse_mirror(
     else:
         # Relative paths resolve under this config's data_dir, not the
         # platform default.  Use an absolute path to store mirrors
-        # elsewhere.
-        base = data_dir if data_dir is not None else resolve().data_dir
-        mirror_path = (base / mirror_path).resolve()
+        # elsewhere.  `data_dir` is not optional: the loader reads it
+        # before any account, and `_require_data_dir` refuses a config
+        # without it, so there is no platform default to fall back to.
+        mirror_path = (data_dir / mirror_path).resolve()
 
     trash_retention_days = _require_int(data, "trash_retention_days", default=30)
     if trash_retention_days < 0:

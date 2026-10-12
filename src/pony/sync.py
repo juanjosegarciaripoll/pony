@@ -151,9 +151,20 @@ class FolderSyncResult:
 
 @dataclass(frozen=True, slots=True)
 class AccountSyncResult:
+    """What one account's run did, and what it left alone.
+
+    ``skipped_folders`` is every folder the run did not touch, for
+    whatever reason -- excluded by configuration, or held by a safety
+    halt.  ``held_folders`` is the second kind on its own, because the
+    two need different things said about them: an excluded folder is
+    working as configured, while a held one is mail that has not been
+    synced and will not be until somebody answers for it.
+    """
+
     account_name: str
     folders: tuple[FolderSyncResult, ...]
     skipped_folders: tuple[str, ...] = ()
+    held_folders: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,10 +360,18 @@ class SyncPlan:
             if isinstance(op, op_type)
         )
 
-    def folders_needing_confirmation(self) -> frozenset[str]:
-        """Folder names whose mass-deletion safety halt requires user OK."""
+    def folders_needing_confirmation(self) -> frozenset[tuple[str, str]]:
+        """``(account, folder)`` of every folder whose halt needs an answer.
+
+        The account is half of the answer, not decoration: these are
+        handed back to :meth:`ImapSyncService.execute` as the set of
+        halts the user has waived, and a bare folder name waived
+        ``INBOX`` in *every* account in the plan.  Two accounts both
+        have an INBOX, and confirming one of them is not confirming the
+        other.
+        """
         return frozenset(
-            f.folder_name
+            (a.account_name, f.folder_name)
             for a in self.accounts
             for f in a.folders
             if f.needs_confirmation
@@ -702,9 +721,15 @@ class ImapSyncService:
         self,
         plan: SyncPlan,
         *,
-        confirmed_folders: frozenset[str] = frozenset(),
+        confirmed_folders: frozenset[tuple[str, str]] = frozenset(),
         progress: ProgressCallback | None = None,
     ) -> SyncResult:
+        """Apply *plan*, skipping any halted folder not waived.
+
+        *confirmed_folders* holds ``(account_name, folder_name)`` pairs,
+        which is what :meth:`SyncPlan.folders_needing_confirmation`
+        returns.
+        """
         self._run_cleanup()
         results: list[AccountSyncResult] = []
         for account_plan in plan.accounts:
@@ -740,7 +765,12 @@ class ImapSyncService:
         plan = self.plan(account_name=account_name)
         halted = plan.folders_needing_confirmation()
         safe = (
-            frozenset(f.folder_name for a in plan.accounts for f in a.folders) - halted
+            frozenset(
+                (a.account_name, f.folder_name)
+                for a in plan.accounts
+                for f in a.folders
+            )
+            - halted
         )
         return self.execute(plan, confirmed_folders=safe)
 
@@ -1538,7 +1568,11 @@ class ImapSyncService:
                 continue
 
             if row.uid is None:
-                # ACTIVE compose draft — APPEND.
+                # No handle, so the server has not got this message:
+                # a draft composed here, a copy filed here, or a
+                # mirror file whose name carried no readable handle --
+                # which is every row of a reindexed older mirror.
+                # APPEND.
                 if read_only or uidvalidity_reset:
                     # On a reset, ``uid IS NULL`` is what
                     # ``clear_uids_for_folder`` left behind, not what a
@@ -1627,7 +1661,7 @@ class ImapSyncService:
         *,
         account: AccountConfig,
         plan: AccountSyncPlan,
-        confirmed_folders: frozenset[str],
+        confirmed_folders: frozenset[tuple[str, str]],
         progress: ProgressCallback | None,
     ) -> AccountSyncResult:
         logger.info("Executing sync plan for account %r", account.name)
@@ -1637,6 +1671,10 @@ class ImapSyncService:
 
         folder_results: list[FolderSyncResult] = []
         skipped = list(plan.skipped_folders)
+        # Folders this run left alone because their halt was not waived,
+        # kept apart from the ones configuration excludes: a caller with
+        # nobody to ask has to be able to say which it was.
+        held: list[str] = []
         if plan.all_server_folders:
             stale = self._index.purge_stale_folders(
                 account_name=account.name,
@@ -1674,14 +1712,16 @@ class ImapSyncService:
             for folder_plan in plan.folders:
                 if (
                     folder_plan.needs_confirmation
-                    and folder_plan.folder_name not in confirmed_folders
+                    and (account.name, folder_plan.folder_name) not in confirmed_folders
                 ):
                     logger.warning(
-                        "Skipping %s/%s — needs confirmation",
+                        "Skipping %s/%s — needs confirmation; run `pony sync`"
+                        " to see what it would do and answer for it",
                         account.name,
                         folder_plan.folder_name,
                     )
                     skipped.append(folder_plan.folder_name)
+                    held.append(folder_plan.folder_name)
                     continue
                 logger.info(
                     "Executing %d op(s) for %s/%s",
@@ -1752,6 +1792,7 @@ class ImapSyncService:
             account_name=account.name,
             folders=tuple(folder_results),
             skipped_folders=tuple(skipped),
+            held_folders=tuple(held),
         )
 
     @staticmethod
@@ -2848,8 +2889,12 @@ def describe_sync_result(result: SyncResult | None) -> str:
     listing three zeroes per account.
     """
     parts: list[str] = []
+    held: list[str] = []
     if result is not None:
         for account in result.accounts:
+            held.extend(
+                f"{account.account_name}/{name}" for name in account.held_folders
+            )
             fetched = sum(folder.fetched for folder in account.folders)
             merged = sum(folder.flag_conflicts_merged for folder in account.folders)
             pushed = sum(
@@ -2864,7 +2909,17 @@ def describe_sync_result(result: SyncResult | None) -> str:
                     f"{account.account_name}: +{fetched} msgs, "
                     f"{merged} merged, {pushed} pushed"
                 )
-    return f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
+    done = f"Sync complete.  {'  '.join(parts)}" if parts else "Sync complete."
+    if not held:
+        return done
+    # A run with nobody to ask skips a halted folder, and saying only
+    # "Sync complete" of a run that left a whole folder unsynced is the
+    # kind of true that misleads.  `pony sync` is the one path that can
+    # put the question.
+    return (
+        f"{done}  Held for confirmation: {', '.join(held)}."
+        " Run `pony sync` to see what they would do and answer for them."
+    )
 
 
 def build_sync_service(

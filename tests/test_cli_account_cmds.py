@@ -13,7 +13,6 @@ import io
 import unittest
 from collections.abc import Iterator, Sequence
 from contextlib import redirect_stderr
-from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -267,15 +266,15 @@ class ConfigEditTestCase(unittest.TestCase):
         self.assertNotIn("Created", out)
         self.assertEqual(after, original)
 
-    def test_bootstrap_without_sample_writes_stub(self) -> None:
-        # Force the sample-config lookup to report "missing" so the stub
-        # bootstrap branch runs.
-        real_exists = Path.exists
+    def test_bootstrap_without_sample_writes_a_loadable_starter(self) -> None:
+        """An ordinary wheel ships no sample, and the fallback has to load.
 
-        def fake_exists(self: Path) -> bool:
-            if self.name == "config-sample.toml":
-                return False
-            return real_exists(self)
+        It used to be two comment lines, which the loader refuses three
+        times over -- no `config_version`, no `data_dir`, no `profile`
+        -- so `pony config edit` created a config `pony doctor` then
+        called broken.
+        """
+        from pony.config import load_config
 
         with isolated_app_env():
             paths = isolated_paths()
@@ -283,13 +282,15 @@ class ConfigEditTestCase(unittest.TestCase):
             with (
                 mock.patch.dict("os.environ", {"EDITOR": "true"}, clear=False),
                 mock.patch("pony.cli.subprocess.run", fake_run),
-                mock.patch.object(Path, "exists", fake_exists),
+                mock.patch("pony.cli.sample_config_path", return_value=None),
             ):
                 out, err, rc = _run_capturing_stderr(["config", "edit"])
             text = paths.config_file.read_text(encoding="utf-8")
+            config = load_config(paths.config_file)
         self.assertEqual(rc, 0)
-        self.assertIn("Run `pony account add`", text)
+        self.assertIn("pony account add", text)
         self.assertIn("Created", out)
+        self.assertEqual(config.accounts, ())
 
     def test_default_editor_used_when_env_unset(self) -> None:
         with isolated_app_env(), temporary_config() as config_path:

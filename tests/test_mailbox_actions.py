@@ -420,6 +420,31 @@ def test_move_reports_a_mirror_that_refuses_the_rename() -> None:
     assert len(_rows(mailboxes, INBOX)) == 1
 
 
+def test_a_message_something_else_moved_first_says_so() -> None:
+    """Two browser tabs, or a window and a sync, racing for one message.
+
+    The mirror answers `KeyError` -- the file is not where the index
+    says it is -- and that is not an internal failure: nothing is lost
+    and nothing is Pony's fault. It used to read "Failed to move
+    message in local mirror", which is also what a full disk says, and
+    the two need different answers from the reader.
+    """
+    mailboxes, _config = _build("actions-move-already-moved")
+    (row,) = _rows(mailboxes, INBOX)
+    mailboxes.mirrors["acct"].move_message_to_folder = Mock(  # type: ignore[union-attr]
+        side_effect=KeyError("message not found: 1234"),
+    )
+
+    outcome = mailbox_actions.move_messages(mailboxes, [row], INBOX, ARCHIVE)
+
+    (text,) = _texts(outcome)
+    assert "has already moved" in text
+    assert row.subject in text
+    assert outcome.notices[0].severity == "warning"
+    assert not outcome.acted
+    assert len(_rows(mailboxes, INBOX)) == 1
+
+
 # ----------------------------------------------------------------------
 # Copy
 # ----------------------------------------------------------------------

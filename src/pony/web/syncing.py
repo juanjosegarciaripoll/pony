@@ -53,7 +53,7 @@ class _HeldPlan:
     """A plan waiting on an answer, and the folders it halted on."""
 
     plan: SyncPlan
-    halted: frozenset[str]
+    halted: frozenset[tuple[str, str]]
     at: float
 
 

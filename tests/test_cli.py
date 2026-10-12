@@ -1780,6 +1780,41 @@ class MoreCliCommandsTest(unittest.TestCase):
             output = run_cli("--config", str(config_path), "config", "edit")
         self.assertIn("Opening", output)
 
+    def test_config_edit_creates_a_file_the_loader_accepts(self) -> None:
+        """It bootstrapped two comment lines, which load three times over.
+
+        The sample it prefers is at the repository root in a checkout and
+        beside the executable in a bundle, and in neither place in an
+        ordinary wheel — where the fallback was a file with no
+        `config_version`, no `data_dir` and no `profile`, so
+        `pony config edit` created a config `pony doctor` then called
+        broken.
+        """
+        import types
+        from unittest.mock import patch
+
+        from pony.config import load_config
+
+        mock_result = types.SimpleNamespace(returncode=0)
+        with isolated_app_env() as env_root:
+            fresh = env_root / "config" / "made-up.toml"
+            fresh.parent.mkdir(parents=True, exist_ok=True)
+            with (
+                patch("subprocess.run", return_value=mock_result),
+                patch("pony.cli.sample_config_path", return_value=None),
+            ):
+                output = run_cli("--config", str(fresh), "config", "edit")
+            self.assertIn(f"Created {fresh}", output)
+            written = fresh.read_text(encoding="utf-8")
+            # It loads, which is the whole point.
+            config = load_config(fresh)
+
+        from pony.domain import CONFIG_VERSION
+
+        self.assertIn(f"config_version = {CONFIG_VERSION}", written)
+        self.assertEqual(config.accounts, ())
+        assert config.data_dir.is_absolute()
+
     def test_contacts_show_finds_existing_contact(self) -> None:
         """``pony contacts show`` displays details for a known contact."""
         from pony.domain import Contact
@@ -3924,6 +3959,74 @@ class ProfileStampTestCase(unittest.TestCase):
         self.assertIn("belongs to profile 'mine'", errors.getvalue())
         self.assertIn("declares 'scratch'", errors.getvalue())
 
+    def test_a_config_with_no_data_dir_stamps_nothing(self) -> None:
+        """What runs before the parse must not write what the parse refuses.
+
+        `_peek_profile` reads `data_dir` and `profile` before the index
+        is opened, and `claim_profile` *writes*. A config with a profile
+        and no `data_dir` stamped the platform-convention directory --
+        the one a run with no loadable config uses -- and then reported
+        itself broken, after which the user's real config was refused
+        there with no way to tell why.
+        """
+        from pony.paths import read_profile, resolve
+
+        broken = self.dir / "no-data-dir.toml"
+        broken.write_text(
+            'config_version = 3\nprofile = "mine"\naccounts = []\n',
+            encoding="utf-8",
+        )
+
+        out, rc = run_cli_capture("--config", str(broken), "doctor")
+
+        assert rc == 1
+        assert "data_dir" in out
+        # Nothing claimed: neither the platform-convention directory
+        # the run fell back to, nor this test's own.
+        self.assertIsNone(read_profile(resolve(broken).data_dir))
+        self.assertIsNone(read_profile(self.data))
+
+    def test_a_relative_data_dir_stamps_nothing_either(self) -> None:
+        """It stamped and created directories under the current directory."""
+        from pony.paths import read_profile, resolve
+
+        relative = self.dir / "relative.toml"
+        relative.write_text(
+            "config_version = 3\n"
+            'data_dir = "pony-data"\n'
+            'profile = "mine"\n'
+            "accounts = []\n",
+            encoding="utf-8",
+        )
+
+        out, rc = run_cli_capture("--config", str(relative), "doctor")
+
+        assert rc == 1
+        assert "absolute" in out
+        self.assertIsNone(read_profile(resolve(relative).data_dir))
+        # Nowhere at all: a relative path was resolved against whatever
+        # the process happened to be run from.
+        self.assertEqual(list(self.dir.rglob("profile.toml")), [])
+        self.assertFalse((Path.cwd() / "pony-data").exists())
+
+    def test_the_refusal_names_the_stamp_and_how_to_undo_it(self) -> None:
+        """A directory claimed under a name you did not mean is recoverable."""
+        from pony.paths import PROFILE_STAMP, claim_profile
+
+        claim_profile(self.data, "mine")
+        scratch = self._config(profile="scratch")
+        errors = io.StringIO()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(errors),
+        ):
+            rc = main(["--config", str(scratch), "doctor"])
+
+        assert rc == 2
+        said = errors.getvalue()
+        assert str(self.data / PROFILE_STAMP) in said
+        assert "delete that file" in said
+
     def test_the_declared_data_dir_is_where_the_index_goes(self) -> None:
         config = self._config(profile="mine")
         out, rc = run_cli_capture("--config", str(config), "doctor")
@@ -4191,6 +4294,10 @@ class ReindexCommandTest(unittest.TestCase):
         self.assertIn("0 with a server handle", output)
         self.assertIn("will be uploaded by the next sync", output)
         self.assertIn("No message carried a handle", output)
+        # And which command converges: every unattended path skips a
+        # held folder, so "sync" on its own is not the answer.
+        self.assertIn("Answer the halt with 'pony sync'", output)
+        self.assertIn("nobody to ask", output)
 
     def test_two_files_with_one_handle_are_reported_not_fatal(self) -> None:
         """The rebuild carries on and names the count it left behind."""

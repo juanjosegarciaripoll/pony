@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,9 +38,19 @@ def index_calendar(
 
     Idempotent: re-running after a no-op change produces zero writes at
     the SQL level beyond the deterministic upsert.
+
+    What the file cannot say is carried over from the row it replaces.
+    A `.ics` on disk knows nothing about the server -- no ``href``, no
+    ``etag`` -- and nothing about what the user has done to it since:
+    `build_stored_component` therefore produces an ACTIVE row with no
+    handle and no trash timestamp, and `upsert_component` writes every
+    column.  Projecting a synced calendar would have cleared the whole
+    of its server metadata, resurrected its trashed events and left
+    every row looking locally created, which is what ``href IS NULL``
+    means to the sync engine.
     """
     resources = mirror.list_resources(calendar.account_name, calendar.calendar_name)
-    existing_refs = {comp.ref for comp in index.list_calendar_components(calendar)}
+    existing = {comp.ref: comp for comp in index.list_calendar_components(calendar)}
     seen_refs: set[ComponentRef] = set()
     upserts = 0
     errors: list[str] = []
@@ -58,11 +69,13 @@ def index_calendar(
         components = _project_resource(resource, raw, parsed)
         with index.connection():
             for component in components:
-                index.upsert_component(component)
+                index.upsert_component(
+                    _keeping_server_state(component, existing.get(component.ref)),
+                )
                 seen_refs.add(component.ref)
                 upserts += 1
 
-    stale = existing_refs - seen_refs
+    stale = set(existing) - seen_refs
     removed = 0
     if stale:
         with index.connection():
@@ -76,6 +89,29 @@ def index_calendar(
         components_upserted=upserts,
         components_removed=removed,
         parse_errors=tuple(errors),
+    )
+
+
+def _keeping_server_state(
+    projected: StoredComponent,
+    known: StoredComponent | None,
+) -> StoredComponent:
+    """*projected*, with what only the index knows taken from *known*.
+
+    The mirror file is the content; the row is the content plus where it
+    came from and what has happened to it here.  A projection replaces
+    the first and must not touch the second.
+    """
+    if known is None:
+        return projected
+    return dataclasses.replace(
+        projected,
+        href=known.href,
+        etag=known.etag,
+        local_flags=known.local_flags,
+        server_flags=known.server_flags,
+        local_status=known.local_status,
+        trashed_at=known.trashed_at,
     )
 
 

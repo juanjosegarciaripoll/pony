@@ -54,10 +54,12 @@ from .index_store import (
 )
 from .mailbox_ops import landed_in_folder
 from .paths import (
+    PROFILE_STAMP,
     AppPaths,
     ProfileMismatchError,
     claim_profile,
     resolve,
+    sample_config_path,
 )
 from .protocols import (
     CredentialsProvider,
@@ -602,10 +604,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"\n"
                 f"  config:   {paths.config_file}\n"
                 f"  data dir: {paths.data_dir}\n"
+                f"  stamp:    {paths.data_dir / PROFILE_STAMP}\n"
                 f"\n"
                 f"Point this config at its own data_dir. To share this"
                 f" one on purpose, declare profile {exc.found!r} in both"
-                f" configs.",
+                f" configs. If the stamp is what is wrong -- a directory"
+                f" claimed under a name you did not mean -- delete that"
+                f" file and the next run claims it again.",
                 file=sys.stderr,
             )
             return 2
@@ -623,7 +628,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _peek_profile(config_path: Path) -> tuple[Path | None, str]:
     """Read ``data_dir`` and ``profile`` without validating the rest.
 
-    Runs before the index is opened, so it cannot wait for a full parse.
+    Runs before the index is opened, so it cannot wait for a full parse
+    -- but it holds `data_dir` to the same shape the loader does, and
+    answers "no profile" for anything else, because what follows this
+    *writes*: `claim_profile` stamps the directory it is handed.
+
+    A config with a `profile` and no `data_dir` stamped the
+    platform-convention directory -- the one a run with no loadable
+    config uses -- and then reported itself broken, after which the
+    user's real config was refused there. A relative `data_dir` stamped
+    and created directories under the current working directory. The
+    loader refuses both (`config.py:_require_data_dir`), so nothing may
+    be stamped for either.
     """
     try:
         raw = read_raw_config(config_path)
@@ -634,11 +650,13 @@ def _peek_profile(config_path: Path) -> tuple[Path | None, str]:
     data = cast("dict[str, object]", raw)
     declared = data.get("data_dir")
     instance = data.get("profile")
-    path: Path | None = None
-    if isinstance(declared, str) and declared.strip():
-        # os.path.expanduser, not Path.expanduser: the latter raises
-        # RuntimeError when there is no home directory to expand to.
-        path = Path(os.path.expanduser(os.path.expandvars(declared)))  # noqa: PTH111
+    if not isinstance(declared, str) or not declared.strip():
+        return None, ""
+    # os.path.expanduser, not Path.expanduser: the latter raises
+    # RuntimeError when there is no home directory to expand to.
+    path = Path(os.path.expanduser(os.path.expandvars(declared)))  # noqa: PTH111
+    if not path.is_absolute():
+        return None, ""
     return path, instance if isinstance(instance, str) else ""
 
 
@@ -1629,6 +1647,16 @@ def run_reindex(
                 " handles were recorded in the filename looks exactly like"
                 " this; 'pony sync --dry-run' says what would happen.",
             )
+        # Which command, and why it has to be that one: a folder of
+        # local-only rows trips the mass-upload halt, and every
+        # unattended path -- background sync, ctrl+g, the browser's
+        # Sync button -- skips a halted folder rather than waiving it.
+        # Only a `pony sync` that can put the question converges.
+        print(
+            "Answer the halt with 'pony sync' (or 'pony sync --yes'):"
+            " background sync, ctrl+g and the browser's Sync button have"
+            " nobody to ask, so they skip a held folder every time.",
+        )
     return 0
 
 
@@ -3359,6 +3387,28 @@ def run_config_show(*, paths: AppPaths, config_path: Path | None) -> int:
     return 0
 
 
+def starter_config(paths: AppPaths) -> str:
+    """The least a configuration can say and still load.
+
+    The fallback this replaces was two comment lines, which the loader
+    refuses three times over -- no `config_version`, no `data_dir`, no
+    `profile` -- so `pony config edit` created a file `pony doctor` then
+    called broken. The version is interpolated rather than typed, as
+    everywhere else that states one, and `data_dir` is this run's own
+    resolved directory, which is platform-correct where the sample's
+    `~/.local/share/pony` is not.
+    """
+    return (
+        f"config_version = {CONFIG_VERSION}\n"
+        f'data_dir = "{paths.data_dir.as_posix()}"\n'
+        'profile = "default"\n'
+        "accounts = []\n"
+        "\n"
+        "# `pony account add <name>` prints an account block to paste here.\n"
+        "# `pony doctor` says what a run will use, and what is missing.\n"
+    )
+
+
 def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
     """Open the config file in the user's editor."""
     import os
@@ -3366,17 +3416,15 @@ def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
     config_file = config_path or paths.config_file
     if not config_file.exists():
         paths.ensure_runtime_dirs()
-        # Bootstrap with the sample config.
-        sample = Path(__file__).parent.parent.parent / "config-sample.toml"
-        if sample.exists():
+        # The annotated sample where there is one -- a source checkout,
+        # a PyInstaller bundle -- and a loadable minimum where there is
+        # not, which is every ordinary wheel.
+        sample = sample_config_path()
+        if sample is not None:
             shutil.copy(sample, config_file)
-            print(f"Created {config_file} from sample config.")
+            print(f"Created {config_file} from the sample config.")
         else:
-            config_file.write_text(
-                "# Pony Express configuration\n"
-                "# Run `pony account add` to add an account.\n",
-                encoding="utf-8",
-            )
+            config_file.write_text(starter_config(paths), encoding="utf-8")
             print(f"Created {config_file}.")
 
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")

@@ -187,3 +187,39 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
         ):
             with self.subTest(module=module):
                 self.assertFalse(_imports_textual(module))
+
+
+class ArchitectureListingTest(unittest.TestCase):
+    """Rule 6: `docs/architecture.md` is the published package layout.
+
+    It lists every module with a line saying what it is for, which is
+    the first thing anyone reads to find where something lives -- and a
+    new module simply did not appear in it (`pony.contact_merge`, the
+    whole of the merge policy, and `chronos.bootstrap`).  Nothing failed,
+    because no test read the page.
+    """
+
+    def _listed(self) -> str:
+        from pathlib import Path
+
+        page = Path(__file__).resolve().parents[1] / "docs" / "architecture.md"
+        return page.read_text(encoding="utf-8")
+
+    def test_every_module_in_both_packages_is_named(self) -> None:
+        from pathlib import Path
+
+        page = self._listed()
+        root = Path(__file__).resolve().parents[1] / "src"
+        missing: list[str] = []
+        for package in ("pony", "chronos"):
+            for module in sorted((root / package).glob("*.py")):
+                if module.name in {"__init__.py", "version.py"}:
+                    continue
+                if module.name not in page:
+                    missing.append(f"{package}/{module.name}")
+
+        self.assertEqual(
+            missing,
+            [],
+            "docs/architecture.md does not mention: " + ", ".join(missing),
+        )

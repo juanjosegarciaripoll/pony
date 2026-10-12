@@ -10,7 +10,6 @@ from chronos.paths import (
     CalendarPaths,
     activate,
     active,
-    bundled_docs_path,
     expand_path,
 )
 
@@ -107,8 +106,3 @@ class ActivationTest(unittest.TestCase):
     def test_the_suite_runs_on_an_activated_root(self) -> None:
         """conftest activates a temporary one, so no test writes to a real dir."""
         self.assertTrue(active().root.is_absolute())
-
-
-class BundledDocsPathTest(unittest.TestCase):
-    def test_returns_none_when_not_frozen(self) -> None:
-        self.assertIsNone(bundled_docs_path())

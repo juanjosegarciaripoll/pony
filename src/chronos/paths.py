@@ -9,7 +9,6 @@ everything here is relative to that root.
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,12 +110,3 @@ def active() -> CalendarPaths:
             "chronos.paths.activate(root) before using the calendar"
         )
     return _active
-
-
-def bundled_docs_path() -> Path | None:
-    if not getattr(sys, "frozen", False):
-        return None
-    base = getattr(sys, "_MEIPASS", None)
-    if not isinstance(base, str):
-        return None
-    return Path(base) / "docs"

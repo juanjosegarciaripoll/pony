@@ -30,7 +30,7 @@ from tui_helpers import (
 from web_helpers import form_fields
 
 from pony import delivery
-from pony.domain import FolderRef
+from pony.domain import FolderRef, MessageRef
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
@@ -88,9 +88,49 @@ def _only_message(index: SqliteIndexRepository) -> int:
     return index.list_folder_message_summaries(folder=INBOX)[0].message_ref.id
 
 
+def _ref(message_id: int, *, folder: str = "INBOX") -> str:
+    """A message reference as the form's hidden fields carry it.
+
+    The same encoding `urls` uses for a link, which is what the page
+    writes into `source`, `forward_of` and `answering`.
+    """
+    from pony.web.compose import _ref_value
+
+    return _ref_value(
+        MessageRef(account_name="acct", folder_name=folder, id=message_id)
+    )
+
+
 # ----------------------------------------------------------------------
 # The form
 # ----------------------------------------------------------------------
+
+
+def test_a_hidden_message_reference_is_spelled_as_a_link_is() -> None:
+    """One encoding for naming a message, not two.
+
+    The hidden fields carried ``account\x1ffolder\x1fid``: a raw control
+    character, which a browser does submit as ``%1F`` but which is an
+    HTML5 parse error in an attribute value — and nothing submitted a
+    compose form through a real browser until the browser test did. The
+    fields are percent-encoded query parameters now, the same three
+    `urls` puts in a link, so a folder with an ``&`` or an ``=`` in its
+    name round-trips.
+    """
+    from pony.web.compose import _ref_value, parse_ref
+
+    awkward = MessageRef(account_name="acct", folder_name="Archive&2024=x", id=7)
+    value = _ref_value(awkward)
+
+    assert "\x1f" not in value
+    assert parse_ref(value) == awkward
+    # The page writes it into the form, and the form is parseable HTML.
+    assert "%26" in value
+    # Nothing, and anything that is not a reference, is no reference.
+    assert _ref_value(None) == ""
+    assert parse_ref("") is None
+    assert parse_ref("account=acct&folder=INBOX") is None
+    assert parse_ref("account=acct&folder=INBOX&id=nope") is None
 
 
 def test_a_blank_compose_offers_the_accounts_that_can_send() -> None:
@@ -376,7 +416,7 @@ def test_discarding_a_reply_goes_back_where_sending_it_would() -> None:
 def test_sending_a_resumed_draft_retires_the_draft_it_came_from() -> None:
     services, index = _services("compose-send-draft")
     source = _only_message(index)
-    source_ref = f"acct\x1fINBOX\x1f{source}"
+    source_ref = _ref(source)
 
     with (
         patch.object(delivery, "smtp_send", lambda **_kwargs: None),
@@ -642,7 +682,7 @@ def test_sending_a_forward_attaches_the_message_being_forwarded() -> None:
                 "to": "you@example.test",
                 "subject": "Fwd: Tuesday meeting confirmed",
                 "body": "See below.",
-                "forward_of": f"acct\x1fINBOX\x1f{original}",
+                "forward_of": _ref(original),
             },
             follow_redirects=False,
         )
@@ -676,7 +716,7 @@ def test_forwarding_a_message_that_has_gone_is_reported() -> None:
                 "to": "you@example.test",
                 "subject": "Fwd",
                 "body": "?",
-                "forward_of": "acct\x1fINBOX\x1f999",
+                "forward_of": _ref(999),
             },
         )
 
@@ -718,11 +758,7 @@ def test_a_reply_sent_from_the_browser_marks_the_original_answered() -> None:
                 "to": "them@example.test",
                 "subject": "Re: hello",
                 "body": "Yes",
-                "answering": (
-                    f"{original.message_ref.account_name}\x1f"
-                    f"{original.message_ref.folder_name}\x1f"
-                    f"{original.message_ref.id}"
-                ),
+                "answering": _ref(original.message_ref.id),
             },
         )
 
@@ -746,11 +782,7 @@ def test_saving_a_resumed_draft_leaves_one_copy() -> None:
                 "subject": "Still a draft",
                 "body": "Later.",
                 "save_draft": "1",
-                "source": (
-                    f"{original.message_ref.account_name}\x1f"
-                    f"{original.message_ref.folder_name}\x1f"
-                    f"{original.message_ref.id}"
-                ),
+                "source": _ref(original.message_ref.id),
             },
         )
 

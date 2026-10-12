@@ -114,6 +114,34 @@ def test_the_sync_summary_names_only_the_accounts_that_changed() -> None:
     )
 
 
+def test_a_run_that_held_a_folder_says_so_and_says_what_to_do() -> None:
+    """ "Sync complete" of a run that skipped a whole folder misleads.
+
+    Background sync, ++ctrl+g++ and the browser's Sync button have
+    nobody to ask, so a folder whose safety halt was not waived is left
+    alone -- and a reindexed mirror halts every folder it has, because
+    every row in it is an upload candidate. The one path that can put
+    the question is `pony sync`, so the sentence names it.
+    """
+    result = SyncResult(
+        accounts=(
+            AccountSyncResult(
+                account_name="fictional",
+                folders=(FolderSyncResult(folder_name="Archive", fetched=1),),
+                skipped_folders=("INBOX", "Spam"),
+                held_folders=("INBOX",),
+            ),
+        )
+    )
+
+    said = describe_sync_result(result)
+
+    assert "Held for confirmation: fictional/INBOX." in said
+    assert "Run `pony sync`" in said
+    # The folder configuration excludes is not held, and is not named.
+    assert "Spam" not in said
+
+
 async def test_plan_error_dismisses_modal_and_notifies() -> None:
     app, *_ = build_pony_app(label="main-sync-plan-error")
     messages = _notifications(app)
@@ -193,8 +221,10 @@ async def test_start_sync_worker_executes_confirmed_plan() -> None:
         run = screen.run_worker.call_args.args[0]
         assert run() == SyncResult(accounts=())
         service.execute.assert_called_once()
+        # The account travels with the folder: two accounts both have an
+        # INBOX, and confirming one is not confirming the other.
         assert service.execute.call_args.kwargs["confirmed_folders"] == frozenset(
-            {"INBOX"}
+            {("acct", "INBOX")}
         )
 
 

@@ -97,6 +97,40 @@ class ProjectionPipelineTest(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].summary, "Simple event")
 
+    def test_a_projection_keeps_what_only_the_index_knows(self) -> None:
+        """A `.ics` on disk knows nothing about the server, or about trash.
+
+        `build_stored_component` therefore says ACTIVE, no handle, no
+        trash timestamp, and `upsert_component` writes every column — so
+        projecting a synced calendar cleared its `href` and `etag`,
+        un-trashed everything in it, and left every row looking locally
+        created, which to the sync engine means "upload this".
+        """
+        import dataclasses
+
+        from chronos.domain import LocalStatus
+
+        self._seed("synced@example.com", corpus.simple_event())
+        index_calendar(mirror=self.mirror, index=self.index, calendar=self.calendar)
+        (row,) = self.index.list_calendar_components(self.calendar)
+        self.index.upsert_component(
+            dataclasses.replace(
+                row,
+                href="/dav/work/synced.ics",
+                etag='"abc123"',
+                local_status=LocalStatus.TRASHED,
+            ),
+        )
+
+        index_calendar(mirror=self.mirror, index=self.index, calendar=self.calendar)
+
+        (after,) = self.index.list_calendar_components(self.calendar)
+        self.assertEqual(after.href, "/dav/work/synced.ics")
+        self.assertEqual(after.etag, '"abc123"')
+        self.assertEqual(after.local_status, LocalStatus.TRASHED)
+        # And the content is still the projection's.
+        self.assertEqual(after.raw_ics, corpus.simple_event())
+
     def test_parse_error_surfaces_without_aborting_run(self) -> None:
         self._seed("good@example.com", corpus.simple_event())
         self._seed("bad@example.com", b"this is not an iCalendar")
