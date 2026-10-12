@@ -582,6 +582,32 @@ def test_a_notice_carried_through_a_redirect_is_escaped_too() -> None:
     assert 'class="notice warning"' in response.text
 
 
+def test_a_notice_only_comes_from_ponys_own_redirect() -> None:
+    """A `?notice=` from another page is that page's words, in our chrome.
+
+    Correctly escaped, so it is a phishing surface rather than an XSS
+    one -- and escaping is no answer to "Your session expired, sign in
+    again" rendered with error styling one tab from the mailbox.
+    """
+    services, _index = _services("web-notice-origin")
+    story = "Your session expired. Sign in again at evil.test"
+
+    with _client(services) as client:
+        hostile = client.get(
+            _mail(notice=story, severity="error"),
+            headers={"sec-fetch-site": "cross-site"},
+        )
+        ours = client.get(
+            _mail(notice=story, severity="error"),
+            headers={"sec-fetch-site": "same-origin"},
+        )
+
+    assert story not in hostile.text
+    assert 'class="notice error"' not in hostile.text
+    # Pony's own redirect still says what it did.
+    assert story in ours.text
+
+
 # ----------------------------------------------------------------------
 # The keymap
 # ----------------------------------------------------------------------
@@ -795,7 +821,61 @@ def test_a_move_with_no_target_says_how_to_name_one() -> None:
         )
 
     assert response.json()["notices"][0]["text"] == (
-        "Name the folder to move to as account/folder."
+        "Name the folder as account/folder."
+    )
+
+
+def test_a_move_to_a_folder_nobody_has_is_refused() -> None:
+    """The prompt is free text; the terminal's picker is not.
+
+    `target=acct/../../../../../../var/tmp/PWNED` reported
+    `changed: 1` and "Moved to ...": nothing escaped, because Maildir
+    encodes `/` as `.`, but the index row then named a junk folder and
+    the next sync would have `IMAP CREATE`d it on the server.  A typo
+    did the same damage as an attack.
+    """
+    services, index = _services("web-move-unknown")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/move",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(message_id),
+                "target": "acct/../../../../../../var/tmp/PWNED",
+            },
+        )
+
+    body = response.json()
+    assert body["changed"] == 0
+    assert "No folder" in body["notices"][0]["text"]
+    # And the message is still where it was.
+    (row,) = index.list_folder_messages(folder=INBOX)
+    assert row.message_ref.folder_name == "INBOX"
+
+
+def test_a_copy_only_accepts_a_folder_the_page_offered() -> None:
+    services, index = _services("web-copy-unknown")
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/copy",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(_only_message(index)),
+                "target": "acct/Nowhere",
+            },
+        )
+
+    assert response.json()["changed"] == 0
+    assert (
+        index.list_folder_messages(
+            folder=FolderRef(account_name="acct", folder_name="Nowhere"),
+        )
+        == ()
     )
 
 

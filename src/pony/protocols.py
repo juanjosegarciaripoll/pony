@@ -38,6 +38,16 @@ class MirrorRepository(Protocol):
     via :meth:`store_message` already hold the returned storage_key.
     """
 
+    carries_handles: bool
+    """Whether a storage_key from this backend can carry a server handle.
+
+    A Maildir filename can (``,V=…,U=…``); an mbox key is a position in
+    a file and cannot, which is why :meth:`stamp_uid` is a no-op there.
+    ``pony reindex`` rebuilds an index out of those handles, so a
+    backend that has none makes the command a no-op worth saying out
+    loud rather than a rebuild that quietly recovers nothing.
+    """
+
     def list_folders(self, *, account_name: str) -> Sequence[FolderRef]:
         """Return all folders for one account."""
         ...

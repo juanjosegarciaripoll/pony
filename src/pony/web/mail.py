@@ -871,10 +871,41 @@ def _mark_all_read(context: ActionContext) -> Outcome:
     )
 
 
-def _move(context: ActionContext) -> Outcome:
-    target = parse_target(context.first("target"))
+def _chosen_target(context: ActionContext) -> FolderRef | Outcome:
+    """The folder the prompt named, or why it named none.
+
+    The terminal moves and copies through a folder picker, so only a
+    folder that exists can be chosen.  The browser's prompt is free
+    text with a ``datalist`` beside it as a hint, and nothing checked
+    the answer: ``target=acct/../../../../var/tmp/PWNED`` reported
+    "Moved to ..." and left the row naming a junk folder the next sync
+    would ``IMAP CREATE``.  Nothing escaped -- Maildir encodes ``/`` as
+    ``.`` -- but containment came from the storage layer rather than
+    from here, and a typo was just as destructive as an attack.
+
+    So the answer is required to be one of the values the page itself
+    offered, which is the same list the datalist is built from.  A
+    folder that does not exist yet is created with ``new_folder``, as
+    it is in the terminal.
+    """
+    value = context.first("target")
+    target = parse_target(value)
     if target is None:
-        return Outcome.refused(warn("Name the folder to move to as account/folder."))
+        return Outcome.refused(warn("Name the folder as account/folder."))
+    if value not in folder_options(context.services):
+        return Outcome.refused(
+            warn(
+                f"No folder {target.account_name}/{target.folder_name}."
+                " Choose one from the list, or create it first."
+            )
+        )
+    return target
+
+
+def _move(context: ActionContext) -> Outcome:
+    target = _chosen_target(context)
+    if isinstance(target, Outcome):
+        return target
     return mailbox_actions.move_messages(
         context.services.mailboxes,
         context.messages,
@@ -884,9 +915,9 @@ def _move(context: ActionContext) -> Outcome:
 
 
 def _copy(context: ActionContext) -> Outcome:
-    target = parse_target(context.first("target"))
-    if target is None:
-        return Outcome.refused(warn("Name the folder to copy to as account/folder."))
+    target = _chosen_target(context)
+    if isinstance(target, Outcome):
+        return target
     return mailbox_actions.copy_messages(
         context.services.mailboxes,
         context.messages,

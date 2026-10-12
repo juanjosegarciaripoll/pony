@@ -621,6 +621,44 @@ class PopulateAlarmsTest(unittest.TestCase):
         self.assertEqual(count, 6)
         self.assertEqual(queries, 1)
 
+    def test_restricting_the_masters_restricts_the_occurrence_query(self) -> None:
+        """The fix for the stall reached the loop and not the query.
+
+        `uids` narrows `masters` in Python while the occurrence read
+        above it stayed unconditional, so rebuilding the alarms of one
+        edited event still built every occurrence row in the window --
+        thirteen thousand of them to use a handful.  Nothing in the
+        output differs, which is why this watches the call.
+        """
+        for n in range(4):
+            uid = f"alarm-scope-{n}@example.com"
+            self._insert_and_expand(
+                uid,
+                _alarm_ics(uid),
+                datetime(2026, 5, 1 + n, 9, 0, tzinfo=UTC),
+            )
+        wanted = frozenset({"alarm-scope-1@example.com"})
+        seen: list[object] = []
+        real = self.index.query_occurrences
+
+        def _watching(*args: object, **kwargs: object) -> object:
+            seen.append(kwargs.get("uids"))
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        self.index.query_occurrences = _watching  # type: ignore[method-assign]
+        self.addCleanup(setattr, self.index, "query_occurrences", real)
+
+        count = populate_alarms(
+            index=self.index,
+            calendar=self.calendar,
+            window_start=self.window_start,
+            window_end=self.window_end,
+            uids=wanted,
+        )
+
+        self.assertEqual(1, count)
+        self.assertEqual([wanted], seen)
+
     def test_email_alarm_not_stored(self) -> None:
         uid = "alarm-email-1@example.com"
         self._insert_and_expand(

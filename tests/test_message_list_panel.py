@@ -758,3 +758,177 @@ async def test_search_results_show_senders_even_from_a_sent_folder() -> None:
 
         assert "From" in _header_text(panel)
         assert "me@example.com" in _row_text(panel, 0)
+
+
+async def test_flagging_a_message_repaints_its_row() -> None:
+    """The mark the user pressed for has to appear without a reload.
+
+    ``FLAGGED_MARK`` and ``ANSWERED_MARK`` were asserted only in
+    ``tests/test_views.py``, against the projection -- nothing checked
+    that a flag change reaches the row on screen.  The archive case in
+    ``test_trashing_leaves_the_cursor_where_it_was`` above is the
+    template this follows.
+    """
+    from pony.views import ANSWERED_MARK, FLAGGED_MARK
+
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="mlist-flag-repaint",
+        seed=[(_INBOX, _dated_message("flag me"))],
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        assert FLAGGED_MARK not in _row_text(panel, 0)
+
+        _main(app).toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+        flagged_row = _row_text(panel, 0)
+
+        _main(app).toggle_flag(MessageFlag.FLAGGED)
+        await pilot.pause()
+        unflagged_row = _row_text(panel, 0)
+
+        _main(app).set_flag(MessageFlag.ANSWERED, present=True)
+        await pilot.pause()
+        answered_row = _row_text(panel, 0)
+
+        stored = index.list_folder_messages(folder=_INBOX)
+
+    assert FLAGGED_MARK in flagged_row
+    assert FLAGGED_MARK not in unflagged_row
+    assert ANSWERED_MARK in answered_row
+    assert [MessageFlag.ANSWERED in row.local_flags for row in stored] == [True]
+
+
+async def test_marking_a_message_unread_repaints_the_row_as_unread() -> None:
+    """Unread is emphasis on the row, so the press has to repaint it."""
+    app, *_ = build_pony_app(
+        label="mlist-unread-repaint",
+        seed=[(_INBOX, _dated_message("read me"))],
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        panel.focus()
+        await pilot.pause()
+        # Opening the reader is what sets SEEN, and it takes the focus,
+        # so this cannot go through the focus-checking `_press` helper.
+        await pilot.press("enter")
+        await pilot.pause()
+        opened = panel.get_selected_summary()
+
+        _main(app).set_flag(MessageFlag.SEEN, present=False)
+        await pilot.pause()
+        after = panel.get_selected_summary()
+
+    assert opened is not None
+    assert MessageFlag.SEEN in opened.local_flags
+    # The summary the panel holds is what every row style reads from.
+    assert after is not None
+    assert MessageFlag.SEEN not in after.local_flags
+
+
+async def test_archiving_leaves_the_cursor_where_it_was() -> None:
+    """Archive takes the same path as trash, and had no test saying so."""
+    from tui_helpers import make_test_account, make_tmp_paths
+
+    paths = make_tmp_paths("cursor-after-archive")
+    account = make_test_account(paths, archive_folder="Archive")
+    app, _cfg, _paths, _index, mirrors = build_pony_app(
+        label="cursor-after-archive-app",
+        accounts=(account,),
+        seed=[(_INBOX, _dated_message(f"subject {i}")) for i in range(6)],
+    )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Archive")
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        for _ in range(3):
+            await _press(pilot, panel, "down")
+        before_row = panel.effective_cursor_row
+        before = panel.get_selected_summary()
+        assert before is not None
+
+        _main(app).archive_current_message()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert panel.effective_cursor_row == before_row
+        after = panel.get_selected_summary()
+        assert after is not None
+        assert after.message_ref.id != before.message_ref.id
+
+
+async def test_moving_leaves_the_cursor_where_it_was() -> None:
+    """A move empties the row under the cursor just as archive does."""
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="cursor-after-move",
+        seed=[(_INBOX, _dated_message(f"subject {i}")) for i in range(6)],
+    )
+    target = FolderRef(account_name="acct", folder_name="Later")
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Later")
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        for _ in range(2):
+            await _press(pilot, panel, "down")
+        before_row = panel.effective_cursor_row
+        before = panel.get_selected_summary()
+        assert before is not None
+        moved = index.get_message(message_ref=before.message_ref)
+        assert moved is not None
+
+        _main(app)._move_to_folder([moved], target)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert panel.effective_cursor_row == before_row
+        after = panel.get_selected_summary()
+        assert after is not None
+        assert after.message_ref.id != before.message_ref.id
+
+
+async def test_a_marked_multi_row_action_keeps_the_cursor_on_its_message() -> None:
+    """Marks can take several rows out from above the cursor at once.
+
+    The rows are gone, so the cursor cannot stay on the same *row*; it
+    has to follow the message it was on, which moved up the list.  The
+    one cursor test there was trashed the row the cursor sat on, which
+    is the other half of ``_restore_target``.
+    """
+    app, *_ = build_pony_app(
+        label="cursor-after-marked-trash",
+        seed=[(_INBOX, _dated_message(f"subject {i}")) for i in range(6)],
+    )
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        for _ in range(2):
+            await _press(pilot, panel, "down")
+        # shift+down marks the row and steps on, twice, so rows 2 and 3
+        # are marked and the cursor has moved past them to row 4.
+        await _press(pilot, panel, "shift+down")
+        await _press(pilot, panel, "shift+down")
+        marked = [summary.message_ref.id for summary in panel.marked_summaries()]
+        before_row = panel.effective_cursor_row
+        before = panel.get_selected_summary()
+        assert len(marked) == 2
+        assert before_row == 4
+        assert before is not None
+        assert before.message_ref.id not in marked
+
+        _main(app).trash_current_message()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert panel.marked_summaries() == []
+        after = panel.get_selected_summary()
+        assert after is not None
+        # Same message, two rows further up now that the marks are gone.
+        assert after.message_ref.id == before.message_ref.id
+        assert panel.effective_cursor_row == before_row - 2

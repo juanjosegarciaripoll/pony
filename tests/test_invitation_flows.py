@@ -410,6 +410,7 @@ async def test_a_reply_without_a_sendable_account_is_reported() -> None:
                 partstat="ACCEPTED",
             ),
         )
+        messages: list[str] = []
         for _ in range(20):
             await pilot.pause()
             messages = [n.message for n in app._notifications]  # noqa: SLF001

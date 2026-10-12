@@ -35,6 +35,9 @@ _MAX_PENDING_WRITES = 32
 class MaildirMirrorRepository(MirrorRepository):
     """Maildir-backed mirror repository."""
 
+    #: A filename can hold `,V=<uidvalidity>,U=<uid>`, so it does.
+    carries_handles = True
+
     def __init__(self, *, account_name: str, root_dir: Path) -> None:
         self._account_name = account_name
         self._root_dir = root_dir
@@ -419,6 +422,10 @@ class MboxMirrorRepository(MirrorRepository):
     matters.
     """
 
+    #: An mbox key is a position in a file; nothing in it can carry a
+    #: handle, which is what makes `stamp_uid` a no-op here.
+    carries_handles = False
+
     def __init__(self, *, account_name: str, root_dir: Path) -> None:
         self._account_name = account_name
         self._root_dir = root_dir
@@ -568,7 +575,9 @@ class MboxMirrorRepository(MirrorRepository):
             mbox[key] = message  # type: ignore[index]  # typeshed: str; runtime: int
             self._deleted_keys.setdefault(folder.folder_name, set()).add(key)
         # Flush is deferred: call flush_writes() to commit pending marks.
-        # _close_all() also flushes all handles on process exit.
+        # The weakref.finalize() set up in __init__ also flushes every
+        # open handle when this repository is collected or the process
+        # exits.
 
     def stamp_uid(
         self,

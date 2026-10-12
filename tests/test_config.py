@@ -820,5 +820,33 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         self.assertEqual(path.parent.name, "mirrors")
 
     def test_an_absolute_path_is_normalised(self) -> None:
+        from pony.paths import contain
+
         config = parse_config(self._config(str(TMP_ROOT / "a" / ".." / "b")))
-        self.assertEqual(config.accounts[0].mirror.path, (TMP_ROOT / "b").resolve())
+        self.assertEqual(
+            config.accounts[0].mirror.path,
+            contain((TMP_ROOT / "b").resolve()),
+        )
+
+    def test_an_absolute_path_is_confined_to_pony_root(self) -> None:
+        """The sandbox has to hold the biggest directory a run writes to.
+
+        ``PONY_ROOT`` is documented as relocating every directory a run
+        writes to -- that is why no test can reach a real one -- and the
+        configuration docs tell the user to spell custom locations out
+        in full.  An absolute ``mirror.path`` went through unrelocated,
+        so a sandboxed run wrote the mirror wherever the config said.
+        """
+        import os
+
+        root = TMP_ROOT / "contained-mirror" / uuid4().hex
+        with unittest.mock.patch.dict(os.environ, {"PONY_ROOT": str(root)}):
+            config = parse_config(self._config("/var/mail/live-mail"))
+
+        path = config.accounts[0].mirror.path
+        self.assertTrue(
+            path.is_relative_to(root),
+            f"{path} escaped PONY_ROOT",
+        )
+        # Relocated, not merged: the spelling is still recoverable.
+        self.assertEqual(("var", "mail", "live-mail"), path.parts[-3:])

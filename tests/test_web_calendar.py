@@ -25,7 +25,7 @@ from tui_helpers import (
 )
 from web_helpers import form_fields, page_data
 
-from chronos.domain import CalendarRef
+from chronos.domain import CalendarRef, VEvent
 from chronos.mutations import is_all_day_span
 from pony.web import WebServices, build_web_app
 
@@ -765,6 +765,7 @@ def test_an_all_day_event_from_the_browser_is_stored_as_dates() -> None:
         )
         if found.summary == "Public holiday"
     ]
+    assert isinstance(component, VEvent)
     assert b"DTSTART;VALUE=DATE:20260517" in component.raw_ics
     assert b"DTEND;VALUE=DATE:20260518" in component.raw_ics
     assert is_all_day_span(component.dtstart, component.dtend)
@@ -792,6 +793,7 @@ def test_an_all_day_event_survives_being_opened_and_saved_again() -> None:
             )
             if found.summary == "Conference"
         ]
+        assert isinstance(stored, VEvent)
         # Re-open it, and save what the form was handed, unchanged.
         page = client.get(
             f"/calendar/event?uid={stored.ref.uid}"
@@ -820,6 +822,7 @@ def test_an_all_day_event_survives_being_opened_and_saved_again() -> None:
         )
         if found.summary == "Conference"
     ]
+    assert isinstance(again, VEvent)
     assert again.dtstart == stored.dtstart
     assert again.dtend == stored.dtend
 

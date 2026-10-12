@@ -1944,7 +1944,7 @@ class ResetCommandTest(unittest.TestCase):
         with isolated_app_env(), temporary_config() as config_path:
             archive = isolated_data_dir() / "archive-mbox"
             archive.mkdir(parents=True, exist_ok=True)
-            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            (archive / "INBOX.mbox").write_text("From nobody\n\n", encoding="utf-8")
             config_path.write_text(
                 sample_config_toml()
                 + f"""
@@ -1965,7 +1965,7 @@ format = "mbox"
 
         self.assertIn("Kept", output)
         self.assertIn("Archive", output)
-        self.assertTrue((archive / "INBOX").exists())
+        self.assertTrue((archive / "INBOX.mbox").exists())
 
     def test_reset_clears_the_cache_that_would_hide_a_kept_mirror(self) -> None:
         """Otherwise the kept mail is on disk and indexed by nothing.
@@ -1986,7 +1986,7 @@ format = "mbox"
             )
             archive = isolated_data_dir() / "archive-kept"
             archive.mkdir(parents=True, exist_ok=True)
-            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            (archive / "INBOX.mbox").write_text("From nobody\n\n", encoding="utf-8")
             config_path.write_text(
                 sample_config_toml()
                 + f"""
@@ -2010,14 +2010,14 @@ format = "mbox"
         # And the advice names the command that actually indexes it:
         # `pony sync` skips local accounts.
         self.assertIn("pony rescan", output)
-        self.assertTrue((archive / "INBOX").exists())
+        self.assertTrue((archive / "INBOX.mbox").exists())
 
     def test_reset_account_removes_a_local_mirror_when_named(self) -> None:
         """Naming it is asking for it."""
         with isolated_app_env(), temporary_config() as config_path:
             archive = isolated_data_dir() / "archive-named"
             archive.mkdir(parents=True, exist_ok=True)
-            (archive / "INBOX").write_text("From nobody\n\n", encoding="utf-8")
+            (archive / "INBOX.mbox").write_text("From nobody\n\n", encoding="utf-8")
             config_path.write_text(
                 sample_config_toml()
                 + f"""
@@ -3950,6 +3950,105 @@ class UnsafeDeleteTestCase(unittest.TestCase):
         self.assertIsNone(self._reason(self.data))
 
 
+class MirrorShapedDeleteTestCase(unittest.TestCase):
+    """A directory handed to rmtree has to look like a mirror first.
+
+    ``unsafe_to_delete`` enumerates three bad shapes, and the third --
+    "it contains the data directory" -- only happens to cover ``/home``
+    because the default ``data_dir`` is under ``$HOME``.  With
+    ``data_dir = /tmp/scratch`` and a mistyped ``mirror.path``,
+    ``/etc``, ``/usr`` and ``/home`` all passed every arm and
+    ``reset --yes`` deleted them with no prompt.
+    """
+
+    def setUp(self) -> None:
+        self.dir = TMP_ROOT / "mirror-shaped" / uuid4().hex
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def _reason(self, target: Path) -> str | None:
+        from pony.cli import not_a_mirror
+
+        return not_a_mirror(target)
+
+    def test_a_directory_full_of_other_peoples_files_is_refused(self) -> None:
+        for name in ("passwd", "hosts", "fstab"):
+            (self.dir / name).write_text("x", encoding="utf-8")
+
+        reason = self._reason(self.dir)
+
+        assert reason is not None
+        self.assertIn("holds no mirror", reason)
+
+    def test_a_maildir_mirror_is_allowed(self) -> None:
+        for name in ("cur", "new", "tmp"):
+            (self.dir / name).mkdir()
+        (self.dir / ".Archive").mkdir()
+
+        self.assertIsNone(self._reason(self.dir))
+
+    def test_an_mbox_mirror_is_allowed(self) -> None:
+        (self.dir / "INBOX.mbox").write_text("", encoding="utf-8")
+
+        self.assertIsNone(self._reason(self.dir))
+
+    def test_a_mirror_that_was_never_written_is_nothing_to_refuse(self) -> None:
+        self.assertIsNone(self._reason(self.dir / "never-synced"))
+        self.assertIsNone(self._reason(self.dir))
+
+    def test_a_home_directory_shaped_tree_is_refused(self) -> None:
+        """Dot-directories are what a Maildir subfolder looks like.
+
+        So "it has hidden directories in it" cannot be the test: a home
+        directory has `.config` and `.local` and is not a mirror.
+        """
+        for name in (".config", ".local", "Documents"):
+            (self.dir / name).mkdir()
+
+        reason = self._reason(self.dir)
+
+        assert reason is not None
+        self.assertIn("holds no mirror", reason)
+
+    def test_reset_refuses_a_mirror_path_that_holds_someone_elses_files(
+        self,
+    ) -> None:
+        """End to end: the refusal has to reach the command.
+
+        `data_dir` here is outside `$HOME`, which is the configuration
+        that made the third denylist arm stop covering anything.
+        """
+        with isolated_app_env() as env_root:
+            elsewhere = env_root / "not-a-mirror"
+            elsewhere.mkdir(parents=True, exist_ok=True)
+            (elsewhere / "passwd").write_text("root:x:0:0", encoding="utf-8")
+            config_path = env_root / "config" / "config.toml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                "config_version = 3\n"
+                f'data_dir = "{isolated_data_dir()}"\n'
+                'profile = "test"\n'
+                "[[accounts]]\n"
+                'name = "personal"\n'
+                'email_address = "user@example.com"\n'
+                'imap_host = "imap.example.com"\n'
+                'username = "user"\n'
+                'credentials_source = "plaintext"\n'
+                'password = "secret"\n'
+                "[accounts.smtp]\n"
+                'host = "smtp.example.com"\n'
+                "[accounts.mirror]\n"
+                f"path = '{elsewhere}'\n"
+                'format = "maildir"\n',
+                encoding="utf-8",
+            )
+
+            out, rc = run_cli_capture("--config", str(config_path), "reset", "--yes")
+
+            self.assertEqual(2, rc)
+            self.assertIn("Refusing to delete", out)
+            self.assertTrue((elsewhere / "passwd").exists())
+
+
 class ConfigInitTomlQuotingTestCase(unittest.TestCase):
     """A generated config must parse on the platform that wrote it.
 
@@ -4044,6 +4143,70 @@ class ReindexCommandTest(unittest.TestCase):
         self.assertIn("0 with a server handle", output)
         self.assertIn("will be uploaded by the next sync", output)
         self.assertIn("No message carried a handle", output)
+
+    def test_two_files_with_one_handle_are_reported_not_fatal(self) -> None:
+        """The rebuild carries on and names the count it left behind."""
+        from pony.config import load_config
+        from pony.domain import FolderRef
+        from pony.storage import MaildirMirrorRepository
+
+        with isolated_app_env(), temporary_config() as config_path:
+            paths = isolated_paths()
+            paths.ensure_runtime_dirs()
+            config = load_config(config_path)
+            account = next(iter(config.accounts))
+            folder = FolderRef(account_name=account.name, folder_name="INBOX")
+            mirror = MaildirMirrorRepository(
+                account_name=account.name,
+                root_dir=account.mirror.path,
+            )
+            for uid in (4, 4, 9):
+                mirror.store_message(
+                    folder=folder,
+                    raw_message=corpus.plain_text(),
+                    uid=uid,
+                    uid_validity=77,
+                )
+
+            output = run_cli("--config", str(config_path), "reindex")
+
+        self.assertIn("2 row(s) added", output)
+        self.assertIn("1 file(s) carry a handle", output)
+
+    def test_an_mbox_mirror_is_told_it_has_no_handles_to_recover(self) -> None:
+        """`reindex --help` promises something mbox cannot do.
+
+        An mbox storage key is a position in a file, so `stamp_uid` is
+        a documented no-op there and the command recovers exactly zero
+        handles -- while reporting a successful rebuild in which every
+        message came back as local-only, i.e. as an upload candidate.
+        """
+        with isolated_app_env() as env_root:
+            config_path = env_root / "config" / "config.toml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                "config_version = 3\n"
+                f'data_dir = "{isolated_data_dir()}"\n'
+                'profile = "test"\n'
+                "[[accounts]]\n"
+                'name = "boxed"\n'
+                'email_address = "user@example.com"\n'
+                'imap_host = "imap.example.com"\n'
+                'username = "user"\n'
+                'credentials_source = "plaintext"\n'
+                'password = "secret"\n'
+                "[accounts.smtp]\n"
+                'host = "smtp.example.com"\n'
+                "[accounts.mirror]\n"
+                'path = "mirrors/boxed"\n'
+                'format = "mbox"\n',
+                encoding="utf-8",
+            )
+
+            output = run_cli("--config", str(config_path), "reindex")
+
+        self.assertIn("cannot carry a server handle", output)
+        self.assertIn("mbox", output)
 
     def test_reindex_of_an_unknown_account_says_so(self) -> None:
         with (

@@ -1561,11 +1561,24 @@ def run_reindex(
         if not accounts:
             raise SystemExit(f"No account named {account!r} in config.")
 
-    added = with_uid = local_only = states = adopted = 0
+    added = with_uid = local_only = states = adopted = conflicts = 0
     for acc in accounts:
         print(f"Reindexing {acc.name} from {acc.mirror.path}...")
+        mirror = build_mirror(acc)
+        if not mirror.carries_handles:
+            # `reindex --help` promises "recovering each message's server
+            # handle from its filename", and an mbox key is a position
+            # in a file with nowhere to keep one.  Say so: otherwise the
+            # command reports a successful rebuild in which every single
+            # message came back as local-only, i.e. as an upload.
+            print(
+                f"  {acc.name} uses an {acc.mirror.format} mirror, whose keys"
+                " cannot carry a server handle, so there is none here to"
+                " recover: every message is indexed as local-only. Run"
+                " 'pony sync --dry-run' before syncing this account.",
+            )
         result = reindex_account_from_mirror(
-            mirror_repository=build_mirror(acc),
+            mirror_repository=mirror,
             index_repository=index,
             account_name=acc.name,
             progress=_rescan_progress,
@@ -1575,6 +1588,7 @@ def run_reindex(
         local_only += result.local_only
         states += result.states
         adopted += result.adopted
+        conflicts += result.conflicts
 
     print(
         f"Reindex complete: {added} row(s) added "
@@ -1582,6 +1596,12 @@ def run_reindex(
         f"{adopted} row(s) given back their handle, "
         f"{states} folder watermark(s) recovered.",
     )
+    if conflicts:
+        print(
+            f"{conflicts} file(s) carry a handle another message in the same"
+            " folder already holds, so they were left unindexed rather than"
+            " renumbered. They are still on disk; the log names them.",
+        )
     if local_only:
         # Not `local_only and with_uid`: the case that most needs
         # saying is the one where *nothing* carried a handle, because
@@ -2552,6 +2572,10 @@ def unsafe_to_delete(target: Path, *, data_dir: Path) -> str | None:
     ``mirror.path`` is a configured string.  Nothing stopped it naming
     ``/``, the home directory, or a parent of the data directory, and
     ``pony reset --yes`` would then hand that to ``shutil.rmtree``.
+
+    These three shapes are a denylist, which is the wrong shape for a
+    deletion guard and is why :func:`not_a_mirror` exists beside it: a
+    mirror path is additionally required to look like a mirror.
     """
     resolved = target.resolve()
     if resolved.parent == resolved:
@@ -2562,6 +2586,44 @@ def unsafe_to_delete(target: Path, *, data_dir: Path) -> str | None:
     if data_resolved != resolved and data_resolved.is_relative_to(resolved):
         return "it contains the data directory"
     return None
+
+
+# What a Maildir mirror root has in it from the moment it is opened:
+# `MaildirMirrorRepository.__init__` creates all three.
+_MAILDIR_ROOT_DIRS = frozenset({"cur", "new", "tmp"})
+
+
+def not_a_mirror(path: Path) -> str | None:
+    """Reason *path* does not look like a mirror Pony wrote, or None.
+
+    ``unsafe_to_delete`` enumerates bad shapes, and enumerating is the
+    wrong way round for something that calls ``shutil.rmtree``: with
+    ``data_dir`` outside ``$HOME`` -- which an isolated or scratch
+    profile has -- a mistyped ``mirror.path`` of ``/etc``, ``/usr`` or
+    ``/home`` passed all three arms, and ``reset --yes`` deleted it
+    without a prompt.  So the question is asked positively instead:
+    does this directory hold a mirror?
+
+    A Maildir mirror root carries ``cur``, ``new`` and ``tmp``; an mbox
+    mirror holds ``*.mbox`` files.  A directory that does not exist, or
+    that is empty, is nothing to refuse -- a mirror that has never been
+    written looks exactly like that.
+    """
+    if not path.exists():
+        return None
+    if not path.is_dir():
+        return "it is not a directory"
+    entries = list(path.iterdir())
+    if not entries:
+        return None
+    if {entry.name for entry in entries} >= _MAILDIR_ROOT_DIRS:
+        return None
+    if any(entry.suffix == ".mbox" and entry.is_file() for entry in entries):
+        return None
+    return (
+        "it holds no mirror: a Maildir mirror has cur/, new/ and tmp/ in"
+        " it, and an mbox mirror has .mbox files"
+    )
 
 
 def run_reset(
@@ -2601,6 +2663,11 @@ def run_reset(
     safe_targets: list[Path] = []
     for t in targets:
         reason = unsafe_to_delete(t, data_dir=paths.data_dir)
+        if reason is None and t != paths.index_db_file:
+            # Every other target is a mirror directory, and a mirror
+            # directory has to look like one before it is handed to
+            # rmtree.
+            reason = not_a_mirror(t)
         if reason is None:
             safe_targets.append(t)
         else:
@@ -2697,7 +2764,9 @@ def _run_reset_account(
             print("Reset cancelled.")
             return 0
 
-    reason = unsafe_to_delete(mirror_path, data_dir=paths.data_dir)
+    reason = unsafe_to_delete(mirror_path, data_dir=paths.data_dir) or not_a_mirror(
+        mirror_path
+    )
     if reason is not None:
         print(
             f"Refusing to delete {mirror_path} -- {reason}.",

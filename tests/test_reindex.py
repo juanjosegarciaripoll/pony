@@ -66,6 +66,60 @@ class ReindexFromMirrorTest(unittest.TestCase):
         self.assertEqual(result.with_uid, 1)
         self.assertEqual(result.local_only, 0)
 
+    def test_a_recovered_handle_carries_the_epoch_it_was_assigned_on(self) -> None:
+        """A UID without its epoch is a handle the planner cannot check.
+
+        `domain.IndexedMessage` documents `uid_validity` as the server's
+        UIDVALIDITY at the moment `uid` was assigned, and the planner's
+        one query for stale UIDs reads the row rather than the folder
+        watermark beside it.  A rebuilt row used to claim its UID on
+        epoch 0 while the watermark the same pass stamped said 7.
+        """
+        self._store("alpha", uid=42, uid_validity=7)
+
+        self._reindex()
+
+        (row,) = self.index.list_folder_messages(folder=INBOX)
+        self.assertEqual(42, row.uid)
+        self.assertEqual(7, row.uid_validity)
+        state = self.index.get_folder_sync_state(
+            account_name="personal",
+            folder_name="INBOX",
+        )
+        assert state is not None
+        self.assertEqual(state.uid_validity, row.uid_validity)
+
+    def test_two_files_claiming_one_handle_do_not_take_the_rebuild_down(
+        self,
+    ) -> None:
+        """One bad file used to cost the whole account's rows.
+
+        Two files in one folder carrying the same `,V=,U=` violate the
+        index's unique handle, and letting that refusal out of the
+        insert aborted the surrounding transaction -- so a rebuild of a
+        10,000-message account produced nothing at all.  The second
+        file is left on disk and counted instead.
+        """
+        self._store("twin", uid=5, uid_validity=7)
+        self._store("twin-again", uid=5, uid_validity=7)
+        self._store("other", uid=6, uid_validity=7)
+
+        result = self._reindex()
+
+        rows = self.index.list_folder_messages(folder=INBOX)
+        self.assertEqual(2, len(rows), "a duplicated handle lost every row")
+        self.assertEqual([5, 6], sorted(row.uid or 0 for row in rows))
+        self.assertEqual(2, result.added)
+        self.assertEqual(1, result.conflicts)
+        # And the watermark still describes the epoch on disk.
+        state = self.index.get_folder_sync_state(
+            account_name="personal",
+            folder_name="INBOX",
+        )
+        assert state is not None
+        self.assertEqual(7, state.uid_validity)
+        self.assertEqual(6, state.highest_uid)
+
     def test_the_folder_watermark_comes_back_too(self) -> None:
         """Without it the next sync would not know which epoch it is in."""
         for uid in (3, 11, 7):

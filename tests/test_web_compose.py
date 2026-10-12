@@ -13,7 +13,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from html import unescape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -34,6 +34,8 @@ from pony.domain import FolderRef
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
+    from email.message import EmailMessage
+
     from pony.index_store import SqliteIndexRepository
     from pony.paths import AppPaths
 
@@ -222,7 +224,7 @@ def test_sending_reaches_smtp_with_what_the_form_said() -> None:
     assert response.status_code == 303
     assert "Message+sent+to+you%40example.test" in response.headers["location"]
     (call,) = sent
-    message = call["msg"]
+    message = cast("EmailMessage", call["msg"])
     assert message["To"] == "you@example.test"
     assert message["Subject"] == "Lunch"
     # The Sent copy is in the index with no UID, for the next sync.
@@ -796,3 +798,118 @@ def test_only_a_draft_can_be_edited_as_one() -> None:
 
     assert response.status_code == 303
     assert "Drafts" in response.headers["location"]
+
+
+def test_the_staging_directory_lives_under_the_data_dir_and_is_swept_once() -> None:
+    """Where uploads wait, and what removes them when the process ends.
+
+    The directory used to be a ``tempfile.mkdtemp`` outside everything
+    ``PONY_ROOT`` relocates, removed by nothing; the lifetime that
+    replaced it -- under ``data_dir``, with one ``atexit`` sweep per
+    root however many applications are built -- had no test.
+    """
+    import pony.web.compose as compose_module
+
+    services, _index, paths = _services_and_paths("compose-staging-lifetime")
+    registered: list[tuple[Any, ...]] = []
+
+    with (
+        patch.object(compose_module, "_SWEPT", set()),
+        patch.object(
+            compose_module,
+            "atexit",
+            type(
+                "_FakeAtexit",
+                (),
+                {"register": staticmethod(lambda *a, **_kw: registered.append(a))},
+            ),
+        ),
+    ):
+        root = compose_module.staging_dir(services.config)
+        again = compose_module.staging_dir(services.config)
+        token, path = compose_module.stage_attachment(
+            services.config, "notes.txt", b"hello"
+        )
+
+    assert root == paths.data_dir / "web-attachments"
+    assert again == root
+    assert root.is_dir()
+    # One sweep for the root, not one per call.
+    assert len(registered) == 1
+    assert registered[0][1] == root
+    # And it really is the sweep: running it takes the staged file with it.
+    assert path.is_file()
+    registered[0][0](*registered[0][1:])
+    assert not root.exists()
+    assert compose_module.staged_path(services.config, token) is None
+
+
+def test_a_config_with_no_data_dir_stages_in_one_private_root() -> None:
+    """A token staged by one request has to be findable by the next.
+
+    Reachable only by building a config in code, but the fallback has to
+    be the *same* directory every time or the second request cannot find
+    what the first wrote.
+    """
+    import pony.web.compose as compose_module
+
+    services, _index, _paths = _services_and_paths("compose-staging-private")
+    config = dataclasses.replace(services.config, data_dir=None)
+
+    first = compose_module.staging_dir(config)
+    token, path = compose_module.stage_attachment(config, "notes.txt", b"hello")
+    second = compose_module.staging_dir(config)
+
+    assert first == second
+    assert compose_module.staged_path(config, token) == path
+    compose_module.release_staged(config, [path])
+    assert compose_module.staged_path(config, token) is None
+
+
+def test_a_ten_megabyte_attachment_survives_the_whole_round_trip() -> None:
+    """The size that is accepted, not only the size that is refused.
+
+    The cap at 25 MB has a test on both sides of it; nothing carried a
+    large file all the way through staging, the MIME build and the
+    base64 transfer encoding to check that what arrives at SMTP is the
+    bytes that were uploaded.  The body is pseudo-random rather than a
+    repeated byte, so a truncation or a re-encode shows up.
+    """
+    import hashlib
+    import random
+
+    payload = random.Random(20261012).randbytes(10 * 1024 * 1024)
+    digest = hashlib.sha256(payload).hexdigest()
+    services, _index = _services("compose-attachment-ten-mb")
+    sent: list[dict[str, object]] = []
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)),
+        _client(services) as client,
+    ):
+        staged = client.post("/compose/attachment?name=big.bin", content=payload)
+        assert staged.status_code == 200, staged.text
+        token = staged.json()["token"]
+        posted = client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "Ten megabytes",
+                "body": "Attached.",
+                "attachment": token,
+            },
+            follow_redirects=False,
+        )
+
+    assert posted.status_code in (302, 303)
+    (call,) = sent
+    parts = [
+        part
+        for part in call["msg"].walk()  # type: ignore[union-attr]
+        if part.get_filename() == "big.bin"
+    ]
+    assert len(parts) == 1
+    arrived = parts[0].get_payload(decode=True)
+    assert len(arrived) == len(payload)
+    assert hashlib.sha256(arrived).hexdigest() == digest

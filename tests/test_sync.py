@@ -285,12 +285,13 @@ def _make_raw_message(
     *,
     sender: str = "alice@example.com",
     recipient: str = "bob@example.com",
+    date: str = "Fri, 10 Apr 2026 10:00:00 +0000",
 ) -> bytes:
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = recipient
     msg["Subject"] = subject
-    msg["Date"] = "Fri, 10 Apr 2026 10:00:00 +0000"
+    msg["Date"] = date
     msg["Message-ID"] = message_id
     msg.set_content(f"Body of: {subject}")
     return msg.as_bytes()
@@ -3672,7 +3673,58 @@ class MassPushGuardTestCase(unittest.TestCase):
         index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
 
         summary = format_plan_detail(service.plan())
-        self.assertIn("would upload 6 message(s)", summary)
+        self.assertIn("would upload up to 6 message(s)", summary)
+
+    def test_the_halt_says_the_upload_count_is_an_upper_bound(self) -> None:
+        """Confirming mostly does not upload, and the prompt hid that.
+
+        `test_confirming_adopts_the_rows_instead_of_appending_them`
+        right below proves it: phase 1 re-attaches every row by its
+        Message-ID and `_execute_push_append` then skips the APPEND, so
+        all six "uploads" upload nothing.  The halt said
+        "would upload 6 message(s)" and asked whether to apply the sync
+        anyway -- which made declining, the answer that leaves the index
+        without its UIDs, look like the careful one.
+        """
+        from pony.sync import describe_halt
+
+        service, index, _, _ = self._folder_of(6)
+        service.sync()
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+
+        halt = describe_halt(service.plan())
+
+        self.assertIn("would upload up to 6 message(s)", halt)
+        self.assertIn("re-attached by its Message-ID", halt)
+        self.assertIn("not uploaded", halt)
+
+    def test_a_deletion_halt_is_not_given_the_upload_caveat(self) -> None:
+        """It is only true of uploads, so it is only said about them."""
+        from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan, describe_halt
+
+        plan = SyncPlan(
+            accounts=(
+                AccountSyncPlan(
+                    account_name="personal",
+                    folders=(
+                        FolderSyncPlan(
+                            folder_name="INBOX",
+                            uid_validity=1,
+                            highest_uid=10,
+                            ops=(),
+                            needs_confirmation=True,
+                            pending_delete_count=9,
+                            pending_delete_total=10,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        halt = describe_halt(plan)
+
+        self.assertIn("would delete 9 of 10", halt)
+        self.assertNotIn("Message-ID", halt)
 
     def test_confirming_adopts_the_rows_instead_of_appending_them(self) -> None:
         """Even confirmed, the rows are re-adopted, not duplicated.
@@ -3940,6 +3992,31 @@ class ProgressCadenceTestCase(unittest.TestCase):
         self.assertFalse(gate.due(2))
         self.assertTrue(gate.due(2, final=True))
 
+    def test_a_loop_with_nothing_to_count_is_gated_on_the_clock_alone(self) -> None:
+        """An argument-less `due()` was closed forever, whatever elapsed.
+
+        `due(done: int = 0)` compared 0 against the item last reported,
+        so `0 - 0 < stride` refused every call -- a gate with no item
+        count reported nothing, however long the work took.  All four
+        call sites pass `done`, so this was the trap waiting for the
+        fifth.
+        """
+        from chronos.outcome import ProgressGate
+
+        gate = ProgressGate(interval=0.0)
+
+        self.assertTrue(gate.due())
+        self.assertTrue(gate.due())
+
+    def test_a_countless_gate_still_waits_out_its_interval(self) -> None:
+        from chronos.outcome import ProgressGate
+
+        gate = ProgressGate(interval=60.0)
+        self.assertTrue(gate.due())
+
+        self.assertFalse(gate.due())
+        self.assertTrue(gate.due(final=True))
+
     def test_the_stride_is_derived_from_the_work(self) -> None:
         from chronos.outcome import PROGRESS_REPORTS_PER_UNIT, progress_stride
 
@@ -4118,3 +4195,92 @@ class AdoptionCostTestCase(unittest.TestCase):
             service.execute(plan, confirmed_folders=frozenset())
 
         self.assertEqual(calls, 20)
+
+
+class NonUtcDateIsAdoptedTestCase(unittest.TestCase):
+    """A reset adopts offset-dated mail that its Message-ID cannot place.
+
+    Adoption keys on Message-ID first; when that cannot settle it -- a
+    resend, a list copy, two messages sharing one id -- it falls back to
+    what the message says about itself, which includes its ``Date:``.
+    That comparison is SQL *text*, so a header offset that survived into
+    the stored row would not match the probe, and the row would be
+    duplicated and then appended to the server as an orphan.
+
+    The offset cannot in fact get that far: ``_parse_date``
+    (``src/pony/message_projection.py:150-161``) returns
+    ``parsed.astimezone(UTC)``, so every ``received_at`` the engine ever
+    compares is already UTC whatever the header said.  Verified by
+    removing both normalisations -- that one and
+    ``chronos.index_store.datetime_to_sql`` -- with this test still
+    green.  So this guards the adoption itself, which it does catch:
+    with ``_adopt_uid`` returning False the folder ends up with four
+    rows.  The text-comparison hazard is pinned where it is reachable,
+    at the index layer, by ``UtcNormalisationTest`` in
+    ``tests/test_index_store.py``.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+    #: One Message-ID on two messages, so the id cannot pick between
+    #: them and the projection fallback is the only way through.
+    shared_id = "<resent@example.com>"
+
+    def _server(
+        self,
+    ) -> dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]:
+        return {
+            "INBOX": {
+                1: (
+                    self.shared_id,
+                    frozenset(),
+                    _make_raw_message(
+                        "Berlin morning",
+                        self.shared_id,
+                        date="Fri, 10 Apr 2026 12:00:00 +0200",
+                    ),
+                ),
+                2: (
+                    self.shared_id,
+                    frozenset(),
+                    _make_raw_message(
+                        "Berlin afternoon",
+                        self.shared_id,
+                        date="Fri, 10 Apr 2026 16:30:00 +0200",
+                    ),
+                ),
+            }
+        }
+
+    def test_a_reset_adopts_rows_whose_date_carried_an_offset(self) -> None:
+        service, index, _mirror, session = _setup(server_folders=self._server())
+        service.sync()
+        # A flag sync rewrites every UID-bearing row, which is what
+        # normalised the stored timestamp while the probe kept the
+        # header's offset.  Without a pass like this the stored text and
+        # the probe agree by accident and the comparison proves nothing.
+        session.folders["INBOX"][1] = (
+            self.shared_id,
+            frozenset({MessageFlag.SEEN}),
+            session.folders["INBOX"][1][2],
+        )
+        service.sync()
+        before = {
+            row.message_ref.id: row.subject
+            for row in index.list_folder_messages(folder=self.folder)
+        }
+        self.assertEqual(len(before), 2)
+
+        session.uid_validity = 2
+        session.call_log.clear()
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 2, "the offset-dated rows were duplicated")
+        self.assertEqual(
+            {row.message_ref.id: row.subject for row in rows},
+            before,
+            "rows were replaced, not adopted",
+        )
+        self.assertTrue(all(row.uid is not None for row in rows), "UIDs not re-adopted")
+        # An unadopted row becomes an upload on the next pass.
+        self.assertNotIn("append", " ".join(session.call_log).lower())

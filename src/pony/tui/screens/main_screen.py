@@ -591,7 +591,12 @@ class MainScreen(Screen[None]):
         def _run_plan() -> SyncPlan:
             return service.plan(progress=_plan_progress)
 
-        self.run_worker(_run_plan, name="sync-plan", thread=True)
+        # `exit_on_error=False`: Textual's default takes the whole
+        # application down, and `plan` raises when every account fails
+        # to plan -- an unreachable server is enough.  The failure
+        # belongs in `_on_plan_complete`'s error arm, which could not
+        # be reached at all while the default stood.
+        self.run_worker(_run_plan, name="sync-plan", thread=True, exit_on_error=False)
 
     def _start_sync_worker(self) -> None:
         """Called by SyncConfirmScreen (via callback) when the user confirms."""
@@ -610,7 +615,7 @@ class MainScreen(Screen[None]):
                 plan, confirmed_folders=confirmed, progress=_progress
             )
 
-        self.run_worker(_run, name="sync-exec", thread=True)
+        self.run_worker(_run, name="sync-exec", thread=True, exit_on_error=False)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:  # pyright: ignore[reportUnknownParameterType]
         """Handle plan and sync worker completion."""

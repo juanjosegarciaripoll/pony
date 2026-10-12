@@ -439,6 +439,21 @@ _HALT_EXPLANATION = (
     " does a misconfigured account or an index that lost its UIDs."
 )
 
+# Said only when an upload is what halted, because it changes what the
+# number means.  An upload is counted while the plan is frozen, before
+# the server has been asked anything; phase 1 then re-attaches each row
+# to the UID its Message-ID already has there and `_execute_push_append`
+# re-reads the row and skips the APPEND.  So the frightening number is
+# mostly the count of handles the index lost, not of messages that will
+# leave -- and saying "would upload N" flatly made declining look like
+# the careful answer when it is the one that leaves the index broken.
+_PUSH_EXPLANATION = (
+    " The upload count is what the plan holds before the server is"
+    " asked: a message it turns out to already have is re-attached by"
+    " its Message-ID and then not uploaded, so the number that actually"
+    " goes out is usually far smaller."
+)
+
 
 def describe_halt(plan: SyncPlan) -> str:
     """Why *plan* stopped, folder by folder, in one paragraph.
@@ -448,6 +463,7 @@ def describe_halt(plan: SyncPlan) -> str:
     it in the confirmation dialog.  Empty when nothing is halted.
     """
     reasons: list[str] = []
+    pushing = False
     for account in plan.accounts:
         for folder in account.folders:
             if not folder.needs_confirmation:
@@ -460,14 +476,16 @@ def describe_halt(plan: SyncPlan) -> str:
                     f" of {folder.pending_delete_total} ({share:.0f}%)"
                 )
             elif folder.pending_push_count:
+                pushing = True
                 reasons.append(
-                    f"{where} would upload {folder.pending_push_count} message(s)"
+                    f"{where} would upload up to {folder.pending_push_count} message(s)"
                 )
             else:
                 reasons.append(f"{where} needs confirmation")
     if not reasons:
         return ""
-    return "; ".join(reasons) + ". " + _HALT_EXPLANATION
+    text = "; ".join(reasons) + ". " + _HALT_EXPLANATION
+    return text + _PUSH_EXPLANATION if pushing else text
 
 
 def format_plan_detail(plan: SyncPlan) -> str:
@@ -491,8 +509,8 @@ def format_plan_detail(plan: SyncPlan) -> str:
                 )
             elif folder.needs_confirmation and folder.pending_push_count:
                 confirm = (
-                    f" [CONFIRM: would upload {folder.pending_push_count}"
-                    f" message(s) to the server]"
+                    f" [CONFIRM: would upload up to"
+                    f" {folder.pending_push_count} message(s) to the server]"
                 )
             elif folder.needs_confirmation:
                 confirm = " [needs confirmation]"

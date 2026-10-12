@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Label, ProgressBar, Static
 
 from ...sync import (
@@ -136,7 +137,19 @@ class SyncConfirmScreen(DialogScreen):
             id="buttons",
         )
         dialog.mount(buttons)
-        self.query_one("#proceed", Button).focus()
+        # After the refresh, not now.  `mount` is asynchronous, so these
+        # Buttons are still only constructor children of a `Horizontal`
+        # that is not in the DOM yet, and `query_one` raised `NoMatches`
+        # every single time -- out of `MainScreen.on_worker_state_changed`
+        # and into the application's exception handler, which stopped the
+        # reader on any non-empty plan.
+        self.call_after_refresh(self._focus_proceed)
+
+    def _focus_proceed(self) -> None:
+        # The screen can be dismissed between the mount and the refresh,
+        # and then there is nothing to focus and nothing wrong.
+        with contextlib.suppress(NoMatches):
+            self.query_one("#proceed", Button).focus()
 
     def _confirm_warning_text(self) -> str:
         if self._plan is None:

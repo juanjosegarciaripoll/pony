@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import re
 import tempfile
@@ -927,11 +928,46 @@ class CalendarSelectionTest(unittest.TestCase):
 # Layer 2 — Pilot flows -------------------------------------------------------
 
 
+def _agenda_cells(screen: MainScreen) -> list[str]:
+    """Every cell the agenda's `EventList` is currently showing.
+
+    The repaint tests read this rather than re-querying the index: a
+    view that never repainted still has the right rows in SQLite.
+    """
+    table = screen.query_one(EventList)
+    return [
+        str(cell) for row in range(table.row_count) for cell in table.get_row_at(row)
+    ]
+
+
 class TuiFlowTestCase(unittest.IsolatedAsyncioTestCase):
-    """Base for Pilot-driven flows."""
+    """Base for Pilot-driven flows.
+
+    ``ai/AGENTS.md`` records three ``IsolatedAsyncioTestCase`` classes in
+    this suite.  There are 26 subclasses of this one base, carrying 82
+    test methods and 228 ``self.assertXxx`` calls, so converting them to
+    plain ``async def`` functions is a rewrite of a third of the file --
+    not something to slip into a test-hardening pass.  What the base
+    class costs the suite is neutralised here instead, and the trap it
+    sets is checked at the bottom of this file.
+    """
 
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _tearDownAsyncioRunner(self) -> None:  # noqa: N802
+        """Leave a usable event loop behind, the way a plain test does.
+
+        ``IsolatedAsyncioTestCase`` runs each test on an
+        ``asyncio.Runner`` of its own and closes it on teardown, which
+        closes that loop *and* leaves the thread with no current loop at
+        all -- so the next thing in this worker that reaches for one
+        gets ``RuntimeError: There is no current event loop``.  Under
+        ``-n auto --dist loadfile`` what runs next is whatever file the
+        worker picks up, which is why the casualty moved around.
+        """
+        super()._tearDownAsyncioRunner()  # type: ignore[misc]
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def services(
         self,
@@ -1619,6 +1655,23 @@ class EditExistingEventTest(TuiFlowTestCase):
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
+            # Put the event on screen first, so there is a repaint to
+            # observe.  The month window is pinned rather than left at
+            # the clock-derived default (CI runs in UTC; machines do
+            # not).
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("m")
+            await pilot.pause()
+            screen._viewed_date = date(2026, 5, 1)
+            screen.refresh_view()
+            await pilot.pause()
+            before = _agenda_cells(screen)
+            self.assertTrue(
+                any("Simple event" in cell for cell in before),
+                f"the agenda does not show the event to edit: {before}",
+            )
+
             screen._edit_specific(component)
             await pilot.pause()
             edit = pilot.app.screen
@@ -1626,6 +1679,17 @@ class EditExistingEventTest(TuiFlowTestCase):
             edit.query_one("#edit-summary").value = "Renamed"  # type: ignore[attr-defined]
             edit.action_save()
             await pilot.pause()
+            await pilot.pause()
+            # Read off the widget, inside the Pilot block: the index
+            # check below holds with `refresh_view()` deleted from
+            # `_save_event`, because by then there is no app left to
+            # ask.  The agenda is what the user is looking at.
+            shown = _agenda_cells(screen)
+
+        self.assertTrue(
+            any("Renamed" in cell for cell in shown),
+            f"the agenda still shows {shown}",
+        )
 
         # The agenda window covers 2026-04-25 → 2026-05-09 (NOW.date()
         # + 14 days). simple-event-1 starts 2026-05-01, so it falls
@@ -4524,3 +4588,189 @@ class AgendaKeysTest(TuiFlowTestCase):
             await pilot.pause()
 
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
+
+
+class ViewRepaintTest(TuiFlowTestCase):
+    """Every view has to repaint after a create, an edit or a delete.
+
+    In 4500 lines, `EventList` was touched for focus and `display`
+    only: `row_count` and row content never appeared, and the one test
+    named for an edit surviving read the index after the Pilot block had
+    already closed the app.
+    """
+
+    async def _month_agenda(self, pilot: Pilot[None]) -> MainScreen:
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.pause()
+        # Pinned, not clock-derived: CI runs in UTC and machines do not.
+        screen._viewed_date = date(2026, 5, 1)
+        screen.refresh_view()
+        await pilot.pause()
+        return screen
+
+    async def test_deleting_an_event_takes_its_row_off_the_agenda(self) -> None:
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        component = services.index.get_component(ref)
+        assert isinstance(component, VEvent)
+
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = await self._month_agenda(pilot)
+            before = _agenda_cells(screen)
+            self.assertTrue(any("Simple event" in cell for cell in before), before)
+
+            screen.delete_with_confirm(component)
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, ConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.pause()
+            after = _agenda_cells(screen)
+
+        self.assertFalse(any("Simple event" in cell for cell in after), after)
+
+    async def test_a_new_event_appears_in_the_timeline_it_was_added_to(self) -> None:
+        from chronos.tui.widgets.timeline_grid import TimelineGrid
+
+        services = self.services()
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            await pilot.press("1")  # Day view
+            await pilot.pause()
+            screen._viewed_date = date(2026, 5, 2)
+            screen.refresh_view()
+            await pilot.pause()
+            timeline = screen.query_one(TimelineGrid)
+            before = {
+                timeline.cell_ref(row, 1)
+                for row in range(timeline.row_count)
+                if timeline.cell_ref(row, 1) is not None
+            }
+
+            screen._save_event(
+                EditDraft(
+                    target=CalendarRef(ACCOUNT_NAME, WORK_CAL),
+                    summary="Added in the timeline",
+                    dtstart=datetime(2026, 5, 2, 10, 0, tzinfo=UTC),
+                    dtend=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+                    location="",
+                    description="",
+                    attendees=(),
+                    alarms=(),
+                    existing=None,
+                ),
+            )
+            await pilot.pause()
+            await pilot.pause()
+            after = {
+                timeline.cell_ref(row, 1)
+                for row in range(timeline.row_count)
+                if timeline.cell_ref(row, 1) is not None
+            }
+
+        self.assertEqual(before, set())
+        self.assertEqual(len(after), 1)
+
+    async def test_the_clock_refresh_leaves_the_cursor_where_it_was(self) -> None:
+        """`_refresh_keeping_cursor` appeared nowhere in this suite.
+
+        It is the whole reason a timer repaint does not feel like one,
+        and it is wired only to the clock tick, so deleting its body in
+        favour of a plain `refresh_view()` broke nothing.
+        """
+        from textual.coordinate import Coordinate
+
+        app = ChronosApp(self.services())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = await self._month_agenda(pilot)
+            table = screen.query_one(EventList)
+            self.assertGreater(table.row_count, 3)
+            table.focus()
+            table.cursor_coordinate = Coordinate(3, 0)
+            await pilot.pause()
+
+            screen._refresh_keeping_cursor()
+            await pilot.pause()
+            kept = table.cursor_coordinate
+
+            screen.refresh_view()
+            await pilot.pause()
+            reset = table.cursor_coordinate
+
+        self.assertEqual(kept, Coordinate(3, 0))
+        self.assertEqual(reset, Coordinate(0, 0))
+
+
+class SyncSlotRefusalTest(TuiFlowTestCase):
+    """`"Sync already running."` appeared twice in the screen and in no test.
+
+    Both keys have to refuse while a sync owns the slot: the dialog
+    (`g`), because a second progress screen would run a second sync over
+    the same accounts, and the background key (`ctrl+g`), because the
+    scheduler hands its slot out once.
+    """
+
+    async def test_both_sync_keys_refuse_while_one_is_already_running(self) -> None:
+        services = self.services(sync_runner=lambda **_: ())
+        app = ChronosApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            self.assertIsNotNone(services.sync_scheduler)
+
+            await pilot.press("g")
+            await pilot.pause()
+            self.assertIsInstance(pilot.app.screen, SyncConfirmScreen)
+            before = len(pilot.app._notifications)
+
+            # The dialog is up, so the slot is taken: both keys refuse.
+            screen.action_sync_dialog()
+            await pilot.pause()
+            screen.action_sync()
+            await pilot.pause()
+            messages = [n.message for n in pilot.app._notifications]
+
+            # No second dialog went up over the first one.
+            self.assertIsInstance(pilot.app.screen, SyncConfirmScreen)
+            self.assertEqual(len(pilot.app._notifications) - before, 2)
+
+        self.assertEqual(messages.count("Sync already running."), 2)
+
+
+# ---------------------------------------------------------------------------
+# The trap the base class above used to set
+# ---------------------------------------------------------------------------
+
+
+def test_the_async_test_cases_leave_a_usable_event_loop_behind() -> None:
+    """Nothing after a ``TuiFlowTestCase`` should find the loop gone.
+
+    This file ends with this on purpose: ``--dist loadfile`` keeps the
+    whole file on one worker and runs it in order, so by the time this
+    is reached every ``TuiFlowTestCase`` above has torn its runner down.
+    Without ``TuiFlowTestCase._tearDownAsyncioRunner`` this raises
+    ``RuntimeError: There is no current event loop in thread
+    'MainThread'`` -- which is the failure ``ai/AGENTS.md`` describes as
+    "depending on file order".
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        # 3.12+ deprecates get_event_loop with no running loop; the
+        # question here is whether there is one at all, not how it is
+        # spelled.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+
+    assert not loop.is_closed()

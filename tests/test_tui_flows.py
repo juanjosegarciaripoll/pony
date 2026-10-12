@@ -48,8 +48,10 @@ from pony.browser_preview import close_preview
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,
+    LocalAccountConfig,
     MessageFlag,
     MessageStatus,
+    MirrorConfig,
 )
 from pony.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from pony.sync import (
@@ -67,9 +69,30 @@ from pony.tui.widgets.folder_panel import SCHEDULED_SYNC_MARK, FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
 
-add_attachment_module.DirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
-save_folder_module._DirOnlyTree = DeterministicDirOnlyTree  # type: ignore[attr-defined]
 PonyApp = TestPonyApp
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_dir_trees(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap the worker-driven trees for the deterministic doubles, per test.
+
+    These used to be bare module-level assignments, which left the
+    production classes replaced for whatever file the xdist worker
+    picked up next -- and meant the real ``_DirOnlyTree.filter_paths``,
+    the whole reason that class exists, never ran anywhere.  It is
+    checked directly in ``test_the_directory_only_tree_hides_files``.
+    """
+    monkeypatch.setattr(
+        add_attachment_module,
+        "DirectoryTree",
+        DeterministicDirectoryTree,
+    )
+    monkeypatch.setattr(
+        save_folder_module,
+        "_DirOnlyTree",
+        DeterministicDirOnlyTree,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -779,9 +802,12 @@ async def test_q_key_quits_app() -> None:
     )
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert app.is_running
         await pilot.press("Q")
         await pilot.pause()
-    # If run_test exits cleanly the app quit without raising.
+        # Leaving the app is the whole behaviour, and a clean exit from
+        # ``run_test`` happens whether or not the key did anything.
+        assert not app.is_running
 
 
 async def test_message_list_renders_subject() -> None:
@@ -802,16 +828,49 @@ async def test_message_list_renders_subject() -> None:
         assert len(app.screen_stack) >= 1
 
 
-async def test_app_unmounts_cleanly() -> None:
-    """PonyApp tears down without raising during on_unmount."""
-    folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
-        label="unmount",
-        seed=[(folder, plain_text())],
+async def test_app_unmount_stops_the_background_sync_thread() -> None:
+    """Tearing the app down stops the scheduler it started.
+
+    The thread is a daemon, so nothing visible breaks when it is left
+    running -- which is why "no exception escaped" could stand in for
+    this for so long.
+    """
+    import dataclasses as _dc
+
+    paths = make_tmp_paths("unmount")
+    account = make_test_account(paths)
+    config = _dc.replace(
+        make_test_config(accounts=(account,)),
+        background_sync_enabled=True,
+        # Far enough out that the cadence never fires inside the test:
+        # the first run is one full interval after start().
+        background_sync_interval_seconds=3600,
     )
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<unmount@example.com>",
+    )
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+
     async with app.run_test() as pilot:
         await pilot.pause()
-    # Reaching here means on_unmount completed without exception.
+        scheduler = app.mail_sync
+        assert scheduler is not None
+        assert scheduler.started
+
+    assert not scheduler.started
 
 
 async def test_sync_nothing_to_sync_no_cancel_notification(
@@ -1261,25 +1320,29 @@ async def test_mark_all_read_notifies() -> None:
             (folder, _custom_plain("msg2", body="body2")),
         ],
     )
-    notifications: list[str] = []
-    original_notify = app.notify
-
-    def _capture(msg: str, **kw: object) -> None:
-        notifications.append(msg)
-        original_notify(msg, **kw)  # type: ignore[arg-type]
-
-    app.notify = _capture  # type: ignore[assignment,method-assign]
+    notifications = _capture_notifications(app)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
+        before = index.list_folder_messages(folder=folder)
+        # Opening the folder puts the cursor on the first row and reads
+        # it, so exactly one of the two is still unread.
+        unread_before = [
+            row for row in before if MessageFlag.SEEN not in row.local_flags
+        ]
         await pilot.press("C")
         await pilot.pause()
-    # May or may not notify depending on whether messages are already read
-    # — no crash is the key assertion.
+        after = index.list_folder_messages(folder=folder)
+
+    # The flag in the index is the whole operation, and the count in the
+    # notice is what tells the user it happened.
+    assert len(unread_before) == 1
+    assert [MessageFlag.SEEN in row.local_flags for row in after] == [True, True]
+    assert "Marked 1 message as read." in notifications
 
 
-async def test_mark_unread_does_not_crash() -> None:
-    """Pressing u on a message does not crash."""
+async def test_mark_unread_takes_the_seen_flag_back_off() -> None:
+    """Pressing u on a message that was read clears SEEN again."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, index, mirrors = build_pony_app(label="mark-unread")
     seed_message(
@@ -1292,9 +1355,17 @@ async def test_mark_unread_does_not_crash() -> None:
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
+        # Opening the reader is what sets SEEN, so there is something
+        # for u to undo; without this the press is a no-op either way.
+        await pilot.press("enter")
+        await pilot.pause()
+        opened = index.list_folder_messages(folder=folder)
         await pilot.press("u")
         await pilot.pause()
-    # Reaching here without exception is the test passing.
+        after = index.list_folder_messages(folder=folder)
+
+    assert [MessageFlag.SEEN in row.local_flags for row in opened] == [True]
+    assert [MessageFlag.SEEN in row.local_flags for row in after] == [False]
 
 
 async def test_goto_folder_shortcut_opens_dialog() -> None:
@@ -1356,13 +1427,21 @@ async def test_compose_new_opens_compose_screen(
 async def test_compose_cancel_empty_dismisses_without_prompt() -> None:
     """Pressing Escape on an empty composer dismisses without showing a save prompt."""
 
+    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="cancel-empty")
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
         await pilot.press("escape")
         await pilot.pause()
-    # No SaveDraftScreen should appear — empty body → direct dismiss.
-    # If app exited cleanly without showing SaveDraftScreen, the test passes.
+        prompted = [s for s in app.screen_stack if isinstance(s, SaveDraftScreen)]
+        # Dismissing the empty composer exits the app, which is the
+        # only observable difference from being asked about a draft.
+        left = not any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+
+    assert prompted == []
+    assert left
 
 
 async def test_compose_cancel_with_content_shows_draft_prompt() -> None:
@@ -1396,6 +1475,7 @@ async def test_compose_send_smtp_error_notifies(
         "pony.delivery.smtp_send",
         lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
     )
+    notifications = _capture_notifications(app)
     async with app.run_test() as pilot:
         await pilot.pause()
         from textual.widgets import Input, TextArea
@@ -1406,7 +1486,11 @@ async def test_compose_send_smtp_error_notifies(
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-    # The compose screen should still be accessible (send failed, did not dismiss)
+        still_open = [s for s in app.screen_stack if isinstance(s, ComposeScreen)]
+
+    assert any("connection refused" in n for n in notifications)
+    # A failed send must not throw the typing away.
+    assert len(still_open) == 1
 
 
 async def _fill_and_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
@@ -1776,8 +1860,11 @@ async def test_message_view_navigate_next() -> None:
         # Navigate to next with "n"
         await pilot.press("n")
         await pilot.pause()
-        # First and next texts may differ or be the same (wrapping) — no crash is key
-        assert first_text is not None
+        next_text = str(view.query_one("#content", Static).render())
+
+    # ``assert first_text is not None`` held however little n did.
+    assert "first body" in first_text
+    assert "second body" in next_text
 
 
 async def test_message_list_sort_and_filter() -> None:
@@ -2065,9 +2152,15 @@ async def test_reply_all_opens_compose_with_cc(
         await pilot.pause()
         await pilot.press("R")
         await pilot.pause()
-        assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+        composer = next(s for s in app.screen_stack if isinstance(s, ComposeScreen))
+        # The name of the test is the Cc, which was never looked at.
+        cc = composer._collect_field("cc-container")  # noqa: SLF001
+        to = composer._collect_field("to-container")  # noqa: SLF001
         await pilot.press("Q")
         await pilot.pause()
+
+    assert "carol@example.com" in cc
+    assert "alice@example.com" in to
 
 
 async def test_compose_send_with_contacts_harvests_recipients(
@@ -2202,13 +2295,16 @@ async def test_harvest_contacts_key_no_contacts_store() -> None:
         seed=[(folder, plain_text())],
     )
     # build_pony_app does not pass contacts, so H should show a notification
+    notifications = _capture_notifications(app)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
         await pilot.pause()
         await pilot.press("H")
         await pilot.pause()
-    # No crash expected; harvest_contacts was a no-op (no contacts store)
+
+    # Said, not swallowed: without the notice the key looks dead.
+    assert "No contact store is open." in notifications
 
 
 async def test_message_view_prev_message_key() -> None:
@@ -2340,6 +2436,8 @@ async def test_compose_cancel_save_draft_saves_to_drafts() -> None:
         index=index,
         mirrors=dict(mirrors),
     )
+    notifications = _capture_notifications(app)
+    drafts = FolderRef(account_name="acct", folder_name="Drafts")
     async with app.run_test() as pilot:
         await pilot.pause()
         from textual.widgets import Input
@@ -2351,9 +2449,17 @@ async def test_compose_cancel_save_draft_saves_to_drafts() -> None:
         # SaveDraftScreen should appear, press y to save
         await pilot.press("y")
         await pilot.pause()
-    # Draft should be saved (no crash = success)
-    # Draft may or may not be in Drafts (depends on account.drafts_folder config)
-    # — the important thing is no exception was raised
+        filed = index.list_folder_messages(folder=drafts)
+
+    # The point of answering "yes" is a row in Drafts addressed to the
+    # recipient that was typed, and a file behind it in the mirror.
+    assert len(filed) == 1
+    assert "bob@example.com" in filed[0].recipients
+    assert mirrors["acct"].get_message_bytes(
+        folder=drafts,
+        storage_key=filed[0].storage_key,
+    )
+    assert any("Saved in Drafts." in n for n in notifications)
 
 
 async def test_message_list_mark_and_navigation() -> None:
@@ -2367,30 +2473,59 @@ async def test_message_list_mark_and_navigation() -> None:
             (folder, _custom_plain("c")),
         ],
     )
+
+    def _subjects(panel: MessageListPanel) -> list[str]:
+        return [summary.subject for summary in panel.marked_summaries()]
+
+    def _cursor(panel: MessageListPanel) -> str | None:
+        summary = panel.get_selected_summary()
+        return None if summary is None else summary.subject
+
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         ml = app.screen.query_one(MessageListPanel)
         ml.focus()
         await pilot.pause()
         await pilot.pause()  # Extra pause to let message list load
+        # All three carry the same Date, so the list keeps insert order.
+        assert _cursor(ml) == "a"
         # Press m to mark current row
         await pilot.press("m")
         await pilot.pause()
+        after_mark = _subjects(ml)
         # Jump to last row with >
         await pilot.press("greater_than_sign")
         await pilot.pause()
         await pilot.pause()  # Wait for async cursor_last
+        at_last = _cursor(ml)
         # Jump to first row with <
         await pilot.press("less_than_sign")
         await pilot.pause()
+        at_first = _cursor(ml)
         # Use shift+down to mark and move
         await pilot.press("shift+down")
         await pilot.pause()
+        after_mark_down = _subjects(ml)
+        moved_on = _cursor(ml)
         # Also test n/p navigation in the message list
         await pilot.press("n")
         await pilot.pause()
+        after_n = _cursor(ml)
         await pilot.press("p")
         await pilot.pause()
+        after_p = _cursor(ml)
+
+    # Every one of these keys has an observable result; the test used to
+    # press all seven and assert none of them.
+    assert after_mark == ["a"]
+    assert at_last == "c"
+    assert at_first == "a"
+    # shift+down *toggles* where it was and steps down, and "a" was
+    # already marked by m, so the mark comes back off.
+    assert after_mark_down == []
+    assert moved_on == "b"
+    assert after_n == "c"
+    assert after_p == "b"
 
 
 async def test_folder_panel_with_nested_folders() -> None:
@@ -2425,8 +2560,18 @@ async def test_folder_panel_with_nested_folders() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         fp = app.screen.query_one(FolderPanel)
-        # The tree should have rendered without error
-        assert fp is not None
+        labels = {str(node.label) for node in fp.root.children[0].children}
+        branch = next(
+            node
+            for node in fp.root.children[0].children
+            if str(node.label).startswith("Archive")
+        )
+        leaves = {str(child.label) for child in branch.children}
+
+    # "Archive" is a branch the two years hang off, not three siblings.
+    assert any(label.startswith("INBOX") for label in labels)
+    assert not any(label.startswith("Archive/") for label in labels)
+    assert {leaf.split()[0] for leaf in leaves} == {"2023", "2024"}
 
 
 async def test_compose_toggle_markdown() -> None:
@@ -2483,9 +2628,11 @@ async def test_compose_screen_prompts_for_name_when_no_display_name() -> None:
         # If contacts store is set and account has no display name,
         # ContactEditScreen should be pushed
         has_edit = any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
-        if has_edit:
-            await pilot.press("escape")
-            await pilot.pause()
+        # Asserted, not branched on: ``if has_edit:`` made the whole
+        # test a no-op the moment the prompt stopped being pushed.
+        assert has_edit
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 async def test_compose_send_fails_without_password(
@@ -2553,11 +2700,17 @@ async def test_browse_contacts_no_store_notifies() -> None:
         seed=[(folder, plain_text())],
     )
     # build_pony_app doesn't pass contacts, so browse should show notification
+    notifications = _capture_notifications(app)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("B")
         await pilot.pause()
-    # No crash - notification was shown
+        from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+
+        opened = [s for s in app.screen_stack if isinstance(s, ContactBrowserScreen)]
+
+    assert "No contacts store available." in notifications
+    assert opened == []
 
 
 async def test_harvest_contacts_with_store() -> None:
@@ -2584,17 +2737,39 @@ async def test_harvest_contacts_with_store() -> None:
         contacts=index,  # Pass contacts so H actually harvests
         config_path=paths.config_file,
     )
+    notifications = _capture_notifications(app)
+    assert index.list_all_contacts() == []
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("H")
         await pilot.pause()
-    # Harvest ran without error
+        harvested = index.list_all_contacts()
+
+    # ``corpus.plain_text`` carries To: bob and Cc: carol, so those are
+    # the records the key is supposed to have created.
+    assert sorted(email for contact in harvested for email in contact.emails) == [
+        "bob@example.com",
+        "carol@example.com",
+    ]
+    assert any("Harvested contacts from 1 message(s)" in n for n in notifications)
 
 
 async def test_compose_new_no_smtp_notifies() -> None:
-    """Pressing c with no sendable accounts shows a notification."""
+    """Pressing c with no sendable accounts shows a notification.
+
+    The only account shape that cannot send is a local one with no SMTP
+    block: ``AccountConfig.can_send`` is unconditionally True, so an
+    IMAP account is always sendable however its SMTP block is built.
+    """
     paths = make_tmp_paths("no-smtp")
-    account = make_test_account(paths, with_smtp=False)
+    mirror_dir = paths.data_dir / "mirrors" / "acct"
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    account = LocalAccountConfig(
+        name="acct",
+        email_address="acct@example.com",
+        mirror=MirrorConfig(path=mirror_dir, format="maildir"),
+    )
+    assert not account.can_send
     config = make_test_config(accounts=(account,))
     index = make_index(paths)
     mirrors = make_mirrors(config)
@@ -2614,11 +2789,18 @@ async def test_compose_new_no_smtp_notifies() -> None:
         credentials=credentials,
         config_path=paths.config_file,
     )
+    notifications = _capture_notifications(app)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("c")
         await pilot.pause()
-    # Should show notification, not open compose
+        opened = [s for s in app.screen_stack if isinstance(s, ComposeScreen)]
+
+    assert opened == []
+    assert any(
+        "Composing requires an IMAP account (SMTP is needed to send)." in n
+        for n in notifications
+    )
 
 
 async def test_open_attachments_key_shows_picker() -> None:
@@ -2789,9 +2971,98 @@ async def test_compose_from_draft_opens_compose() -> None:
         # Press e to edit the draft
         await pilot.press("e")
         await pilot.pause()
-        assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+        composer = next(s for s in app.screen_stack if isinstance(s, ComposeScreen))
+        from textual.widgets import Input, TextArea
+
+        resumed_to = composer._collect_field("to-container")  # noqa: SLF001
+        resumed_subject = composer.query_one("#subject-input", Input).value
+        resumed_body = composer.query_one("#body-area", TextArea).text
         await pilot.press("Q")
         await pilot.pause()
+
+    # "with draft content" was the claim; only the screen class was read.
+    assert resumed_to == "bob@example.com"
+    assert resumed_subject == "My draft"
+    assert "Draft body text" in resumed_body
+
+
+async def test_resuming_a_draft_and_saving_leaves_one_row_in_drafts() -> None:
+    """Saving an edited draft replaces it rather than adding beside it.
+
+    Both halves of this are covered at the model layer and in the
+    browser; through the terminal, nothing reached ``_on_draft_done`` at
+    all, because the screen test that resumes a draft replaces
+    ``app.push_screen`` with a ``Mock``.
+    """
+    from email.message import EmailMessage
+
+    from pony.domain import MessageStatus
+
+    folder = FolderRef(account_name="acct", folder_name="Drafts")
+    draft_msg = EmailMessage()
+    draft_msg["From"] = "acct@example.com"
+    draft_msg["To"] = "bob@example.com"
+    draft_msg["Subject"] = "Half written"
+    draft_msg["Date"] = "Fri, 11 Apr 2026 10:00:00 +0000"
+    draft_msg["Message-ID"] = "<resume-me@example.com>"
+    draft_msg.set_content("First half")
+
+    paths = make_tmp_paths("draft-resume-save")
+    account = make_test_account(paths)
+    config = make_test_config(accounts=(account,))
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=draft_msg.as_bytes(),
+        message_id="<resume-me@example.com>",
+    )
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+    notifications = _capture_notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one(FolderPanel).select_folder_ref(folder)
+        await pilot.pause()
+        await pilot.pause()
+        msg_list = app.screen.query_one(MessageListPanel)
+        msg_list.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        composer = next(s for s in app.screen_stack if isinstance(s, ComposeScreen))
+        from textual.widgets import TextArea
+
+        composer.query_one("#body-area", TextArea).load_text("Second half")
+        await pilot.pause()
+        # Escape, then y: save the draft rather than discarding it.
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        await pilot.pause()
+        rows = index.list_folder_messages(folder=folder)
+
+    live = [row for row in rows if row.local_status is not MessageStatus.TRASHED]
+    assert any("Saved in Drafts." in n for n in notifications)
+    assert len(live) == 1
+    assert live[0].message_id != "<resume-me@example.com>"
+    saved = mirrors["acct"].get_message_bytes(
+        folder=folder,
+        storage_key=live[0].storage_key,
+    )
+    assert b"Second half" in saved
 
 
 async def test_new_folder_creates_in_mirror() -> None:
@@ -2857,13 +3128,15 @@ async def test_open_attachment_numeric_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pressing '1' in the message view opens attachment 1 directly."""
-    launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    launch_mock = Mock()
     monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+    app, config, _paths, _index, _mirrors = build_pony_app(
         label="open-att-numeric",
         seed=[(folder, multipart_mixed_attachment())],
     )
+    assert config.downloads_path is not None
+    saved = config.downloads_path / "q1-report.pdf"
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2875,17 +3148,24 @@ async def test_open_attachment_numeric_key(
         await pilot.press("1")
         await pilot.pause()
         await pilot.pause()
-    # attachment should have been opened or notification shown
-    # (no crash = success)
+
+    # The key writes the part out and hands the file to the viewer; both
+    # halves are observable, and neither was asserted before.
+    assert saved.is_file()
+    assert saved.read_bytes() == b"%PDF-1.4 fake pdf content"
+    assert [call.args[0] for call in launch_mock.call_args_list] == [saved]
 
 
 async def test_save_attachment_numeric_key() -> None:
     """Pressing ctrl+1 in the message view saves attachment 1."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+    app, config, _paths, _index, _mirrors = build_pony_app(
         label="save-att-numeric",
         seed=[(folder, multipart_mixed_attachment())],
     )
+    notifications = _capture_notifications(app)
+    assert config.downloads_path is not None
+    saved = config.downloads_path / "q1-report.pdf"
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2897,22 +3177,30 @@ async def test_save_attachment_numeric_key() -> None:
         await pilot.press("ctrl+1")
         await pilot.pause()
         await pilot.pause()
-    # no crash = success
+
+    assert saved.is_file()
+    assert saved.read_bytes() == b"%PDF-1.4 fake pdf content"
+    assert any("Saved 1 attachment(s) to" in n for n in notifications)
 
 
 async def test_archive_no_folder_configured_notifies() -> None:
     """Pressing A when archive_folder is not configured shows an error."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     # build_pony_app doesn't set archive_folder by default
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
         label="archive-no-folder",
         seed=[(folder, plain_text())],
     )
+    notifications = _capture_notifications(app)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("A")
         await pilot.pause()
-    # Should show "No archive_folder configured" notification — no crash
+        still_there = index.list_folder_messages(folder=folder)
+
+    assert "No archive_folder configured for this account." in notifications
+    # A refusal leaves the message where it was.
+    assert len(still_there) == 1
 
 
 async def test_reply_and_send_marks_answered(
@@ -2966,6 +3254,8 @@ async def test_reply_and_send_marks_answered(
 
 async def test_navigate_prev_in_message_view() -> None:
     """Pressing p in message view navigates to previous message."""
+    from textual.widgets import Static
+
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="nav-prev-view",
@@ -2983,12 +3273,23 @@ async def test_navigate_prev_in_message_view() -> None:
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # Now press p in the view to go back
         view = app.screen.query_one(MessageViewPanel)
+        opened_second = str(view.query_one("#content", Static).render())
+        # Now press p in the view to go back
         view.focus()
         await pilot.pause()
         await pilot.press("p")
         await pilot.pause()
+        opened_first = str(view.query_one("#content", Static).render())
+        cursor = ml.get_selected_summary()
+
+    # p has to move both halves: the reader's body and the list cursor
+    # behind it, or the next action works on a different message than
+    # the one on screen.
+    assert "second body" in opened_second
+    assert "first body" in opened_first
+    assert cursor is not None
+    assert cursor.subject == "msg1"
 
 
 async def test_compose_reply_sends_and_marks_answered(
@@ -3194,23 +3495,52 @@ async def test_next_unread_request_advances_the_reader() -> None:
 
 
 async def test_next_unread_request_at_the_end_is_a_noop() -> None:
-    """With nothing unread after the cursor the reader stays put."""
+    """With nothing unread after the cursor the reader stays put.
+
+    Seeded so that an unread row sits *before* the cursor: the search
+    has to start after it, and "nothing unread anywhere" would pass
+    whichever end it started from.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="next-unread-end",
-        seed=[(folder, plain_text())],
+        seed=[
+            (folder, _custom_plain("a", body="a body")),
+            (folder, _custom_plain("b", body="b body")),
+            (folder, _custom_plain("c", body="c body")),
+        ],
     )
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         screen = app.screen
         assert isinstance(screen, MainScreen)
+        msg_list = screen.query_one(MessageListPanel)
+        msg_list.focus()
+        await pilot.pause()
+        # Open the last row; "b" in the middle is still unread.
+        await pilot.press("greater_than_sign")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        unread = [
+            summary.subject
+            for summary in msg_list._summaries  # noqa: SLF001
+            if MessageFlag.SEEN not in summary.local_flags
+        ]
         view = screen.query_one(MessageViewPanel)
+        before = msg_list.get_selected_summary()
         view.post_message(MessageViewPanel.NextUnreadRequested())
         await pilot.pause()
         await pilot.pause()
-        # Still on the main screen, nothing raised.
-        assert isinstance(app.screen, MainScreen)
+        after = msg_list.get_selected_summary()
+
+    # "Stays put" is about the cursor, not about the screen class.
+    assert unread == ["b"]
+    assert before is not None
+    assert before.subject == "c"
+    assert after is not None
+    assert after.message_ref == before.message_ref
 
 
 async def test_external_editor_without_configuration_warns() -> None:
@@ -3656,3 +3986,86 @@ async def test_open_attachment_without_matching_viewer_uses_os_default(
     launch_mock.assert_called_once()
     _path, command = launch_mock.call_args.args
     assert command is None
+
+
+async def test_quitting_while_a_sync_runs_does_not_wait_it_out() -> None:
+    """Q during a sync leaves, and leaves the thread to exit on its own.
+
+    A mail sync has no cancellation point, so the thread is a daemon and
+    ``stop`` joins it with a timeout rather than blocking exit on an
+    IMAP session that will not come back.  Nothing exercised quitting
+    while one was in flight.
+    """
+    import dataclasses as _dc
+
+    paths = make_tmp_paths("quit-while-syncing")
+    account = make_test_account(paths)
+    config = _dc.replace(
+        make_test_config(accounts=(account,)),
+        background_sync_enabled=True,
+        background_sync_interval_seconds=3600,
+    )
+    index = make_index(paths)
+    mirrors = make_mirrors(config)
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    seed_message(
+        index=index,
+        mirror=mirrors["acct"],
+        folder=folder,
+        raw=plain_text(),
+        message_id="<quit-sync@example.com>",
+    )
+
+    running = threading.Event()
+    release = threading.Event()
+
+    def _blocks(_self: ImapSyncService, **_kwargs: object) -> SyncResult:
+        running.set()
+        # Deliberately ignores the cancel event, which is the case the
+        # join timeout exists for.
+        release.wait(10)
+        return SyncResult(accounts=())
+
+    app = PonyApp(
+        config=config,
+        index=index,
+        mirrors=dict(mirrors),
+        credentials=PlaintextCredentialsProvider(config),
+        config_path=paths.config_file,
+    )
+    original = ImapSyncService.sync
+    ImapSyncService.sync = _blocks  # type: ignore[method-assign]
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scheduler = app.mail_sync
+            assert scheduler is not None
+            assert scheduler.request_now()
+            # Polled rather than waited on: the scheduler announces its
+            # start through `call_from_thread`, so blocking this thread
+            # on an Event blocks the callback it is waiting for.
+            for _ in range(200):
+                if running.is_set():
+                    break
+                await pilot.pause()
+            assert running.is_set()
+            assert scheduler.running
+
+            await pilot.press("Q")
+            await pilot.pause()
+
+            # Left: the app is gone while the uninterruptible run is
+            # still in flight on its daemon thread.  Waiting it out is
+            # what must not happen -- the exit would hang on it.
+            assert not app.is_running
+            assert scheduler.running
+            # Let it finish before teardown, so the unmount's own
+            # `stop` does not spend its 5 s join timeout here.
+            release.set()
+            for _ in range(200):
+                if not scheduler.running:
+                    break
+                await pilot.pause()
+    finally:
+        ImapSyncService.sync = original  # type: ignore[method-assign]
+        release.set()

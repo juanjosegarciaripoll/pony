@@ -12,6 +12,7 @@ import dataclasses
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from textual.containers import Horizontal, Vertical
 from textual.events import Paste
 from textual.widgets import Button, Input
@@ -374,11 +375,11 @@ async def test_quoted_display_names_survive_the_round_trip() -> None:
         assert screen._collect_field("cc-container") == cc
 
 
-async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
+async def test_a_sent_message_keeps_quoted_recipients_intact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The address that reaches SMTP must be the one the reply started with."""
     from unittest.mock import Mock
-
-    import pony.delivery as delivery_module
 
     cc = '"Doe, John" <john@example.test>, plain@example.test'
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
@@ -393,8 +394,9 @@ async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _screen(app)
-        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
-            side_effect=lambda **kwargs: sent.append(kwargs)
+        monkeypatch.setattr(
+            "pony.delivery.smtp_send",
+            Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
         await pilot.pause()
@@ -407,7 +409,9 @@ async def test_a_sent_message_keeps_quoted_recipients_intact() -> None:
     assert names[0] == "Doe, John"
 
 
-async def test_a_non_plaintext_account_can_actually_send() -> None:
+async def test_a_non_plaintext_account_can_actually_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Every backend offered in the From dropdown must reach SMTP.
 
     ``action_send`` used to read ``account.password`` — the literal TOML
@@ -418,8 +422,6 @@ async def test_a_non_plaintext_account_can_actually_send() -> None:
     from unittest.mock import Mock
 
     from tui_helpers import make_test_account, make_tmp_paths
-
-    import pony.delivery as delivery_module
 
     paths = make_tmp_paths("env-send")
     account = dataclasses.replace(
@@ -442,8 +444,9 @@ async def test_a_non_plaintext_account_can_actually_send() -> None:
         screen._credentials = Mock(  # type: ignore[attr-defined]
             get_password=Mock(return_value="resolved-from-env")
         )
-        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
-            side_effect=lambda **kwargs: sent.append(kwargs)
+        monkeypatch.setattr(
+            "pony.delivery.smtp_send",
+            Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
         await pilot.pause()
@@ -452,11 +455,12 @@ async def test_a_non_plaintext_account_can_actually_send() -> None:
     assert sent[0]["password"] == "resolved-from-env"  # type: ignore[index]
 
 
-async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
+async def test_a_failing_credential_lookup_is_reported_not_crashed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A backend that cannot produce a password must not take the app down."""
     from unittest.mock import Mock
 
-    import pony.delivery as delivery_module
     from pony.config import ConfigError
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
@@ -477,8 +481,9 @@ async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
         screen.notify = Mock(  # type: ignore[method-assign]
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
-        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
-            side_effect=lambda **kwargs: sent.append(kwargs)
+        monkeypatch.setattr(
+            "pony.delivery.smtp_send",
+            Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
         await pilot.pause()
@@ -487,11 +492,11 @@ async def test_a_failing_credential_lookup_is_reported_not_crashed() -> None:
     assert any("keyring locked" in n for n in notices), notices
 
 
-async def test_without_a_provider_the_configured_password_is_used() -> None:
+async def test_without_a_provider_the_configured_password_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A composer built without a provider still sends from config."""
     from unittest.mock import Mock
-
-    import pony.delivery as delivery_module
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(
         label="no-provider-send",
@@ -505,8 +510,9 @@ async def test_without_a_provider_the_configured_password_is_used() -> None:
         await pilot.pause()
         screen = _screen(app)
         assert screen._credentials is None
-        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
-            side_effect=lambda **kwargs: sent.append(kwargs)
+        monkeypatch.setattr(
+            "pony.delivery.smtp_send",
+            Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
         await pilot.pause()
@@ -514,13 +520,13 @@ async def test_without_a_provider_the_configured_password_is_used() -> None:
     assert sent, "the configured password was ignored"
 
 
-async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
+async def test_no_password_anywhere_is_refused_with_a_clear_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Neither a provider nor a configured password: refuse, do not crash."""
     from unittest.mock import Mock
 
     from tui_helpers import make_test_account, make_tmp_paths
-
-    import pony.delivery as delivery_module
 
     paths = make_tmp_paths("no-password")
     account = dataclasses.replace(make_test_account(paths), password=None)
@@ -540,8 +546,9 @@ async def test_no_password_anywhere_is_refused_with_a_clear_notice() -> None:
         screen.notify = Mock(  # type: ignore[method-assign]
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
-        delivery_module.smtp_send = Mock(  # type: ignore[attr-defined]
-            side_effect=lambda **kwargs: sent.append(kwargs)
+        monkeypatch.setattr(
+            "pony.delivery.smtp_send",
+            Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
         await pilot.pause()

@@ -54,8 +54,9 @@ use_utf8 = false
 # url = "https://caldav.example.com/dav/calendars/user/USER/"
 # username = "USER@example.com"
 # credential = { backend = "plaintext", password = "REPLACE-ME" }
-# # mirror_path is optional; defaults to <user-data-dir>/mirror/<name>.
-# # mirror_path = "~/.local/share/chronos/mirror/personal"
+# # mirror_path is optional; defaults to <calendar root>/mirror/<name>,
+# # which is <data_dir>/calendar/mirror/<name> under Pony Express.
+# # mirror_path = "~/.local/share/pony/calendar/mirror/personal"
 # # trash_retention_days defaults to 30.
 # # include / exclude are Python regexes (re.fullmatch); default include = [".*"].
 

@@ -38,8 +38,9 @@ from .protocols import ContactRepository, IndexRepository
 
 # Bumped when the schema, FTS tables, or triggers change in a way that
 # existing databases cannot be migrated to in-place.  Schema version 3
-# is the per-row identity rewrite (SYNC_REWRITE.md): the messages table
-# loses its (account, folder, message_id) primary key and gains an
+# is the per-row identity rewrite documented under "Schema" in
+# docs/synchronization.md: the messages table loses its
+# (account, folder, message_id) primary key and gains an
 # autoincrement ``id`` plus ``source_folder`` / ``source_uid`` /
 # ``uid_validity`` columns.  ``initialize`` migrates a v2 DB in place
 # (dropping synthetic-mid orphans en route); anything older is refused

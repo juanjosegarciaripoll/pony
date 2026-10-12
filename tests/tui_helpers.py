@@ -217,7 +217,6 @@ def make_test_account(
     paths: AppPaths,
     name: str = "acct",
     *,
-    with_smtp: bool = True,
     archive_folder: str | None = None,
     password: str | None = "secret",
 ) -> AccountConfig:
@@ -225,21 +224,20 @@ def make_test_account(
 
     The SMTP block is real (example.com) but tests patch ``smtp_send``
     before hitting the wire, so no network is ever involved.
+
+    There is deliberately no ``with_smtp=False``: it used to exist and
+    both arms built the same ``SmtpConfig``, so the one test that asked
+    for an unsendable account got a sendable one.  An ``AccountConfig``
+    is always sendable — ``can_send`` says so unconditionally — so a
+    test that wants one that is not needs a ``LocalAccountConfig``.
     """
     mirror_dir = paths.data_dir / "mirrors" / name
     mirror_dir.mkdir(parents=True, exist_ok=True)
-    smtp = (
-        SmtpConfig(host="smtp.example.com")
-        if with_smtp
-        else SmtpConfig(
-            host="smtp.example.com",
-        )
-    )
     return AccountConfig(
         name=name,
         email_address=f"{name}@example.com",
         imap_host="imap.example.com",
-        smtp=smtp,
+        smtp=SmtpConfig(host="smtp.example.com"),
         username=name,
         credentials_source="plaintext",
         mirror=MirrorConfig(path=mirror_dir, format="maildir"),

@@ -641,30 +641,53 @@ async def test_the_periodic_sync_is_the_apps_not_the_screens() -> None:
         assert not hasattr(screen, "_background_sync_timer")
 
 
+def _tree_folder_names(panel: object) -> set[str]:
+    """Every folder the panel's tree is currently showing.
+
+    ``panel._inbox_nodes`` holds the INBOX rows only, which is why
+    asserting against it could never see a newly created folder.
+    """
+    names: set[str] = set()
+    pending = [panel.root]  # type: ignore[attr-defined]
+    while pending:
+        node = pending.pop()
+        if isinstance(node.data, FolderRef):
+            names.add(node.data.folder_name)
+        pending.extend(node.children)
+    return names
+
+
 async def test_creating_a_folder_refreshes_the_tree() -> None:
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, mirrors = build_pony_app(
         label="main-folder-created",
         seed=[(folder, plain_text())],
     )
+    messages = _notifications(app)
 
     async with app.run_test() as pilot:
         await _select_inbox(pilot)
         screen = _main(app)
-        mirrors["acct"].create_folder(account_name="acct", folder_name="Fresh")
-
-        screen._create_folder("acct", "Fresh")
-        await pilot.pause()
 
         from pony.tui.widgets.folder_panel import FolderPanel
 
         panel = screen.query_one(FolderPanel)
-        names = {
-            node.data.folder_name
-            for node in panel._inbox_nodes
-            if isinstance(node.data, FolderRef)
-        }
-        assert "INBOX" in names
+        before = _tree_folder_names(panel)
+
+        screen._create_folder("acct", "Fresh")
+        await pilot.pause()
+
+        after = _tree_folder_names(panel)
+
+    # The new folder has to be in the mirror *and* on the tree: the test
+    # used to assert ``"INBOX" in names``, which held with the refresh
+    # deleted.
+    assert "Fresh" not in before
+    assert "Fresh" in after
+    assert "Fresh" in {
+        ref.folder_name for ref in mirrors["acct"].list_folders(account_name="acct")
+    }
+    assert any("Folder 'Fresh' created locally" in m for m in messages)
 
 
 async def test_goto_folder_moves_the_tree_cursor() -> None:

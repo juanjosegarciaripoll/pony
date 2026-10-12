@@ -965,7 +965,17 @@ def _notices(request: Request) -> Sequence[Notice]:
     An action that navigates has nowhere to put its outcome but the
     URL, and the text is escaped like anything else on the way back in.
     One ``notice`` and one ``severity`` per notice, paired by position.
+
+    Only from Pony's own page, though: this is Pony talking to itself
+    across its own 303, and a link from anywhere else could put
+    attacker-chosen prose inside Pony's chrome with error styling on it
+    -- escaped, so phishing rather than script, and the escaping is no
+    answer to "Your session expired, sign in again".  Same question as
+    :func:`_check_origin` asks of a POST, and the same answer: a client
+    that labels nothing is the user, not a page aimed at them.
     """
+    if not _from_own_page(request):
+        return ()
     texts = request.query_params.getlist("notice")
     severities = request.query_params.getlist("severity")
     return tuple(

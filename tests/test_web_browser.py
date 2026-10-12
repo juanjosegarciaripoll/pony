@@ -66,6 +66,8 @@ INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 #: Where the message that tries to phish the reader is kept, so the
 #: list the rest of this file drives stays three rows long.
 HOSTILE = FolderRef(account_name="acct", folder_name="Hostile")
+#: Where the compose form's "Save draft" lands what the browser typed.
+DRAFTS = FolderRef(account_name="acct", folder_name="Drafts")
 
 
 def _event_ics() -> bytes:
@@ -309,6 +311,36 @@ async function run() {
   report.steps.push("event-sync");
   out();
 
+  // The compose form, filled and submitted by the browser itself.
+  // Every other compose test synthesises the POST body from the
+  // page's fields; this one types into them and presses the button,
+  // so the form's own names, its `form="compose-form"` button outside
+  // it, and the same-origin check on the POST are all in play.
+  frame.contentWindow.location.assign("__COMPOSE__");
+  await ready(frame, "form#compose-form");
+  const compose = frame.contentDocument;
+  const type = (selector, value) => {
+    const input = compose.querySelector(selector);
+    input.focus();
+    input.value = value;
+    input.dispatchEvent(new frame.contentWindow.Event("input", { bubbles: true }));
+  };
+  type("#to", "drafted@example.test");
+  type("#subject", "Typed in a browser");
+  type("#body", "Body the browser sent.");
+  const save = Array.from(compose.querySelectorAll("button")).find(
+    (button) => button.textContent.trim() === "Save draft",
+  );
+  report.saveButtonForm = save.getAttribute("form") || "";
+  save.click();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (frame.contentWindow.location.pathname !== "/compose") break;
+    await sleep(25);
+  }
+  report.composeLanded = frame.contentWindow.location.pathname;
+  report.steps.push("compose");
+  out();
+
   // Quitting, in the other frame, because it stops that page for good.
   const reader = document.getElementById("reader");
   await ready(reader);
@@ -380,6 +412,7 @@ def _report() -> dict[str, Any]:
         raw=_phishing_message(),
         message_id="<browser-phish@example.com>",
     )
+    mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     runtime = make_calendar_runtime(
         make_tmp_paths("browser-ux-cal"),
         account_name="personal",
@@ -410,6 +443,7 @@ def _report() -> dict[str, Any]:
             "__EVENT__",
             "/calendar/event?account=personal&calendar=work&uid=standing@example.com",
         )
+        .replace("__COMPOSE__", "/compose?account=acct")
         .replace("__KEYMAP__", json.dumps(keymap))
     )
 
@@ -465,6 +499,17 @@ def _report() -> dict[str, Any]:
     assert "error" not in report, report
     report["hostileDom"] = hostile_dom
     report["sink"] = sorted(set(sink))
+    # What the browser's own form submission left in the store.
+    report["drafts"] = [
+        {"recipients": row.recipients, "subject": row.subject}
+        for row in index.list_folder_messages(folder=DRAFTS)
+    ]
+    report["draftBodies"] = [
+        mirrors["acct"]
+        .get_message_bytes(folder=DRAFTS, storage_key=row.storage_key)
+        .decode("utf-8", "replace")
+        for row in index.list_folder_messages(folder=DRAFTS)
+    ]
     return report
 
 
@@ -524,6 +569,7 @@ def test_the_harness_got_all_the_way_through() -> None:
         "typing",
         "open",
         "event-sync",
+        "compose",
         "quit",
     ]
 
@@ -646,3 +692,25 @@ def test_a_hostile_message_reaches_nothing_from_ponys_own_origin() -> None:
     assert "<title>script ran</title>" not in dom
     # And nothing the message asked for ever arrived.
     assert report["sink"] == []
+
+
+def test_the_browser_fills_the_compose_form_and_files_the_draft() -> None:
+    """A real form submission, not a body synthesised from its fields.
+
+    Every other compose test builds the POST out of ``form_fields`` and
+    sends it with a client, which cannot tell whether the fields carry
+    the names the server reads, whether a submit button sitting *outside*
+    the form still submits it, or whether the same-origin check lets a
+    form post through.  This types into the page and presses the button.
+    """
+    report = _report()
+
+    # The button is outside the form and reaches it by id; without the
+    # attribute the click submits nothing.
+    assert report["saveButtonForm"] == "compose-form"
+    # The POST was accepted and redirected away from /compose.
+    assert report["composeLanded"] != "/compose"
+    assert report["drafts"] == [
+        {"recipients": "drafted@example.test", "subject": "Typed in a browser"},
+    ]
+    assert "Body the browser sent." in report["draftBodies"][0]

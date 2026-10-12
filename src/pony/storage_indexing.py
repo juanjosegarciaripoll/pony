@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -11,6 +12,8 @@ from chronos.outcome import ProgressGate, progress_stride
 from .domain import FolderRef, FolderSyncState, IndexedMessage, MessageRef
 from .message_projection import project_rfc822_message
 from .protocols import IndexRepository, MirrorRepository
+
+logger = logging.getLogger(__name__)
 
 RescanProgress = Callable[[str, int, int], None]
 """``(message, current, total)`` callback.  ``total == 0`` means unknown."""
@@ -60,6 +63,7 @@ def _ingest_one(
     folder: FolderRef,
     storage_key: str,
     uid: int | None = None,
+    uid_validity: int = 0,
 ) -> None:
     raw_message = mirror_repository.get_message_bytes(
         folder=folder,
@@ -76,7 +80,13 @@ def _ingest_one(
         storage_key=storage_key,
     )
     if uid is not None:
-        projected = dataclasses.replace(projected, uid=uid)
+        # The epoch travels with the UID.  `domain.IndexedMessage`
+        # documents `uid_validity` as "the server's UIDVALIDITY at the
+        # moment `uid` was assigned", and a row that carried the number
+        # without the epoch claimed a handle on epoch 0 while the folder
+        # watermark beside it said 42 -- the planner's one query for
+        # stale UIDs reads the row, not the watermark.
+        projected = dataclasses.replace(projected, uid=uid, uid_validity=uid_validity)
     index_repository.insert_message(message=projected)
 
 
@@ -289,6 +299,12 @@ class ReindexResult:
     # A rescan creates exactly those, and a rescan is the obvious thing
     # to try first when the index is gone.
     adopted: int = 0
+    # Files whose handle is already held by another row in the same
+    # folder.  Two files cannot share one ``(folder, uid)`` -- the index
+    # has a unique index saying so -- and inserting the second one
+    # raised, which took the whole account's rebuild down with it.  They
+    # are left on disk and counted here instead.
+    conflicts: int = 0
 
 
 def reindex_account_from_mirror(
@@ -324,12 +340,20 @@ def reindex_account_from_mirror(
     older epoch are indexed without a handle: their UIDs mean nothing
     on the current one.
 
+    A handle two files in one folder both claim belongs to one of them.
+    The second is left alone and counted in
+    :attr:`ReindexResult.conflicts`: the index refuses two rows with one
+    ``(folder, uid)``, and letting that refusal out aborted the
+    transaction and so the entire account's rebuild -- the wrong
+    failure mode for the tool somebody reaches for when the index is
+    already gone.
+
     Nothing here touches the network.
     """
     from .storage import uid_of
 
     folders = mirror_repository.list_folders(account_name=account_name)
-    added = with_uid = local_only = states = adopted = 0
+    added = with_uid = local_only = states = adopted = conflicts = 0
     with index_repository.connection():
         for folder in folders:
             keys = list(mirror_repository.list_messages(folder=folder))
@@ -339,6 +363,13 @@ def reindex_account_from_mirror(
             # (body preview included) and parse flags and three
             # datetimes for every row in the folder to get it.
             known = set(index_repository.list_folder_storage_keys(folder=folder))
+            # Handles the folder already has rows for, so a second file
+            # claiming one is recognised before the insert rather than
+            # by the unique index raising mid-transaction.
+            claimed = index_repository.list_folder_uids(
+                account_name=folder.account_name,
+                folder_name=folder.folder_name,
+            )
             epoch = max(
                 (handle[0] for key in keys if (handle := uid_of(key)) is not None),
                 default=0,
@@ -351,19 +382,30 @@ def reindex_account_from_mirror(
                 uid = handle[1] if handle is not None and handle[0] == epoch else None
                 if uid is not None:
                     highest = max(highest, uid)
-                if key not in known:
+                if key not in known and uid is not None and uid in claimed:
+                    logger.warning(
+                        "Reindex: %s/%s holds uid=%d already -- leaving %s unindexed",
+                        folder.account_name,
+                        folder.folder_name,
+                        uid,
+                        key,
+                    )
+                    conflicts += 1
+                elif key not in known:
                     _ingest_one(
                         mirror_repository=mirror_repository,
                         index_repository=index_repository,
                         folder=folder,
                         storage_key=key,
                         uid=uid,
+                        uid_validity=epoch,
                     )
                     added += 1
                     if uid is None:
                         local_only += 1
                     else:
                         with_uid += 1
+                        claimed.add(uid)
                 elif uid is not None and index_repository.adopt_uid(
                     folder=folder,
                     storage_key=key,
@@ -371,6 +413,7 @@ def reindex_account_from_mirror(
                     uid_validity=epoch,
                 ):
                     adopted += 1
+                    claimed.add(uid)
                 if progress is not None and gate.due(done, final=done == total):
                     progress(folder.folder_name, done, total)
             if epoch:
@@ -394,6 +437,7 @@ def reindex_account_from_mirror(
         local_only=local_only,
         states=states,
         adopted=adopted,
+        conflicts=conflicts,
     )
 
 

@@ -36,6 +36,22 @@ if TYPE_CHECKING:
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 
 
+def _contact_store(mailboxes: Mailboxes) -> SqliteIndexRepository:
+    """``mailboxes.index``, as the contact store it also is.
+
+    ``Mailboxes.index`` is declared as ``IndexRepository``, which says
+    nothing about contacts; the object behind it is the one SQLite
+    repository that implements both protocols, exactly as it does in the
+    application.  Asserted rather than cast, so the narrowing is also a
+    check.
+    """
+    from pony.index_store import SqliteIndexRepository as _Repo
+
+    store = mailboxes.index
+    assert isinstance(store, _Repo)
+    return store
+
+
 def _contacts(label: str) -> SqliteIndexRepository:
     """The index doubles as the contact store, as it does in the app."""
     return make_index(make_tmp_paths(label))
@@ -369,7 +385,7 @@ def test_record_sent_retires_the_draft_files_the_copy_and_harvests() -> None:
         override="INBOX",
     ).message
     assert draft is not None
-    contacts = mailboxes.index
+    contacts = _contact_store(mailboxes)
 
     outcome = delivery.record_sent(
         mailboxes,
@@ -506,7 +522,7 @@ def test_deliver_message_drafts_then_sends_then_files_the_sent_copy() -> None:
             _outgoing(),
             account,
             credentials=None,
-            contacts=mailboxes.index,
+            contacts=_contact_store(mailboxes),
             to="you@example.test",
             connect_timeout=1.0,
         )
@@ -521,7 +537,9 @@ def test_deliver_message_drafts_then_sends_then_files_the_sent_copy() -> None:
     rows = list(mailboxes.index.list_folder_messages(folder=INBOX))
     assert [row.uid for row in rows] == [None]
     # The address it went to is a contact now.
-    assert mailboxes.index.find_contact_by_email(email_address="you@example.test")
+    assert _contact_store(mailboxes).find_contact_by_email(
+        email_address="you@example.test",
+    )
 
 
 def test_deliver_message_leaves_a_failed_send_in_drafts() -> None:

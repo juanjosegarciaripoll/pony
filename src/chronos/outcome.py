@@ -141,7 +141,17 @@ class ProgressGate:
         self._last = 0.0
         self._last_item = 0
 
-    def due(self, done: int = 0, *, final: bool = False) -> bool:
+    def due(self, done: int | None = None, *, final: bool = False) -> bool:
+        """Whether a loop that has finished *done* items may report now.
+
+        A loop with nothing to count calls this with no argument and is
+        gated on the clock alone.  It used to default *done* to ``0``,
+        which compared 0 against the item already reported and so was
+        closed forever however long had passed -- a trap for the next
+        caller that has elapsed time and no item count.
+        """
+        if done is None:
+            done = self._last_item + self._stride
         if final:
             self._last = time.monotonic()
             self._last_item = done

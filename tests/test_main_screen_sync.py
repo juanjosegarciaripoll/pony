@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from enum import Enum, auto
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
+from textual.worker import WorkerState
 from tui_helpers import build_pony_app
 
 from pony.sync import (
@@ -24,12 +24,6 @@ from pony.tui.screens.main_screen import MainScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 
 
-class _State(Enum):
-    RUNNING = auto()
-    SUCCESS = auto()
-    ERROR = auto()
-
-
 def _main(app: object) -> MainScreen:
     return next(
         screen
@@ -39,9 +33,22 @@ def _main(app: object) -> MainScreen:
 
 
 def _worker(
-    *, name: str, state: _State, result: object = None, error: Exception | None = None
+    *,
+    name: str,
+    state: WorkerState,
+    result: object = None,
+    error: Exception | None = None,
 ) -> Any:
-    """Return a stand-in for a Textual ``Worker`` with just the fields read."""
+    """Return a stand-in for a Textual ``Worker`` with just the fields read.
+
+    The state is Textual's own enum, not a look-alike.  Production reads
+    the members off the instance (``worker.state == worker.state.ERROR``),
+    so a hand-rolled enum satisfied every comparison by construction and
+    the tests could not tell a right member name from a wrong one.  The
+    error and exec paths are also driven through a real ``Worker`` in
+    ``test_a_failing_plan_reaches_the_screen_through_a_real_worker`` and
+    ``test_a_confirmed_plan_executes_through_a_real_worker`` below.
+    """
     return SimpleNamespace(name=name, state=state, result=result, error=error)
 
 
@@ -123,7 +130,7 @@ async def test_plan_error_dismisses_modal_and_notifies() -> None:
         screen._on_plan_complete(
             _worker(
                 name="sync-plan",
-                state=_State.ERROR,
+                state=WorkerState.ERROR,
                 error=RuntimeError("fictional planning failure"),
             )
         )
@@ -148,7 +155,7 @@ async def test_nonempty_plan_is_shown_for_confirmation() -> None:
         app.push_screen(modal)
         await pilot.pause()
         screen._on_plan_complete(
-            _worker(name="sync-plan", state=_State.SUCCESS, result=plan)
+            _worker(name="sync-plan", state=WorkerState.SUCCESS, result=plan)
         )
         assert screen._sync_plan is plan
         modal.show_plan.assert_called_once_with(plan)
@@ -212,7 +219,7 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         screen._on_exec_complete(
             _worker(
                 name="sync-exec",
-                state=_State.ERROR,
+                state=WorkerState.ERROR,
                 error=RuntimeError("fictional execution failure"),
             )
         )
@@ -224,7 +231,7 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         screen._on_exec_complete(
             _worker(
                 name="sync-exec",
-                state=_State.SUCCESS,
+                state=WorkerState.SUCCESS,
                 result=SyncResult(accounts=()),
             )
         )
@@ -246,12 +253,30 @@ async def test_worker_completion_routes_by_worker_name() -> None:
         # application owns, not a worker this screen runs — so it must now
         # fall through like any other name.
         for name in ("sync-plan", "sync-exec", "sync-bg", "something-else"):
-            event = SimpleNamespace(worker=_worker(name=name, state=_State.SUCCESS))
+            event = SimpleNamespace(
+                worker=_worker(name=name, state=WorkerState.SUCCESS),
+            )
             screen.on_worker_state_changed(event)  # type: ignore[arg-type]
         await pilot.pause()
 
         screen._on_plan_complete.assert_called_once()
         screen._on_exec_complete.assert_called_once()
+
+        # A worker that has not finished is not a completion.  Only
+        # Textual's own enum has these members, which is why the states
+        # the gate exists to reject were never passed to it before.
+        for state in (
+            WorkerState.PENDING,
+            WorkerState.RUNNING,
+            WorkerState.CANCELLED,
+        ):
+            event = SimpleNamespace(
+                worker=_worker(name="sync-plan", state=state),
+            )
+            screen.on_worker_state_changed(event)  # type: ignore[arg-type]
+        await pilot.pause()
+
+        screen._on_plan_complete.assert_called_once()
 
 
 async def test_sync_callbacks_are_safe_with_no_modal_on_screen() -> None:
@@ -271,7 +296,7 @@ async def test_sync_callbacks_are_safe_with_no_modal_on_screen() -> None:
         screen._on_plan_complete(
             _worker(
                 name="sync-plan",
-                state=_State.ERROR,
+                state=WorkerState.ERROR,
                 error=RuntimeError("fictional planning failure"),
             )
         )
@@ -279,7 +304,9 @@ async def test_sync_callbacks_are_safe_with_no_modal_on_screen() -> None:
         # Planning produced nothing to do.
         screen._on_plan_complete(
             _worker(
-                name="sync-plan", state=_State.SUCCESS, result=SyncPlan(accounts=())
+                name="sync-plan",
+                state=WorkerState.SUCCESS,
+                result=SyncPlan(accounts=()),
             )
         )
 
@@ -287,7 +314,7 @@ async def test_sync_callbacks_are_safe_with_no_modal_on_screen() -> None:
         screen._on_exec_complete(
             _worker(
                 name="sync-exec",
-                state=_State.SUCCESS,
+                state=WorkerState.SUCCESS,
                 result=SyncResult(accounts=()),
             )
         )
@@ -327,7 +354,7 @@ async def test_a_nonempty_plan_without_a_modal_is_still_stored() -> None:
         await pilot.pause()
         screen = _main(app)
         screen._on_plan_complete(
-            _worker(name="sync-plan", state=_State.SUCCESS, result=plan)
+            _worker(name="sync-plan", state=WorkerState.SUCCESS, result=plan)
         )
         await pilot.pause()
 
@@ -406,7 +433,7 @@ async def test_the_plan_still_reaches_the_dialog_under_the_help_screen() -> None
         assert isinstance(app.screen, HelpScreen)
 
         screen._on_plan_complete(
-            _worker(name="sync-plan", state=_State.SUCCESS, result=plan)
+            _worker(name="sync-plan", state=WorkerState.SUCCESS, result=plan)
         )
         await pilot.pause()
 
@@ -444,7 +471,7 @@ async def test_a_sync_that_fails_under_the_help_screen_still_closes() -> None:
         screen._on_plan_complete(
             _worker(
                 name="sync-plan",
-                state=_State.ERROR,
+                state=WorkerState.ERROR,
                 error=RuntimeError("fictional planning failure"),
             )
         )
@@ -515,3 +542,144 @@ async def test_a_failed_background_sync_still_repaints_the_list() -> None:
         await pilot.pause()
 
         screen._refresh_after_sync.assert_called_once()
+
+
+async def test_a_failing_plan_reaches_the_screen_through_a_real_worker(
+    monkeypatch: Any,
+) -> None:
+    """The error arm, driven by Textual's own Worker rather than a stand-in.
+
+    Every other test on this path hands ``_on_plan_complete`` a
+    ``SimpleNamespace``, so nothing checked that a real failed worker
+    carries its state and its exception where production looks for them.
+    It did not get that far until `run_worker` was given
+    ``exit_on_error=False``: Textual's default sent the failure to the
+    application's exception handler, so the arm this exercises could
+    never run.
+    """
+    from pony.sync import ImapSyncService
+
+    def _boom(_self: ImapSyncService, **_kw: object) -> SyncPlan:
+        raise RuntimeError("fictional planning failure")
+
+    monkeypatch.setattr(ImapSyncService, "plan", _boom)
+    app, *_ = build_pony_app(label="main-sync-real-plan-error")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        for _ in range(8):
+            await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        assert _main(app)._sync_screen is None
+
+    assert "Sync planning failed: fictional planning failure" in messages
+
+
+def _one_folder_plan() -> SyncPlan:
+    return SyncPlan(
+        accounts=(
+            AccountSyncPlan(
+                account_name="acct",
+                folders=(
+                    FolderSyncPlan(
+                        folder_name="INBOX",
+                        uid_validity=1,
+                        highest_uid=1,
+                        ops=(
+                            FetchNewOp(
+                                uid=1,
+                                message_id="<real-exec@example.com>",
+                                server_flags=frozenset(),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+
+def _one_message_result() -> SyncResult:
+    return SyncResult(
+        accounts=(
+            AccountSyncResult(
+                account_name="acct",
+                folders=(FolderSyncResult(folder_name="INBOX", fetched=1),),
+            ),
+        )
+    )
+
+
+async def test_the_exec_worker_reports_its_result_without_being_faked() -> None:
+    """A real Textual worker runs the plan and a real handler reports it.
+
+    ``_start_sync_worker`` is otherwise only reached with
+    ``screen.run_worker`` replaced by a ``Mock``, and ``_on_exec_complete``
+    only with a ``SimpleNamespace`` in place of the worker, so the two
+    halves were never joined up.
+    """
+    plan = _one_folder_plan()
+    result = _one_message_result()
+    service = Mock()
+    service.execute.return_value = result
+
+    app, *_ = build_pony_app(label="main-sync-real-exec-worker")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = _main(app)
+        screen._sync_service = service
+        screen._sync_plan = plan
+        screen._start_sync_worker()
+        for _ in range(12):
+            if describe_sync_result(result) in messages:
+                break
+            await pilot.pause()
+
+    service.execute.assert_called_once()
+    assert service.execute.call_args.args[0] is plan
+    assert describe_sync_result(result) in messages
+
+
+async def test_a_confirmed_plan_executes_through_a_real_worker(
+    monkeypatch: Any,
+) -> None:
+    """Plan, confirm with ``y``, execute -- no mocked worker anywhere."""
+    from pony.sync import ImapSyncService
+
+    plan = _one_folder_plan()
+    result = _one_message_result()
+    executed: list[object] = []
+
+    def _execute(_self: ImapSyncService, given: SyncPlan, **_kw: object) -> SyncResult:
+        executed.append(given)
+        return result
+
+    monkeypatch.setattr(ImapSyncService, "plan", lambda _self, **_kw: plan)
+    monkeypatch.setattr(ImapSyncService, "execute", _execute)
+    app, *_ = build_pony_app(label="main-sync-real-exec")
+    messages = _notifications(app)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        for _ in range(8):
+            await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, SyncConfirmScreen)
+        for _ in range(20):
+            if dialog.query("#proceed").nodes:
+                break
+            await pilot.pause()
+        await pilot.press("y")
+        for _ in range(20):
+            if isinstance(app.screen, MainScreen):
+                break
+            await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+
+    assert executed == [plan]
+    assert describe_sync_result(result) in messages

@@ -414,7 +414,13 @@ def _parse_mirror(
     # Expand environment variables (e.g. $HOME, %USERPROFILE%).
     mirror_path = _expand_path(path_str)
     if mirror_path.is_absolute():
-        mirror_path = mirror_path.resolve()
+        # Contained like `data_dir` above, and for the same reason:
+        # `PONY_ROOT` is documented as relocating every directory a run
+        # writes to, and the mirror is the largest one of them.  Without
+        # this a test session or a sandboxed install reached the real
+        # mail the moment a config spelled its mirror out in full --
+        # which the configuration docs tell the user to do.
+        mirror_path = contain(mirror_path.resolve())
     elif is_half_qualified(str(mirror_path)):
         # Half-qualified: "/mail" on Windows has a root but no drive, and
         # "C:mail" a drive but no root.  Neither is absolute, so the old

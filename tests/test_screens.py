@@ -9,6 +9,7 @@ do not re-test business logic already covered by unit tests.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -31,7 +32,26 @@ from pony.tui.screens.new_folder_screen import NewFolderScreen
 from pony.tui.screens.save_draft_screen import SaveDraftScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 
-save_picker_module._DirOnlyTree = DeterministicDirOnlyTree  # type: ignore[attr-defined]
+#: The production class, captured before the fixture below replaces it.
+_REAL_DIR_ONLY_TREE = save_picker_module._DirOnlyTree
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_dir_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap the worker-driven tree for the deterministic double, per test.
+
+    This used to be a bare module-level assignment, which left the
+    production class replaced for every file the xdist worker picked up
+    next -- and meant the real ``_DirOnlyTree.filter_paths``, the whole
+    reason that class exists, never ran anywhere.  It is checked
+    directly in ``test_the_directory_only_tree_hides_files``.
+    """
+    monkeypatch.setattr(
+        save_picker_module,
+        "_DirOnlyTree",
+        DeterministicDirOnlyTree,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Minimal hosting app factory
@@ -402,8 +422,18 @@ async def test_sync_confirm_y_key_calls_on_confirm() -> None:
 
 
 async def test_sync_confirm_show_plan_transitions() -> None:
-    """show_plan() updates the title widget to 'Sync Plan'."""
-    import contextlib
+    """show_plan() retitles the dialog, mounts the buttons, focuses one.
+
+    The focus is deferred to after the mount deliberately: the Buttons
+    are constructor children of a ``Horizontal`` that is not in the DOM
+    when ``show_plan`` returns, so looking for ``#proceed`` inside it
+    raises ``NoMatches`` -- which, from
+    ``MainScreen.on_worker_state_changed``, reaches the application's
+    exception handler and stops the reader.  See
+    ``test_a_confirmed_plan_executes_through_a_real_worker`` in
+    ``tests/test_main_screen_sync.py``, which presses ``g`` for real.
+    """
+    from textual.widgets import Button
 
     from pony.sync import SyncPlan
 
@@ -413,15 +443,18 @@ async def test_sync_confirm_show_plan_transitions() -> None:
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, SyncConfirmScreen)
-        # show_plan() mounts buttons dynamically; query_one("#proceed").focus() may
-        # fail before the event loop processes the mount — suppress that.
-        with contextlib.suppress(Exception):
-            screen.show_plan(empty_plan)
+        screen.show_plan(empty_plan)
         await pilot.pause()
         from textual.widgets import Label
 
         titles = [str(w.render()) for w in app.screen.query(Label) if w.id == "title"]
         assert any("Sync Plan" in t for t in titles)
+        assert {button.id for button in screen.query(Button)} == {"proceed", "cancel"}
+        assert screen._planning is False
+        # Pressing Enter has to confirm, so Proceed must hold the focus
+        # once it exists.
+        assert screen.focused is not None
+        assert screen.focused.id == "proceed"
 
 
 async def test_sync_confirm_update_status() -> None:
@@ -1728,6 +1761,25 @@ async def test_save_folder_picker_cancel_returns_none(tmp_path) -> None:
         await pilot.click("#cancel")
         await pilot.pause()
     assert app.return_value is None
+
+
+def test_the_directory_only_tree_hides_files(tmp_path: pathlib.Path) -> None:
+    """The production class, not the test double, filters the listing.
+
+    Every screen test replaces ``_DirOnlyTree`` with a deterministic
+    double, so the one method the real class adds -- the whole reason it
+    exists -- was never executed anywhere in the suite.  It needs no
+    app: ``filter_paths`` is a plain function of the paths it is handed.
+    """
+    (tmp_path / "keep-me").mkdir()
+    (tmp_path / "also-a-dir").mkdir()
+    (tmp_path / "message.eml").write_text("not a directory", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("nor this", encoding="utf-8")
+
+    tree = _REAL_DIR_ONLY_TREE.__new__(_REAL_DIR_ONLY_TREE)
+    kept = sorted(path.name for path in tree.filter_paths(sorted(tmp_path.iterdir())))
+
+    assert kept == ["also-a-dir", "keep-me"]
 
 
 async def test_save_folder_picker_select_returns_path(tmp_path) -> None:
