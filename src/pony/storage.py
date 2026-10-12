@@ -1132,12 +1132,20 @@ def _sanitize_for_path(name: str) -> str:
     return _UNSAFE_PATH_RE.sub(".", name)
 
 
-_UID_SUFFIX_RE = re.compile(r",V=(\d+),U=(\d+)\Z")
+# ``,V=<uidvalidity>,U=<uid>`` ends the unique part of the name, and an
+# info section may follow it: ``!2,S`` from Pony, which forces
+# ``Maildir.colon = "!"``, or the standard ``:2,S`` from any other
+# client that has flagged the file.  Reading only our own spelling made
+# every message another MUA had touched look local-only to ``reindex``,
+# and left the folder's UID watermark to be decided by whichever file
+# that client had not flagged.
+_UID_SUFFIX_RE = re.compile(r",V=(\d+),U=(\d+)(?:[:!][\w,=-]*)?\Z")
 
 
 def uid_of(storage_key: str) -> tuple[int, int] | None:
     """Return ``(uid_validity, uid)`` encoded in *storage_key*, or None.
 
+    Accepts a bare storage key and a filename on disk, flagged or not.
     None means the message has no server handle on disk: either it was
     stored before UIDs were recorded in the name, or it exists only
     locally and has never been APPENDed.

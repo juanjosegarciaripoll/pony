@@ -1129,6 +1129,35 @@ class MaildirUidNamingTestCase(unittest.TestCase):
         )
         self.assertEqual(uid_of(key), (1, 5))
 
+    def test_a_name_another_client_flagged_still_carries_its_handle(self) -> None:
+        """The case a shared mirror is made of.
+
+        Pony forces ``Maildir.colon = "!"`` and writes its own flags as
+        ``!2,S``, so only its own spelling used to parse.  Any file the
+        other client had flagged carries the standard ``:2,S``, and
+        ``uid_of`` returned None for it: ``reindex`` then indexed
+        current-epoch messages as local-only -- upload candidates --
+        and took the folder's UID watermark from whichever file that
+        client had happened not to touch.
+        """
+        key = self._store("theirs", uid=200, uid_validity=99)
+        found = next(
+            path
+            for subdir in ("cur", "new")
+            for path in (self.root / subdir).iterdir()
+            if path.name.startswith(key)
+        )
+        foreign = found.with_name(f"{key}:2,S")
+        found.rename(foreign)
+
+        self.assertEqual(uid_of(foreign.name), (99, 200))
+        self.assertEqual(uid_of(f"{key}!2,FS"), (99, 200))
+        # A plain key, and anything that is not an info section, are
+        # unchanged.
+        self.assertEqual(uid_of(key), (99, 200))
+        self.assertIsNone(uid_of(f"{key}:2,S/elsewhere"))
+        self.assertIsNone(uid_of("1234.5.6"))
+
     def test_a_handle_learned_later_is_stamped_on(self) -> None:
         """APPEND supplies the UID after the message is already stored."""
         key = self._store("appended")
