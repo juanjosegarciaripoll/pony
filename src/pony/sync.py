@@ -307,6 +307,11 @@ class FolderSyncPlan:
     needs_confirmation: bool = False
     pending_delete_count: int = 0
     pending_delete_total: int = 0
+    # What the folder is known to hold: rows that carry a server UID.
+    # Every planning path sets it, because the mass-push ratio is
+    # measured against it -- ``pending_delete_total`` is set by the slow
+    # path alone, so the ratio arm was dead on the other three.
+    known_total: int = 0
     pending_push_count: int = 0
     is_new: bool = False
     scan_ms: int = 0
@@ -539,9 +544,9 @@ def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
     if push_count < _MASS_PUSH_MIN:
         return plan
     # What the folder is known to hold: rows already carrying a UID
-    # (the slow path counts them) plus whatever this pass will fetch.
+    # plus whatever this pass will fetch.
     fetches = sum(1 for op in plan.ops if isinstance(op, FetchNewOp))
-    known = plan.pending_delete_total + fetches
+    known = plan.known_total + fetches
     over_ratio = bool(known) and push_count > known * _MASS_PUSH_THRESHOLD
     if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
         return plan
@@ -1147,6 +1152,10 @@ class ImapSyncService:
             uid_validity=stored.uid_validity,
             highest_uid=stored.highest_uid,
             ops=tuple(ops),
+            known_total=self._index.count_uids_for_folder(
+                account_name=account.name,
+                folder_name=folder_name,
+            ),
         )
 
     def _plan_medium_path(
@@ -1198,6 +1207,10 @@ class ImapSyncService:
             uid_validity=stored.uid_validity,
             highest_uid=stored.highest_uid,
             ops=tuple(ops),
+            known_total=self._index.count_uids_for_folder(
+                account_name=account.name,
+                folder_name=folder_name,
+            ),
         )
 
     def _plan_slow_path(
@@ -1369,6 +1382,7 @@ class ImapSyncService:
             needs_confirmation=needs_confirmation,
             pending_delete_count=delete_count,
             pending_delete_total=total_known,
+            known_total=total_known,
         )
 
     def _plan_new_folder(
@@ -1392,6 +1406,10 @@ class ImapSyncService:
             uid_validity=0,
             highest_uid=0,
             ops=tuple(ops),
+            known_total=self._index.count_uids_for_folder(
+                account_name=account.name,
+                folder_name=folder_name,
+            ),
             is_new=True,
         )
 
@@ -1495,7 +1513,15 @@ class ImapSyncService:
 
             if row.uid is None:
                 # ACTIVE compose draft — APPEND.
-                if read_only:
+                if read_only or uidvalidity_reset:
+                    # On a reset, ``uid IS NULL`` is what
+                    # ``clear_uids_for_folder`` left behind, not what a
+                    # composer did: a pass that cleared the UIDs and
+                    # then failed before recording the new
+                    # ``uid_validity`` (only done ``if not
+                    # had_failure``) leaves every row in this state,
+                    # and the folder's whole contents would be planned
+                    # as uploads.  The re-fetch re-adopts them instead.
                     continue
                 ops.append(PushAppendOp(message_ref=row.message_ref))
                 continue

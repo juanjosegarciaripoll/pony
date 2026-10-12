@@ -382,6 +382,115 @@ class MassDeletionGuardTest(SyncTestCase):
         rows = self.index.list_calendar_components(self.calendar_ref)
         self.assertEqual(len(rows), 1)
 
+    def test_the_minimum_baseline_is_not_itself_exempt(self) -> None:
+        """Five components losing all five used to pass unflagged.
+
+        The guard read ``baseline <= _MASS_DELETION_MIN_BASELINE``,
+        where the mail half's equivalent is ``total_known >=
+        _MASS_DELETE_MIN``: at exactly the minimum the calendar's guard
+        was off and the mail's was on.
+        """
+        for i in range(5):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}{i}.ics",
+                ics=_ics_with_uid(f"five-{i}@example.com"),
+                etag=f"etag-{i}",
+            )
+        self._run()
+        for i in range(5):
+            self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}{i}.ics")
+
+        result = self._run()
+
+        self.assertEqual(result.calendars_synced, 0)
+        self.assertTrue(any("5/5" in e for e in result.errors), result.errors)
+        self.assertEqual(len(self.index.list_calendar_components(self.calendar_ref)), 5)
+
+
+class MassPushGuardTest(SyncTestCase):
+    """C-12: a pass that would upload a whole calendar halts first.
+
+    ``href IS NULL`` cannot tell "created here" from "on the server,
+    handle lost", which is the mail half's reason for the same halt.
+    The calendar had none at all: every such row went out as a PUT.
+    """
+
+    def _local_only(self, uid: str) -> None:
+        ref = ComponentRef(
+            account_name=ACCOUNT_NAME,
+            calendar_name=CALENDAR_NAME,
+            uid=uid,
+        )
+        self.index.upsert_component(
+            VEvent(
+                ref=ref,
+                href=None,
+                etag=None,
+                raw_ics=_ics_with_uid(uid),
+                summary=f"Local {uid}",
+                description=None,
+                location=None,
+                dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+                dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+                status=None,
+                local_flags=(),
+                server_flags=(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            )
+        )
+
+    def _on_the_server(self, count: int) -> None:
+        for i in range(count):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}{i}.ics",
+                ics=_ics_with_uid(f"there-{i}@example.com"),
+                etag=f"etag-{i}",
+            )
+
+    def test_an_index_that_lost_its_hrefs_is_not_uploaded(self) -> None:
+        self._on_the_server(10)
+        self._run()
+        # What a rebuild without hrefs leaves behind.
+        for row in self.index.list_calendar_components(self.calendar_ref):
+            self.index.upsert_component(replace(row, href=None, etag=None))
+        self.session.calls.clear()
+
+        result = self._run()
+
+        self.assertEqual(result.calendars_synced, 0)
+        self.assertTrue(any("would be" in e for e in result.errors), result.errors)
+        self.assertNotIn("put", [call[0] for call in self.session.calls])
+
+    def test_a_handful_of_new_events_still_goes_out(self) -> None:
+        self._on_the_server(10)
+        self._run()
+        for n in range(2):
+            self._local_only(f"mine-{n}@example.com")
+
+        result = self._run()
+
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertEqual(
+            [call[0] for call in self.session.calls].count("put"),
+            2,
+        )
+
+    def test_the_ratio_catches_a_small_calendar(self) -> None:
+        self._on_the_server(10)
+        self._run()
+        for n in range(5):
+            self._local_only(f"mine-{n}@example.com")
+        self.session.calls.clear()
+
+        result = self._run()
+
+        self.assertEqual(result.calendars_synced, 0)
+        self.assertNotIn("put", [call[0] for call in self.session.calls])
+
 
 class PushPendingTest(SyncTestCase):
     def _seed_local_only(self, uid: str) -> None:
@@ -874,6 +983,62 @@ class TrashRetentionTest(SyncTestCase):
         row = self.index.get_component(ref)
         assert row is not None, "it is only two days old; the retry must continue"
         self.assertEqual(row.local_status, LocalStatus.TRASHED)
+
+
+class TrashedWithoutAHandleTest(SyncTestCase):
+    """A trashed component with no href keeps its retention.
+
+    It used to be purged from the index *and* the mirror in the same
+    pass, with none of `trash_retention_days`.  `href = None` is the
+    state a locally-created component and one whose handle was lost
+    both sit in, so that purge is capable of destroying the only copy
+    of an event that is on the server.
+    """
+
+    def _trashed_local_only(self) -> ComponentRef:
+        uid = "nohref@example.com"
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+        self.index.upsert_component(
+            VEvent(
+                ref=ref,
+                href=None,
+                etag=None,
+                raw_ics=_ics_with_uid(uid),
+                summary="No handle",
+                description=None,
+                location=None,
+                dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+                dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+                status=None,
+                local_flags=(),
+                server_flags=(),
+                local_status=LocalStatus.TRASHED,
+                trashed_at=datetime.now(UTC) - timedelta(days=2),
+                synced_at=None,
+            )
+        )
+        self.mirror.write(ref.resource, _ics_with_uid(uid))
+        return ref
+
+    def test_it_survives_the_pass_that_trashed_it(self) -> None:
+        ref = self._trashed_local_only()
+
+        self._run()
+
+        self.assertIsNotNone(self.index.get_component(ref))
+        self.assertEqual(self.mirror.read(ref.resource), _ics_with_uid(ref.uid))
+
+    def test_the_retention_sweep_still_reaps_it(self) -> None:
+        ref = self._trashed_local_only()
+        row = self.index.get_component(ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(row, trashed_at=datetime.now(UTC) - timedelta(days=31))
+        )
+
+        self._run()
+
+        self.assertIsNone(self.index.get_component(ref))
 
 
 class PushTrashedTest(SyncTestCase):

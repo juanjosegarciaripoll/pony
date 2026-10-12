@@ -3426,6 +3426,71 @@ class UidValidityResetPreservesMailTestCase(unittest.TestCase):
         self.assertNotIn(row.message_id, remaining)
 
 
+class StaleUidEpochTestCase(unittest.TestCase):
+    """A cleared UID epoch is not a folder full of outgoing mail.
+
+    ``_execute_ops`` records the new ``uid_validity`` only ``if not
+    had_failure``, so a pass that detects the reset, clears the UIDs and
+    then fails on anything leaves every row ``ACTIVE`` with ``uid IS
+    NULL`` against a stored epoch that is still the old one.  The
+    APPEND arm was the one arm of ``_pending_push_ops`` that did not
+    consult ``uidvalidity_reset``, so the next pass planned an upload
+    for each.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _folder_of(
+        self, count: int
+    ) -> tuple[
+        ImapSyncService,
+        SqliteIndexRepository,
+        MaildirMirrorRepository,
+        FakeImapSession,
+    ]:
+        return _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<stale-{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"Stale {uid}", f"<stale-{uid}@example.com>"),
+                    )
+                    for uid in range(1, count + 1)
+                }
+            }
+        )
+
+    def test_no_upload_is_planned_for_a_row_whose_epoch_ended(self) -> None:
+        from pony.sync import PushAppendOp
+
+        service, index, _, session = self._folder_of(6)
+        service.sync()
+        # The state the interrupted pass leaves behind.
+        session.uid_validity = 2
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+
+        plan = service.plan()
+        (folder_plan,) = plan.accounts[0].folders
+        appends = [op for op in folder_plan.ops if isinstance(op, PushAppendOp)]
+        self.assertEqual(appends, [])
+
+    def test_the_next_pass_re_adopts_instead(self) -> None:
+        service, index, _, session = self._folder_of(6)
+        service.sync()
+        session.uid_validity = 2
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+        session.call_log.clear()
+
+        service.sync()
+
+        self.assertNotIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 6)
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(row.uid is not None for row in rows))
+
+
 class UidValidityAdoptionFallbackTestCase(unittest.TestCase):
     """Adoption must not depend on every message having a unique Message-ID.
 
@@ -3652,6 +3717,91 @@ class MassPushGuardTestCase(unittest.TestCase):
 
         self.assertIn("append:INBOX", session.call_log)
         self.assertEqual(len(session.folders["INBOX"]), 7)
+
+
+class MassPushRatioOnEveryPathTestCase(unittest.TestCase):
+    """The ratio arm had a baseline on one planning path out of four.
+
+    ``known`` was ``pending_delete_total + fetches``, and only
+    ``_plan_slow_path`` sets ``pending_delete_total``.  On the fast
+    path, the medium path and a new folder it was 0, so ``over_ratio``
+    was never true and 5 to 49 stranded uploads went out unflagged.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _compose(
+        self,
+        index: SqliteIndexRepository,
+        mirror: MaildirMirrorRepository,
+        count: int,
+    ) -> None:
+        for n in range(count):
+            raw = _make_raw_message(f"Mine {n}", f"<mine-{n}@example.com>")
+            key = mirror.store_message(folder=self.folder, raw_message=raw)
+            index.insert_message(
+                message=project_rfc822_message(
+                    message_ref=MessageRef(
+                        account_name="personal",
+                        folder_name="INBOX",
+                        id=0,
+                    ),
+                    raw_message=raw,
+                    storage_key=key,
+                )
+            )
+
+    def _ten_on_the_server(
+        self,
+    ) -> tuple[
+        ImapSyncService,
+        SqliteIndexRepository,
+        MaildirMirrorRepository,
+        FakeImapSession,
+    ]:
+        return _setup(
+            server_folders={
+                "INBOX": {
+                    uid: (
+                        f"<there-{uid}@example.com>",
+                        frozenset(),
+                        _make_raw_message(f"There {uid}", f"<there-{uid}@example.com>"),
+                    )
+                    for uid in range(1, 11)
+                }
+            }
+        )
+
+    def test_the_fast_path_measures_uploads_against_the_folder(self) -> None:
+        service, index, mirror, session = self._ten_on_the_server()
+        service.sync()
+        # Nothing changed on the server, so this is the fast path: no
+        # FETCH, no fresh UID or flag information.
+        self._compose(index, mirror, 5)
+        session.call_log.clear()
+
+        plan = service.plan()
+        (folder_plan,) = plan.accounts[0].folders
+        self.assertEqual(folder_plan.pending_push_count, 5)
+        self.assertEqual(folder_plan.known_total, 10)
+        self.assertTrue(folder_plan.needs_confirmation)
+
+        service.sync()
+        self.assertNotIn("append:INBOX", session.call_log)
+
+    def test_a_couple_of_drafts_are_still_ordinary_composing(self) -> None:
+        service, index, mirror, session = self._ten_on_the_server()
+        service.sync()
+        self._compose(index, mirror, 2)
+        session.call_log.clear()
+
+        plan = service.plan()
+        (folder_plan,) = plan.accounts[0].folders
+        self.assertFalse(folder_plan.needs_confirmation)
+
+        service.sync()
+        self.assertIn("append:INBOX", session.call_log)
+        self.assertEqual(len(session.folders["INBOX"]), 12)
 
 
 class ScopedExpungeTestCase(unittest.TestCase):

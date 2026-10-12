@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 _MASS_DELETION_RATIO = 0.2
 _MASS_DELETION_MIN_BASELINE = 5
 
+# C-12 mass-push safety halt, the mail half's C-7 in calendar terms:
+# `href IS NULL` cannot tell "created here" from "on the server, and the
+# handle was lost", so a pass that would upload a large share of a
+# calendar is an index that lost its hrefs, not a user who wrote that
+# many events.  The absolute ceiling catches the big case, the ratio the
+# small calendar.  (C-7 through C-11 are taken in
+# `ai/calendar/SYNCHRONIZATION.md` §10; this is the next free number.)
+_MASS_PUSH_RATIO = 0.2
+_MASS_PUSH_MIN = 5
+_MASS_PUSH_ABSOLUTE = 50
+
 
 class SyncError(Exception):
     pass
@@ -781,7 +792,11 @@ def _guard_mass_deletion(
     local_hrefs: Iterable[str],
     server_hrefs: Iterable[str],
 ) -> None:
-    if baseline <= _MASS_DELETION_MIN_BASELINE:
+    if baseline < _MASS_DELETION_MIN_BASELINE:
+        # Strictly below, as the mail half's `total_known >=
+        # _MASS_DELETE_MIN` is: at exactly the minimum baseline a
+        # five-component calendar losing all five went through
+        # unflagged.
         return
     if removed <= _MASS_DELETION_RATIO * baseline:
         return
@@ -806,6 +821,50 @@ def _guard_mass_deletion(
         f"missing from server (>{int(_MASS_DELETION_RATIO * 100)}%). "
         "Refusing to delete locally without confirmation. "
         "See `tui.log` for sample hrefs."
+    )
+
+
+def _guard_mass_push(
+    *,
+    calendar_ref: CalendarRef,
+    calendar: CalendarConfig,
+    session: CalDAVSession,
+    push_count: int,
+) -> None:
+    """C-12: refuse to upload a large share of a calendar unprompted.
+
+    Every `href IS NULL` row is a PUT, and nothing in the row says
+    whether it was composed locally or lost its href — an index rebuilt
+    without its hrefs would put the whole calendar back as new
+    resources, each one a duplicate of what is already there.  The mail
+    half halts on exactly this signal; this is the same halt, counted
+    in UIDs so it matches what `_push_pending` actually uploads.
+
+    The baseline has to come from the *server*, not from the index: the
+    case worth catching is the one where no local row remembers its
+    href, and an index-side count of hrefs is then zero, which is
+    exactly when a ratio cannot fire.  That costs one PROPFIND, and
+    only on a pass that already has an unusual number of uploads
+    waiting.  A calendar with nothing on the server is left to the
+    absolute ceiling, so writing a new calendar offline still works.
+    """
+    if push_count < _MASS_PUSH_MIN:
+        return
+    known = len(session.calendar_query(calendar.url))
+    over_ratio = bool(known) and push_count > known * _MASS_PUSH_RATIO
+    if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
+        return
+    logger.warning(
+        "%s: mass-push guard tripped (%d to upload against %d on the server)",
+        calendar_ref.calendar_name,
+        push_count,
+        known,
+    )
+    raise SyncHaltError(
+        f"{calendar_ref.calendar_name}: {push_count} component(s) would be "
+        f"uploaded against {known} already on the server. Refusing to push "
+        "without confirmation — an index that lost its hrefs looks exactly "
+        "like this. See `tui.log`."
     )
 
 
@@ -1253,19 +1312,25 @@ def _push_trashed(
     )
     trashed = [c for c in components if c.local_status == LocalStatus.TRASHED]
     hrefs_done: set[str] = set()
-    purge_local_only: list[ComponentRef] = []
+    # A row with no server identity has nothing to DELETE, and used to
+    # be purged from the index and the mirror here and now.  But
+    # `href = None` is the state a locally-created component and one
+    # whose handle was lost both sit in -- the same ambiguity the
+    # mass-push guard exists for -- so destroying the file is
+    # destroying the only copy of it.  It waits for
+    # `trash_retention_days` like every other trashed component
+    # instead; `_purge_expired_trash` takes it whether or not it has an
+    # href, and a retention of zero means "never purge behind my back",
+    # so it keeps the row rather than reaping it early.
     deleted_remote = 0
     for component in trashed:
-        if component.href is None:
-            purge_local_only.append(component.ref)
+        if component.href is None or component.etag is None:
+            # Nothing to DELETE: no href, or an href the server never
+            # gave us an etag for.
             continue
         if component.href in hrefs_done:
             continue
         etag = component.etag
-        if etag is None:
-            # Locally trashed without server identity: purge locally only.
-            purge_local_only.append(component.ref)
-            continue
         try:
             session.delete(component.href, etag)
         except CalDAVConflictError:
@@ -1278,13 +1343,10 @@ def _push_trashed(
         hrefs_done.add(component.href)
         deleted_remote += 1
 
-    # Purge local rows + mirror files for everything we either deleted on the
-    # server or that was never synced in the first place.
+    # Purge local rows + mirror files for everything we deleted on the
+    # server.  Anything that had nothing to delete is the retention
+    # sweep's business, below.
     with index.connection():
-        for ref in purge_local_only:
-            index.delete_component(ref)
-            with contextlib.suppress(FileNotFoundError):
-                mirror.delete(ref.resource)
         for component in trashed:
             if component.href in hrefs_done:
                 index.delete_component(component.ref)
@@ -1383,6 +1445,12 @@ def _push_pending(
     by_uid: dict[str, list[StoredComponent]] = {}
     for component in pending:
         by_uid.setdefault(component.ref.uid, []).append(component)
+    _guard_mass_push(
+        calendar_ref=calendar_ref,
+        calendar=calendar,
+        session=session,
+        push_count=len(by_uid),
+    )
 
     pushed = 0
     for uid, rows in by_uid.items():
