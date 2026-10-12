@@ -11,6 +11,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
+from unittest.mock import patch
+from urllib.parse import unquote_plus
 
 from starlette.testclient import TestClient
 from tui_helpers import (
@@ -950,3 +952,134 @@ def test_the_heading_is_the_calendars_own_words_for_the_view() -> None:
         for query, title in expected.items():
             body = client.get(f"/calendar?{query}").text
             assert title in body, (query, title)
+
+
+def test_saving_an_event_with_attendees_invites_them() -> None:
+    """The terminal has posted the iTIP REQUEST since invitations landed.
+
+    This half stored the event and told nobody, which looks identical
+    to the person who saved it and is the one failure an attendee
+    notices.
+    """
+    from pony import invitation_actions
+
+    posted: list[dict[str, object]] = []
+
+    class _Delivered:
+        ok = True
+        sent_to = ("ada@example.test", "bob@example.test")
+        error = None
+
+    def _record(**kwargs: object) -> _Delivered:
+        posted.append(kwargs)
+        return _Delivered()
+
+    services, _runtime = _services("cal-invite")
+
+    with (
+        patch.object(invitation_actions, "send_event_invitations", _record),
+        _client(services) as client,
+    ):
+        response = client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Design review",
+                "starts": "2026-05-17T14:00",
+                "ends": "2026-05-17T15:00",
+                "location": "",
+                "attendees": "ada@example.test, bob@example.test",
+                "description": "",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert len(posted) == 1
+    assert posted[0]["attendees"] == ("ada@example.test", "bob@example.test")
+    # A new event is an invitation, not an update.
+    assert posted[0]["is_update"] is False
+    assert b"BEGIN:VEVENT" in posted[0]["ics"]  # type: ignore[operator]
+    landed = unquote_plus(response.headers["location"])
+    assert "Invitation sent to 2 attendees." in landed
+
+
+def test_an_event_with_no_attendees_posts_nothing() -> None:
+    from pony import invitation_actions
+
+    posted: list[dict[str, object]] = []
+    services, _runtime = _services("cal-no-invite")
+
+    with (
+        patch.object(
+            invitation_actions,
+            "send_event_invitations",
+            lambda **kwargs: posted.append(kwargs),
+        ),
+        _client(services) as client,
+    ):
+        client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Alone",
+                "starts": "2026-05-17T14:00",
+                "ends": "2026-05-17T15:00",
+                "location": "",
+                "attendees": "",
+                "description": "",
+            },
+            follow_redirects=False,
+        )
+
+    assert posted == []
+
+
+def test_a_refused_invitation_still_reports_the_event_as_saved() -> None:
+    """The event is on the server already; a retry would write it twice."""
+    from pony import invitation_actions
+
+    class _Refused:
+        ok = False
+        sent_to = ()
+        error = "smtp.example.com refused the message"
+
+    services, _runtime = _services("cal-invite-refused")
+
+    with (
+        patch.object(
+            invitation_actions,
+            "send_event_invitations",
+            lambda **_kwargs: _Refused(),
+        ),
+        _client(services) as client,
+    ):
+        response = client.post(
+            "/calendar/event",
+            data={
+                "uid": "",
+                "target": f"{ACCOUNT}/{CALENDAR}",
+                "summary": "Design review",
+                "starts": "2026-05-17T14:00",
+                "ends": "2026-05-17T15:00",
+                "location": "",
+                "attendees": "ada@example.test",
+                "description": "",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    landed = unquote_plus(response.headers["location"])
+    assert "Event saved" in landed
+    assert "invitation was not sent" in landed
+    # The event is there regardless.
+    from chronos.views import all_calendar_refs
+
+    runtime = services.calendar
+    assert runtime is not None
+    refs = all_calendar_refs(runtime.config, runtime.mirror)
+    rows = runtime.index.list_calendar_components(refs[0])
+    assert [row.summary for row in rows] == ["Design review"]

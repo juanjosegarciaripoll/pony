@@ -755,8 +755,15 @@ async def _event_form(services: WebServices, request: Request) -> Response:
 async def _event_save(services: WebServices, request: Request) -> Response:
     context = ActionContext.of(services, await request.body())
     form = calendar_view.form_from_fields(dict(context.fields))
-    outcome = calendar_view.save(services, form)
-    if holds_form(outcome):
+    # Saving an event with attendees posts the invitations, which is an
+    # SMTP conversation: off the loop, as the composer's send is.
+    outcome = await run_in_threadpool(calendar_view.save, services, form)
+    # `holds_form` alone is not enough here, because this form *creates*
+    # a record: an event that was stored and then failed to invite its
+    # attendees has something wrong with it and must still not keep a
+    # form that would store it a second time.  Nothing was stored is
+    # the only reason to keep the typing.
+    if holds_form(outcome) and not outcome.acted:
         return HTMLResponse(
             calendar_view.event_form_page(services, form, notices=outcome.notices),
         )

@@ -15,12 +15,13 @@ view can be linked to.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Outcome, warn
+from chronos.outcome import Notice, Outcome, failure, info, warn
 from chronos.views import (
     AgendaWindow,
     CalendarSelection,
@@ -56,8 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from chronos.domain import CalendarRef, StoredComponent
-    from chronos.event_actions import Calendars
-    from chronos.outcome import Notice
+    from chronos.event_actions import Calendars, SavedEvent
     from chronos.views import OccurrenceRow
 
     from ..calendar import CalendarRuntime
@@ -1098,7 +1098,64 @@ def save(services: WebServices, form: EventForm) -> Outcome:
         all_day=form.all_day,
     )
     saved = save_event(calendars_of(runtime), draft, now=datetime.now(UTC))
-    return saved.outcome
+    if not attendees or saved.outcome.blocked:
+        return saved.outcome
+    return _announce(services, saved, summary=draft.summary, attendees=attendees)
+
+
+def _announce(
+    services: WebServices,
+    saved: SavedEvent,
+    *,
+    summary: str,
+    attendees: Sequence[str],
+) -> Outcome:
+    """Post the iTIP REQUEST for an event that has already been stored.
+
+    The terminal has done this since invitations landed; this half
+    saved the event and told nobody, which looks identical to the user
+    and is the one failure an attendee notices.
+
+    The event is already on the server, so a failure here is reported
+    as a saved event with an unsent invitation -- never as a failure of
+    the save, which would invite the user to try again and write it
+    twice.
+    """
+    from ..delivery import resolve_send_password
+    from ..invitation_actions import replying_account, send_event_invitations
+
+    def plus(notice: Notice) -> Outcome:
+        return dataclasses.replace(
+            saved.outcome, notices=(*saved.outcome.notices, notice)
+        )
+
+    account = replying_account(services.config, arrived_on=None)
+    if isinstance(account, Notice):
+        return plus(warn(f"Event saved, but no invitation was sent: {account.text}"))
+    password = resolve_send_password(services.credentials, account)
+    if isinstance(password, Notice):
+        return plus(warn(f"Event saved, but no invitation was sent: {password.text}"))
+    delivery = send_event_invitations(
+        ics=saved.ics,
+        attendees=tuple(attendees),
+        organizer=saved.organizer,
+        summary=summary,
+        is_update=not saved.created,
+        account=account,
+        password=password,
+        connect_timeout=services.config.smtp_connect_timeout_seconds,
+    )
+    if not delivery.ok:
+        return plus(
+            failure(f"Event saved, but the invitation was not sent: {delivery.error}")
+        )
+    if not delivery.sent_to:
+        # Every attendee was the organizer: nothing to post, and not a
+        # failure.
+        return saved.outcome
+    count = len(delivery.sent_to)
+    plural = "" if count == 1 else "s"
+    return plus(info(f"Invitation sent to {count} attendee{plural}."))
 
 
 def _parse_moment(value: str) -> datetime | None:
