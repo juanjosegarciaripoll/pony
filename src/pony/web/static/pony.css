@@ -40,11 +40,6 @@
   --radius: 6px;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  /* Emphasis in this file is 700 and never 600. A request for 600
-     against `system-ui` is resolved on Windows to Segoe UI Semibold,
-     which is a separate family rather than a heavier cut of the face
-     around it, so an unread row came out in a different typeface
-     instead of in bold. 700 maps to a real installed face everywhere. */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,7 +90,7 @@ body {
 }
 
 .brand {
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--accent);
   white-space: nowrap;
@@ -120,7 +115,7 @@ body {
 .tab.current {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 #status {
@@ -181,7 +176,7 @@ body {
 
 .pane-head .title {
   font-size: 0.95rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -284,7 +279,7 @@ body {
 
 .row.unread > a {
   color: var(--unread);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .row:hover > a {
@@ -338,7 +333,7 @@ body {
   padding: 0.35rem 0.6rem;
   background: var(--bg-sunken);
   font-size: 0.78rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--fg);
 }
 
@@ -376,7 +371,7 @@ body {
 .folder.current {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .folder.synthetic {
@@ -468,7 +463,7 @@ details.sender-check:not([open]) > summary .sender-headline {
 details.sender-check[open] > summary {
   display: block;
   margin-bottom: 0.4rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 details.sender-check[open] > summary .sender-headline {
@@ -607,7 +602,7 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg-raised);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .field {
@@ -701,7 +696,7 @@ a:focus-visible {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 #new-event {
@@ -720,7 +715,7 @@ a:focus-visible {
 
 .agenda-row.in_progress > a {
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* Month grid */
@@ -896,7 +891,7 @@ a:focus-visible {
 
 .day-column .event.in-progress {
   border-color: var(--error);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .event-time {
@@ -1137,7 +1132,7 @@ dialog h2 {
 .stopped h1 {
   margin: 0 0 0.6rem;
   font-size: 1.1rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .stopped p {
