@@ -868,13 +868,15 @@ def agenda_mode_window(viewed: date, mode: AgendaWindow) -> tuple[datetime, date
 
 
 def agenda_title(viewed: date, mode: AgendaWindow) -> str:
-    start, end = agenda_mode_window(viewed, mode)
-    label = {
-        AgendaWindow.DAY: "Day",
-        AgendaWindow.WEEK: "Week",
-        AgendaWindow.MONTH: "Month",
-    }[mode]
-    return f"Agenda · {label} · {start.date().isoformat()} – {end.date().isoformat()}"
+    """What the agenda is showing, as a person would say it.
+
+    The browser wrote these four titles a second time and said them
+    better -- ``Mon 05 May 2026`` against ``Day · 2026-05-05`` -- so its
+    wording is the one that survived the two copies becoming one.  A
+    title is read far more often than it is parsed, and an ISO date in a
+    heading is a date formatted for a machine that is not reading it.
+    """
+    return f"Agenda · {mode.value} from {viewed:%d %b %Y}"
 
 
 def agenda_rows(
@@ -894,7 +896,7 @@ def agenda_rows(
 
 
 def day_title(viewed: date) -> str:
-    return f"Day · {viewed.isoformat()}"
+    return f"{viewed:%a %d %B %Y}"
 
 
 def day_rows(
@@ -922,8 +924,13 @@ def grid_window(
 
 
 def grid_title(viewed: date, days: int = DEFAULT_GRID_DAYS) -> str:
-    end = viewed + timedelta(days=days - 1)
-    return f"Grid · {viewed.isoformat()} – {end.isoformat()}"
+    """The span the grid covers, inclusive of both ends.
+
+    The year is named once, at the end, because both dates are nearly
+    always in the same one and repeating it reads as noise.
+    """
+    last = viewed + timedelta(days=days - 1)
+    return f"{viewed:%d %b} – {last:%d %b %Y}"
 
 
 def grid_rows(
@@ -955,7 +962,7 @@ def month_grid_window(viewed: date) -> tuple[datetime, datetime]:
 
 
 def month_title(viewed: date) -> str:
-    return f"Month · {viewed:%B %Y}"
+    return f"{viewed:%B %Y}"
 
 
 def month_rows(

@@ -207,28 +207,44 @@ class WindowMathTest(unittest.TestCase):
 
 
 class ViewScreenTitleTest(unittest.TestCase):
-    def test_day_title_iso_date(self) -> None:
-        self.assertEqual(day_title(date(2026, 4, 25)), "Day · 2026-04-25")
+    """One wording for a title, and it is the one a person would say.
 
-    def test_grid_title_includes_start_and_end(self) -> None:
-        # Grid view defaults to 4 days starting from the viewed date.
-        title = grid_title(date(2026, 4, 25))
-        self.assertIn("2026-04-25", title)
-        self.assertIn("2026-04-28", title)
+    These were ISO dates -- ``Day · 2026-04-25`` -- because the terminal
+    wrote them and the browser wrote its own, better, second copy.  The
+    copies are one function now and the browser's prose won, so the
+    assertions pin the whole string rather than probing it for digits:
+    the point of the change is the exact wording.
+    """
+
+    def test_day_title_names_the_weekday(self) -> None:
+        self.assertEqual(day_title(date(2026, 4, 25)), "Sat 25 April 2026")
+
+    def test_grid_title_spans_both_ends_and_names_the_year_once(self) -> None:
+        # Grid view defaults to 4 days starting from the viewed date,
+        # and the last day is inclusive.
+        self.assertEqual(
+            grid_title(date(2026, 4, 25)),
+            "25 Apr – 28 Apr 2026",
+        )
 
     def test_agenda_title_reflects_window_mode(self) -> None:
-        # Day mode: just today.
-        day_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.DAY)
-        self.assertIn("Day", day_title_text)
-        self.assertIn("2026-04-25", day_title_text)
-        # Week mode: aligned Mon–Sun (2026-04-20 to 2026-04-26).
-        week_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.WEEK)
-        self.assertIn("Week", week_title_text)
-        self.assertIn("2026-04-20", week_title_text)
-        # Month mode: full April 2026.
-        month_title_text = agenda_title(date(2026, 4, 25), AgendaWindow.MONTH)
-        self.assertIn("Month", month_title_text)
-        self.assertIn("2026-04-01", month_title_text)
+        self.assertEqual(
+            agenda_title(date(2026, 4, 25), AgendaWindow.DAY),
+            "Agenda · day from 25 Apr 2026",
+        )
+        self.assertEqual(
+            agenda_title(date(2026, 4, 25), AgendaWindow.WEEK),
+            "Agenda · week from 25 Apr 2026",
+        )
+        self.assertEqual(
+            agenda_title(date(2026, 4, 25), AgendaWindow.MONTH),
+            "Agenda · month from 25 Apr 2026",
+        )
+
+    def test_month_title_is_the_month_and_the_year(self) -> None:
+        from chronos.views import month_title
+
+        self.assertEqual(month_title(date(2026, 4, 25)), "April 2026")
 
     def test_agenda_window_for_uses_calendar_aligned_ranges(self) -> None:
         d = date(2026, 4, 25)
