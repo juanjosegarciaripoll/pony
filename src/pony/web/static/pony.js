@@ -121,6 +121,49 @@ function here() {
   return document.body.dataset;
 }
 
+// ── Where each pane was scrolled to ───────────────────────────
+//
+// Choosing a folder or opening a message is an ordinary navigation, and
+// browsers restore scroll for history navigation only -- never for a
+// new URL. Without this the folder list and the message list both
+// return to the top on every click, and what you just chose can be off
+// screen.
+const PANE_SCROLL = "pony.paneScroll";
+const SCROLLED_PANES = ["folders", "list"];
+
+function paneScroller(id) {
+  const pane = document.getElementById(id);
+  return pane ? pane.querySelector(".pane-body") : null;
+}
+
+function rememberPaneScroll() {
+  const tops = {};
+  for (const id of SCROLLED_PANES) {
+    const body = paneScroller(id);
+    if (body) tops[id] = body.scrollTop;
+  }
+  try {
+    window.sessionStorage.setItem(PANE_SCROLL, JSON.stringify(tops));
+  } catch {
+    // A private window, or blocked site data, throws. The position is a
+    // convenience and nothing depends on having it.
+  }
+}
+
+function restorePaneScroll() {
+  let tops = null;
+  try {
+    tops = JSON.parse(window.sessionStorage.getItem(PANE_SCROLL) || "null");
+  } catch {
+    return;
+  }
+  if (!tops) return;
+  for (const id of SCROLLED_PANES) {
+    const body = paneScroller(id);
+    if (body && typeof tops[id] === "number") body.scrollTop = tops[id];
+  }
+}
+
 // The folder being read, without the message open in it.
 function folderParams() {
   const data = here();
@@ -307,6 +350,14 @@ async function refresh() {
   const markup = await response.text();
   const parsed = new DOMParser().parseFromString(markup, "text/html");
   const fresh = parsed.getElementById("rows");
+  // Where the open message sat, so its successor can be found after the
+  // swap. Taken before, because the row is about to be gone.
+  const openId = here().message;
+  const openRow =
+    openId && target.querySelector(`.row[data-id="${CSS.escape(openId)}"]`);
+  const openAt = openRow
+    ? Array.from(target.querySelectorAll(".row")).indexOf(openRow)
+    : -1;
   if (fresh) {
     target.replaceWith(fresh);
     wireMarkTaps();
@@ -315,11 +366,20 @@ async function refresh() {
     // the server and this swapped only the rows, so it would go on
     // naming a message that is no longer here -- `targets()` prefers
     // it, so `A` pressed twice archived the first message and then
-    // failed on it again, and the reading pane still showed it. The
-    // folder without it is what the user is actually looking at.
-    const open = here().message;
-    if (open && !document.querySelector(`#rows .row[data-id="${CSS.escape(open)}"]`)) {
-      go(`/mail?${folderParams()}`);
+    // failed on it again, and the reading pane still showed it.
+    //
+    // Follow on to whatever took its place, which is what the reader
+    // does: leaving for the folder on its own emptied the pane and put
+    // the cursor back at the top.
+    if (
+      openId &&
+      !document.querySelector(`#rows .row[data-id="${CSS.escape(openId)}"]`)
+    ) {
+      const rows = Array.from(document.querySelectorAll("#rows .row"));
+      const next = openAt >= 0 ? rows[Math.min(openAt, rows.length - 1)] : null;
+      const link = next && next.querySelector("a[href]");
+      rememberPaneScroll();
+      go(link ? link.href : `/mail?${folderParams()}`);
       return;
     }
     const again =
@@ -339,7 +399,14 @@ async function refresh() {
   const refreshed = new DOMParser()
     .parseFromString(await folders.text(), "text/html")
     .getElementById("folders");
-  if (refreshed) tree.replaceWith(refreshed);
+  if (refreshed) {
+    // The replacement starts at the top, so carry the position over.
+    const was = paneScroller("folders");
+    const top = was ? was.scrollTop : 0;
+    tree.replaceWith(refreshed);
+    const now = refreshed.querySelector(".pane-body");
+    if (now) now.scrollTop = top;
+  }
 }
 
 // ── The help overlay ───────────────────────────────────────────
@@ -910,6 +977,11 @@ function start() {
   wireFolderToggle();
   const form = currentForm();
   state.formAtLoad = form ? formState(form) : null;
+  restorePaneScroll();
+  // `pagehide` rather than `beforeunload`: it fires for an ordinary
+  // navigation and does not keep the page out of the back/forward
+  // cache.
+  window.addEventListener("pagehide", rememberPaneScroll);
   document.addEventListener("keydown", onKeyDown);
   // Clicking a row selects it, so the keyboard and the pointer agree
   // about what an action will act on.
