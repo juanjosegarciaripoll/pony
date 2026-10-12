@@ -59,6 +59,7 @@ src/pony/
   html_policy.py       # the headers a message's own HTML is shown under
   browser_preview.py   # serves that HTML to the browser over loopback
   handoff.py           # files written only for an external program to open
+  authentication.py    # what the receiving server said about the sender
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
   search_parser.py     # query language parser
@@ -520,6 +521,17 @@ first. `build_browser_html()` produces self-contained HTML with CID-resolved
 inline images for the `w` key. `pony.pdf_export` feeds that same HTML to
 whichever external converter is present (Chromium/Chrome, `wkhtmltopdf`,
 WeasyPrint or LibreOffice).
+
+**Who a message is from is the receiving server's answer, not Pony's.**
+`pony.authentication` reads the first `Authentication-Results` header
+(RFC 8601) into a verdict on `RenderedMessage`, so the terminal, the
+browser and the printed page show one answer decided in one place. It
+reads only the topmost header, because a message can arrive carrying
+reports the sender wrote, and it compares the signing domain against
+the `From` domain, because a signature that passes for some other
+domain is what phishing looks like. Pony verifies no signature itself:
+DKIM is a DNS check, and the key may have rotated by the time the
+message is in the mirror.
 
 **A message's HTML is never shown inside either front end, and never as
 a file.** It is a page of its own, and both front ends serve it: the

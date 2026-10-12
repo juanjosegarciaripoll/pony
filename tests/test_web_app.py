@@ -17,7 +17,12 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 import pytest
-from corpus import html_only, multipart_mixed_attachment, plain_text
+from corpus import (
+    authenticated_message,
+    html_only,
+    multipart_mixed_attachment,
+    plain_text,
+)
 from starlette.testclient import TestClient
 from tui_helpers import (
     make_index,
@@ -314,6 +319,53 @@ def test_a_form_in_a_message_has_nowhere_to_post_and_nothing_to_rebase() -> None
     # it gives back are what a link needs; `tests/test_html_policy.py`
     # has the measurement, and checks them in a real browser.
     assert "sandbox allow-popups allow-popups-to-escape-sandbox" in policy
+
+
+def test_the_reader_states_who_vouched_for_the_message() -> None:
+    """Beside `From`, because it is a statement about `From`.
+
+    Pony checks nothing itself: the receiving server did, and wrote its
+    answer in `Authentication-Results`.  A signature that passes for a
+    domain other than the one in `From` is the case worth marking, so
+    the class on the value says which of the three it is.
+    """
+    services, index = _services("web-auth", seed=(authenticated_message(),))
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(_message(message_id)).text
+
+    assert "Sender" in page
+    assert "example.com confirmed by dkim+dmarc" in page
+    assert "auth-passed" in page
+
+
+def test_the_reader_marks_a_signature_from_another_domain() -> None:
+    services, index = _services(
+        "web-auth-unaligned",
+        seed=(
+            authenticated_message(results="mx; dkim=pass header.d=bulk-sender.example"),
+        ),
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(_message(message_id)).text
+
+    assert "not by example.com" in page
+    assert "auth-unaligned" in page
+
+
+def test_the_reader_says_nothing_when_no_server_reported() -> None:
+    """Most mail has no report; a header that is always there is noise."""
+    services, index = _services("web-auth-silent")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(_message(message_id)).text
+
+    assert "auth-passed" not in page
+    assert ">Sender<" not in page
 
 
 def test_a_message_can_be_downloaded_as_it_arrived() -> None:

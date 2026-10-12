@@ -758,6 +758,45 @@ async def test_eml_viewer_screen_opens_nested_message() -> None:
         assert isinstance(app.screen, EmlViewerScreen)
 
 
+async def test_the_reader_states_who_vouched_for_the_message() -> None:
+    """The verdict sits with the headers, because it is about `From`.
+
+    Pony checks nothing itself; the receiving server did, and the
+    terminal shows the same answer the browser front end and the
+    printed page show, from the same place on the model.
+    """
+    from textual.widgets import Static
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = _make_host(EmlViewerScreen, corpus.authenticated_message())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+        shown = str(panel.query_one("#content", Static).content)
+
+    assert "Sender:" in shown
+    assert "example.com confirmed by dkim+dmarc" in shown
+    assert shown.index("From:") < shown.index("Sender:")
+
+
+async def test_the_reader_is_silent_when_no_server_reported() -> None:
+    """Most mail carries no report, and a line that is always there is noise."""
+    from textual.widgets import Static
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.widgets.message_view import MessageViewPanel
+
+    app = _make_host(EmlViewerScreen, corpus.plain_text())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(MessageViewPanel)
+        shown = str(panel.query_one("#content", Static).content)
+
+    assert "Sender:" not in shown
+
+
 async def test_eml_viewer_screen_reports_attachment_io_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

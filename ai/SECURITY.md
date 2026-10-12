@@ -16,6 +16,17 @@ second surface.  What stands between them:
   anything a message said.  `tests/test_web_html.py` pins that, and
   `tests/test_web_app.py` checks a hostile subject through a real
   request.
+- **Who a message claims to be from is stated, when the server said.**
+  `pony.authentication` reads the first `Authentication-Results`
+  header and shows whether the signing domain *is* the `From` domain.
+  It is deliberately narrow: only the topmost header, because a message
+  can arrive carrying reports the sender wrote; alignment compared,
+  because `dkim=pass` for an attacker's own domain is trivial to get
+  and is what the attack looks like; `spf=pass` alone not treated as a
+  pass, because it authenticates the envelope and not the `From` a
+  reader sees; and nothing shown at all when no server reported, so the
+  indicator stays worth reading.  Pony verifies no signature itself and
+  does not claim to — the line names the server that did.
 - **A message body is shown as text.** The reader renders
   `render_message(...).body` — HTML stripped, URLs as text — and
   linkifies only `https?://`, `ftp://` and bare addresses, so a

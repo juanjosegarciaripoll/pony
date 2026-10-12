@@ -498,20 +498,29 @@ def _row_action(name: str, label: str) -> Raw:
 
 
 def _headers(rendered: RenderedMessage) -> Raw:
+    auth = rendered.authentication
     fields = (
-        ("From", rendered.from_),
-        ("To", rendered.to),
-        ("Cc", rendered.cc),
-        ("Date", rendered.date),
+        ("From", rendered.from_, ""),
+        ("To", rendered.to, ""),
+        ("Cc", rendered.cc, ""),
+        ("Date", rendered.date, ""),
+        # Next to From, because it is about From: whether the domain the
+        # message claims to come from actually vouched for it.  The
+        # receiving server decided this; Pony only read its answer.
+        (
+            "Sender",
+            auth.label() if auth.worth_showing else "",
+            f"auth auth-{auth.verdict.value}",
+        ),
     )
     return element(
         "dl",
         join(
             fragment(
                 element("dt", label),
-                element("dd", value),
+                element("dd", value, class_=css) if css else element("dd", value),
             )
-            for label, value in fields
+            for label, value, css in fields
             if value
         ),
         class_="headers",

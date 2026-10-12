@@ -36,6 +36,7 @@
   --unread: #1d1b17;
   --error: #a32020;
   --warning: #8a5a00;
+  --ok: #1d6b35;
   --radius: 6px;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -54,6 +55,7 @@
     --unread: #ffffff;
     --error: #ff8b7d;
     --warning: #e8b765;
+    --ok: #7fcf98;
   }
 }
 
@@ -407,6 +409,27 @@ body {
 .headers dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* What the receiving server said about the sender.  The message's own
+   markup is never in this page -- it is a page of its own -- so these
+   colours cannot be restyled by it. */
+.headers dd.auth {
+  color: var(--fg-dim);
+}
+
+.headers dd.auth-passed {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.headers dd.auth-failed {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.headers dd.auth-unaligned {
+  color: var(--warning);
 }
 
 pre.text {

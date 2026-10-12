@@ -14,6 +14,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
+from ...authentication import Authenticity
 from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
@@ -315,6 +316,15 @@ class MessageViewPanel(VerticalScroll):
                 lines.append(line)
         lines.append(f"Date:    {_escape(r.date)}")
         lines.append(f"Subject: {_escape(r.subject)}")
+        if r.authentication.worth_showing:
+            # What the receiving server found, not what Pony checked.
+            # Shown next to From because it is about From: whether the
+            # domain the message claims actually vouched for it.
+            auth = r.authentication
+            style = "red" if auth.verdict is Authenticity.FAILED else "dim"
+            if auth.verdict is Authenticity.PASSED:
+                style = "green"
+            lines.append(f"Sender:  [{style}]{_escape(auth.label())}[/{style}]")
 
         if r.attachments:
             lines.append("")

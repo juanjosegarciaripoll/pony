@@ -18,6 +18,11 @@ from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path, PurePath, PureWindowsPath
 
+from .authentication import (
+    UNKNOWN_AUTHENTICATION,
+    MessageAuthentication,
+    parse_authentication,
+)
 from .html_sanitize import strip_invisible_blocks
 
 # Used by build_browser_html() to carry the original email's <style> blocks
@@ -247,6 +252,10 @@ class RenderedMessage:
     # itself to this message; empty when the sender omitted the header.
     message_id: str = ""
     references: str = ""
+    # What the receiving server said about who sent it, read off its
+    # `Authentication-Results` header.  Both front ends and the printed
+    # page show the same verdict, so it is decided once, here.
+    authentication: MessageAuthentication = UNKNOWN_AUTHENTICATION
 
 
 def render_message(raw_bytes: bytes) -> RenderedMessage:
@@ -275,6 +284,7 @@ def render_message(raw_bytes: bytes) -> RenderedMessage:
         styled_body=styled_body,
         message_id=_header(msg, "Message-ID"),
         references=_header(msg, "References"),
+        authentication=parse_authentication(msg),
     )
 
 
@@ -797,9 +807,24 @@ def build_browser_html(raw_bytes: bytes) -> str:
 
     # Header block.
     cc_row = f"<tr><td>Cc</td><td>{_html.escape(cc)}</td></tr>" if cc else ""
+    # What the receiving server found about the sender, next to From
+    # because it is about From.  This page shows the sender's own markup
+    # below, and the sender's CSS can reach this table, so the verdict
+    # carries its class on the row rather than relying on a colour the
+    # message could restyle.
+    auth = parse_authentication(msg)
+    auth_row = ""
+    if auth.worth_showing:
+        auth_row = (
+            f"<tr class='auth auth-{auth.verdict.value}'><td>Sender</td>"
+            f"<td>{_html.escape(auth.label())}"
+            f" <span class='auth-detail'>{_html.escape(auth.detail())}</span>"
+            "</td></tr>"
+        )
     header_block = f"""
 <table class="headers">
   <tr><td>From</td><td>{_html.escape(from_)}</td></tr>
+  {auth_row}
   <tr><td>To</td><td>{_html.escape(to)}</td></tr>
   {cc_row}
   <tr><td>Date</td><td>{_html.escape(date)}</td></tr>
@@ -828,12 +853,25 @@ def build_browser_html(raw_bytes: bytes) -> str:
 <head>
 <meta charset="utf-8">
 <style>
+/* The sender's own style blocks come first on purpose.  This page
+   carries Pony's header table above the message, and a rule of the
+   sender's that collides with one of Pony's -- `table{{}}`, `body{{}}`,
+   `td{{}}` -- would otherwise win on being later.  It cannot be made
+   safe by ordering alone, since a more specific selector still wins,
+   so the rows that state something about the sender are also selected
+   specifically below. */
+{extra_styles}
 body{{font-family:sans-serif;margin:0;padding:0;color:#222}}
 table.headers{{border-collapse:collapse;width:100%;background:#f5f5f5;
               font-size:.9em;padding:.6em}}
 table.headers td{{padding:3px 10px;vertical-align:top}}
 table.headers td:first-child{{font-weight:bold;color:#555;
                               white-space:nowrap;width:5em}}
+table.headers tr.auth td{{color:#555}}
+table.headers tr.auth-passed td{{color:#0a6b2d;font-weight:bold}}
+table.headers tr.auth-failed td{{color:#a30000;font-weight:bold}}
+table.headers tr.auth-unaligned td{{color:#8a5a00}}
+table.headers tr.auth td span.auth-detail{{color:#777;font-weight:normal}}
 hr.header-sep{{border:none;border-top:1px solid #ccc;margin:0}}
 .body-wrap{{padding:1em}}
 .attachments{{padding:.6em 1em;background:#fffbe6;
@@ -842,7 +880,6 @@ hr.header-sep{{border:none;border-top:1px solid #ccc;margin:0}}
 .att-meta{{color:#777}}
 .nested-header{{margin:1em 0;padding:.6em 1em;background:#eef6ff;
                border:1px solid #b0d0f0;border-radius:4px;font-size:.9em}}
-{extra_styles}
 </style>
 </head>
 <body>

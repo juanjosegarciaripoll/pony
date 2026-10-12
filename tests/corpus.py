@@ -121,6 +121,25 @@ def plain_text() -> bytes:
     return msg.as_bytes()
 
 
+def authenticated_message(
+    *, results: str = "mx.example.org; dkim=pass header.d=example.com; dmarc=pass"
+) -> bytes:
+    """A message carrying the receiving server's own verdict on it.
+
+    The default is the aligned pass an ordinary well-configured sender
+    gets; pass *results* to get any other report.
+    """
+    msg = EmailMessage()
+    msg["Authentication-Results"] = results
+    msg["From"] = FROM_ADDR
+    msg["To"] = TO_ADDR
+    msg["Subject"] = "Your statement is ready"
+    msg["Date"] = DATE
+    msg["Message-ID"] = MESSAGE_ID
+    msg.set_content(PLAIN_BODY)
+    return msg.as_bytes()
+
+
 def mid_thread_message() -> bytes:
     """A message several replies deep, with a folded ``References`` chain.
 

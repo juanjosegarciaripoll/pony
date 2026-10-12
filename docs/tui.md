@@ -102,6 +102,48 @@ When the message view is focused (after opening a message):
 | ++greater++ | Scroll to bottom |
 | ++i++ | Answer the invitation on this message |
 
+### Who the message is from
+
+Under `From`, the reader shows a `Sender` line when the server that
+accepted the message said something about who sent it:
+
+```
+ From:    Alice Smith <alice@example.com>
+ Sender:  example.com confirmed by dkim+dmarc
+```
+
+Pony checks nothing itself. DKIM is a signature verified against DNS,
+and by the time a message is in the mirror the key may have rotated;
+the server that accepted it did check, and recorded the result in an
+`Authentication-Results` header. The line reports that, and nothing
+else.
+
+Three things it can say:
+
+| Line | Means |
+|---|---|
+| `example.com confirmed by dkim+dmarc` | The domain in `From` is the domain that signed it |
+| `signed by bulk.example, not by example.com` | Something signed it, but not the sender it claims |
+| `failed dkim+dmarc` | The server checked and it did not pass |
+
+The middle one is the case the line exists for. A signature that passes
+proves only that *somebody* signed the message, and in phishing that
+somebody is usually a domain the attacker owns — so a reader told only
+"signed" would be reassured about exactly the mail they should not be.
+
+Nothing is shown when no server reported, which is most personal mail
+relayed by servers that do not add the header. An indicator that is
+always there is one nobody reads.
+
+Two limits worth knowing. Only the topmost header is read: a message
+can arrive carrying any number of reports the sender wrote itself, and
+only the receiving server's own — the one it prepended — is worth
+anything. And `spf=pass` on its own is not treated as a pass, because
+SPF authenticates the envelope sender rather than the `From` header a
+reader is looking at, and the two differ for every mailing list.
+
+The same line appears in the browser front end and on the printed page.
+
 ---
 
 ## The calendar

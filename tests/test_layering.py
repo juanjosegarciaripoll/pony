@@ -88,6 +88,7 @@ _BACKEND_MODULES = (
     "pony.browser_preview",
     "pony.html_policy",
     "pony.handoff",
+    "pony.authentication",
     "pony.web",
 )
 
