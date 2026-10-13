@@ -29,7 +29,7 @@ from ..domain import FolderRef, MessageFlag
 from ..folder_utils import shows_recipient
 from ..invitation import CALENDAR_CONTENT_TYPES
 from ..mailbox_actions import folder_unread_counts
-from ..message_export import message_parts
+from ..message_export import listed_parts
 from ..message_renderer import fmt_size, parse_styled_body, render_message
 from ..views import (
     ROW_BATCH,
@@ -753,13 +753,14 @@ def _attachments(
     *,
     answerable: bool = False,
 ) -> Raw | None:
-    """The parts of the message, with an Import control where one helps.
+    """The attachments, with an Import control where one helps.
 
-    Numbered as the reader numbers them -- ``0`` the message as it
-    arrived, ``T`` its body as text, then the attachments -- so a user
-    who knows ``S`` then ``0`` in the terminal finds the same thing
-    here, and the download names match because both ask
-    :mod:`pony.message_export` for them.
+    Numbered as the reader numbers them, so the number beside a file
+    here is the one ``S`` takes in either front end, and the download
+    names match because both ask :mod:`pony.message_export` for them.
+    Parts ``0`` and ``T`` -- the message as it arrived and its body as
+    text -- are served and can be asked for by name; they are not
+    listed, because every message has them.
 
     *answerable* says the page is already showing this message's
     invitation with Accept, Decline and Tentative on it.  A
@@ -788,8 +789,7 @@ def _attachments(
                 ),
                 element(
                     "span",
-                    f"{part.content_type}, {fmt_size(part.size_bytes)}"
-                    + (f" — {part.note}" if part.note else ""),
+                    f"{part.content_type}, {fmt_size(part.size_bytes)}",
                     class_="about",
                 ),
                 _import_control(by_index[part.key], targets)
@@ -798,7 +798,7 @@ def _attachments(
                 and _is_calendar_file(by_index[part.key])
                 else None,
             )
-            for part in message_parts(rendered)
+            for part in listed_parts(rendered)
         ),
         class_="attachments",
     )

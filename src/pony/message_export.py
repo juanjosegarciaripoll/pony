@@ -43,6 +43,7 @@ __all__ = [
     "PartKey",
     "OpenablePart",
     "downloads_dir",
+    "listed_parts",
     "message_parts",
     "part_key",
     "part_payload",
@@ -95,15 +96,6 @@ class MessagePart:
         return self.key == TEXT_BODY
 
     @property
-    def note(self) -> str:
-        """What this part is, for a reader who has not met the numbering."""
-        if self.is_whole_message:
-            return "the message itself"
-        if self.is_text_body:
-            return "the body as text"
-        return ""
-
-    @property
     def label(self) -> str:
         """How a picker names this part: key, name and size."""
         return f"{self.key}: {self.filename} ({fmt_size(self.size_bytes)})"
@@ -134,6 +126,22 @@ def message_parts(rendered: RenderedMessage) -> tuple[MessagePart, ...]:
             )
             for attachment in rendered.attachments
         ),
+    )
+
+
+def listed_parts(rendered: RenderedMessage) -> tuple[MessagePart, ...]:
+    """The parts a reader sees listed: the attachments, ``1..N``.
+
+    Parts ``0`` and ``T`` are reachable by name everywhere -- ``s``,
+    the ``S`` prompt, a digit accelerator, ``n=0`` in a URL -- so
+    listing them put two rows naming the open message on every message
+    that had an attachment.  Both front ends ask here rather than each
+    deciding, so the lists stay the same list.
+    """
+    return tuple(
+        part
+        for part in message_parts(rendered)
+        if not part.is_whole_message and not part.is_text_body
     )
 
 

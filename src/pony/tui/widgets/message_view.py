@@ -21,7 +21,7 @@ from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
 from ...keymap import MAIL_KEYMAP
-from ...message_export import message_parts
+from ...message_export import listed_parts
 from ...message_renderer import (
     RenderedMessage,
     build_browser_html,
@@ -341,21 +341,20 @@ class MessageViewPanel(VerticalScroll):
         lines.append(f"Subject: {_escape(r.subject)}")
 
         if r.attachments:
-            # Numbered as `pony.message_export` numbers them, part 0
-            # included, so the digit that opens a part is the one beside
-            # it here and the one typed at the `S` prompt.  Only when
-            # there is an attachment: a plain message would otherwise
-            # carry a block naming itself.
+            # Numbered as `pony.message_export` numbers them, so the
+            # digit that opens a part is the one beside it here and the
+            # one typed at the `S` prompt.  The message itself and its
+            # text are parts 0 and T and are reachable by name, but
+            # they are not listed: every message has them.
             lines.append("")
             lines.append("Parts:")
-            for part in message_parts(r):
+            for part in listed_parts(r):
                 name = _escape(part.filename)
                 link = f"[@click=\"screen.open_attachment('{part.key}')\"]"
-                note = f"  {part.note}" if part.note else ""
                 lines.append(
                     f"  [{part.key}] {link}{name}[/]"
                     f"  {_escape(part.content_type)}"
-                    f"  ({fmt_size(part.size_bytes)}){note}"
+                    f"  ({fmt_size(part.size_bytes)})"
                 )
 
         if self._invitation is not None:

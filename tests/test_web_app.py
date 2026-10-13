@@ -470,13 +470,13 @@ def test_an_attachment_is_served_as_a_download_that_cannot_be_sniffed() -> None:
     assert 'filename="q1-report.pdf"' in response.headers["content-disposition"]
 
 
-def test_the_browser_offers_the_parts_the_reader_offers() -> None:
-    """``0`` the message, ``T`` its text, then the attachments.
+def test_the_browser_serves_every_part_and_lists_the_attachments() -> None:
+    """``0`` and ``T`` are served and named; the list is the files.
 
-    The page listed attachments only, so the two parts a user can ask
-    for by name in the terminal had no link here -- and the numbering
-    beside each one is what makes `S` then `0` and a click the same
-    operation.
+    Both are reachable by name, which is what makes `S` then `0` and a
+    click the same operation -- but listing them put two rows naming
+    the open message above every attachment, which is what the reader
+    is looking at the list for.
     """
     services, index = _services(
         "web-parts",
@@ -491,9 +491,10 @@ def test_the_browser_offers_the_parts_the_reader_offers() -> None:
         lowercase = client.get(_message(message_id, path="/message/attachment", n="t"))
         nonsense = client.get(_message(message_id, path="/message/attachment", n="x"))
 
-    assert "the message itself" in page
-    assert "the body as text" in page
     assert "q1-report.pdf" in page
+    assert ".eml" not in page
+    assert "the message itself" not in page
+    assert "the body as text" not in page
 
     assert whole.status_code == 200
     assert whole.headers["content-type"].startswith("message/rfc822")

@@ -18,6 +18,7 @@ import corpus
 from pony.message_export import (
     TEXT_BODY,
     WHOLE_MESSAGE,
+    listed_parts,
     message_parts,
     part_key,
     part_payload,
@@ -58,12 +59,28 @@ class MessagePartsTest(unittest.TestCase):
         self.assertEqual([part.key for part in parts], [WHOLE_MESSAGE, TEXT_BODY, 1])
         self.assertEqual(parts[2].filename, "q1-report.pdf")
 
-    def test_each_part_says_what_it_is(self) -> None:
-        parts = message_parts(render_message(corpus.multipart_mixed_attachment()))
+    def test_only_the_attachments_are_listed(self) -> None:
+        """What a reader sees: its files, not the message it has open.
 
-        self.assertEqual(parts[0].note, "the message itself")
-        self.assertEqual(parts[1].note, "the body as text")
-        self.assertEqual(parts[2].note, "")
+        0 and T stay in ``message_parts`` -- the prompt, the digit
+        accelerators and ``n=0`` all name them -- and out of the list,
+        where they said nothing on every message that had a file.
+        """
+        rendered = render_message(corpus.multipart_mixed_attachment())
+
+        listed = listed_parts(rendered)
+
+        self.assertEqual([part.key for part in listed], [1])
+        self.assertEqual(listed[0].filename, "q1-report.pdf")
+
+    def test_a_message_with_no_attachments_lists_nothing(self) -> None:
+        rendered = render_message(corpus.plain_text())
+
+        self.assertEqual(listed_parts(rendered), ())
+        self.assertEqual(
+            [part.key for part in message_parts(rendered)],
+            [WHOLE_MESSAGE, TEXT_BODY],
+        )
 
 
 class PartPayloadTest(unittest.TestCase):

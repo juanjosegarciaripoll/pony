@@ -157,9 +157,11 @@ without that a kept mirror came back indexed by nothing.
   so `S` then `0` is `s`, and `*` is every part. In the open message, a
   digit opens that part and `ctrl`+digit saves it, with `t` and `ctrl+t`
   for the text; `0` used to mean *every attachment*, which was the one
-  numbering in the program that did not count parts. The browser lists
-  and serves the same parts, and the Markdown rendering of a body is no
-  longer written by any key.
+  numbering in the program that did not count parts. The browser serves
+  the same parts and takes the same selection; both front ends list the
+  attachments alone, because every message has a part 0 and a part `T`
+  and naming them on every message said nothing a reader did not know.
+  The Markdown rendering of a body is no longer written by any key.
 - **To: is one address per row, like Cc: and Bcc:**: the three recipient
   fields now behave identically. A comma-separated list splits into one row
   per address when you leave the field or paste it — never while you are
