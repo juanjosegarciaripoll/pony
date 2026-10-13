@@ -240,16 +240,66 @@ class EmptySubjectProjectionTest(unittest.TestCase):
 
 
 class InlineImageProjectionTest(unittest.TestCase):
-    """Inline CID image must NOT be counted as an attachment."""
+    """An inline CID image is a part the reader offers, so it counts."""
 
     def setUp(self) -> None:
         self.msg = _project(corpus.inline_image())
 
-    def test_inline_image_not_counted_as_attachment(self) -> None:
-        self.assertFalse(self.msg.has_attachments)
+    def test_inline_image_counted_as_attachment(self) -> None:
+        self.assertTrue(self.msg.has_attachments)
 
     def test_body_preview_from_plain_fallback(self) -> None:
         self.assertIn("Hello", self.msg.body_preview)
+
+
+class AttachmentFlagAgreesWithTheReaderTest(unittest.TestCase):
+    """The index flag and the reader's list answer one question.
+
+    `has_attachments` was a regex searched over the whole raw message:
+    ``Content-Disposition: attachment``, ``filename=`` anywhere at all,
+    or ``text/calendar``.  The reader walks the MIME tree and counts a
+    part that says it is an attachment, one that carries a filename, or
+    one that is neither plain text nor HTML -- the numbering `pony
+    message attachment N` and the MCP ``get_attachment`` tool expose.
+    So a ``multipart/mixed`` carrying a bare image indexed as having no
+    attachment while the reader offered it as ``[1]``, and the list
+    showed no paperclip for a message that has one.
+    """
+
+    def test_every_fixture_agrees(self) -> None:
+        from pony.message_renderer import render_message
+
+        for name in (
+            "plain_text",
+            "multipart_alternative",
+            "multipart_mixed_attachment",
+            "multipart_mixed_multi",
+            "calendar_invite",
+            "inline_image",
+            "inline_image_named",
+            "inline_text_named",
+            "inline_html_named",
+            "unnamed_attachment",
+            "html_only",
+            "html_first_multipart",
+            "html_rich_formatting",
+            "attachment_only",
+            "nested_forward",
+            "double_attached_emails",
+            "base64_rfc822_attachment",
+            "quoted_printable_body",
+            "base64_body",
+            "empty_body",
+            "corrupt_base64_body",
+            "duplicate_headers",
+            "traversal_attachment_filename",
+        ):
+            raw = getattr(corpus, name)()
+            with self.subTest(fixture=name):
+                self.assertEqual(
+                    _project(raw).has_attachments,
+                    bool(render_message(raw).attachments),
+                )
 
 
 class QuotedPrintableBodyProjectionTest(unittest.TestCase):

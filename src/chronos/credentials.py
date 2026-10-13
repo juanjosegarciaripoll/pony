@@ -13,7 +13,6 @@ from chronos.domain import (
     CredentialSpec,
     EnvCredential,
     GoogleCredential,
-    KeyringCredential,
     OAuthCredential,
     PlaintextCredential,
 )
@@ -49,8 +48,6 @@ class DefaultCredentialsProvider:
       - EnvCredential: reads the named environment variable.
       - CommandCredential: runs the command and uses stdout (stripped)
         as the basic-auth password.
-      - KeyringCredential: deferred in v1 (requires the `keyring`
-        package).
       - OAuthCredential / GoogleCredential: load tokens from
         `paths.active().token_path(account)`. If the file is missing and
         an `interactive_authorizer` is configured, run it to obtain
@@ -98,14 +95,6 @@ class DefaultCredentialsProvider:
             return value
         if isinstance(spec, CommandCredential):
             return _resolve_command(account_name, spec)
-        if isinstance(spec, KeyringCredential):
-            raise CredentialResolutionError(
-                f"{account_name}: the 'encrypted' credential backend "
-                f"(service={spec.service}, username={spec.username}) "
-                "is not available in v1. It requires the `keyring` "
-                "package; approve adding it as a runtime dependency to "
-                "enable this."
-            )
         # spec narrows to OAuthCredential by elimination, but OAuth is
         # handled in build_auth() before this function is called.
         raise CredentialResolutionError(

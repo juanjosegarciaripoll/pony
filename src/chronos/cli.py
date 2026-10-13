@@ -2081,9 +2081,8 @@ def _credential_backend(spec: CredentialSpec) -> str:
         return "command"
     if isinstance(spec, OAuthCredential):
         return "oauth"
-    if isinstance(spec, GoogleCredential):
-        return "google"
-    return "encrypted"
+    # spec narrows to GoogleCredential by elimination.
+    return "google"
 
 
 def _default_loopback_flow(credential: OAuthCredential, stdout: TextIO) -> StoredTokens:

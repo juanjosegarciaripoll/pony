@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 
 def expand_path(raw: str | Path) -> Path:
@@ -19,6 +19,24 @@ def expand_path(raw: str | Path) -> Path:
     text = os.path.expandvars(text)
     text = os.path.expanduser(text)  # noqa: PTH111
     return Path(text)
+
+
+def is_half_qualified(raw: str, *, flavour: type[PurePath] = PurePath) -> bool:
+    """Is *raw* neither relative nor fully qualified?
+
+    On Windows ``"/mail"`` has a root but no drive and ``"C:mail"`` a
+    drive but no root; neither is absolute, so joining it against a base
+    silently drops the base -- ``data_dir / "/mail"`` is ``C:\\mail``.
+    POSIX has no such shape, which is why this takes the flavour: the
+    branch it guards is only reachable on Windows, and only a
+    ``PureWindowsPath`` can exercise it elsewhere.
+
+    It lives here rather than in :mod:`pony.config` because both halves
+    resolve a configured mirror path against a base directory and both
+    have to refuse the same shape; the dependency arrow points this way.
+    """
+    path = flavour(raw)
+    return not path.is_absolute() and bool(path.drive or path.root)
 
 
 @dataclass(frozen=True, slots=True)

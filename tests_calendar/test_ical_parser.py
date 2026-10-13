@@ -227,6 +227,23 @@ class ExtractAttendeesTest(unittest.TestCase):
             extract_organizer(raw, "attendees-1@example.com"), "host@example.com"
         )
 
+    def test_only_addresses_the_writer_accepts_come_back(self) -> None:
+        """The reader and the writer agree on what an address is.
+
+        The reader used to require only an ``@``, so a server-supplied
+        ATTENDEE with a space in it was handed to `build_event_ics`,
+        which refuses it -- and `calendar edit` on that event failed
+        with "invalid attendee email" whatever was being edited.  A
+        display-name form is normalised; a value that is not an address
+        is dropped rather than carried to a writer that cannot write it.
+        """
+        from chronos.mutations import normalize_attendee_emails
+
+        raw = corpus.event_with_unwritable_attendee()
+        attendees = extract_attendees(raw, "bad-attendee-1@example.com")
+        self.assertEqual(attendees, ("carol@example.com", "dave@example.com"))
+        self.assertEqual(normalize_attendee_emails(attendees), attendees)
+
     def test_valarm_attendee_is_not_treated_as_event_attendee(self) -> None:
         raw = corpus.event_with_email_alarm()
         self.assertEqual(extract_attendees(raw, "alarm-email-1@example.com"), ())

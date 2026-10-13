@@ -141,7 +141,11 @@ class MaildirIntegrityTests(unittest.TestCase):
         _index_message(index, "INBOX", "missing.1.host")
 
         result = check_mirror_integrity(account=account, index=index)
-        self.assertEqual(result.status, CheckStatus.WARN)
+        # A row pointing at a file that is not there is a message the
+        # reader lists and cannot open, so it is an error and counts
+        # towards `pony doctor`'s exit status.  The calendar's doctor
+        # has always called the same corruption a FAIL.
+        self.assertEqual(result.status, CheckStatus.ERROR)
         self.assertIn("1 stale", result.detail)
 
     def test_subfolder_scanned(self) -> None:
@@ -202,7 +206,7 @@ class MboxIntegrityTests(unittest.TestCase):
         _index_message(index, "INBOX", "0")
 
         result = check_mirror_integrity(account=account, index=index)
-        self.assertEqual(result.status, CheckStatus.WARN)
+        self.assertEqual(result.status, CheckStatus.ERROR)
         self.assertIn("stale", result.detail)
 
     def test_existing_mbox_file_reports_ok(self) -> None:

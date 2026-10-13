@@ -14,7 +14,6 @@ from chronos.domain import (
     AppConfig,
     CommandCredential,
     EnvCredential,
-    KeyringCredential,
     PlaintextCredential,
 )
 
@@ -61,6 +60,18 @@ class ParseTopLevelTest(unittest.TestCase):
         with self.assertRaises(ConfigError) as ctx:
             parse({})
         self.assertIn("config_version", str(ctx.exception))
+
+    def test_an_unsupported_config_version_is_refused(self) -> None:
+        """The field was read and never compared with anything.
+
+        `config_version = 999` parsed cleanly and the file was then
+        interpreted as the current schema, which is the one thing the
+        number exists to prevent.  The mail half has had the strict
+        equality since its first commit.
+        """
+        with self.assertRaises(ConfigError) as ctx:
+            parse({"config_version": 999})
+        self.assertIn("unsupported config_version 999", str(ctx.exception))
 
     def test_config_version_must_be_int(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
@@ -167,8 +178,46 @@ class ParseAccountTest(unittest.TestCase):
         config = parse(self._wrap(acct_data))
 
         self.assertEqual(
-            config.accounts[0].mirror_path, active().root / "mirrors" / "personal"
+            config.accounts[0].mirror_path,
+            (active().root / "mirrors" / "personal").resolve(),
         )
+
+    def test_a_relative_mirror_path_is_resolved(self) -> None:
+        """Every later use of the path is a spelling comparison.
+
+        `_dump_account` decides whether to write the key back out by
+        comparing it with the default, and the sync engine compares it
+        with what it wrote; an unresolved ``a/../b`` is a different
+        string for the same directory.  The mail side resolves
+        `mirror.path` for this reason and the calendar did not.
+        """
+        from chronos.paths import active
+
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["mirror_path"] = "mirrors/../elsewhere"
+        config = parse(self._wrap(acct_data))
+
+        self.assertEqual(
+            config.accounts[0].mirror_path, (active().root / "elsewhere").resolve()
+        )
+
+    def test_a_half_qualified_mirror_path_is_refused(self) -> None:
+        """A root without a drive, or a drive without a root.
+
+        Neither is absolute, so joining it against the calendar's root
+        discards the root: "/mail" becomes C:\\mail.  The mail side
+        refuses that shape for `mirror.path`; the calendar joined it.
+        Only a Windows path can have it, so the predicate is asked
+        directly rather than through a path this machine cannot spell.
+        """
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["mirror_path"] = "mirrors/personal"
+        with (
+            unittest.mock.patch("chronos.config.is_half_qualified", return_value=True),
+            self.assertRaises(ConfigError) as ctx,
+        ):
+            parse(self._wrap(acct_data))
+        self.assertIn("neither relative nor fully qualified", str(ctx.exception))
 
     def test_mirror_path_defaults_to_the_active_layout_when_omitted(self) -> None:
         from chronos.paths import active
@@ -290,14 +339,25 @@ class ParseCredentialTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse(self._wrap({"backend": "command", "command": []}))
 
-    def test_encrypted(self) -> None:
-        config = parse(
-            self._wrap({"backend": "encrypted", "service": "chronos", "username": "u"})
-        )
-        cred = config.accounts[0].credential
-        assert isinstance(cred, KeyringCredential)
-        self.assertEqual(cred.service, "chronos")
-        self.assertEqual(cred.username, "u")
+    def test_encrypted_is_refused_at_parse(self) -> None:
+        """The word that works for mail and not for the calendar.
+
+        A mail account's ``credentials_source = "encrypted"`` is the
+        DPAPI/SHAKE store in `pony.credentials`.  The same word on a
+        calendar account used to parse into a spec no resolver could
+        answer, so the config loaded and the first sync failed; the
+        refusal belongs where the word is read, and it names what does
+        work instead.
+        """
+        with self.assertRaises(ConfigError) as ctx:
+            parse(
+                self._wrap(
+                    {"backend": "encrypted", "service": "chronos", "username": "u"}
+                )
+            )
+        message = str(ctx.exception)
+        self.assertIn("'encrypted' backend is not available", message)
+        self.assertIn("'command'", message)
 
     def test_oauth_minimal(self) -> None:
         config = parse(
@@ -513,7 +573,6 @@ class DumpTest(unittest.TestCase):
             PlaintextCredential(password="s3cret"),
             EnvCredential(variable="MY_VAR"),
             CommandCredential(command=("pass", "show", "chronos")),
-            KeyringCredential(service="chronos", username="u@example.com"),
             OAuthCredential(
                 client_id="cid",
                 client_secret="cs",

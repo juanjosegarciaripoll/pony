@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
 from dateutil.rrule import rrule, rruleset, rrulestr
@@ -19,7 +19,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.ical_parser import extract_alarm_triggers
+from chronos.ical_parser import extract_alarm_triggers, localize_naive, to_utc
 from chronos.protocols import IndexRepository
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def expand(
     anchor = _anchor(master)
     if anchor is None:
         return []
-    anchor = _to_utc(anchor)
+    anchor = to_utc(anchor)
 
     duration = _master_duration(master)
     rrule_str, rdates, exdates = _extract_rules(master.raw_ics, master.ref.uid)
@@ -76,7 +76,7 @@ def expand(
 
     ruleset = _build_ruleset(rrule_anchor, rrule_str, rdates, exdates)
     raw_occurrences = ruleset.between(
-        _to_utc(window_start), _to_utc(window_end), inc=True
+        to_utc(window_start), to_utc(window_end), inc=True
     )
 
     in_window = [dt for dt in raw_occurrences if window_start <= dt < window_end]
@@ -89,7 +89,7 @@ def expand(
     override_map = _index_overrides(overrides)
     out: list[Occurrence] = []
     for occ_dt in in_window:
-        occ_utc = _to_utc(occ_dt)
+        occ_utc = to_utc(occ_dt)
         override = override_map.get(occ_utc)
         if override is None:
             out.append(
@@ -105,7 +105,7 @@ def expand(
         override_anchor = _anchor(override)
         if override_anchor is None:
             continue
-        override_start = _to_utc(override_anchor)
+        override_start = to_utc(override_anchor)
         override_end = _end_time(override, duration)
         out.append(
             Occurrence(
@@ -381,24 +381,20 @@ def _master_duration(component: StoredComponent) -> timedelta | None:
     end = component.dtend if isinstance(component, VEvent) else component.due
     if end is None:
         return None
-    return _to_utc(end) - _to_utc(anchor)
+    return to_utc(end) - to_utc(anchor)
 
 
 def _end_time(
     component: StoredComponent, fallback_duration: timedelta | None
 ) -> datetime | None:
     if isinstance(component, VEvent) and component.dtend is not None:
-        return _to_utc(component.dtend)
+        return to_utc(component.dtend)
     if isinstance(component, VTodo) and component.due is not None:
-        return _to_utc(component.due)
+        return to_utc(component.due)
     anchor = _anchor(component)
     if anchor is None or fallback_duration is None:
         return None
-    return _to_utc(anchor) + fallback_duration
-
-
-def _to_utc(value: datetime) -> datetime:
-    return value.astimezone(UTC)
+    return to_utc(anchor) + fallback_duration
 
 
 def _single_occurrence(
@@ -520,26 +516,17 @@ def _raw_tz_anchor(raw_ics: bytes, uid: str) -> datetime | None:
         except (KeyError, ValueError):
             return None
         if isinstance(value, datetime):
-            return value if value.tzinfo is not None else _safe_localize_naive(value)
+            return value if value.tzinfo is not None else localize_naive(value)
         if isinstance(value, date):
-            return _safe_localize_naive(datetime(value.year, value.month, value.day))
+            # A VALUE=DATE DTSTART carries no zone at all, and the
+            # stored `dtstart` reads it as UTC midnight
+            # (`ical_parser._get_datetime`).  This anchor expands the
+            # same series, so reading it as *local* midnight offset
+            # every occurrence of an all-day series by the reader's UTC
+            # offset: a weekly trip beginning on the 1st came out at
+            # the 30th, 22:00, two zones east of UTC.
+            return datetime(value.year, value.month, value.day, tzinfo=UTC)
     return None
-
-
-def _safe_localize_naive(value: datetime) -> datetime:
-    """Attach local tzinfo to naive datetimes without timestamp conversion.
-
-    We intentionally avoid calling `value.astimezone()` here: on Windows,
-    resolving very old/edge dates through localtime can raise
-    `OSError: [Errno 22] Invalid argument`. For floating DTSTART semantics,
-    we only need "local wall time", not an immediate epoch conversion.
-    """
-    return value.replace(tzinfo=_local_tzinfo())
-
-
-def _local_tzinfo() -> tzinfo:
-    tz = datetime.now().astimezone().tzinfo
-    return tz or UTC
 
 
 def _extract_rules(
@@ -599,7 +586,7 @@ def _extract_date_list(component: object, key: str) -> list[datetime]:
         for entry in cast(list[object], dts):
             dt = getattr(entry, "dt", None)
             if isinstance(dt, datetime):
-                collected.append(_to_utc(dt))
+                collected.append(to_utc(dt))
             elif isinstance(dt, date):
                 collected.append(datetime(dt.year, dt.month, dt.day, tzinfo=UTC))
     return collected

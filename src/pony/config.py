@@ -18,8 +18,10 @@ import json
 import os
 import re
 import tomllib
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import cast
+
+from chronos.paths import is_half_qualified
 
 from .domain import (
     CONFIG_VERSION,
@@ -389,20 +391,6 @@ def _parse_folder_config(data: dict[str, object]) -> FolderConfig:
         exclude=_require_string_list(data, "exclude"),
         read_only=_require_string_list(data, "read_only"),
     )
-
-
-def is_half_qualified(raw: str, *, flavour: type[PurePath] = PurePath) -> bool:
-    """Is *raw* neither relative nor fully qualified?
-
-    On Windows ``"/mail"`` has a root but no drive and ``"C:mail"`` a
-    drive but no root; neither is absolute, so joining it against a base
-    silently drops the base -- ``data_dir / "/mail"`` is ``C:\\mail``.
-    POSIX has no such shape, which is why this takes the flavour: the
-    branch it guards is only reachable on Windows, and only a
-    ``PureWindowsPath`` can exercise it elsewhere.
-    """
-    path = flavour(raw)
-    return not path.is_absolute() and bool(path.drive or path.root)
 
 
 def _parse_mirror(

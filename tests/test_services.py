@@ -247,11 +247,21 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     """`pony doctor` answers for the calendar half too."""
 
     def setUp(self) -> None:
+        from chronos.paths import activate as activate_calendar
+        from chronos.paths import active as active_calendar
+
         self.paths = _tmp_paths(f"cal-{self.id().rsplit('.', 1)[-1]}")
         self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
         # The calendar's files live under the data directory the doctor
         # was handed, so there is nothing to redirect.
         self.calendar_home = self.paths.calendar_dir
+        self.calendar_home.mkdir(parents=True, exist_ok=True)
+        # `pony` activates the calendar's root before reading anything,
+        # and an account's `mirror_path` default comes from it, so a
+        # doctor reading this config has to see this root.
+        previous = active_calendar().root
+        activate_calendar(self.calendar_home)
+        self.addCleanup(activate_calendar, previous)
 
     def _write_config(self, text: str) -> None:
         self.paths.config_file.write_text(resolve_fixture(text), encoding="utf-8")
@@ -312,21 +322,72 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self.assertIn("pony calendar sync", checks["Calendar index"][1])
         self.assertEqual(CheckStatus.WARN, checks["Calendar mirror"][0])
 
+    _CALENDAR_ACCOUNT = """
+        config_version = 3
+        data_dir = "{DATA_DIR}"
+        profile = "test"
+        accounts = []
+
+        [calendar]
+
+        [[calendar.accounts]]
+        name = "work"
+        url = "https://cal.example.com/dav/"
+        username = "user@example.com"
+        credential = { backend = "env", variable = "CAL_PASSWORD" }
+        """
+
     def test_a_synced_calendar_counts_its_calendars(self) -> None:
-        self._write_config(
-            "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
-            'profile = "test"\n'
-            "accounts = []\n\n[calendar]\n"
-        )
+        self._write_config(self._CALENDAR_ACCOUNT)
         (self.calendar_home / "mirror" / "work" / "personal").mkdir(parents=True)
         (self.calendar_home / "mirror" / "work" / "shared").mkdir(parents=True)
-        self.calendar_home.mkdir(parents=True, exist_ok=True)
         (self.calendar_home / "index.sqlite3").write_bytes(b"")
         checks = self._checks()
         self.assertEqual(CheckStatus.OK, checks["Calendar index"][0])
         self.assertEqual(CheckStatus.OK, checks["Calendar mirror"][0])
         self.assertIn("2 calendar(s)", checks["Calendar mirror"][1])
+
+    def test_an_index_row_with_no_mirror_file_is_an_error(self) -> None:
+        """The calendar's own comparison, not a directory count.
+
+        "Is the calendar healthy?" was answered by counting mirror
+        directories with `iterdir`, so a row pointing at an event whose
+        `.ics` is gone -- the one corruption that makes the agenda offer
+        something it cannot open -- was reachable only through
+        `pony calendar doctor`.
+        """
+        from chronos.domain import ComponentRef, LocalStatus, VEvent
+        from chronos.index_store import SqliteIndexRepository
+
+        self._write_config(self._CALENDAR_ACCOUNT)
+        (self.calendar_home / "mirror" / "work" / "personal").mkdir(parents=True)
+        index = SqliteIndexRepository(self.calendar_home / "index.sqlite3")
+        self.addCleanup(index.close)
+        index.upsert_component(
+            VEvent(
+                ref=ComponentRef("work", "personal", "gone@example.com"),
+                href="/dav/work/personal/gone.ics",
+                etag="e1",
+                raw_ics=b"",
+                summary="Vanished",
+                description=None,
+                location=None,
+                dtstart=None,
+                dtend=None,
+                status=None,
+                local_flags=frozenset(),
+                server_flags=frozenset(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            )
+        )
+        index.close()
+
+        checks = self._checks()
+        name = 'Calendar integrity "work/personal"'
+        self.assertEqual(CheckStatus.ERROR, checks[name][0])
+        self.assertIn("missing mirror files", checks[name][1])
 
     def test_a_broken_calendar_table_is_an_error_not_a_crash(self) -> None:
         self._write_config(

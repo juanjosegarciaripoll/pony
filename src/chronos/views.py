@@ -31,6 +31,7 @@ from chronos.domain import (
     VTodo,
 )
 from chronos.ical_parser import extract_alarm_triggers, extract_attendees
+from chronos.mutations import is_all_day_span
 from chronos.protocols import IndexRepository, MirrorRepository
 
 DEFAULT_AGENDA_DAYS = 14
@@ -437,25 +438,13 @@ def _format_event_day(start: datetime, today: date) -> str:
 
 
 def is_full_day(occurrence: Occurrence) -> bool:
-    """A whole-day span: >= ~23h long and beginning at midnight in UTC
-    (VALUE=DATE all-day) or in the local timezone.
+    """An occurrence covering whole days, which the grids draw as a banner.
 
-    Standard all-day events parse to UTC midnight, but some clients
-    (Outlook/Apple/Thunderbird) store them as local midnight-to-midnight
-    (e.g. ``DTSTART;TZID=Europe/Madrid:...T000000``), which lands off UTC
-    midnight. Accepting either anchor keeps both kinds out of the hour
-    grid. The 23h floor stays DST-tolerant; the end is left unchecked
-    because a 23h+ span anchored at midnight is already unambiguous and an
-    end-at-midnight test breaks across DST transitions.
+    The rule is :func:`chronos.mutations.is_all_day_span`, asked here of
+    an occurrence instead of a stored span, so that what a grid draws as
+    all-day is exactly what ``calendar edit`` keeps as ``VALUE=DATE``.
     """
-    if occurrence.end is None:
-        return False
-    if occurrence.end - occurrence.start < timedelta(hours=23):
-        return False
-    return (
-        occurrence.start.astimezone(UTC).time() == time.min
-        or occurrence.start.astimezone().time() == time.min
-    )
+    return is_all_day_span(occurrence.start, occurrence.end)
 
 
 def _occurrence_is_past(occurrence: Occurrence, now: datetime) -> bool:

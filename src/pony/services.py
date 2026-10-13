@@ -37,6 +37,22 @@ class ServiceStatus:
     checks: tuple[DoctorCheck, ...]
 
 
+def _calendar_status(status: object) -> CheckStatus:
+    """The calendar's severity word for this one.
+
+    Two ladders for one thing: the mail side says ``ERROR`` where the
+    calendar says ``FAIL``, which is why the two renderers cannot share
+    a tag table.
+    """
+    from chronos.services import DiagnosticStatus
+
+    if status is DiagnosticStatus.FAIL:
+        return CheckStatus.ERROR
+    if status is DiagnosticStatus.WARN:
+        return CheckStatus.WARN
+    return CheckStatus.OK
+
+
 def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
     """Report the calendar's configuration and local state.
 
@@ -47,7 +63,10 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
     An unconfigured calendar is not a problem to report: plenty of
     people only want the mail client.
     """
+    from chronos import services as calendar_services
+    from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
     from chronos.paths import CalendarPaths
+    from chronos.storage import VdirMirrorRepository
 
     from .calendar import load_calendar_config
 
@@ -86,22 +105,7 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
             )
         )
     mirror_root = calendar_paths.mirror_dir
-    if mirror_root.is_dir():
-        calendars = sum(
-            1
-            for account in mirror_root.iterdir()
-            if account.is_dir()
-            for calendar in account.iterdir()
-            if calendar.is_dir()
-        )
-        checks.append(
-            DoctorCheck(
-                "Calendar mirror",
-                CheckStatus.OK,
-                f"{calendars} calendar(s): {mirror_root}",
-            )
-        )
-    else:
+    if not mirror_root.is_dir():
         checks.append(
             DoctorCheck(
                 "Calendar mirror",
@@ -109,6 +113,40 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
                 f"Does not exist (created on first sync): {mirror_root}",
             )
         )
+        return checks
+
+    mirror = VdirMirrorRepository(
+        mirror_root,
+        account_roots={a.name: a.mirror_path for a in config.accounts},
+    )
+    calendars = sum(len(mirror.list_calendars(a.name)) for a in config.accounts)
+    checks.append(
+        DoctorCheck(
+            "Calendar mirror",
+            CheckStatus.OK,
+            f"{calendars} calendar(s): {mirror_root}",
+        )
+    )
+    if not index_path.exists():
+        # Nothing to compare against, and opening the index would
+        # create the file this check just reported as missing.
+        return checks
+    index = CalendarIndexRepository(index_path)
+    try:
+        report = calendar_services.check_local_integrity(
+            config=config, mirror=mirror, index=index
+        )
+    finally:
+        index.close()
+    checks.extend(
+        DoctorCheck(
+            f'Calendar integrity "{result.scope}"',
+            _calendar_status(result.status),
+            result.message,
+        )
+        for result in report.results
+        if result.status is not calendar_services.DiagnosticStatus.OK
+    )
     return checks
 
 
@@ -391,7 +429,15 @@ def check_mirror_integrity(
         parts.append(f"{len(orphan_files)} orphan file(s)")
     if stale_keys:
         parts.append(f"{len(stale_keys)} stale index row(s)")
-    return DoctorCheck(label, CheckStatus.WARN, ", ".join(parts))
+    # A stale index row is a message the reader lists and then cannot
+    # open: the row points at a file that is not there.  That is a
+    # failure, not a warning, and `pony doctor`'s error count has to
+    # reflect it -- the calendar's own doctor already calls the same
+    # corruption a FAIL ("index rows point at missing mirror files").
+    # A mirror file with no index row is the other way round and loses
+    # nothing, so it stays a warning, as it does there.
+    status = CheckStatus.ERROR if stale_keys else CheckStatus.WARN
+    return DoctorCheck(label, status, ", ".join(parts))
 
 
 def _maildir_base_key(filename: str) -> str:

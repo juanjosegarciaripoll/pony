@@ -6,7 +6,7 @@ import re
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -1181,6 +1181,61 @@ class EditCommandTest(CliTestCase):
         )
         assert component is not None
         self.assertIn(b"DTSTART;VALUE=DATE:20260501", component.raw_ics)
+
+    def test_edit_keeps_an_outlook_all_day_event_whole(self) -> None:
+        """An all-day event written at local midnight stays all-day.
+
+        Outlook, Apple Calendar and Thunderbird store an all-day event
+        as ``DTSTART;TZID=...:...T000000``, which lands off UTC
+        midnight.  The grid draws it as a banner; `edit` used to decide
+        it was not an all-day span and rewrite it as a timed event, so
+        changing its summary turned a holiday into a 24-hour
+        appointment.  The reader's zone is pinned because in UTC the two
+        readings are the same.
+        """
+        zone = timezone(timedelta(hours=2))
+        start = datetime(2026, 5, 1, 0, 0, tzinfo=zone)
+        ics = (
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:outlook-day@example.com\r\n"
+            b"DTSTAMP:20260422T120000Z\r\n"
+            b"DTSTART;TZID=Europe/Madrid:20260501T000000\r\n"
+            b"DTEND;TZID=Europe/Madrid:20260502T000000\r\n"
+            b"SUMMARY:Holiday\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        self.mirror.write(
+            ResourceRef("personal", "work", "outlook-day@example.com"), ics
+        )
+        self.index.upsert_component(
+            VEvent(
+                ref=ComponentRef("personal", "work", "outlook-day@example.com"),
+                href=None,
+                etag=None,
+                raw_ics=ics,
+                summary="Holiday",
+                description=None,
+                location=None,
+                dtstart=start,
+                dtend=start + timedelta(days=1),
+                status=None,
+                local_flags=frozenset(),
+                server_flags=frozenset(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            )
+        )
+        with mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone):
+            code = self._run(
+                ["edit", "outlook-day@example.com", "--summary", "Day off"]
+            )
+        self.assertEqual(code, 0, self.stderr.getvalue())
+        component = self.index.get_component(
+            ComponentRef("personal", "work", "outlook-day@example.com")
+        )
+        assert component is not None
+        self.assertIn(b"DTSTART;VALUE=DATE:20260501", component.raw_ics)
+        self.assertIn(b"DTEND;VALUE=DATE:20260502", component.raw_ics)
 
     def test_edit_not_found(self) -> None:
         code = self._run(["edit", "missing@example.com", "--summary", "X"])

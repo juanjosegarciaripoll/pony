@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from chronos.domain import (
+    CALENDAR_CONFIG_VERSION,
     DEFAULT_BACKGROUND_SYNC_INTERVAL_SECONDS,
     GOOGLE_CALDAV_URL,
     AccountConfig,
@@ -17,11 +18,10 @@ from chronos.domain import (
     CredentialSpec,
     EnvCredential,
     GoogleCredential,
-    KeyringCredential,
     OAuthCredential,
     PlaintextCredential,
 )
-from chronos.paths import active, expand_path
+from chronos.paths import active, expand_path, is_half_qualified
 
 _DEFAULT_TRASH_RETENTION_DAYS = 30
 _DEFAULT_INCLUDE = (".*",)
@@ -49,6 +49,17 @@ def load(path: Path) -> AppConfig:
 
 def parse(data: dict[str, object]) -> AppConfig:
     config_version = _require_int(data, "config_version", "")
+    if config_version != CALENDAR_CONFIG_VERSION:
+        # Read and never compared, so `config_version = 999` parsed
+        # cleanly and the file was then interpreted as the current
+        # schema anyway.  Hosted under Pony the number is injected and
+        # always matches; a calendar reading its own config.toml is the
+        # path this guards.
+        raise ConfigError(
+            f"unsupported config_version {config_version}; this build "
+            f"requires config_version = {CALENDAR_CONFIG_VERSION}",
+            "config_version",
+        )
     use_utf8 = _optional_bool(data, "use_utf8", "", default=False)
     editor = _optional_str(data, "editor", "", default=None)
     theme = _optional_str(data, "theme", "", default=None)
@@ -153,9 +164,17 @@ def _parse_credential(data: object, key: str) -> CredentialSpec:
             cmd_parts.append(part)
         return CommandCredential(command=tuple(cmd_parts))
     if backend == "encrypted":
-        return KeyringCredential(
-            service=_require_str(spec, "service", key),
-            username=_require_str(spec, "username", key),
+        # Mail's `credentials_source = "encrypted"` is a working
+        # DPAPI/SHAKE store; this name used to parse into a spec no
+        # resolver could answer, so a calendar account configured with
+        # it loaded cleanly and then failed at the first sync.  Refuse
+        # the word here, and name what does work.
+        raise ConfigError(
+            "the 'encrypted' backend is not available for a calendar "
+            "account: it would need the `keyring` package. Use "
+            "'command' to read the password from a password manager, "
+            "or 'env'.",
+            key,
         )
     if backend == "google":
         return GoogleCredential(
@@ -180,7 +199,7 @@ def _parse_credential(data: object, key: str) -> CredentialSpec:
         )
     raise ConfigError(
         f"unknown credential backend '{backend}' "
-        "(expected: plaintext, env, command, encrypted, oauth, google)",
+        "(expected: plaintext, env, command, oauth, google)",
         key,
     )
 
@@ -207,9 +226,23 @@ def _parse_mirror_path(
     expanded = expand_path(raw)
     if expanded.is_absolute():
         return expanded
+    if is_half_qualified(str(expanded)):
+        # "/mail" on Windows has a root but no drive, and "C:mail" a
+        # drive but no root.  Neither is absolute, so the join below
+        # would discard the base and write to C:\mail instead of a
+        # directory inside the calendar's root.  Refuse rather than
+        # guess, as the mail side does for `mirror.path`.
+        raise ConfigError(
+            f"'mirror_path' {raw!r} is neither relative nor fully qualified "
+            "(a root without a drive, or a drive without a root). Use a "
+            "plain relative path, or a complete one.",
+            account_key,
+        )
     # A relative path belongs to the calendar's root, not to whatever
-    # directory the command was run from.
-    return paths.root / expanded
+    # directory the command was run from.  Resolved, because every later
+    # comparison is a spelling comparison -- including the one in
+    # `_dump_account` that decides whether to write the key back out.
+    return (paths.root / expanded).resolve()
 
 
 def _parse_regex_list(data: object, key: str) -> tuple[re.Pattern[str], ...]:
@@ -437,12 +470,6 @@ def _dump_credential(spec: CredentialSpec) -> dict[str, object]:
         return {"backend": "env", "variable": spec.variable}
     if isinstance(spec, CommandCredential):
         return {"backend": "command", "command": list(spec.command)}
-    if isinstance(spec, KeyringCredential):
-        return {
-            "backend": "encrypted",
-            "service": spec.service,
-            "username": spec.username,
-        }
     if isinstance(spec, GoogleCredential):
         return {
             "backend": "google",

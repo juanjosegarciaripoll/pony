@@ -88,6 +88,31 @@ def run_doctor(
     return DoctorReport(results=tuple(results))
 
 
+def check_local_integrity(
+    *,
+    config: AppConfig,
+    mirror: MirrorRepository,
+    index: IndexRepository,
+) -> DoctorReport:
+    """Compare every calendar's mirror against the index, and nothing else.
+
+    The part of :func:`run_doctor` that needs no credentials and no
+    network: it reads each ``.ics`` the mirror holds and each row the
+    index holds, and reports a file with no row, a row with no file and
+    an ``.ics`` that will not parse.
+
+    It is public because ``pony doctor`` answers for the calendar half
+    too, and used to answer "is it healthy?" by counting mirror
+    directories with ``iterdir`` -- so the comparison that can actually
+    find a missing file was reachable only through
+    ``pony calendar doctor``.
+    """
+    results: list[DiagnosticResult] = []
+    for account in config.accounts:
+        results.extend(_check_mirror_integrity(account, mirror, index))
+    return DoctorReport(results=tuple(results))
+
+
 def _noop_progress(_message: str) -> None:
     return None
 
@@ -436,6 +461,7 @@ __all__ = [
     "DoctorReport",
     "ProgressFn",
     "SessionFactory",
+    "check_local_integrity",
     "format_report",
     "run_doctor",
 ]

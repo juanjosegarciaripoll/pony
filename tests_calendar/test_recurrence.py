@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from chronos.domain import (
     CalendarRef,
@@ -142,6 +143,43 @@ class AllDayExpansionTest(unittest.TestCase):
         self.assertEqual(occs[0].start, datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
         self.assertEqual(occs[0].end, datetime(2026, 5, 2, 0, 0, tzinfo=UTC))
 
+    def test_an_all_day_series_expands_to_utc_midnights(self) -> None:
+        """The anchor and the stored span must read VALUE=DATE alike.
+
+        `expand` takes its rrule anchor from the raw ICS so a timed
+        series keeps its wall clock through DST.  An all-day DTSTART has
+        no zone to keep: the stored span reads it as UTC midnight, and
+        reading the anchor as *local* midnight instead moved every
+        occurrence by the reader's own offset.  The reader's zone is
+        pinned rather than ambient, because a run in UTC -- which is
+        what CI does -- cannot tell the two readings apart.
+        """
+        master = _event(
+            "all-day-weekly-1@example.com",
+            corpus.recurring_all_day(),
+            dtstart=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 2, 0, 0, tzinfo=UTC),
+        )
+        for offset in (2, -7):
+            zone = timezone(timedelta(hours=offset))
+            with (
+                self.subTest(offset=offset),
+                mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone),
+            ):
+                occs = expand(
+                    master=master,
+                    window_start=datetime(2026, 4, 1, tzinfo=UTC),
+                    window_end=datetime(2026, 6, 1, tzinfo=UTC),
+                )
+                self.assertEqual(
+                    [occ.start for occ in occs],
+                    [
+                        datetime(2026, 5, 1, tzinfo=UTC),
+                        datetime(2026, 5, 8, tzinfo=UTC),
+                        datetime(2026, 5, 15, tzinfo=UTC),
+                    ],
+                )
+
 
 class ZeroDurationTest(unittest.TestCase):
     def test_event_without_dtend_has_none_end(self) -> None:
@@ -162,15 +200,31 @@ class ZeroDurationTest(unittest.TestCase):
 
 
 class LocalFloatingTimeTest(unittest.TestCase):
-    def test_safe_localize_naive_old_date_does_not_convert(self) -> None:
+    def test_localize_naive_old_date_does_not_convert(self) -> None:
         # Regression: Windows may raise OSError when naive ancient dates are
         # pushed through astimezone(). We attach local tzinfo directly.
-        from chronos.recurrence import _safe_localize_naive
+        from chronos.ical_parser import localize_naive
 
         naive = datetime(1900, 1, 1, 9, 0)
-        localized = _safe_localize_naive(naive)
+        localized = localize_naive(naive)
         self.assertIsNotNone(localized.tzinfo)
         self.assertEqual(localized.replace(tzinfo=None), naive)
+
+    def test_a_naive_value_reaches_utc_without_resolving_localtime(self) -> None:
+        """`to_utc` reads a floating value as local wall time.
+
+        It used to hand the naive value straight to ``astimezone``,
+        which resolves it through the platform's localtime -- the call
+        `localize_naive` exists to keep away from an ancient date.
+        """
+        from chronos.ical_parser import to_utc
+
+        zone = timezone(timedelta(hours=2))
+        with mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone):
+            self.assertEqual(
+                to_utc(datetime(1900, 1, 1, 9, 0)),
+                datetime(1900, 1, 1, 7, 0, tzinfo=UTC),
+            )
 
 
 class WeeklyRecurrenceTest(unittest.TestCase):

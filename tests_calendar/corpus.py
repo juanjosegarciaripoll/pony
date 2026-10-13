@@ -43,6 +43,29 @@ END:VEVENT
     )
 
 
+def event_with_unwritable_attendee() -> bytes:
+    """Attendees a server sent that the writer cannot write back.
+
+    One address with a space in it, one in display-name form.  Between
+    them they are what tells the reader's "has an ``@``" test apart from
+    the writer's.
+    """
+    return _vcalendar(
+        """
+BEGIN:VEVENT
+UID:bad-attendee-1@example.com
+DTSTAMP:20260422T120000Z
+DTSTART:20260501T090000Z
+DTEND:20260501T100000Z
+ATTENDEE;CN=Carol:MAILTO:carol@example.com
+ATTENDEE;CN=Team Room:MAILTO:team room@example.com
+ATTENDEE;CN=Dave:MAILTO:Dave Doe <dave@example.com>
+SUMMARY:Attendees a writer would refuse
+END:VEVENT
+"""
+    )
+
+
 def timed_event_with_tz() -> bytes:
     return _vcalendar(
         """
@@ -85,6 +108,28 @@ DTSTAMP:20260422T120000Z
 DTSTART;VALUE=DATE:20260501
 DTEND;VALUE=DATE:20260502
 SUMMARY:All-day event
+END:VEVENT
+"""
+    )
+
+
+def recurring_all_day() -> bytes:
+    """A weekly all-day series: VALUE=DATE plus an RRULE.
+
+    The combination is what tells the two readings of ``VALUE=DATE``
+    apart.  A single all-day event takes the stored UTC-midnight anchor
+    and never consults the raw ICS; only a series does, so only a series
+    shows an anchor read in the wrong zone.
+    """
+    return _vcalendar(
+        """
+BEGIN:VEVENT
+UID:all-day-weekly-1@example.com
+DTSTAMP:20260422T120000Z
+DTSTART;VALUE=DATE:20260501
+DTEND;VALUE=DATE:20260502
+RRULE:FREQ=WEEKLY;COUNT=3
+SUMMARY:All-day weekly
 END:VEVENT
 """
     )
@@ -452,8 +497,10 @@ END:VEVENT
 ALL_SINGLE_FIXTURES: tuple[tuple[str, bytes], ...] = (
     ("simple_event", simple_event()),
     ("event_with_attendees", event_with_attendees()),
+    ("event_with_unwritable_attendee", event_with_unwritable_attendee()),
     ("timed_event_with_tz", timed_event_with_tz()),
     ("all_day_event", all_day_event()),
+    ("recurring_all_day", recurring_all_day()),
     ("recurring_weekly", recurring_weekly()),
     ("recurring_with_exceptions", recurring_with_exceptions()),
     ("recurring_count", recurring_count()),

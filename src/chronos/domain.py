@@ -54,12 +54,6 @@ class CommandCredential:
 
 
 @dataclass(frozen=True)
-class KeyringCredential:
-    service: str
-    username: str
-
-
-@dataclass(frozen=True)
 class OAuthCredential:
     """OAuth 2.0 client credentials for an account.
 
@@ -102,7 +96,6 @@ CredentialSpec = (
     PlaintextCredential
     | EnvCredential
     | CommandCredential
-    | KeyringCredential
     | OAuthCredential
     | GoogleCredential
 )

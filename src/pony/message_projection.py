@@ -31,11 +31,19 @@ _HEADER_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-# Detect attachments: Content-Disposition: attachment, filename=, or text/calendar.
-_ATTACHMENT_RE = re.compile(
-    rb"Content-Disposition:\s*attachment|filename\s*=|Content-Type:\s*text/calendar",
-    re.IGNORECASE,
+# One MIME part's Content-Type and Content-Disposition, read off its own
+# unfolded header block rather than from anywhere in the message.
+_CONTENT_TYPE_HEADER_RE = re.compile(
+    rb"^Content-Type:[ \t]*([^\r\n]*)", re.MULTILINE | re.IGNORECASE
 )
+_CONTENT_DISPOSITION_HEADER_RE = re.compile(
+    rb"^Content-Disposition:[ \t]*([^\r\n]*)", re.MULTILINE | re.IGNORECASE
+)
+
+# A ``filename`` parameter of a Content-Disposition, or the older
+# ``name`` of a Content-Type: between them they are what
+# ``EmailMessage.get_filename`` reads.
+_FILENAME_PARAM_RE = re.compile(rb"(?:^|[;\s])(?:file)?name[ \t]*=", re.IGNORECASE)
 
 # Detect Content-Type: text/plain parts.
 _TEXT_PLAIN_RE = re.compile(
@@ -70,7 +78,7 @@ def project_rfc822_message(
     cc = _decode_header(header_map.get(b"cc", b""))
     subject = _decode_header(header_map.get(b"subject", b""))
     received_at = _parse_date(header_map.get(b"date", b""))
-    has_attachments = bool(_ATTACHMENT_RE.search(raw_message))
+    has_attachments = _detect_attachments(headers, raw_message)
     body_preview = _extract_body_preview(body, raw_message)
     message_id_raw = header_map.get(b"message-id", b"")
     message_id = " ".join(message_id_raw.decode("ascii", errors="replace").split())
@@ -96,6 +104,56 @@ def project_rfc822_message(
         received_at=received_at,
         has_attachments=has_attachments,
     )
+
+
+def _detect_attachments(headers: bytes, raw_message: bytes) -> bool:
+    """Does this message carry an attachment, per part rather than per message?
+
+    The rule has to be the one the reader applies, because it is the
+    numbering the whole program exposes: ``message_renderer``'s
+    :func:`~pony.message_renderer.is_attachment_part` counts a part that
+    says it is an attachment, one that carries a filename, *or* one that
+    is neither plain text nor HTML and so cannot be body.  This used to
+    be a single regex searched over the whole raw message with no
+    counterpart for the third clause, so a ``multipart/mixed`` carrying
+    a bare ``image/png`` with no disposition indexed as having no
+    attachment while the reader offered ``[1] attachment.png`` -- and
+    the clause it did have matched ``filename=`` anywhere at all,
+    including inside a body.
+
+    The full parser stays out of it: building an
+    ``email.message.Message`` to index one flag is what made the first
+    rescan of a large account take minutes.
+    """
+    if b"multipart" not in headers.lower():
+        return _part_is_attachment(headers)
+    for part in _BOUNDARY_RE.split(raw_message)[1:]:
+        separator = _HEADER_BODY_RE.search(part)
+        part_headers = part[: separator.start()] if separator else part
+        if _part_is_attachment(part_headers):
+            return True
+    return False
+
+
+def _part_is_attachment(part_headers: bytes) -> bool:
+    """One part's half of :func:`_detect_attachments`."""
+    unfolded = _CONTINUATION_RE.sub(b" ", part_headers)
+    disposition_match = _CONTENT_DISPOSITION_HEADER_RE.search(unfolded)
+    disposition = disposition_match.group(1).strip() if disposition_match else b""
+    if disposition.split(b";")[0].strip().lower() == b"attachment":
+        return True
+    type_match = _CONTENT_TYPE_HEADER_RE.search(unfolded)
+    content_type_value = type_match.group(1).strip() if type_match else b""
+    if _FILENAME_PARAM_RE.search(disposition) or _FILENAME_PARAM_RE.search(
+        content_type_value
+    ):
+        return True
+    content_type = content_type_value.split(b";")[0].strip().lower()
+    if not content_type or content_type.startswith(b"multipart/"):
+        # No Content-Type at all means text/plain, which is body; a
+        # multipart part is a container whose children are walked.
+        return False
+    return content_type not in (b"text/plain", b"text/html")
 
 
 def _split_headers_body(raw: bytes) -> tuple[bytes, bytes]:

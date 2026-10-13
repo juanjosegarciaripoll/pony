@@ -326,8 +326,11 @@ def missing_message_id() -> bytes:
 def inline_image() -> bytes:
     """multipart/related with an inline CID-referenced image.
 
-    The image part has Content-Disposition: inline, so has_attachments
-    must be False — inline images are not user-downloadable attachments.
+    The image part is ``Content-Disposition: inline`` with no filename,
+    so it is an attachment only by the clause that says a part which is
+    neither plain text nor HTML cannot be body.  The reader lists it as
+    ``[1] attachment.png`` and `pony message attachment 1` writes it,
+    so the index flag has to say so too.
     """
     html_with_cid = (
         "<html><body><p>Hello!</p>"

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
+from email.utils import parseaddr
 
 from icalendar import Calendar
 
 from chronos.domain import AlarmAction, ComponentKind, ParsedAlarm
+
+# What an address may hold once it has been through `parseaddr`.  No
+# separator and no control character: the value is written back into an
+# iCalendar property, where either would end the value early.
+_ATTENDEE_EMAIL_RE = re.compile(r"^[^@\s,;:\x00-\x1f\x7f]+@[^@\s,;:\x00-\x1f\x7f]+$")
 
 
 class IcalParseError(ValueError):
@@ -95,7 +102,7 @@ def _get_datetime(component: object, key: str) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return _to_utc(value)
+        return to_utc(value)
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=UTC)
     return None
@@ -143,8 +150,35 @@ def parse_recurrence_id(component: object) -> str | None:
     return _get_recurrence_id(component)
 
 
-def _to_utc(dt: datetime) -> datetime:
+def to_utc(dt: datetime) -> datetime:
+    """*dt* in UTC, reading a naive value as local wall time.
+
+    The zone is attached before the conversion rather than left to
+    ``astimezone``, which resolves a naive value through the platform's
+    localtime: that raises ``OSError: [Errno 22]`` on Windows for dates
+    far enough from now, which is why :func:`localize_naive` exists at
+    all.  Attaching a fixed offset first gives the same answer for
+    every date a calendar can hold.
+    """
+    if dt.tzinfo is None:
+        dt = localize_naive(dt)
     return dt.astimezone(UTC)
+
+
+def localize_naive(value: datetime) -> datetime:
+    """Attach the local zone to a naive datetime without converting it.
+
+    A DTSTART with neither TZID nor ``Z`` is *floating*: it means local
+    wall time, which is all this records.  Shared with
+    :mod:`chronos.recurrence`, which anchors rrule expansion on the same
+    reading.
+    """
+    return value.replace(tzinfo=local_tzinfo())
+
+
+def local_tzinfo() -> tzinfo:
+    tz = datetime.now().astimezone().tzinfo
+    return tz or UTC
 
 
 def _call_get(component: object, key: str) -> object:
@@ -225,7 +259,15 @@ def extract_sequence(raw_ics: bytes, uid: str) -> int:
 
 
 def extract_attendees(raw_ics: bytes, uid: str) -> tuple[str, ...]:
-    """Return attendee email addresses from the master component with ``uid``."""
+    """Attendee email addresses from the master component with ``uid``.
+
+    Each value goes through :func:`normalize_attendee_email`, so what
+    comes out is what `build_event_ics` can write back.  A value that is
+    not an address -- a server sending ``MAILTO:team room@example.com``
+    -- is dropped rather than carried: these addresses are handed
+    straight back to the writer by ``calendar edit``, which refused the
+    whole edit over one of them.
+    """
     component = _find_master_component(raw_ics, uid)
     if component is None:
         return ()
@@ -333,10 +375,36 @@ def _component_values(component: object, key: str) -> tuple[object, ...]:
     return (value,)
 
 
+def normalize_attendee_email(value: str) -> str:
+    """An attendee or organizer value as a bare email address.
+
+    Accepts a plain address, a ``mailto:`` value and simple
+    ``Name <email>`` input, which is what both an ``ATTENDEE`` property
+    and a form field can hold.  Separators and control characters are
+    refused because the result is serialized straight back into an
+    iCalendar property, and because an address with a space or a
+    semicolon in it is not one.
+
+    One rule for reading and for writing: the reader used to require
+    only an ``@``, so an event whose server-supplied ``ATTENDEE`` had a
+    space in it could be displayed and then not edited at all --
+    ``build_event_ics`` refused the value the reader had just handed it.
+    """
+    raw = value.strip()
+    if not raw:
+        raise ValueError("attendee email cannot be blank")
+    _display_name, parsed = parseaddr(raw)
+    email = (parsed or raw).strip()
+    if email.lower().startswith("mailto:"):
+        email = email[7:].strip()
+    if not _ATTENDEE_EMAIL_RE.fullmatch(email):
+        raise ValueError(f"invalid attendee email: {value!r}")
+    return email
+
+
 def _mailto_value(value: object) -> str | None:
-    text = str(value).strip()
-    if text.lower().startswith("mailto:"):
-        text = text[7:].strip()
-    if "@" not in text:
+    """*value* as an email address, or ``None`` when it is not one."""
+    try:
+        return normalize_attendee_email(str(value))
+    except ValueError:
         return None
-    return text

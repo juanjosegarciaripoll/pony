@@ -322,6 +322,12 @@ trash_retention_days = 30
 # # trash_retention_days = 30
 # # include / exclude / read_only are Python regexes matched with
 # # re.fullmatch against the calendar name; default include = [".*"].
+# #
+# # A calendar account's credential backends are plaintext, env,
+# # command, oauth and google.  There is no "encrypted" here: a mail
+# # account's credentials_source = "encrypted" is the operating
+# # system's own store, and the same word for a calendar account would
+# # need the keyring package, so the loader refuses it.
 
 # Google Calendar.  The "google" backend fills in the CalDAV URL, OAuth
 # scope and username, so only the client_id/client_secret from your

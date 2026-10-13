@@ -16,7 +16,6 @@ from chronos.domain import (
     CommandCredential,
     CredentialSpec,
     EnvCredential,
-    KeyringCredential,
     PlaintextCredential,
 )
 from chronos.paths import CalendarPaths
@@ -110,17 +109,6 @@ class CommandBackendTest(unittest.TestCase):
         with self.assertRaises(CredentialResolutionError) as ctx:
             _resolve_password(provider, spec)
         self.assertIn("exited 7", str(ctx.exception))
-
-
-class KeyringBackendTest(unittest.TestCase):
-    def test_keyring_raises_deferred_error(self) -> None:
-        provider = DefaultCredentialsProvider(env={})
-        spec = KeyringCredential(service="chronos", username="user@example.com")
-        with self.assertRaises(CredentialResolutionError) as ctx:
-            _resolve_password(provider, spec)
-        message = str(ctx.exception)
-        self.assertIn("keyring", message)
-        self.assertIn("encrypted", message)
 
 
 class BuildAuthTest(unittest.TestCase):

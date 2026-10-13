@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
-from email.utils import parseaddr
 
 from icalendar import Calendar, Event
 
@@ -16,8 +14,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-
-_ATTENDEE_EMAIL_RE = re.compile(r"^[^@\s,;:\x00-\x1f\x7f]+@[^@\s,;:\x00-\x1f\x7f]+$")
+from chronos.ical_parser import local_tzinfo, normalize_attendee_email
 
 
 def build_event_ics(
@@ -36,10 +33,10 @@ def build_event_ics(
 ) -> bytes:
     """Serialise one VEVENT.
 
-    With `all_day`, DTSTART/DTEND are written as `VALUE=DATE` using the
-    UTC calendar dates of `dtstart`/`dtend` — the form the parser reads
-    back as UTC midnight (see `all_day_bounds`). `dtend` is exclusive
-    and defaults to the day after `dtstart`.
+    With `all_day`, DTSTART/DTEND are written as `VALUE=DATE` on the
+    calendar dates the span covers — the form the parser reads back as
+    UTC midnight (see `all_day_bounds`). `dtend` is exclusive and
+    defaults to the day after `dtstart`.
     """
     normalized_attendees = normalize_attendee_emails(attendees)
     normalized_organizer = (
@@ -54,9 +51,14 @@ def build_event_ics(
         f"DTSTAMP:{_fmt_dt(now)}",
     ]
     if all_day:
-        end = dtend if dtend is not None else dtstart + timedelta(days=1)
-        lines.append(f"DTSTART;VALUE=DATE:{_fmt_date(dtstart)}")
-        lines.append(f"DTEND;VALUE=DATE:{_fmt_date(end)}")
+        first = all_day_date(dtstart)
+        span = dtend - dtstart if dtend is not None else timedelta(days=1)
+        # Whole days, rounded: a span a DST transition shortened to 23 h
+        # or stretched to 25 h still covers one day, and the exclusive
+        # end is never the start.
+        days = max(1, round(span / timedelta(days=1)))
+        lines.append(f"DTSTART;VALUE=DATE:{first:%Y%m%d}")
+        lines.append(f"DTEND;VALUE=DATE:{first + timedelta(days=days):%Y%m%d}")
     else:
         lines.append(f"DTSTART:{_fmt_dt(dtstart)}")
         if dtend is not None:
@@ -103,18 +105,31 @@ def all_day_bounds(first: date, last: date) -> tuple[datetime, datetime]:
 
 
 def is_all_day_span(dtstart: datetime | None, dtend: datetime | None) -> bool:
-    """True for a stored span that `build_event_ics(all_day=True)` would write.
+    """One test for "this span covers whole days".
 
-    That is: both ends at UTC midnight, at least a day apart.
+    True when the span runs at least ~23 h from midnight, measured
+    either in UTC -- which is what ``VALUE=DATE`` parses to and what
+    ``build_event_ics(all_day=True)`` writes -- or in the reader's own
+    zone, which is where Outlook, Apple Calendar and Thunderbird put it
+    (``DTSTART;TZID=Europe/Madrid:...T000000``, landing off UTC
+    midnight).  The 23 h floor is DST tolerance; the end is left
+    unchecked because a 23 h span anchored at midnight is already
+    unambiguous and an end-at-midnight test breaks across a transition.
+
+    Both grids ask this through :func:`chronos.views.is_full_day`, and
+    ``calendar edit`` asks it to decide whether to keep an event as
+    ``VALUE=DATE``.  The two used to be separate rules, and the strict
+    one here demanded both ends at UTC midnight: the grid drew a
+    local-midnight all-day event as a banner while an edit of the same
+    event decided it was not all-day and rewrote it timed.
     """
     if dtstart is None or dtend is None:
         return False
-    start = dtstart.astimezone(UTC)
-    end = dtend.astimezone(UTC)
+    if dtend - dtstart < timedelta(hours=23):
+        return False
     return (
-        start.time() == time.min
-        and end.time() == time.min
-        and end - start >= timedelta(days=1)
+        dtstart.astimezone(UTC).time() == time.min
+        or dtstart.astimezone(local_tzinfo()).time() == time.min
     )
 
 
@@ -188,25 +203,6 @@ def normalize_attendee_emails(values: Sequence[str]) -> tuple[str, ...]:
         seen.add(key)
         out.append(email)
     return tuple(out)
-
-
-def normalize_attendee_email(value: str) -> str:
-    """Normalize a user-entered attendee value to a bare email address.
-
-    Accepts plain emails, ``mailto:`` values, and simple ``Name <email>`` input.
-    The validation intentionally rejects separators and control characters
-    because attendee values are serialized directly into an iCalendar property.
-    """
-    raw = value.strip()
-    if not raw:
-        raise ValueError("attendee email cannot be blank")
-    _display_name, parsed = parseaddr(raw)
-    email = (parsed or raw).strip()
-    if email.lower().startswith("mailto:"):
-        email = email[7:].strip()
-    if not _ATTENDEE_EMAIL_RE.fullmatch(email):
-        raise ValueError(f"invalid attendee email: {value!r}")
-    return email
 
 
 def generate_uid(
@@ -289,9 +285,23 @@ def _fmt_duration(td: timedelta) -> str:
     return f"{sign}P{body}" if body else "PT0S"
 
 
-def _fmt_date(dt: datetime) -> str:
-    as_utc = dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-    return as_utc.astimezone(UTC).strftime("%Y%m%d")
+def all_day_date(dt: datetime) -> date:
+    """The calendar date a whole-day span beginning at *dt* starts on.
+
+    ``VALUE=DATE`` carries a date and no zone, so the date written has
+    to be the one the span actually covers.  A span stored at UTC
+    midnight is on its UTC date, which is what `all_day_bounds` writes;
+    one stored at the reader's midnight -- how Outlook and Apple
+    Calendar write an all-day event -- is on its local date, and taking
+    the UTC date of that moved the event a day earlier.
+    """
+    as_utc = dt.astimezone(UTC)
+    if as_utc.time() == time.min:
+        return as_utc.date()
+    local = dt.astimezone(local_tzinfo())
+    if local.time() == time.min:
+        return local.date()
+    return as_utc.date()
 
 
 def _fmt_dt(dt: datetime) -> str:
@@ -310,11 +320,11 @@ def _escape_text(value: str) -> str:
 
 __all__ = [
     "all_day_bounds",
+    "all_day_date",
     "build_event_ics",
     "edited_flags",
     "generate_uid",
     "is_all_day_span",
-    "normalize_attendee_email",
     "normalize_attendee_emails",
     "reschedule_event_ics",
     "trashed_copy",

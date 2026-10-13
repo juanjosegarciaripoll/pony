@@ -267,7 +267,7 @@ it. See [Calendar → When it runs](calendar.md#when-it-runs).
 | `name` | string | — | **Required.** Account name. |
 | `url` | string | — | **Required**, except for the `google` credential backend, which defaults it. |
 | `username` | string | — | **Required**, except for the `google` backend. |
-| `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `oauth` or `google`. `encrypted` parses but is refused at sync time: it needs the `keyring` package, which is not a dependency. |
+| `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `oauth` or `google`. |
 | `mirror_path` | string | `<calendar data dir>/mirror/<account>` | Directory holding this account's `.ics` files, one subdirectory per calendar. The default is where the layout would put them anyway, so setting nothing moves nothing. |
 | `trash_retention_days` | int | `30` | How long a trashed event may linger locally when the server will not accept its deletion. The normal path is immediate: a trashed event is deleted on the server at the next sync and purged here straight away. This is the backstop for when that delete keeps failing — after the retention the row and its mirror file are dropped with no further network attempt. |
 | `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. `read_only` means server-to-local only: nothing is uploaded from such a calendar, and a local change there is undone when the server's copy is next fetched. |
@@ -285,7 +285,13 @@ explicitly, which is **not** the same shape as the mail accounts'
 | `{ backend = "command", command = ["pass", "show", "caldav/personal"] }` | The command's stdout, trailing newlines stripped. Run directly, with no shell, and given 30 seconds. |
 | `{ backend = "oauth", client_id = "…", client_secret = "…" }` | An OAuth 2.0 flow. Optional `scope` (defaults to Google Calendar read+write) and `token_path`. |
 | `{ backend = "google", client_id = "…", client_secret = "…" }` | The same flow with Google's URL, username and scope filled in. |
-| `{ backend = "encrypted", service = "…", username = "…" }` | Parses, but is refused at sync time — it needs the `keyring` package, which is not a dependency. |
+
+There is no `encrypted` backend here. A mail account's
+`credentials_source = "encrypted"` is the operating system's own store
+(DPAPI on Windows, a key derived from machine identity elsewhere); the
+same word on a calendar account would need the `keyring` package, which
+is not a dependency, so the loader refuses it and says to use `command`
+or `env` instead.
 
 For `oauth` and `google` the browser flow runs the first time the account
 is synced, and the tokens are stored under the calendar's data directory,
