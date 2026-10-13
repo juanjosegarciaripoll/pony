@@ -205,6 +205,11 @@ class MainScreen(Screen[None]):
         # The search the list is showing, so an action can repaint it
         # instead of dropping back to the folder (see `_repaint_list`).
         self._search: SearchContext | None = None
+        # Set when a repaint was asked for by an action, so the reader
+        # pane is re-synced once the list knows its rows again. The
+        # rows arrive from a worker, so there is nothing to sync to on
+        # the line after asking for them.
+        self._sync_view_with_rows = False
         self._sync_service: ImapSyncService | None = None
         self._sync_plan: SyncPlan | None = None
         # The sync dialog itself, rather than "whatever is on top of the
@@ -953,6 +958,11 @@ class MainScreen(Screen[None]):
         what an action wants and a fresh search does not: the row the
         cursor sat on in the folder it came from means nothing in a hit
         list.
+
+        What is handed over is the read, not its result: the panel runs
+        it in the worker that already fetches a folder off the event
+        loop.  Running it here froze the terminal for as long as the
+        query took.
         """
         from ...search_parser import parse_query
 
@@ -960,25 +970,23 @@ class MainScreen(Screen[None]):
         if search is None:
             return
         query = parse_query(search.raw)
-        # Scoped in the query, not afterwards: `search` bounds what it
-        # materialises, so filtering the result dropped the hits that
-        # were past the bound -- one match in INBOX behind 500 in
-        # Archive came back as nothing at all.
-        results = list(
-            self._index.search(
-                query=query,
-                account_name=search.account_name,
-                folder_name=(
-                    None if search.folder is None else search.folder.folder_name
-                ),
-            ),
-        )
-
         msg_list = self.query_one(MessageListPanel)
         summary = msg_list.get_selected_summary() if keep_cursor else None
-        msg_list.load_search_results(
-            results,
+        msg_list.load_search(
             search.raw,
+            # Scoped in the query, not afterwards: `search` bounds what
+            # it materialises, so filtering the result dropped the hits
+            # that were past the bound -- one match in INBOX behind 500
+            # in Archive came back as nothing at all.
+            fetch=lambda: list(
+                self._index.search(
+                    query=query,
+                    account_name=search.account_name,
+                    folder_name=(
+                        None if search.folder is None else search.folder.folder_name
+                    ),
+                ),
+            ),
             restore_row=msg_list.effective_cursor_row if keep_cursor else None,
             restore_key=None if summary is None else str(summary.message_ref.id),
         )
@@ -1139,10 +1147,31 @@ class MainScreen(Screen[None]):
             self._reload_keeping_cursor(self._current_folder_ref)
 
     def _refresh_after_list_action(self) -> None:
-        """Repaint the list, the open message and the folder counts."""
+        """Repaint the list, the open message and the folder counts.
+
+        The open message is re-synced from
+        :meth:`on_message_list_panel_rows_ready`, not here: the list
+        fetches its rows in a thread, so on this line it has none and
+        the reader pane would be cleared for every action.
+        """
+        self._sync_view_with_rows = True
         self._repaint_list()
-        self._refresh_view_after_reload()
         self._refresh_folder_indicators()
+
+    def on_message_list_panel_rows_ready(
+        self, event: MessageListPanel.RowsReady
+    ) -> None:
+        """Follow the cursor with the reader, once there is a cursor.
+
+        Only for a repaint an action asked for.  Opening a folder or
+        running a search also lands rows, and neither should load a
+        message nobody opened.
+        """
+        event.stop()
+        if not self._sync_view_with_rows:
+            return
+        self._sync_view_with_rows = False
+        self._refresh_view_after_reload()
 
     def _refresh_view_after_reload(self) -> None:
         """Sync the message view to the current cursor row.
@@ -1187,8 +1216,25 @@ class MainScreen(Screen[None]):
         report(self.app, outcome)
 
     def _targets(self) -> list[FolderMessageSummary]:
-        """Summaries to act on: marked rows if any, else the cursor row."""
+        """Summaries to act on: marked rows if any, else the cursor row.
+
+        Empty while the list is still finding its rows, and the caller
+        says so rather than letting the key look ignored -- see
+        :meth:`_nothing_to_act_on`.
+        """
         return self.query_one(MessageListPanel).summaries_to_act_on()
+
+    def _nothing_to_act_on(self) -> bool:
+        """Whether the empty target list means "wait" rather than "nothing".
+
+        A key pressed while the list is still loading has no row to act
+        on, and the rows are fetched in a thread -- so the honest answer
+        is to say the list is still loading, not to do nothing quietly.
+        """
+        if not self.query_one(MessageListPanel).awaiting_rows:
+            return False
+        self.app.notify("The list is still loading.", severity="warning")  # pyright: ignore[reportUnknownMemberType]
+        return True
 
     def _resolve_targets(
         self, summaries: list[FolderMessageSummary]
@@ -1219,6 +1265,7 @@ class MainScreen(Screen[None]):
         """
         targets = self._targets()
         if not targets:
+            self._nothing_to_act_on()
             return
         messages = self._resolve_targets(targets)
         if not messages:
@@ -1327,6 +1374,7 @@ class MainScreen(Screen[None]):
         """
         summaries = self._targets()
         if not summaries:
+            self._nothing_to_act_on()
             return
         messages = self._resolve_targets(summaries)
         if not messages:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from rich.text import Text
@@ -85,6 +86,18 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     class SearchExitRequested(Message):
         """Posted when the user presses q or escape in search-results mode."""
 
+    @dataclass
+    class RowsReady(Message):
+        """Posted once a load knows which rows the panel is showing.
+
+        The rows are fetched off the event loop, so between asking for
+        a folder and this there is nothing to select and nothing to act
+        on.  Anything that has to read the panel back after reloading
+        it -- the reader pane, which has to follow the cursor onto
+        whatever took a trashed message's place -- waits for this
+        instead of reading it on the next line.
+        """
+
     _LOAD_BATCH = ROW_BATCH
 
     def __init__(self, index: IndexRepository, **kwargs: object) -> None:
@@ -108,6 +121,10 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         # Row the cursor is heading for once the stream reaches it, set
         # by ``load_folder(restore_row=…)``. None once applied.
         self._pending_cursor: int | None = None
+        # Clear while a load is still finding out what its rows are.
+        # A panel with no rows knows that much, so it starts set.
+        self._rows_known = asyncio.Event()
+        self._rows_known.set()
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
@@ -220,21 +237,23 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         ``clear()`` resets the cursor and the replacement rows arrive
         later from the worker, so neither can be done by moving the
         cursor once this returns — there is nothing to move it to yet.
+        Nor is there a selection: the query runs in a thread, and until
+        it answers the panel is :attr:`awaiting_rows` and says so in its
+        border.  :class:`RowsReady` is posted the moment it answers.
 
         *show_recipients* asks for the To column instead of the From
         column; the screen sets it for a Sent folder, where the sender
         is the user on every row.
         """
         self._in_search = False
-        self._marked.clear()
-        self.border_title = "Messages"
-        self.clear()
-        self._loaded_keys.clear()
+        self._begin_load("Messages  (loading…)")
         self._set_correspondent_column(show_recipients)
-        summaries = list(self._index.list_folder_message_summaries(folder=folder_ref))
-        self._summaries = summaries
-        self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
-        self._load_worker = self._stream_rows(summaries)
+        self._load_worker = self._load_rows(
+            lambda: list(self._index.list_folder_message_summaries(folder=folder_ref)),
+            restore_row=restore_row,
+            restore_key=restore_key,
+            title="Messages",
+        )
 
     def _restore_target(
         self,
@@ -245,8 +264,10 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         """Row the cursor should end on, or None to leave it at the top.
 
         Prefers the message named by *restore_key*; falls back to
-        *restore_row*, clamped.  The full row list is known synchronously
-        even though the rows stream in, so both resolve immediately.
+        *restore_row*, clamped.  Resolved as soon as the query answers,
+        which is before any row has been inserted -- so the cursor has
+        a destination throughout the stream, and
+        :attr:`effective_cursor_row` is that destination.
         """
         if not summaries:
             return None
@@ -268,18 +289,28 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         """
         return self._in_search
 
-    def load_search_results(
+    def load_search(
         self,
-        messages: list[IndexedMessage],
         query_raw: str,
         *,
+        fetch: Callable[[], list[IndexedMessage]],
         restore_row: int | None = None,
         restore_key: str | None = None,
     ) -> None:
-        """Replace the table contents with search results.
+        """Replace the table contents with what *fetch* finds.
 
-        Search still returns full ``IndexedMessage`` objects; project
-        them down to summaries here so the panel state is uniform.
+        The query belongs to the screen -- it owns the words and their
+        scope -- and running it belongs here, in the one worker that
+        already fetches a folder off the event loop.  It is the most
+        expensive read the reader can ask for (``index_store`` records
+        385 ms for it) and it used to run on the loop, so the terminal
+        was frozen for the whole of it with the old folder still on
+        screen and nothing to say why.  Now the panel empties, says it
+        is searching, and fills when the hits arrive.
+
+        Search returns full ``IndexedMessage`` objects; they are
+        projected down to summaries in the worker, so the panel state
+        is uniform and the projection is off the loop too.
 
         *restore_row* and *restore_key* mean what they do in
         :meth:`load_folder`: they are what lets the screen re-run a
@@ -292,30 +323,82 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         one that would quietly undo any other order a caller asked for.
         """
         self._in_search = True
-        self._marked.clear()
-        self.border_title = f"Search: {query_raw}  [q=exit]"
-        self.clear()
-        self._loaded_keys.clear()
+        self._begin_load(f"Search: {query_raw}  (searching…)")
         # Results span folders, so there is no single answer to whether
         # the user is the sender; From is the column that always means
         # something.
         self._set_correspondent_column(False)
-        msgs = list(messages)
-        summaries = [summary_of(m) for m in msgs]
-        self._summaries = summaries
-        self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
-        self._load_worker = self._stream_rows(summaries)
-        if not msgs:
-            self.border_title = f"Search: {query_raw}  (no results)  [q=exit]"
+        self._load_worker = self._load_rows(
+            lambda: [summary_of(message) for message in fetch()],
+            restore_row=restore_row,
+            restore_key=restore_key,
+            title=f"Search: {query_raw}  [q=exit]",
+            empty_title=f"Search: {query_raw}  (no results)  [q=exit]",
+        )
+
+    def _begin_load(self, awaiting_title: str) -> None:
+        """Empty the panel and say that rows are on their way.
+
+        One state for both loads: nothing selected, nothing to act on,
+        and a border that says why.  A folder read with no sign of it is
+        a keypress that looks ignored, which is what moving the query
+        off the event loop would otherwise buy.
+        """
+        self._marked.clear()
+        self.border_title = awaiting_title
+        self.clear()
+        self._loaded_keys.clear()
+        self._summaries = []
+        self._pending_cursor = None
+        self._rows_known.clear()
+
+    @property
+    def awaiting_rows(self) -> bool:
+        """True while a load has yet to find out what its rows are.
+
+        There is no cursor row to read and nothing to act on while this
+        holds: the screen says so rather than acting on the wrong
+        message or appearing to drop the key.
+        """
+        return not self._rows_known.is_set()
 
     @work(exclusive=True, group="message-list-load")
-    async def _stream_rows(self, summaries: list[FolderMessageSummary]) -> None:
-        """Insert rows in batches, yielding to the event loop between them.
+    async def _load_rows(
+        self,
+        fetch: Callable[[], list[FolderMessageSummary]],
+        *,
+        restore_row: int | None,
+        restore_key: str | None,
+        title: str,
+        empty_title: str | None = None,
+    ) -> None:
+        """Find the rows off the event loop, then stream them in.
+
+        The query used to run here on the loop -- a folder of ten
+        thousand froze the terminal for as long as SQLite took, and
+        `docs/architecture.md` claimed a worker that only the row
+        insertion had.  ``asyncio.to_thread`` is what the rest of the
+        screen's blocking work uses; the index opens one connection per
+        thread for exactly this.
 
         ``exclusive=True`` ensures a second ``load_folder`` call cancels
-        the in-flight load before this one starts adding rows for the
-        previous folder.
+        the in-flight load -- query included -- before this one starts
+        adding rows for the previous folder.
         """
+        summaries = await asyncio.to_thread(fetch)
+        self._summaries = summaries
+        self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
+        self.border_title = (
+            empty_title if not summaries and empty_title is not None else title
+        )
+        # Before the rows: what reads the panel back is after a
+        # selection, and the selection is decided by now.
+        self._rows_known.set()
+        self.post_message(self.RowsReady())
+        await self._stream_rows(summaries)
+
+    async def _stream_rows(self, summaries: list[FolderMessageSummary]) -> None:
+        """Insert rows in batches, yielding to the event loop between them."""
         for i in range(0, len(summaries), self._LOAD_BATCH):
             chunk = summaries[i : i + self._LOAD_BATCH]
             for summary in chunk:
@@ -365,6 +448,10 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         that asks "which message is selected" has to see the destination,
         or a trash immediately followed by another action would operate
         on the top of the folder instead of the message under the cursor.
+
+        Before that -- while the query is still running -- there is no
+        destination and no rows, and :attr:`awaiting_rows` is how a
+        caller tells that apart from an empty folder.
         """
         if self._pending_cursor is not None:
             return self._pending_cursor

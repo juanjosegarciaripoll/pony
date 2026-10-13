@@ -176,6 +176,16 @@ without that a kept mirror came back indexed by nothing.
 
 ### Fixed
 
+- **The message list reads its folder off the event loop**: the SQL that
+  finds a folder's rows ran on the terminal's event loop with no limit on
+  it, so opening a large folder froze the interface for as long as SQLite
+  took — only the row *insertion* was in a worker. The query is in the
+  worker now, and so is search, which is the slowest read the reader can
+  ask for. While a load is in flight the list says so in its border, has
+  nothing selected and nothing to act on; a key pressed in that moment is
+  told the list is still loading instead of quietly doing nothing, and the
+  reader pane follows the cursor once the rows land.
+
 - **One request repaints the browser's page after an action**: the list and
   the unread counts beside the folders were two fetches, the second not
   starting until the first had landed — two round trips on every archive

@@ -1937,7 +1937,7 @@ async def test_message_list_empty_search_can_exit() -> None:
         await pilot.press("q")
         await pilot.pause()
         panel = app.screen.query_one(MessageListPanel)
-        panel.load_search_results([], "fictional query")
+        panel.load_search("fictional query", fetch=lambda: [])
         await pilot.pause()
         assert "no results" in str(panel.border_title)
         assert panel._in_search is True
@@ -1961,7 +1961,9 @@ async def test_search_q_from_list_closes_the_reader_before_exiting() -> None:
         await _select_first_inbox(pilot)
         panel = app.screen.query_one(MessageListPanel)
         view = app.screen.query_one(MessageViewPanel)
-        panel.load_search_results(list(index.list_folder_messages(folder=folder)), "x")
+        panel.load_search(
+            "x", fetch=lambda: list(index.list_folder_messages(folder=folder))
+        )
         await panel.wait_for_load_complete()
         panel.focus()
         await pilot.press("enter")

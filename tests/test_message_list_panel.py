@@ -236,7 +236,7 @@ async def test_q_leaves_search_mode_and_restores_the_border_title() -> None:
         await _boot(pilot)
         panel = _panel(app)
         hits = list(index.list_folder_messages(folder=_INBOX))
-        panel.load_search_results(hits, "subject")
+        panel.load_search("subject", fetch=lambda: hits)
         await pilot.pause()
         assert "Search:" in str(panel.border_title)
 
@@ -265,7 +265,7 @@ async def test_search_with_no_hits_says_so_in_the_border_title() -> None:
     async with app.run_test() as pilot:
         await _boot(pilot)
         panel = _panel(app)
-        panel.load_search_results([], "nothing")
+        panel.load_search("nothing", fetch=lambda: [])
         await pilot.pause()
 
         assert "no results" in str(panel.border_title)
@@ -457,6 +457,153 @@ async def test_closing_the_reader_returns_focus_to_the_list() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Awaiting rows
+# ---------------------------------------------------------------------------
+
+
+def _watch_thread(index: object, method: str) -> list[object]:
+    """Record the thread each call to *method* runs on, and delegate."""
+    import threading
+
+    threads: list[object] = []
+    real = getattr(index, method)
+
+    def recording(**kwargs: object) -> object:
+        threads.append(threading.current_thread())
+        return real(**kwargs)
+
+    setattr(index, method, recording)
+    return threads
+
+
+async def test_the_folder_query_runs_off_the_event_loop() -> None:
+    """The read, not just the row insertion, is in the worker.
+
+    ``list_folder_message_summaries`` ran here on the event loop, with
+    no limit on it, while ``docs/architecture.md`` claimed a worker that
+    only ``add_row`` had: opening a ten-thousand-row folder froze the
+    terminal for as long as SQLite took. The index opens one connection
+    per thread, which is what makes this safe.
+    """
+    import threading
+
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("mlist-off-loop", count=3)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        loop_thread = threading.current_thread()
+        ran_on = _watch_thread(index, "list_folder_message_summaries")
+
+        panel.load_folder(_INBOX)
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert ran_on, "the folder was never read"
+        assert loop_thread not in ran_on
+        assert panel.row_count == 3
+
+
+async def test_a_list_still_loading_says_so_and_has_nothing_to_act_on() -> None:
+    """Between asking for a folder and the rows: one honest state.
+
+    Nothing is selected, nothing can be acted on, and the border says
+    why -- a folder read with no sign of it is a keypress that looks
+    ignored, which is what moving the read off the loop would otherwise
+    buy.
+    """
+    app, *_ = _app_with_rows("mlist-awaiting", count=3)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+
+        panel.load_folder(_INBOX)
+
+        # Synchronously after the call: the worker cannot have run.
+        assert panel.awaiting_rows is True
+        assert panel.get_selected_summary() is None
+        assert panel.summaries_to_act_on() == []
+        assert panel.border_title == "Messages  (loading…)"
+
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert panel.awaiting_rows is False
+        assert panel.get_selected_summary() is not None
+        assert panel.border_title == "Messages"
+
+
+async def test_the_search_runs_off_the_event_loop_and_says_it_is_running() -> None:
+    """The slowest read the reader can ask for, in the same worker.
+
+    ``index_store`` records 385 ms for a search; it ran on the loop,
+    with the folder it was leaving still on screen. The screen hands
+    the panel the read rather than its result, so one worker runs both
+    kinds of load and one await covers them.
+    """
+    import threading
+
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("mlist-search-loop", count=3)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        screen = _main(app)
+        panel = _panel(app)
+        loop_thread = threading.current_thread()
+        ran_on = _watch_thread(index, "search")
+
+        screen._run_search("subject")
+
+        assert panel.awaiting_rows is True
+        assert panel.border_title == "Search: subject  (searching…)"
+
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert ran_on, "the search never ran"
+        assert loop_thread not in ran_on
+        assert panel.in_search is True
+        # The title says the search is done rather than running. The
+        # `[q=exit]` it also carries is console markup by the time it
+        # comes back out, so it is not what this compares.
+        assert "searching" not in str(panel.border_title)
+        assert str(panel.border_title).startswith("Search: subject")
+        assert panel.row_count == 3
+
+
+async def test_the_reader_follows_the_cursor_once_the_rows_land() -> None:
+    """Trashing the open message opens whatever took its place.
+
+    The screen used to re-sync the reader on the line after asking for
+    the reload, when the panel still held the old rows. It now waits
+    for ``RowsReady``; without that wait the pane would be cleared and
+    hidden on every action, because the panel has no rows yet.
+    """
+    app, *_ = _app_with_rows("mlist-reader-follows", count=4)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        view = app.screen.query_one(MessageViewPanel)
+
+        await _press(pilot, panel, "down")
+        panel.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        opened = view._rendered
+        assert opened is not None
+
+        _main(app).trash_current_message()
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert view.display is True
+        assert view._rendered is not None
+        assert view._rendered.subject != opened.subject
+
+
+# ---------------------------------------------------------------------------
 # Cursor restore across a reload
 # ---------------------------------------------------------------------------
 
@@ -467,9 +614,10 @@ def _restore_target(
     """Run the target resolution against a synthetic summary list.
 
     Rows stream in from a worker, so the cursor cannot be moved after
-    ``load_folder`` returns — there is nothing to move it to yet. The
-    destination is resolved up front from the summary list, which *is*
-    known synchronously, and this is that resolution.
+    ``load_folder`` returns — there is nothing to move it to yet, and
+    until the query answers there are no rows at all. The destination
+    is resolved from the summary list the moment it arrives, before any
+    row is inserted, and this is that resolution.
     """
     from unittest.mock import Mock
 
@@ -753,7 +901,7 @@ async def test_search_results_show_senders_even_from_a_sent_folder() -> None:
         assert "To" in _header_text(panel)
 
         results = list(index.list_folder_messages(folder=_SENT))
-        panel.load_search_results(results, "outbound")
+        panel.load_search("outbound", fetch=lambda: results)
         await panel.wait_for_load_complete()
         await pilot.pause()
 
@@ -1006,7 +1154,7 @@ async def test_search_results_keep_the_order_they_arrive_in() -> None:
         hits = list(index.list_folder_messages(folder=_INBOX))
         # Deliberately not newest-first: whatever the caller hands over.
         reordered = sorted(hits, key=lambda m: m.received_at)
-        panel.load_search_results(reordered, "subject")
+        panel.load_search("subject", fetch=lambda: reordered)
         await pilot.pause()
 
         assert [s.message_ref.id for s in panel._summaries] == [  # noqa: SLF001

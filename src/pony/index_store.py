@@ -1092,10 +1092,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         Folding is always on — the FTS5 ``unicode61`` tokenizer is case-
         and diacritic-insensitive by construction.
 
-        *limit* bounds the rows materialised.  The query ran unbounded
-        and the TUI calls it on the event loop, so a broad term over a
-        large mailbox froze the interface for as long as it took to build
+        *limit* bounds the rows materialised.  The query ran unbounded,
+        and a broad term over a large mailbox takes as long as building
         every row — measured at 385 ms for 40 000 messages, and linear.
+        Both front ends run it off their event loop, the terminal in the
+        message list's own worker and the browser in the thread pool.
 
         *folder_name* narrows the search here rather than in the caller.
         Both front ends used to ask for the account's hits and drop the

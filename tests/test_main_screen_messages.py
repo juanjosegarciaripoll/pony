@@ -532,6 +532,39 @@ async def test_edit_draft_is_dead_on_a_search_hit_from_another_folder() -> None:
         assert not isinstance(app.screen, ComposeScreen)
 
 
+async def test_a_key_pressed_while_the_list_loads_says_it_is_loading() -> None:
+    """An action with no row to act on, because the rows are in flight.
+
+    The list fetches its rows off the event loop, so there is a moment
+    with nothing selected. An action then has nothing to act on, and
+    the honest answer is to say the list is still loading rather than
+    to do nothing quietly -- which reads as a key that was dropped.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="main-action-while-loading",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
+        messages = _notifications(app)
+
+        panel.load_folder(folder)
+        assert panel.awaiting_rows is True
+        screen.trash_current_message()
+
+        assert "The list is still loading." in messages
+        # And nothing was trashed on the way past.
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert [
+            row.local_status for row in index.list_folder_messages(folder=folder)
+        ] == [MessageStatus.ACTIVE]
+
+
 async def test_search_without_a_folder_or_account_selected_warns() -> None:
     """With the tree cursor on the root there is nothing to scope to."""
     from pony.tui.widgets.folder_panel import FolderPanel
