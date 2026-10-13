@@ -40,7 +40,34 @@ All v1 capabilities implemented and tested:
 
 ## Queue
 
-- **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump.
+- **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump — which is the one below.
+- **A UIDVALIDITY reset re-downloads the whole folder.** On a reset the
+  planner empties `local_uids` (`sync.py:1320`), so every remote UID is
+  new and `fetch_messages_batch` pulls every body; `_adopt_existing_row`
+  then matches each one to its UID-less row by Message-ID and keeps the
+  mirror file, the local flags and the local status. Nothing is
+  duplicated or lost — the download is what is wasted. The planner
+  already holds `uid → Message-ID` for the folder from a headers-only
+  fetch (`imap_client.py:398`) and `SlowPathRow` already carries
+  `message_id`, so the adoption can be planned and only genuinely new
+  UIDs fetched. A Message-ID is not a key: rows sharing one, and rows
+  with none, fall back to the body fetch rather than being paired by
+  guess.
+- **Drop `messages.uid_validity` (schema v4).** The v2→v3 migration
+  backfilled it "so the planner can detect stale UIDs in one query
+  without a join"; that query was never written, nothing reads the
+  column, and the reset fix above does not need it either. The epoch
+  keeps its two live carriers: `folder_sync_state.uid_validity`, which
+  is what a sync compares against the server, and the Maildir
+  filename's `,V=<epoch>,U=<uid>`, which `reindex` checks and which
+  survives losing the index. Rebuild the table as `_migrate_v2_to_v3`
+  does rather than `ALTER TABLE DROP COLUMN`, so the migration does not
+  depend on which SQLite a user's Python bundles. Takes the field off
+  `IndexedMessage`, `_FULL_COLS`, `adopt_uid`, `_ingest_one` and
+  `clear_uids_for_folder`, and the paragraph at `domain.py:410` with
+  it; `store_message_async(uid_validity=...)` stays, because that is
+  what writes the filename. Carry the `body_preview` rename in the same
+  bump.
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.
