@@ -359,13 +359,17 @@ async def _index_page(services: WebServices, request: Request) -> Response:
 async def _mail_page(services: WebServices, request: Request) -> Response:
     """The reader: folders, the list, and a message if one is open.
 
-    Rendered in the thread pool, not on the event loop.  The row list is
-    one unpaginated SQL read plus a string build per row -- 618 ms and
-    2.4 MB for 8,000 rows, measured -- and on the loop that is the whole
-    server stopped for the duration: the other tab, an upload in
+    Rendered in the thread pool, not on the event loop: it is a SQL
+    read plus a string build per row, and on the loop that is the whole
+    server stopped for the duration -- the other tab, an upload in
     flight, the sync's own requests.  The thread does not make the page
-    faster; it makes the wait this request's own.  (Pagination is the
-    thing that would make it faster, and is not attempted here.)
+    faster; it makes the wait this request's own.
+
+    What makes it faster is the batch.  One unpaginated read of an
+    8,000-row folder was 618 ms and 2.4 MB, measured; the page carries
+    `ROW_BATCH` rows now and the rest arrive after it, the way the
+    reader streams rows into its table.  ``offset`` is the batch to
+    start at, which is also the link a page with no script follows.
     """
     folder = _folder_from(request)
     query = request.query_params.get("q", "")
@@ -377,9 +381,21 @@ async def _mail_page(services: WebServices, request: Request) -> Response:
                 folder=folder,
                 query=query,
                 notices=notices,
+                offset=_offset_from(request),
             ),
         ),
     )
+
+
+def _offset_from(request: Request) -> int:
+    """How far down the folder a list starts, and never off the end.
+
+    A hand-edited ``offset`` is a number from outside: anything that is
+    not a non-negative integer is the top of the folder, which is what
+    the reader shows when it is asked for a row that is not there.
+    """
+    raw = request.query_params.get("offset", "")
+    return int(raw) if raw.isdigit() else 0
 
 
 async def _rows_fragment(services: WebServices, request: Request) -> Response:
@@ -396,14 +412,15 @@ async def _rows_fragment(services: WebServices, request: Request) -> Response:
     query = request.query_params.get("q", "")
     return HTMLResponse(
         # In the thread pool for the same reason the whole page is: this
-        # is the whole list again, and `refresh()` asks for it after
-        # every action.
+        # is a batch of the list again, and `refresh()` asks for it
+        # after every action.
         await run_in_threadpool(
             lambda: mail_view.rows(
                 services,
                 folder,
                 open_id=open_id,
                 query=query,
+                offset=_offset_from(request),
             ),
         ),
     )

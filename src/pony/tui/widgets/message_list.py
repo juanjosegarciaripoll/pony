@@ -19,7 +19,7 @@ from ...domain import (
     MessageFlag,
 )
 from ...protocols import IndexRepository
-from ...views import message_row, summary_of
+from ...views import ROW_BATCH, message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
@@ -85,7 +85,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     class SearchExitRequested(Message):
         """Posted when the user presses q or escape in search-results mode."""
 
-    _LOAD_BATCH = 200
+    _LOAD_BATCH = ROW_BATCH
 
     def __init__(self, index: IndexRepository, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]

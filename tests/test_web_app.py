@@ -36,6 +36,7 @@ from tui_helpers import (
 from web_helpers import form_fields, link_to
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
+from pony.views import ROW_BATCH
 from pony.web import WebServices, build_web_app
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS, TOKEN_COOKIE
 
@@ -518,6 +519,64 @@ def test_the_text_part_of_an_html_message_has_no_html_in_it() -> None:
     assert response.status_code == 200
     assert "<" not in body
     assert body.strip()
+
+
+def test_a_long_folder_arrives_a_batch_at_a_time() -> None:
+    """The page carries one batch and says where the next one starts.
+
+    An unpaginated read of an 8,000-row folder was 618 ms and 2.4 MB of
+    markup before this, all of it on the request the user was waiting
+    on.  The reader has always drawn a batch at a time -- `ROW_BATCH`
+    rows into its table, the event loop free between them -- and this is
+    the browser doing the same.
+    """
+    services, _index = _services(
+        "web-batched",
+        seed=tuple(plain_text() for _ in range(ROW_BATCH + 5)),
+    )
+
+    with _client(services) as client:
+        page = client.get("/mail?account=acct&folder=INBOX").text
+        rest = client.get(
+            f"/mail/rows?account=acct&folder=INBOX&offset={ROW_BATCH}"
+        ).text
+        beyond = client.get(
+            f"/mail/rows?account=acct&folder=INBOX&offset={ROW_BATCH + 5}"
+        ).text
+
+    assert page.count("data-id=") == ROW_BATCH
+    # And the link that a page with no script follows to the rest.
+    assert f"offset={ROW_BATCH}" in page
+    assert 'class="more"' in page
+
+    assert rest.count("data-id=") == 5
+    # The last batch is the last: nothing left to point at.
+    assert 'class="more"' not in rest
+
+    assert "Nothing here." in beyond
+
+
+def test_the_second_page_of_a_long_folder_stands_on_its_own() -> None:
+    """Following the More link with no script shows the next batch.
+
+    The offset comes from a URL, so it is a number from outside: a
+    hand-edited one that is not a number at all starts at the top
+    rather than failing, which is what the reader does when asked for a
+    row that is not there.
+    """
+    services, _index = _services(
+        "web-batched-page",
+        seed=tuple(plain_text() for _ in range(ROW_BATCH + 5)),
+    )
+
+    with _client(services) as client:
+        second = client.get(f"/mail?account=acct&folder=INBOX&offset={ROW_BATCH}")
+        nonsense = client.get("/mail?account=acct&folder=INBOX&offset=../etc")
+
+    assert second.status_code == 200
+    assert second.text.count("data-id=") == 5
+    assert nonsense.status_code == 200
+    assert nonsense.text.count("data-id=") == ROW_BATCH
 
 
 def _cyrillic_attachment() -> bytes:

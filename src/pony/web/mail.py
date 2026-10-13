@@ -31,7 +31,7 @@ from ..invitation import CALENDAR_CONTENT_TYPES
 from ..mailbox_actions import folder_unread_counts
 from ..message_export import message_parts
 from ..message_renderer import fmt_size, parse_styled_body, render_message
-from ..views import build_folder_tree, message_row, summary_of
+from ..views import ROW_BATCH, build_folder_tree, message_row, summary_of
 from . import urls
 from .actions import (
     Action,
@@ -68,6 +68,7 @@ def mail_page(
     message: IndexedMessage | None = None,
     query: str = "",
     notices: Sequence[Notice] = (),
+    offset: int = 0,
 ) -> str:
     """The reader: folders beside the list, with a message open or not."""
     title = (
@@ -79,6 +80,7 @@ def mail_page(
             folder,
             open_id=None if message is None else message.message_ref.id,
             query=query,
+            offset=offset,
         ),
     ]
     if message is not None:
@@ -296,6 +298,7 @@ def list_pane(
     *,
     open_id: int | None = None,
     query: str = "",
+    offset: int = 0,
 ) -> Raw:
     """The list, with the column headings the terminal shows above it."""
     show_recipients = shows_recipient(services.config, folder)
@@ -330,6 +333,7 @@ def list_pane(
             open_id=open_id,
             query=query,
             show_recipients=show_recipients,
+            offset=offset,
         ),
     )
 
@@ -365,13 +369,31 @@ def rows(
     open_id: int | None = None,
     query: str = "",
     show_recipients: bool | None = None,
+    offset: int = 0,
 ) -> Raw:
-    """The rows themselves, which is all an action needs to refresh."""
+    """One batch of rows, which is all an action needs to refresh.
+
+    A batch rather than the folder, because the reader draws a batch
+    too: `ROW_BATCH` rows go into the terminal's table at a time, with
+    the event loop free between them, so a big folder is usable from
+    the first screenful. Here the first batch is in the page and the
+    rest follow -- the marker at the end of an incomplete list says
+    where from, as a link for a reader with no script and as the next
+    fetch for one with it.
+    """
     if show_recipients is None:
         show_recipients = shows_recipient(services.config, folder)
-    summaries = (
-        _search(services, folder, query) if query else _folder_rows(services, folder)
-    )
+    # One more than the batch: a full batch answers "is there more?"
+    # only by asking again, and an empty answer is a round trip spent
+    # saying nothing.
+    summaries: Sequence[FolderMessageSummary]
+    if query:
+        summaries = _search(services, folder, query)
+        more = False
+    else:
+        batch = _folder_rows(services, folder, offset=offset)
+        more = len(batch) > ROW_BATCH
+        summaries = batch[:ROW_BATCH]
     # The server's own zone, which is the one `format_received` renders
     # a row in: one `datetime.now(UTC)` here put every row's date back
     # into UTC, which is the drift `pony.views.format_received`
@@ -397,18 +419,44 @@ def rows(
     return element(
         "ol",
         join(rendered),
+        _more(folder, offset + len(rendered), query=query) if more else None,
         id="rows",
         class_="rows",
         data_account=folder.account_name,
         data_folder=folder.folder_name,
+        start=str(offset + 1),
+    )
+
+
+def _more(folder: FolderRef, offset: int, *, query: str) -> Raw:
+    """Where the rest of the folder is.
+
+    A link, so a page with no script still reaches the next batch, and
+    `data-offset` so the script can ask for it without parsing one.
+    """
+    return element(
+        "li",
+        element(
+            "a",
+            "More",
+            href=urls.mail_url(folder, query_text=query, offset=offset),
+        ),
+        class_="more",
+        data_offset=str(offset),
     )
 
 
 def _folder_rows(
     services: WebServices,
     folder: FolderRef,
+    *,
+    offset: int = 0,
 ) -> Sequence[FolderMessageSummary]:
-    return services.index.list_folder_message_summaries(folder=folder)
+    return services.index.list_folder_message_summaries(
+        folder=folder,
+        limit=ROW_BATCH + 1,
+        offset=offset,
+    )
 
 
 def _search(

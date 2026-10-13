@@ -48,13 +48,25 @@ def query(**params: str | int | None) -> str:
     return f"?{urlencode(pairs)}" if pairs else ""
 
 
-def mail_url(folder: FolderRef | None, *, q: str = "") -> str:
+def mail_url(
+    folder: FolderRef | None,
+    *,
+    q: str = "",
+    query_text: str = "",
+    offset: int = 0,
+) -> str:
+    """The folder's page, optionally from *offset* rows down.
+
+    *offset* is how a page with no script reaches the next batch of a
+    long folder, and it is the one the script asks for too.
+    """
     if folder is None:
         return MAIL
     return MAIL + query(
         account=folder.account_name,
         folder=folder.folder_name,
-        q=q or None,
+        q=(q or query_text) or None,
+        offset=offset or None,
     )
 
 

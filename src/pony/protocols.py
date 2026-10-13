@@ -356,7 +356,12 @@ class IndexRepository(Protocol):
         ...
 
     def list_folder_message_summaries(
-        self, *, folder: FolderRef, active_only: bool = True
+        self,
+        *,
+        folder: FolderRef,
+        active_only: bool = True,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> Sequence[FolderMessageSummary]:
         """Return a narrow projection of messages in one folder for list display.
 
@@ -367,6 +372,11 @@ class IndexRepository(Protocol):
         'pending_move')`` in SQL — pending-move rows are visible in
         their target folder while awaiting the next sync push.
         Ordered by ``received_at`` descending.
+
+        *limit* and *offset* take one batch of that order
+        (`pony.views.ROW_BATCH` is what both front ends ask for), so a
+        list can be drawn from the first batch while the rest is still
+        coming.
         """
         ...
 

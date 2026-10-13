@@ -21,9 +21,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from .domain import Contact, FolderMessageSummary, FolderRef, MessageFlag
+
+#: How many rows a front end takes at a time.  The terminal inserts
+#: rows into its table in batches this size, yielding to the event loop
+#: between them, so a 10k-row folder is usable from the first batch
+#: rather than after the last; the browser asks for the same batch and
+#: appends the rest as they arrive.  One number, because it is one
+#: decision about how long a user waits to see a list.
+ROW_BATCH: Final = 200
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

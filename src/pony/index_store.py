@@ -913,7 +913,12 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         return tuple(_indexed_message_from_row(row) for row in rows)
 
     def list_folder_message_summaries(
-        self, *, folder: FolderRef, active_only: bool = True
+        self,
+        *,
+        folder: FolderRef,
+        active_only: bool = True,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> Sequence[FolderMessageSummary]:
         """Return a narrow per-row projection for the folder list view.
 
@@ -940,6 +945,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             params.append(MessageStatus.ACTIVE.value)
             params.append(MessageStatus.PENDING_MOVE.value)
         sql += " ORDER BY received_at DESC"
+        if limit is not None:
+            # In SQL rather than in a caller's slice: a front end that
+            # draws the first screenful should not pay for materialising
+            # a folder of fifty thousand to throw it away.  SQLite needs
+            # a LIMIT before it will take an OFFSET.
+            sql += " LIMIT ? OFFSET ?"
+            params.append(limit)
+            params.append(offset)
+        elif offset:
+            sql += " LIMIT -1 OFFSET ?"
+            params.append(offset)
         with self._use() as conn:
             rows = conn.execute(sql, params).fetchall()
         return tuple(_summary_from_row(row) for row in rows)

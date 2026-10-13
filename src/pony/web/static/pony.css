@@ -251,6 +251,14 @@ body {
   padding: 0;
 }
 
+/* Where the rest of a long folder is.  The script follows it before a
+   user would, so this is what a page with no script shows. */
+.rows .more > a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  color: var(--fg-dim);
+}
+
 .row > a {
   display: grid;
   grid-template-columns: var(--mail-columns);

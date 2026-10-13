@@ -30,6 +30,10 @@ const state = {
   // What the page's form held when it loaded, for the Escape that
   // leaves it. Null on a page with no form.
   formAtLoad: null,
+  // Which row stream is the current one. A new one makes every older
+  // one stop at its next batch, which is what the reader's
+  // `exclusive=True` worker does when a folder is loaded again.
+  stream: 0,
 };
 
 // ── Rows, selection and marks ──────────────────────────────────
@@ -565,6 +569,55 @@ async function refresh() {
     applyFolds(folds);
     const now = refreshed.querySelector(".pane-body");
     if (now) now.scrollTop = top;
+  }
+  // The swap put the first batch back, so the rest has to come again.
+  void streamRows();
+}
+
+// The rest of the folder, a batch at a time.
+//
+// The page carries the first batch and a marker saying where the next
+// one starts; this follows the markers until there are none. It is what
+// the reader does -- rows into the table in batches, the event loop
+// free between them -- so a long folder is usable from the first
+// screenful instead of after the last row has been built. The marker is
+// a link, so a page with no script still reaches the next batch; this
+// consumes it before a user would.
+async function streamRows() {
+  const mine = ++state.stream;
+  for (;;) {
+    const marker = document.querySelector("#rows .more");
+    if (!marker || mine !== state.stream) return;
+    const offset = marker.dataset.offset;
+    let fresh = null;
+    try {
+      const response = await fetch(`/mail/rows?${mailParams()}&offset=${offset}`);
+      if (!response.ok) return;
+      fresh = new DOMParser()
+        .parseFromString(await response.text(), "text/html")
+        .getElementById("rows");
+    } catch {
+      // Offline, or the server has stopped. The marker is still a
+      // link, so the rest of the folder is still reachable by hand.
+      return;
+    }
+    // A batch that is still in the document is the one to replace: a
+    // refresh may have swapped the list while this was in flight, and
+    // then this answer belongs to a list that is gone.
+    if (!fresh || mine !== state.stream || !marker.isConnected) return;
+    const arrived = Array.from(fresh.children);
+    if (!arrived.length) {
+      marker.remove();
+      return;
+    }
+    marker.replaceWith(...arrived);
+    wireMarkTaps();
+    // The same offset twice would be a loop rather than a list.
+    const next = document.querySelector("#rows .more");
+    if (next && next.dataset.offset === offset) {
+      next.remove();
+      return;
+    }
   }
 }
 
@@ -1218,6 +1271,7 @@ function start() {
   state.formAtLoad = form ? formState(form) : null;
   restorePaneScroll();
   restoreFolds();
+  void streamRows();
   // `pagehide` rather than `beforeunload`: it fires for an ordinary
   // navigation and does not keep the page out of the back/forward
   // cache.
