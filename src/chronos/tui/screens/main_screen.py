@@ -17,10 +17,11 @@ from chronos.domain import (
     SyncResult,
 )
 from chronos.event_actions import (
+    DEFAULT_EVENT_DURATION,
     Calendars,
     EditDraft,
-    default_event_start,
     import_ics_file,
+    new_event_defaults,
     reschedule_event,
     save_event,
     trash_event,
@@ -309,30 +310,35 @@ class MainScreen(Screen[None]):
         all_day: bool = False,
     ) -> None:
         services = self._services()
-        if initial_start is None:
-            if self._view in (ViewKind.DAY, ViewKind.GRID):
-                timeline = self.query_one(TimelineGrid)
-                coordinate = timeline.cursor_coordinate
-                initial_start = timeline.slot_start(coordinate.row, coordinate.column)
-                banner_day = timeline.all_day_date(coordinate.row, coordinate.column)
-                if initial_start is None and banner_day is not None:
-                    # Cursor on the "all day" banner: an all-day event.
-                    initial_start, initial_end = all_day_bounds(banner_day, banner_day)
-                    all_day = True
-            if initial_start is None:
-                initial_start = default_event_start(
-                    self._viewed_date,
-                    services.now(),
-                )
-        if initial_end is None:
-            initial_end = initial_start + timedelta(hours=1)
+        if initial_start is None and self._view in (ViewKind.DAY, ViewKind.GRID):
+            # The cursor is on a slot or on the all-day banner, and
+            # either of those says when the event is more precisely
+            # than any default could.
+            timeline = self.query_one(TimelineGrid)
+            coordinate = timeline.cursor_coordinate
+            initial_start = timeline.slot_start(coordinate.row, coordinate.column)
+            banner_day = timeline.all_day_date(coordinate.row, coordinate.column)
+            if initial_start is None and banner_day is not None:
+                initial_start, initial_end = all_day_bounds(banner_day, banner_day)
+                all_day = True
         calendars = all_calendar_refs(services.config, services.mirror)
-        if not calendars:
+        defaults = new_event_defaults(
+            calendars,
+            day=self._viewed_date,
+            now=services.now(),
+            preferred=self._selection.first_of(calendars),
+        )
+        if defaults is None:
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
                 "No calendars available. Add an account first."
             )
             return
-        default = self._selection.first_of(calendars) or calendars[0]
+        if initial_start is None:
+            initial_start = defaults.dtstart
+            initial_end = defaults.dtend
+        if initial_end is None:
+            initial_end = initial_start + DEFAULT_EVENT_DURATION
+        default = defaults.calendar
         screen = EventEditScreen(
             calendars=calendars,
             existing=None,

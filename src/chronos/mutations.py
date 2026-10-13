@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from icalendar import Calendar, Event
 
+from chronos import ical_parser
 from chronos.domain import (
     LOCAL_FLAG_DIRTY,
     LocalStatus,
@@ -14,7 +15,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.ical_parser import local_tzinfo, normalize_attendee_email
+from chronos.ical_parser import normalize_attendee_email
 
 
 def build_event_ics(
@@ -127,9 +128,12 @@ def is_all_day_span(dtstart: datetime | None, dtend: datetime | None) -> bool:
         return False
     if dtend - dtstart < timedelta(hours=23):
         return False
+    # Through the module, not a from-import of `local_tzinfo`: the
+    # reader's zone is the one thing a test of this rule has to pin,
+    # and a second binding of the name would be a second place to pin.
     return (
         dtstart.astimezone(UTC).time() == time.min
-        or dtstart.astimezone(local_tzinfo()).time() == time.min
+        or dtstart.astimezone(ical_parser.local_tzinfo()).time() == time.min
     )
 
 
@@ -298,7 +302,7 @@ def all_day_date(dt: datetime) -> date:
     as_utc = dt.astimezone(UTC)
     if as_utc.time() == time.min:
         return as_utc.date()
-    local = dt.astimezone(local_tzinfo())
+    local = dt.astimezone(ical_parser.local_tzinfo())
     if local.time() == time.min:
         return local.date()
     return as_utc.date()

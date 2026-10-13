@@ -17,10 +17,12 @@ and where -- because "Saved 3 file(s)" leaves a user to go and look.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from chronos.outcome import Notice, Outcome, failure, info, warn
 
+from .domain import ViewerRule
 from .message_renderer import (
     AttachmentPayload,
     extract_attachment,
@@ -31,7 +33,6 @@ from .message_renderer import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from .message_renderer import RenderedMessage
 
@@ -40,10 +41,14 @@ __all__ = [
     "WHOLE_MESSAGE",
     "MessagePart",
     "PartKey",
+    "OpenablePart",
+    "downloads_dir",
     "message_parts",
     "part_key",
     "part_payload",
+    "parts_to_open",
     "save_parts",
+    "viewer_command",
 ]
 
 #: The message itself, as it arrived.  Attachments are numbered from 1.
@@ -173,6 +178,119 @@ def part_payload(
     if not isinstance(key, int):
         return None
     return extract_attachment(rendered.raw_bytes, key)
+
+
+def downloads_dir(configured: Path | None) -> Path:
+    """Where a saved part goes when the configuration does not say.
+
+    ``~/Downloads``, which is what the platform's own file managers
+    use.  This was the reader screen's answer, so every key that writes
+    a part asked the screen for it and a second front end would have
+    had to decide again.
+    """
+    return configured or Path.home() / "Downloads"
+
+
+@dataclass(frozen=True, slots=True)
+class OpenablePart:
+    """One part written out, and what should show it.
+
+    ``path`` is where the bytes were written, or ``None`` for a message
+    -- part 0, or an attached one -- which a reader shows itself rather
+    than handing to whatever the desktop opens an ``.eml`` with.
+    ``command`` is the argv the ``[viewers]`` table names for this
+    content type, or ``None`` for the platform default.
+    """
+
+    key: PartKey
+    content_type: str
+    data: bytes
+    path: Path | None
+    command: tuple[str, ...] | None
+
+
+def parts_to_open(
+    rendered: RenderedMessage,
+    keys: Sequence[PartKey],
+    dest_dir: Path,
+    *,
+    viewers: Sequence[ViewerRule] = (),
+) -> tuple[tuple[OpenablePart, ...], Outcome]:
+    """Write the chosen parts out and say what should show each one.
+
+    Every decision here is the model's: that a message goes to the
+    reader's own viewer rather than to the desktop's, that everything
+    else is written beside the attachments under a name not already
+    taken, and which viewer command a content type gets.  Which parts
+    were not there and which could not be written come back as notices,
+    as they do from :func:`save_parts`.
+
+    Launching is the caller's, and only the caller's: the terminal has
+    to suspend itself around a viewer that writes to the same terminal,
+    and a browser would serve the bytes instead of running anything.
+    """
+    if not keys:
+        return (), Outcome.refused(warn("Nothing chosen to open."))
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return (), Outcome.refused(failure(f"Could not use {dest_dir}: {exc}"))
+
+    openable: list[OpenablePart] = []
+    notices: list[Notice] = []
+    missing: list[PartKey] = []
+    for key in keys:
+        payload = part_payload(rendered, key)
+        if payload is None:
+            missing.append(key)
+            continue
+        if payload.content_type == "message/rfc822":
+            openable.append(
+                OpenablePart(
+                    key=key,
+                    content_type=payload.content_type,
+                    data=payload.data,
+                    path=None,
+                    command=None,
+                )
+            )
+            continue
+        try:
+            out = unique_destination(dest_dir, payload.filename)
+            out.write_bytes(payload.data)
+        except OSError as exc:
+            notices.append(failure(f"Could not save part {key}: {exc}"))
+            continue
+        openable.append(
+            OpenablePart(
+                key=key,
+                content_type=payload.content_type,
+                data=payload.data,
+                path=out,
+                command=viewer_command(viewers, payload.content_type),
+            )
+        )
+    if missing:
+        absent = ", ".join(str(key) for key in missing)
+        notices.append(warn(f"No part {absent} on this message."))
+    return tuple(openable), Outcome(changed=len(openable), notices=tuple(notices))
+
+
+def viewer_command(
+    viewers: Sequence[ViewerRule], content_type: str | None
+) -> tuple[str, ...] | None:
+    """The configured argv for *content_type*, or ``None`` for the default.
+
+    Matching is exact on the lower-cased type, so a ``text/calendar``
+    entry does not claim ``text/plain``.
+    """
+    if not content_type:
+        return None
+    wanted = content_type.strip().lower()
+    for rule in viewers:
+        if rule.content_type == wanted:
+            return rule.command
+    return None
 
 
 def save_parts(

@@ -106,3 +106,25 @@ class ActivationTest(unittest.TestCase):
     def test_the_suite_runs_on_an_activated_root(self) -> None:
         """conftest activates a temporary one, so no test writes to a real dir."""
         self.assertTrue(active().root.is_absolute())
+
+
+class PerTestRootTest(unittest.TestCase):
+    """Each test gets a calendar root nothing else has written to.
+
+    `MainScreen` persists the view it was last on and reads it back at
+    startup, which is the feature; under one shared root it also meant
+    every Pilot test inherited the previous one's view, and which test
+    ran first was down to the scheduler.  A test cannot prove this on
+    its own -- it would pass alone and fail only after another file ran
+    -- so what is checked is the lever: the root is not the session's.
+    """
+
+    def test_the_activated_root_is_this_test_s_own(self) -> None:
+        from tests_calendar.conftest import TMP_ROOT
+
+        root = active().root
+        self.assertNotEqual(root, TMP_ROOT / "calendar")
+        self.assertTrue(root.is_relative_to(TMP_ROOT))
+
+    def test_no_view_is_inherited_from_another_test(self) -> None:
+        self.assertFalse(active().tui_state_file.exists())

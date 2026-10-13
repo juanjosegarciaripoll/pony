@@ -160,3 +160,74 @@ class SavePartsTest(unittest.TestCase):
         self.assertEqual(outcome.changed, 0)
         self.assertTrue(outcome.failed)
         self.assertEqual(len(outcome.notices), 2)
+
+
+class OpeningPartsTest(unittest.TestCase):
+    """Opening a part is the same operation as saving one, plus a viewer.
+
+    Where the bytes go, which viewer a content type gets and that a
+    message goes to the reader's own viewer rather than to whatever the
+    desktop opens an ``.eml`` with were all decided inside the reader
+    screen, so a second front end had nothing to reuse.  What stays with
+    a front end is the launching: an external viewer writes to the same
+    terminal, so the terminal has to suspend itself around it.
+    """
+
+    def test_an_attachment_is_written_and_given_its_viewer(self) -> None:
+        from pony.domain import ViewerRule
+        from pony.message_export import parts_to_open
+
+        rendered = render_message(corpus.multipart_mixed_attachment())
+        with TemporaryDirectory() as raw:
+            dest = Path(raw) / "downloads"
+            parts, outcome = parts_to_open(
+                rendered,
+                [1],
+                dest,
+                viewers=(
+                    ViewerRule(
+                        content_type="application/octet-stream", command=("less",)
+                    ),
+                ),
+            )
+
+            self.assertEqual(outcome.changed, 1)
+            (part,) = parts
+            assert part.path is not None
+            self.assertTrue(part.path.is_file())
+            self.assertEqual(part.path.parent, dest)
+            self.assertEqual(part.command, ("less",))
+
+    def test_a_message_is_not_written_out_at_all(self) -> None:
+        from pony.message_export import parts_to_open
+
+        rendered = render_message(corpus.plain_text())
+        with TemporaryDirectory() as raw:
+            dest = Path(raw) / "downloads"
+            parts, outcome = parts_to_open(rendered, [WHOLE_MESSAGE], dest)
+
+            (part,) = parts
+            self.assertIsNone(part.path, "a message goes to the reader's own viewer")
+            self.assertEqual(part.content_type, "message/rfc822")
+            self.assertTrue(part.data)
+            self.assertEqual(list(dest.iterdir()), [])
+            self.assertEqual(outcome.changed, 1)
+
+    def test_a_part_that_is_not_there_is_a_warning(self) -> None:
+        from pony.message_export import parts_to_open
+
+        rendered = render_message(corpus.plain_text())
+        with TemporaryDirectory() as raw:
+            parts, outcome = parts_to_open(rendered, [9], Path(raw))
+
+            self.assertEqual(parts, ())
+            self.assertEqual(
+                [(n.severity, n.text) for n in outcome.notices],
+                [("warning", "No part 9 on this message.")],
+            )
+
+    def test_the_downloads_directory_falls_back_to_the_platform_one(self) -> None:
+        from pony.message_export import downloads_dir
+
+        self.assertEqual(downloads_dir(Path("/elsewhere")), Path("/elsewhere"))
+        self.assertEqual(downloads_dir(None), Path.home() / "Downloads")

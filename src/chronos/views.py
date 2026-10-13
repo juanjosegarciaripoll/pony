@@ -541,62 +541,66 @@ def _todo_sort_key(todo: VTodo) -> tuple[datetime, str]:
     return due, todo.ref.uid
 
 
-_DETAIL_LABEL_WIDTH = len("Reminders:")  # the longest label in the grid
+#: What the notes section is called, for whoever draws it.  The
+#: description is a paragraph rather than a field, so it is not one.
+NOTES_LABEL = "Notes:"
 
 
-def render_event_detail(component: StoredComponent, today: date) -> str:
-    """Multi-line component summary used by the detail pane.
+@dataclass(frozen=True, slots=True)
+class DetailField:
+    """One labelled thing an event's detail pane says."""
 
-    Layout (labels right-aligned so the colons line up):
+    label: str
+    value: str
 
-         Summary: <text>
-          Source: <calendar> (<account>)
-        Location: <text or '(no location)'>
-           Start: <friendly date + time or '(not set)'>
-             End: <friendly date + time or '(not set)'>
-          Status: <status>          # only when present
 
-        Notes:
-        <description or '(no notes)'>
+def event_detail_fields(
+    component: StoredComponent, today: date
+) -> tuple[DetailField, ...]:
+    """What the detail pane says about *component*, field by field.
 
-    Times go through `format_friendly_start` so 'Today 09:00' /
-    'Tomorrow 14:00' / 'Tue 09:00' / 'Wed 15 May 09:00' shorthand
-    matches the row list. The iCal `UID` is not shown — it's an
-    implementation detail of the storage layer, not user-facing data.
+    The fields and their order, with no padding and no newlines in
+    them.  A monospace pane lines the colons up by padding to its
+    longest label and joins them with newlines; a browser's panel would
+    use a description list and let CSS decide.  Neither is a projection's
+    decision -- this is the shape :class:`MessageRow` has had since the
+    message list grew a second front end, and this function used to
+    return one pre-padded string.
+
+    Times go through `format_friendly_start`, so "Today 09:00" /
+    "Tue 09:00" / "Wed 15 May 09:00" match the row list.  The iCal
+    ``UID`` is not shown: it is how the storage layer names a component,
+    not something a user asked about.  The description is not a field --
+    see :data:`NOTES_LABEL`.
     """
-    lines: list[str] = [
-        _detail_field("Summary", component.summary or "(no summary)"),
-        _detail_field(
+    fields: list[DetailField] = [
+        DetailField("Summary", component.summary or "(no summary)"),
+        DetailField(
             "Source",
             f"{component.ref.calendar_name} ({component.ref.account_name})",
         ),
-        _detail_field("Location", component.location or "(no location)"),
+        DetailField("Location", component.location or "(no location)"),
     ]
     if isinstance(component, VEvent):
-        lines.append(_detail_field("Start", _detail_when(component.dtstart, today)))
-        lines.append(_detail_field("End", _detail_when(component.dtend, today)))
+        fields.append(DetailField("Start", _detail_when(component.dtstart, today)))
+        fields.append(DetailField("End", _detail_when(component.dtend, today)))
     else:
         if component.dtstart is not None:
-            lines.append(_detail_field("Start", _detail_when(component.dtstart, today)))
-        lines.append(_detail_field("Due", _detail_when(component.due, today)))
+            fields.append(DetailField("Start", _detail_when(component.dtstart, today)))
+        fields.append(DetailField("Due", _detail_when(component.due, today)))
     if component.status:
-        lines.append(_detail_field("Status", component.status))
+        fields.append(DetailField("Status", component.status))
     if isinstance(component, VEvent):
         attendees = extract_attendees(component.raw_ics, component.ref.uid)
         if attendees:
-            lines.append(_detail_field("Attendees", ", ".join(attendees)))
+            fields.append(DetailField("Attendees", ", ".join(attendees)))
     alarms = extract_alarm_triggers(component.raw_ics, component.ref.uid)
     if alarms:
-        alarm_str = ", ".join(_format_alarm(a) for a in alarms)
-        lines.append(_detail_field("Reminders", alarm_str))
-    lines.extend(["", "Notes:", component.description or "(no notes)"])
-    return "\n".join(lines)
-
-
-def _detail_field(label: str, value: str) -> str:
-    # Right-align so the colons line up; values then start at the
-    # same column on every row.
-    return f"{label + ':':>{_DETAIL_LABEL_WIDTH}} {value}"
+        fields.append(
+            DetailField("Reminders", ", ".join(_format_alarm(a) for a in alarms))
+        )
+    fields.append(DetailField(NOTES_LABEL, component.description or "(no notes)"))
+    return tuple(fields)
 
 
 def _detail_when(value: datetime | None, today: date) -> str:
@@ -976,17 +980,19 @@ def month_rows(
 
 
 __all__ = [
-    "AgendaWindow",
-    "CalendarSelection",
     "DEFAULT_AGENDA_DAYS",
     "DEFAULT_END_HOUR",
     "DEFAULT_GRID_DAYS",
     "DEFAULT_START_HOUR",
-    "EventRow",
     "IN_PROGRESS_MARK",
+    "NOTES_LABEL",
+    "SLOT_MINUTES",
+    "AgendaWindow",
+    "CalendarSelection",
+    "DetailField",
+    "EventRow",
     "OccurrenceRow",
     "RowEmphasis",
-    "SLOT_MINUTES",
     "ViewKind",
     "agenda_mode_window",
     "agenda_rows",
@@ -999,6 +1005,7 @@ __all__ = [
     "day_rows",
     "day_title",
     "day_window",
+    "event_detail_fields",
     "format_day",
     "format_duration",
     "format_event_row",
@@ -1022,7 +1029,6 @@ __all__ = [
     "month_title",
     "month_window",
     "relative_day_name",
-    "render_event_detail",
     "search_components",
     "step_viewed",
     "timed_day_minutes",

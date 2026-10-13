@@ -328,8 +328,10 @@ class MirrorFolderTest(unittest.TestCase):
             with mock.patch.object(MaildirMirrorRepository, "get_message_bytes", _boom):
                 output, rc = run_cli_capture(*self._mirror_args(config_path))
         self.assertEqual(rc, 0)
-        self.assertIn("Warning: skipping", output)
-        self.assertIn("Skipped 1 message", output)
+        # The action's own wording: a message whose bytes cannot be
+        # read is a failure notice and the rest of the folder still
+        # copies, which is what the TUI's `c` reports too.
+        self.assertIn("Could not read source message", output)
 
     def test_delete_failure_during_overwrite_is_logged(self) -> None:
         from pony.storage import MaildirMirrorRepository

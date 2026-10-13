@@ -255,3 +255,18 @@ def test_a_marked_contact_says_so_as_data() -> None:
     assert row.marked is True
     assert row.mark == MARKED_MARK
     assert row.emails == ""
+
+
+def test_the_correspondent_column_is_named_once() -> None:
+    """ "To" in a folder of sent mail, "From" everywhere else.
+
+    Both front ends labelled the column themselves -- one in a padded
+    header string, the other in a `columns(...)` call -- so the word
+    could have come out different in one of them.  Which folders show
+    the recipient is `folder_utils.shows_recipient`; what the column is
+    called is this.
+    """
+    from pony.views import correspondent_label
+
+    assert correspondent_label(shows_recipient=True) == "To"
+    assert correspondent_label(shows_recipient=False) == "From"

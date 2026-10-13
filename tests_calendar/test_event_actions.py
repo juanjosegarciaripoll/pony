@@ -13,7 +13,7 @@ import re
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from chronos.domain import (
@@ -365,3 +365,67 @@ class EventActionsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewEventDefaultsTest(unittest.TestCase):
+    """What a blank event form starts with, decided once.
+
+    The agenda's screen and the browser's blank form each chose the
+    duration and the calendar: an hour written out twice, and
+    "the calendar in view, or the first one" asked twice.
+    """
+
+    def _refs(self) -> tuple[CalendarRef, ...]:
+        return (CalendarRef("personal", "work"), CalendarRef("personal", "home"))
+
+    def test_the_span_is_the_default_start_plus_the_default_duration(self) -> None:
+        from chronos.event_actions import (
+            DEFAULT_EVENT_DURATION,
+            default_event_start,
+            new_event_defaults,
+        )
+
+        day = date(2026, 5, 20)
+        now = datetime(2026, 5, 19, 11, 17, tzinfo=UTC)
+        defaults = new_event_defaults(self._refs(), day=day, now=now)
+
+        assert defaults is not None
+        self.assertEqual(defaults.dtstart, default_event_start(day, now))
+        self.assertEqual(defaults.dtend - defaults.dtstart, DEFAULT_EVENT_DURATION)
+
+    def test_the_calendar_in_view_is_the_one_it_goes_in(self) -> None:
+        from chronos.event_actions import new_event_defaults
+
+        refs = self._refs()
+        defaults = new_event_defaults(
+            refs,
+            day=date(2026, 5, 20),
+            now=datetime(2026, 5, 19, 11, 17, tzinfo=UTC),
+            preferred=refs[1],
+        )
+
+        assert defaults is not None
+        self.assertEqual(defaults.calendar, refs[1])
+
+    def test_a_calendar_not_in_view_falls_back_to_the_first(self) -> None:
+        from chronos.event_actions import new_event_defaults
+
+        refs = self._refs()
+        defaults = new_event_defaults(
+            refs,
+            day=date(2026, 5, 20),
+            now=datetime(2026, 5, 19, 11, 17, tzinfo=UTC),
+            preferred=CalendarRef("other", "shared"),
+        )
+
+        assert defaults is not None
+        self.assertEqual(defaults.calendar, refs[0])
+
+    def test_no_calendars_means_no_defaults(self) -> None:
+        from chronos.event_actions import new_event_defaults
+
+        self.assertIsNone(
+            new_event_defaults(
+                (), day=date(2026, 5, 20), now=datetime(2026, 5, 19, tzinfo=UTC)
+            )
+        )

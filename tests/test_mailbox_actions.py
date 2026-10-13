@@ -12,6 +12,7 @@ SQLite and real maildirs.
 from __future__ import annotations
 
 import dataclasses
+import unittest
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -35,6 +36,7 @@ from pony.domain import (
     IndexedMessage,
     LocalAccountConfig,
     MessageFlag,
+    MessageRef,
     MessageStatus,
     MirrorConfig,
 )
@@ -684,3 +686,146 @@ def test_check_move_policy_ignores_accounts_with_no_server() -> None:
 
     assert mailbox_actions.check_move_policy(config, source, target) is None
     assert mailboxes.mirror("local") is not None
+
+
+class PlanDedupTest(unittest.TestCase):
+    """Which rows are duplicates, and which copy survives.
+
+    The grouping and the ranking lived inside `pony folder dedup`, so
+    nothing but that command could offer deduplication and nothing but
+    that command's own test could check the rule.  Same shape as
+    `contact_actions.plan_merge`, for the same reason.
+    """
+
+    def _row(
+        self,
+        row_id: int,
+        *,
+        message_id: str = "<dup@example.com>",
+        uid: int | None = 1,
+        flags: frozenset[MessageFlag] = frozenset(),
+        status: MessageStatus = MessageStatus.ACTIVE,
+        received: int = 10,
+    ) -> IndexedMessage:
+        return IndexedMessage(
+            message_ref=MessageRef(
+                account_name="personal", folder_name="INBOX", id=row_id
+            ),
+            message_id=message_id,
+            sender="alice@example.com",
+            recipients="bob@example.com",
+            cc="",
+            subject="Duplicate",
+            body_preview="",
+            storage_key=f"key-{row_id}",
+            local_flags=flags,
+            base_flags=flags,
+            local_status=status,
+            received_at=datetime(2026, 4, received, 9, 0, tzinfo=UTC),
+            has_attachments=False,
+            uid=uid,
+        )
+
+    def test_the_copy_carrying_the_most_information_is_kept(self) -> None:
+        from pony.mailbox_actions import plan_dedup
+
+        bare = self._row(1)
+        informed = self._row(
+            2, flags=frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED})
+        )
+
+        (group,) = plan_dedup([bare, informed])
+
+        self.assertEqual(group.message_id, "<dup@example.com>")
+        self.assertEqual(group.keep, informed)
+        self.assertEqual(group.trash, (bare,))
+
+    def test_among_equals_the_oldest_row_is_kept(self) -> None:
+        from pony.mailbox_actions import plan_dedup
+
+        first = self._row(1)
+        second = self._row(2)
+
+        (group,) = plan_dedup([second, first])
+
+        self.assertEqual(group.keep, first)
+
+    def test_rows_the_server_has_not_seen_are_not_duplicates(self) -> None:
+        """A row with no UID is a local draft; one in flux is in flux."""
+        from pony.mailbox_actions import plan_dedup
+
+        self.assertEqual(plan_dedup([self._row(1), self._row(2, uid=None)]), ())
+        self.assertEqual(
+            plan_dedup([self._row(1), self._row(2, status=MessageStatus.PENDING_MOVE)]),
+            (),
+        )
+        self.assertEqual(
+            plan_dedup([self._row(1, message_id=""), self._row(2, message_id="")]), ()
+        )
+
+    def test_groups_come_back_in_a_stable_order(self) -> None:
+        from pony.mailbox_actions import plan_dedup
+
+        rows = [
+            self._row(1, message_id="<b@example.com>"),
+            self._row(2, message_id="<b@example.com>"),
+            self._row(3, message_id="<a@example.com>"),
+            self._row(4, message_id="<a@example.com>"),
+        ]
+
+        self.assertEqual(
+            [group.message_id for group in plan_dedup(rows)],
+            ["<a@example.com>", "<b@example.com>"],
+        )
+
+
+class CopyFlushesTheTargetMirrorTest(unittest.TestCase):
+    """Copying releases the target mirror's handles before it returns.
+
+    `flush_mirror`'s rule is that every path which mutates a mirror and
+    then hands control back to the user calls it, and copying did not.
+    The bytes are not at risk -- an mbox `store_message` flushes as it
+    appends -- but the handle stays open, and on Windows no other
+    repository can replace a file this one still holds.
+    """
+
+    def test_a_copy_into_an_mbox_leaves_no_handle_open(self) -> None:
+        from pony.mailbox_actions import copy_messages
+        from pony.storage import MboxMirrorRepository
+
+        paths = make_tmp_paths("copy-flush")
+        mirror_dir = paths.data_dir / "mirrors" / "local"
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        account = dataclasses.replace(
+            _local_account(paths),
+            mirror=MirrorConfig(path=mirror_dir, format="mbox"),
+        )
+        config = make_test_config(accounts=(account,))
+        index = make_index(paths)
+        mirrors = make_mirrors(config)
+        inbox = FolderRef(account_name="local", folder_name="INBOX")
+        target = FolderRef(account_name="local", folder_name="Archive")
+        seed_message(
+            index=index,
+            mirror=mirrors["local"],
+            folder=inbox,
+            raw=plain_text(),
+        )
+        mirrors["local"].create_folder(account_name="local", folder_name="Archive")
+        rows = index.list_folder_messages(folder=inbox)
+
+        outcome = copy_messages(
+            Mailboxes(config=config, index=index, mirrors=mirrors),
+            rows,
+            inbox,
+            target,
+        )
+        self.assertEqual(outcome.changed, 1)
+
+        # A second repository over the same tree, as another process
+        # would be: the message is there, and nothing is holding it.
+        fresh = MboxMirrorRepository(account_name="local", root_dir=mirror_dir)
+        self.assertEqual(len(fresh.list_messages(folder=target)), 1)
+        written = mirrors["local"]
+        assert isinstance(written, MboxMirrorRepository)
+        self.assertEqual(written._open_handles, {})  # noqa: SLF001

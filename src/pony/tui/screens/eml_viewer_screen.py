@@ -11,10 +11,10 @@ from textual.screen import Screen
 
 from ...domain import ViewerRule
 from ...handoff import handoff_path
+from ...message_export import viewer_command
 from ...message_renderer import extract_attachment
 from ..terminal import (
     launch_file,
-    resolve_viewer_command,
     suspend_for_external_program,
 )
 from ..widgets.message_view import MessageViewPanel
@@ -202,7 +202,7 @@ class EmlViewerScreen(Screen[None]):
                     with suspend_for_external_program(self.app):
                         launch_file(
                             path,
-                            resolve_viewer_command(self._viewers, payload.content_type),
+                            viewer_command(self._viewers, payload.content_type),
                         )
                 except OSError as exc:
                     self.app.notify(  # pyright: ignore[reportUnknownMemberType]

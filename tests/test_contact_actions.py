@@ -10,6 +10,7 @@ another way in the next.  It lives in :mod:`pony.contact_actions` and
 from __future__ import annotations
 
 import dataclasses
+import unittest
 from email.message import EmailMessage
 from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
@@ -442,10 +443,18 @@ def test_one_function_answers_what_an_account_sends_with() -> None:
     import inspect
 
     from pony import invitation_actions, tui
+    from pony.web import calendar as web_calendar
 
-    for module in (invitation_actions, tui.app):
+    # `invitation_actions` is the one that asks, through
+    # `sender_for_invitation`; the two front ends ask it rather than
+    # resolving a password and wording a refusal each.
+    source = inspect.getsource(invitation_actions)
+    assert "resolve_send_password" in source
+    assert "resolve_smtp_password" not in source
+    for module in (tui.app, web_calendar):
         source = inspect.getsource(module)
-        assert "resolve_send_password" in source, module.__name__
+        assert "sender_for_invitation" in source, module.__name__
+        assert "resolve_send_password" not in source, module.__name__
         assert "resolve_smtp_password" not in source, module.__name__
 
 
@@ -1093,3 +1102,69 @@ def test_record_sent_files_into_a_localised_sent_folder() -> None:
         ),
     )
     assert len(filed) == 1
+
+
+class ImportContactsTest(unittest.TestCase):
+    """An address book import, with no command around it.
+
+    The matching rule, the merge policy and what to say about a record
+    an import cannot arbitrate were written inside
+    `pony.cli.import_bbdb_contacts`, which also printed mid-loop -- so
+    nothing but that command could import contacts, and a skipped
+    record went to stdout rather than to whoever asked.
+    """
+
+    def test_a_record_whose_address_a_third_contact_holds_is_a_notice(self) -> None:
+        from pony.contact_actions import import_contacts
+
+        repo = _contacts("import-conflict")
+        repo.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name="Alice",
+                last_name="Smith",
+                emails=("shared@example.com",),
+            )
+        )
+        repo.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name="Bob",
+                last_name="Jones",
+                emails=("bob@example.com",),
+            )
+        )
+
+        # A record matching Bob by address but also claiming Alice's.
+        tally, outcome = import_contacts(
+            repo,
+            [
+                Contact(
+                    id=None,
+                    first_name="Bob",
+                    last_name="Jones",
+                    emails=("bob@example.com", "shared@example.com"),
+                )
+            ],
+        )
+
+        self.assertEqual(tally.skipped, 1)
+        self.assertEqual(tally.created + tally.updated, 0)
+        self.assertEqual([notice.severity for notice in outcome.notices], ["warning"])
+        self.assertIn("Skipped", outcome.notices[0].text)
+
+    def test_an_address_less_record_merges_on_re_import(self) -> None:
+        from pony.contact_actions import import_contacts
+
+        repo = _contacts("import-addressless")
+        record = Contact(id=None, first_name="Phone", last_name="Only", emails=())
+
+        first, _ = import_contacts(repo, [record])
+        second, _ = import_contacts(repo, [record])
+
+        self.assertEqual((first.created, first.updated), (1, 0))
+        self.assertEqual(
+            (second.created, second.updated),
+            (0, 1),
+            "a re-import made a second copy of a record with no address",
+        )

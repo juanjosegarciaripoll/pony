@@ -812,13 +812,18 @@ def _first_calendar(services: WebServices, request: Request) -> str:
     The first one in view, as it is in the terminal: creating an event
     while looking at one calendar files it there.
     """
+    from chronos.event_actions import new_event_defaults
+
     refs = calendar_view.calendar_targets(services)
-    view = calendar_view.read_view(
-        _multi(request),
-        today=datetime.now(UTC).astimezone().date(),
+    today = datetime.now(UTC).astimezone().date()
+    view = calendar_view.read_view(_multi(request), today=today)
+    defaults = new_event_defaults(
+        refs,
+        day=today,
+        now=datetime.now(UTC),
+        preferred=view.selection.first_of(refs),
     )
-    chosen = view.selection.first_of(refs)
-    return "" if chosen is None else calendar_value(chosen)
+    return "" if defaults is None else calendar_value(defaults.calendar)
 
 
 # ----------------------------------------------------------------------

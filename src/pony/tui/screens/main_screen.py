@@ -50,8 +50,9 @@ from ...mailbox_actions import Mailboxes
 from ...message_export import (
     WHOLE_MESSAGE,
     PartKey,
+    downloads_dir,
     part_key,
-    part_payload,
+    parts_to_open,
     save_parts,
 )
 from ...message_renderer import (
@@ -59,7 +60,6 @@ from ...message_renderer import (
     render_message,
     save_every_attachment,
     save_one_attachment,
-    unique_destination,
 )
 from ...notifications import NotificationCenter
 from ...protocols import (
@@ -83,7 +83,6 @@ from ..bindings import to_textual
 from ..terminal import (
     format_terminal_title,
     launch_file,
-    resolve_viewer_command,
     set_terminal_title,
     suspend_for_external_program,
 )
@@ -1856,56 +1855,38 @@ class MainScreen(Screen[None]):
         self._open_indices_from(raw, indices)
 
     def _open_indices_from(self, raw: bytes, indices: list[PartKey]) -> None:
-        """Open the chosen parts, each in whatever can show it.
+        """Launch each chosen part in whatever `parts_to_open` says shows it.
 
-        Part 0 and an attached message are the same kind of thing -- a
-        message -- and both go to the reader's own viewer rather than to
-        whatever the desktop would hand an ``.eml`` to.  Everything else
-        is written next to the attachments and launched.
+        The decisions -- where the bytes go, which viewer a content type
+        gets, that a message goes to the reader's own viewer rather than
+        to whatever the desktop opens an ``.eml`` with -- are
+        `message_export`'s.  What is left here is the launching, which
+        is this front end's alone: an external viewer writes to the same
+        terminal, so it runs inside Textual's suspend context.
         """
         from .eml_viewer_screen import EmlViewerScreen
 
-        rendered = render_message(raw)
         dest = self._downloads_dir()
-        dest.mkdir(parents=True, exist_ok=True)
-        missing: list[PartKey] = []
-        viewers = self._config.viewers
-        for idx in indices:
-            payload = part_payload(rendered, idx)
-            if payload is None:
-                missing.append(idx)
-                continue
-            if payload.content_type == "message/rfc822":
+        parts, outcome = parts_to_open(
+            render_message(raw), indices, dest, viewers=self._config.viewers
+        )
+        self._report(outcome)
+        for part in parts:
+            if part.path is None:
                 self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                    EmlViewerScreen(payload.data, dest, viewers=viewers)
-                )
-                continue
-            command = resolve_viewer_command(viewers, payload.content_type)
-            try:
-                out = unique_destination(dest, payload.filename)
-                out.write_bytes(payload.data)
-            except OSError as exc:
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Could not save part {idx}: {exc}",
-                    severity="error",
+                    EmlViewerScreen(part.data, dest, viewers=self._config.viewers)
                 )
                 continue
             try:
                 # The default viewer may run in this terminal and alter
                 # input modes.  Textual's suspend context restores them.
                 with suspend_for_external_program(self.app):
-                    launch_file(out, command)
+                    launch_file(part.path, part.command)
             except OSError as exc:
                 self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Could not open {out.name}: {exc}",
+                    f"Could not open {part.path.name}: {exc}",
                     severity="error",
                 )
-        if missing:
-            absent = ", ".join(str(i) for i in missing)
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"No part {absent} on this message.",
-                severity="warning",
-            )
 
     def action_save_message(self) -> None:
         """Save the message as it arrived: part 0, the whole ``.eml``.
@@ -1966,7 +1947,7 @@ class MainScreen(Screen[None]):
         self._save_indices_from(raw, [key])
 
     def _downloads_dir(self) -> Path:
-        return self._config.downloads_path or Path.home() / "Downloads"
+        return downloads_dir(self._config.downloads_path)
 
     # ------------------------------------------------------------------
     # Contacts

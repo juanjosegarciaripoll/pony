@@ -197,6 +197,17 @@ def message_row(
     )
 
 
+def correspondent_label(*, shows_recipient: bool) -> str:
+    """What the sender/recipient column is called.
+
+    "To" in a folder of mail the user sent, "From" everywhere else --
+    which `folder_utils.shows_recipient` decides.  Both front ends
+    wrote the word out, so the column could have come out named
+    differently in one of them.
+    """
+    return "To" if shows_recipient else "From"
+
+
 def status_mark(summary: FolderMessageSummary) -> str:
     """Status marker: flagged, then answered, then has-attachments."""
     if MessageFlag.FLAGGED in summary.local_flags:
@@ -307,6 +318,7 @@ __all__ = [
     "MessageRow",
     "build_folder_tree",
     "contact_row",
+    "correspondent_label",
     "format_received",
     "has_inbox_mail",
     "message_row",

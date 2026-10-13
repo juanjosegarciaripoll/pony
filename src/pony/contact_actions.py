@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from email.utils import getaddresses
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, Outcome, info, warn
+from chronos.outcome import Notice, NoticeLog, Outcome, info, warn
 
 from .contact_naming import harvested_name
 from .domain import Contact, IndexedMessage
@@ -309,6 +309,77 @@ def save_contact(
     return saved, Outcome(changed=1, notices=(info(f"Saved {label_for(saved)}."),))
 
 
+@dataclass(frozen=True, slots=True)
+class ImportTally:
+    """How an import went, record by record."""
+
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+
+
+def import_contacts(
+    contacts: ContactRepository,
+    incoming: Sequence[Contact],
+) -> tuple[ImportTally, Outcome]:
+    """Add *incoming* to the address book, merging with what is there.
+
+    The matching rule: a record merges into the existing contact that
+    shares one of its addresses.  A record with no address at all has
+    nothing to match on, so it falls back to the name -- and only
+    against contacts that have no address either, because a namesake
+    who does have mail must not be merged into.  Without that fallback
+    every re-import made another copy of every address-less record, and
+    the importer re-runs whenever the file is newer.
+
+    The merge itself is `contact_merge.merged_contact`, the same policy
+    the contact browser's merge key uses.  A record whose address a
+    third contact already holds is skipped, because an import cannot
+    arbitrate who owns an address; it comes back as a notice rather
+    than a line printed mid-loop, which is what made this
+    unusable from anywhere but a command.
+    """
+    from .contact_merge import merged_contact
+    from .index_store import ContactEmailConflictError
+
+    log = NoticeLog()
+    created = 0
+    updated = 0
+    skipped = 0
+    with contacts.connection():
+        for contact in incoming:
+            existing = _import_match(contacts, contact)
+            try:
+                if existing is not None:
+                    contacts.upsert_contact(contact=merged_contact(existing, contact))
+                    updated += 1
+                else:
+                    contacts.upsert_contact(contact=contact)
+                    created += 1
+            except ContactEmailConflictError as exc:
+                log.warn(f"Skipped {label_for(contact)}: {exc}")
+                skipped += 1
+    tally = ImportTally(created=created, updated=updated, skipped=skipped)
+    return tally, log.outcome(created + updated)
+
+
+def _import_match(contacts: ContactRepository, contact: Contact) -> Contact | None:
+    """The existing record *contact* should merge into, if any."""
+    for email in contact.emails:
+        found = contacts.find_contact_by_email(email_address=email)
+        if found is not None:
+            return found
+    if contact.emails:
+        return None
+    # Asking the index rather than reading the whole address book per
+    # record is what keeps the import from being quadratic in the size
+    # of the book.
+    return contacts.find_address_less_contact_by_name(
+        first_name=contact.first_name,
+        last_name=contact.last_name,
+    )
+
+
 def label_for(contact: Contact) -> str:
     """What to call *contact* in a notice or a prompt."""
     return contact.display_name or (
@@ -334,11 +405,13 @@ def summarize(labels: Sequence[str], *, prefix: str = "  - ") -> str:
 __all__ = [
     "MAX_NAMED",
     "ContactEdit",
+    "ImportTally",
     "MergePlan",
     "contact_for_address",
     "delete_contacts",
     "harvest_addresses",
     "harvest_folder",
+    "import_contacts",
     "label_for",
     "list_contacts",
     "looks_like_address",

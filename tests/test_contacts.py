@@ -741,13 +741,11 @@ class ContactsCliTests(unittest.TestCase):
             bbdb_file,
         )
 
-        created, updated, skipped = import_bbdb_contacts(
+        tally, _outcome = import_bbdb_contacts(
             index=repo,
             bbdb_path=bbdb_file,
         )
-        self.assertEqual(created, 0)
-        self.assertEqual(updated, 1)
-        self.assertEqual(skipped, 0)
+        self.assertEqual((tally.created, tally.updated, tally.skipped), (0, 1, 0))
 
         found = repo.find_contact_by_email(email_address="alice@work.com")
         self.assertIsNotNone(found)
@@ -1565,17 +1563,16 @@ class ContactLookupCostTests(unittest.TestCase):
             bbdb_file,
         )
 
-        created, updated, skipped = import_bbdb_contacts(
-            index=self.repo, bbdb_path=bbdb_file
-        )
+        tally, _outcome = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
 
-        self.assertEqual((created, updated, skipped), (5, 0, 0))
+        self.assertEqual((tally.created, tally.updated, tally.skipped), (5, 0, 0))
         self.assertEqual(
             self.calls, 0, "read the whole address book once per imported record"
         )
 
     def test_re_importing_the_same_address_less_record_still_merges(self) -> None:
         from pony.cli import import_bbdb_contacts
+        from pony.contact_actions import ImportTally
 
         tmp = TMP_ROOT / "contacts" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1585,11 +1582,13 @@ class ContactLookupCostTests(unittest.TestCase):
             bbdb_file,
         )
 
-        first = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
-        second = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
+        first, _ = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
+        second, _ = import_bbdb_contacts(index=self.repo, bbdb_path=bbdb_file)
 
-        self.assertEqual(first, (1, 0, 0))
-        self.assertEqual(second, (0, 1, 0), "a re-import duplicated the record")
+        self.assertEqual(ImportTally(created=1), first)
+        self.assertEqual(
+            ImportTally(updated=1), second, "a re-import duplicated the record"
+        )
 
     def test_a_book_longer_than_one_statement_s_parameters(self) -> None:
         """`list_all_contacts` passes every id, and SQLite caps them.

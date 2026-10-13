@@ -14,10 +14,13 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
+from chronos.keymap import key_for
+
 from ...authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
 from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
+from ...keymap import MAIL_KEYMAP
 from ...message_export import message_parts
 from ...message_renderer import (
     RenderedMessage,
@@ -374,8 +377,13 @@ def _invitation_lines(invitation: Invitation) -> list[str]:
     """
     lines = [f"[bold]{_escape(invitation.describe()[0])}[/bold]"]
     lines += [f"  {_escape(line)}" for line in invitation.describe()[1:]]
-    if invitation.is_request:
-        lines.append("  [dim]i — accept, decline or add to the calendar[/dim]")
-    elif invitation.is_cancellation:
-        lines.append("  [dim]i — remove it from the calendar[/dim]")
+    # The key comes from the table rather than from this sentence: the
+    # letter was typed in here, so moving `respond_invitation` would
+    # have left the block telling the user to press a key that does
+    # nothing -- which is what happened to the composer's cheatsheet.
+    key = key_for(MAIL_KEYMAP, "respond_invitation")
+    if key and invitation.is_request:
+        lines.append(f"  [dim]{key} — accept, decline or add to the calendar[/dim]")
+    elif key and invitation.is_cancellation:
+        lines.append(f"  [dim]{key} — remove it from the calendar[/dim]")
     return lines

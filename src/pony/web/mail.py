@@ -31,7 +31,13 @@ from ..invitation import CALENDAR_CONTENT_TYPES
 from ..mailbox_actions import folder_unread_counts
 from ..message_export import message_parts
 from ..message_renderer import fmt_size, parse_styled_body, render_message
-from ..views import ROW_BATCH, build_folder_tree, message_row, summary_of
+from ..views import (
+    ROW_BATCH,
+    build_folder_tree,
+    correspondent_label,
+    message_row,
+    summary_of,
+)
 from . import urls
 from .actions import (
     Action,
@@ -317,7 +323,7 @@ def list_pane(
             columns(
                 ("mark", ""),
                 ("date", "Date"),
-                ("who", "To" if show_recipients else "From"),
+                ("who", correspondent_label(shows_recipient=show_recipients)),
                 ("subject", "Subject"),
             ),
             element(

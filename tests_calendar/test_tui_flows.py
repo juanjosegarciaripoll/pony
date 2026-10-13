@@ -69,6 +69,7 @@ from chronos.views import (
     all_calendar_refs,
     day_title,
     day_window,
+    event_detail_fields,
     format_duration,
     format_event_row,
     format_friendly_start,
@@ -79,7 +80,6 @@ from chronos.views import (
     in_progress_keys,
     is_in_progress,
     month_window,
-    render_event_detail,
     search_components,
     week_window,
 )
@@ -787,7 +787,7 @@ class SearchAndDetailTest(unittest.TestCase):
             synced_at=None,
         )
         today = date(2026, 4, 25)
-        text = render_event_detail(event, today)
+        text = _detail_text(event, today)
         self.assertIn("Summary: Standup", text)
         # New layout: "Source: <calendar> (<account>)" replaces the
         # old "Account / Calendar:" line. The calendar comes first.
@@ -822,7 +822,7 @@ class SearchAndDetailTest(unittest.TestCase):
             trashed_at=None,
             synced_at=None,
         )
-        text = render_event_detail(event, date(2026, 4, 25))
+        text = _detail_text(event, date(2026, 4, 25))
         self.assertIn("Attendees: alice@example.com, bob@example.com", text)
 
     def test_render_event_detail_todo(self) -> None:
@@ -844,7 +844,7 @@ class SearchAndDetailTest(unittest.TestCase):
             trashed_at=None,
             synced_at=None,
         )
-        text = render_event_detail(todo, date(2026, 4, 25))
+        text = _detail_text(todo, date(2026, 4, 25))
         self.assertIn("Buy milk", text)
         self.assertIn("Due: ", text)
         self.assertIn("Start: ", text)
@@ -854,7 +854,7 @@ class SearchAndDetailTest(unittest.TestCase):
     def test_render_event_detail_minimal(self) -> None:
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-3")
         event = _empty_event(ref)
-        text = render_event_detail(event, date(2026, 4, 25))
+        text = _detail_text(event, date(2026, 4, 25))
         self.assertIn("(no summary)", text)
         self.assertIn(WORK_CAL, text)
         # The Location and Notes slots are always present, even when
@@ -868,7 +868,7 @@ class SearchAndDetailTest(unittest.TestCase):
     def test_render_event_detail_aligns_labels(self) -> None:
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "uid-x")
         event = _empty_event(ref)
-        text = render_event_detail(event, date(2026, 4, 25))
+        text = _detail_text(event, date(2026, 4, 25))
         # Right-aligned labels mean every grid line's colon sits at
         # the same column. Pick the column from the "Location:" line
         # (the longest label) and assert each grid line carries a
@@ -882,6 +882,18 @@ class SearchAndDetailTest(unittest.TestCase):
                 ln for ln in text.splitlines() if ln.lstrip().startswith(label + ":")
             )
             self.assertEqual(line[colon_col], ":", line)
+
+
+def _detail_text(component: StoredComponent, today: date) -> str:
+    """The detail fields as the detail pane draws them.
+
+    `event_detail_fields` hands back the fields; padding them to the
+    widest label and joining them with newlines is the widget's, which
+    is the point of the split.
+    """
+    from chronos.tui.widgets.event_view import render_fields
+
+    return render_fields(event_detail_fields(component, today))
 
 
 class DatePickerTest(unittest.TestCase):
@@ -1222,7 +1234,11 @@ class StartupFocusTest(TuiFlowTestCase):
         # focus by default, so the user had to tab out of it before
         # arrow keys did anything useful.
         # The persisted view determines which widget gets initial focus:
-        # EventList for AGENDA, TimelineGrid for Day / Grid.
+        # EventList for AGENDA, TimelineGrid for Day / Grid.  This used
+        # to assert that one of the two had it, because every test
+        # inherited whichever view the previous one left in `tui_state`
+        # -- the calendar's root is per-test now, so a fresh session
+        # opens on AGENDA and the answer is exactly one widget.
         services = self.services()
         app = ChronosApp(services)
         async with app.run_test() as pilot:
@@ -1232,13 +1248,11 @@ class StartupFocusTest(TuiFlowTestCase):
             assert isinstance(screen, MainScreen)
             from chronos.tui.widgets.timeline_grid import TimelineGrid
 
-            event_list = screen.query_one(EventList)
-            timeline = screen.query_one(TimelineGrid)
-            # Exactly one of the two primary widgets must hold focus.
             self.assertTrue(
-                event_list.has_focus or timeline.has_focus,
-                "neither EventList nor TimelineGrid has focus on startup",
+                screen.query_one(EventList).has_focus,
+                "a fresh session opens on the agenda, with its list focused",
             )
+            self.assertFalse(screen.query_one(TimelineGrid).has_focus)
 
 
 class DetailPaneTracksCursorTest(TuiFlowTestCase):
@@ -1287,7 +1301,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
             # cursor.
             self.assertEqual(
                 str(event_view.content),
-                render_event_detail(second_component, NOW.date()),
+                _detail_text(second_component, NOW.date()),
             )
 
     def _seed_long_event(self, services: TuiServices) -> StoredComponent:
@@ -3094,7 +3108,6 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(reminders_text(alarms), "")
 
     def test_render_event_detail_shows_reminders(self) -> None:
-        from chronos.views import render_event_detail
         from tests_calendar import corpus
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "alarm-display-1@example.com")
@@ -3115,12 +3128,11 @@ class AlarmHelperTest(unittest.TestCase):
             trashed_at=None,
             synced_at=None,
         )
-        detail = render_event_detail(component, date(2026, 5, 1))
+        detail = _detail_text(component, date(2026, 5, 1))
         self.assertIn("Reminders", detail)
         self.assertIn("15 min before start", detail)
 
     def test_render_event_detail_no_reminders_field_when_none(self) -> None:
-        from chronos.views import render_event_detail
         from tests_calendar import corpus
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
@@ -3141,7 +3153,7 @@ class AlarmHelperTest(unittest.TestCase):
             trashed_at=None,
             synced_at=None,
         )
-        detail = render_event_detail(component, date(2026, 5, 1))
+        detail = _detail_text(component, date(2026, 5, 1))
         self.assertNotIn("Reminders", detail)
 
 

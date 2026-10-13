@@ -974,3 +974,41 @@ async def test_a_marked_multi_row_action_keeps_the_cursor_on_its_message() -> No
         # Same message, two rows further up now that the marks are gone.
         assert after.message_ref.id == before.message_ref.id
         assert panel.effective_cursor_row == before_row - 2
+
+
+async def test_search_results_keep_the_order_they_arrive_in() -> None:
+    """The store's ``ORDER BY`` is the order, and the only one.
+
+    The panel sorted the hits by date itself -- a second definition of
+    "newest first", which would quietly undo any other order a caller
+    asked for and which nothing but reading both could keep in step.
+    """
+    from email.message import EmailMessage
+
+    def _on(day: int) -> bytes:
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"subject {day}"
+        msg["Date"] = f"Fri, {day} Apr 2026 12:00:00 +0000"
+        msg["Message-ID"] = f"<day-{day}@example.com>"
+        msg.set_content("body")
+        return msg.as_bytes()
+
+    app, _cfg, _paths, index, _mirrors = build_pony_app(
+        label="mlist-search-order",
+        seed=[(_INBOX, _on(day)) for day in (17, 18, 19)],
+    )
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        hits = list(index.list_folder_messages(folder=_INBOX))
+        # Deliberately not newest-first: whatever the caller hands over.
+        reordered = sorted(hits, key=lambda m: m.received_at)
+        panel.load_search_results(reordered, "subject")
+        await pilot.pause()
+
+        assert [s.message_ref.id for s in panel._summaries] == [  # noqa: SLF001
+            m.message_ref.id for m in reordered
+        ]

@@ -868,13 +868,23 @@ class EventForm:
 
     @staticmethod
     def blank(*, target: str, day: date) -> EventForm:
-        from chronos.event_actions import default_event_start
+        """A new event's form, with the calendar's own defaults in it.
+
+        The hour and the chosen calendar are
+        `event_actions.new_event_defaults`': the target arrives already
+        chosen because the route knows which calendars are in view, and
+        the span comes from the same function the agenda's screen uses.
+        """
+        from chronos.event_actions import (
+            DEFAULT_EVENT_DURATION,
+            default_event_start,
+        )
 
         start = default_event_start(day, datetime.now(UTC))
         return EventForm(
             target=target,
             starts=_local_field(start),
-            ends=_local_field(start + timedelta(hours=1)),
+            ends=_local_field(start + DEFAULT_EVENT_DURATION),
         )
 
 
@@ -1137,20 +1147,17 @@ def _announce(
     the save, which would invite the user to try again and write it
     twice.
     """
-    from ..delivery import resolve_send_password
-    from ..invitation_actions import replying_account, send_event_invitations
+    from ..invitation_actions import send_event_invitations, sender_for_invitation
 
     def plus(notice: Notice) -> Outcome:
         return dataclasses.replace(
             saved.outcome, notices=(*saved.outcome.notices, notice)
         )
 
-    account = replying_account(services.config, arrived_on=None)
-    if isinstance(account, Notice):
-        return plus(warn(f"Event saved, but no invitation was sent: {account.text}"))
-    password = resolve_send_password(services.credentials, account)
-    if isinstance(password, Notice):
-        return plus(warn(f"Event saved, but no invitation was sent: {password.text}"))
+    ready = sender_for_invitation(services.config, services.credentials)
+    if isinstance(ready, Notice):
+        return plus(ready)
+    account, password = ready
     delivery = send_event_invitations(
         ics=saved.ics,
         attendees=tuple(attendees),

@@ -22,6 +22,7 @@ from tui_helpers import (
 )
 
 from chronos.domain import CalendarRef
+from chronos.outcome import Notice
 from pony.domain import Contact
 from pony.invitation_actions import _with_method, send_event_invitations
 from pony.tui.calendar_host import contact_completer
@@ -382,3 +383,69 @@ class SendingIsReachableWithoutATerminalTest(unittest.TestCase):
         import pony.tui.app as app
 
         self.assertIs(app.send_event_invitations, actions.send_event_invitations)
+
+
+def _sendable_account() -> Any:
+    return make_test_account(make_tmp_paths("invite-sender"))
+
+
+def _config_with(*accounts: Any) -> Any:
+    from tui_helpers import make_test_config
+
+    return make_test_config(accounts=accounts)
+
+
+class SenderForInvitationTest(unittest.TestCase):
+    """One answer to "who posts this invitation, and with what".
+
+    Both front ends post the same iTIP REQUEST after the same save, and
+    each asked the two questions and worded both refusals itself -- the
+    terminal said "no account is configured for sending invitations",
+    the browser "no invitation was sent: No account configured for
+    sending".  Every refusal has to be about the invitation and not
+    about the save: the event is already on the server, and a sentence
+    that sounds like a failed save invites the user to write it twice.
+    """
+
+    def test_an_account_and_its_password_come_back_together(self) -> None:
+        from pony.invitation_actions import sender_for_invitation
+
+        account = _sendable_account()
+        config = _config_with(account)
+        ready = sender_for_invitation(config, _FixedCredentials("s3cret"))
+
+        self.assertEqual(ready, (account, "s3cret"))
+
+    def test_no_sendable_account_is_a_saved_event_with_no_invitation(self) -> None:
+        from pony.invitation_actions import sender_for_invitation
+
+        config = _config_with()
+        ready = sender_for_invitation(config, _FixedCredentials("s3cret"))
+
+        assert isinstance(ready, Notice)
+        self.assertTrue(ready.text.startswith("Event saved, but no invitation"))
+        self.assertIn("No account configured for sending", ready.text)
+
+    def test_a_password_that_cannot_be_got_says_the_same_thing(self) -> None:
+        from pony.invitation_actions import sender_for_invitation
+
+        ready = sender_for_invitation(
+            _config_with(_sendable_account()), _FailingCredentials()
+        )
+
+        assert isinstance(ready, Notice)
+        self.assertTrue(ready.text.startswith("Event saved, but no invitation"))
+        self.assertEqual(ready.severity, "error")
+
+
+class _FixedCredentials:
+    def __init__(self, password: str) -> None:
+        self._password = password
+
+    def get_password(self, *, account_name: str) -> str:  # noqa: ARG002
+        return self._password
+
+
+class _FailingCredentials:
+    def get_password(self, *, account_name: str) -> str:
+        raise RuntimeError(f"locked keyring for {account_name}")

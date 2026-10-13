@@ -13,8 +13,6 @@ from textual.app import App, SuspendNotSupported
 
 from chronos.tui.terminal import osc777_notification
 
-from ..domain import ViewerRule
-
 MAIL_TITLE_PREFIX = "✉ "
 
 
@@ -23,24 +21,6 @@ def format_terminal_title(text: str, *, has_inbox_mail: bool = False) -> str:
     if has_inbox_mail:
         return f"{MAIL_TITLE_PREFIX}{text}"
     return text
-
-
-def resolve_viewer_command(
-    viewers: Sequence[ViewerRule], content_type: str | None
-) -> tuple[str, ...] | None:
-    """Return the configured argv for *content_type*, or ``None``.
-
-    Matching is exact on the lower-cased type, so a config entry for
-    ``text/calendar`` does not claim ``text/plain``.  ``None`` means the
-    caller should fall back to the OS default handler.
-    """
-    if not content_type:
-        return None
-    wanted = content_type.strip().lower()
-    for rule in viewers:
-        if rule.content_type == wanted:
-            return rule.command
-    return None
 
 
 def launch_file(path: Path, command: Sequence[str] | None = None) -> None:

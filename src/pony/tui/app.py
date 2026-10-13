@@ -24,9 +24,8 @@ from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
 from ..calendar import CalendarRuntime
 from ..composer import DraftSpec
-from ..delivery import resolve_send_password
 from ..domain import AnyAccount, AppConfig, ViewerRule
-from ..invitation_actions import send_event_invitations
+from ..invitation_actions import send_event_invitations, sender_for_invitation
 from ..keymap import APPLICATION_KEYS, KeyBinding, Surface
 from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import resolve
@@ -291,20 +290,15 @@ class PonyApp(QuitAsksTheScreen):
         reported as a failure to *post* the invitation, never as a lost
         event.
         """
-        account = next((a for a in self._config.accounts if a.can_send), None)
-        if account is None:
-            self.notify(
-                "Event saved, but no account is configured for sending invitations.",
-                severity="warning",
-            )
+        # Who sends it and with what is `invitation_actions`' answer,
+        # and so is every sentence about not being able to: the browser
+        # posts the same iTIP REQUEST after the same save, and both
+        # halves used to word these two refusals themselves.
+        ready = sender_for_invitation(self._config, self._credentials)
+        if isinstance(ready, Notice):
+            self.notify(ready.text, severity=ready.severity)
             return
-        # One answer to "what does this account send with", which words
-        # both refusals: this used to ask a second function with the
-        # arguments the other way round and then word them again here.
-        password = resolve_send_password(self._credentials, account)
-        if isinstance(password, Notice):
-            self.notify(password.text, severity=password.severity)
-            return
+        account, password = ready
         self._deliver_invitation(
             ics=ics,
             attendees=tuple(attendees),

@@ -280,11 +280,12 @@ Textual, calls `app.notify`, or touches a widget.
 
 | Module | Operations |
 |---|---|
-| `pony.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message |
+| `pony.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message, planning a deduplication |
 | `pony.delivery` | filing a draft or a sent copy, and sending: the password, the pre-send draft, SMTP, the Sent copy |
-| `pony.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge |
-| `pony.invitation_actions` | filing an invitation, answering its organizer |
-| `chronos.event_actions` | saving, rescheduling, trashing and importing an event |
+| `pony.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge, importing an address book |
+| `pony.invitation_actions` | filing an invitation, answering its organizer, inviting an event's attendees |
+| `pony.message_export` | the parts of a message, saved to disk or handed to a viewer |
+| `chronos.event_actions` | saving, rescheduling, trashing and importing an event, and what a blank form starts with |
 
 The *projections* are what a view is of: `pony.views` turns an indexed
 message into the four fields and the one state a list row shows, or a
@@ -316,6 +317,10 @@ for the same reason `chronos.scheduler` does: `pony` imports `chronos`,
 never the reverse, so anything both halves share has to sit there.
 Nothing in it knows about calendars, and `pony.notifications` takes its
 `Severity` from it rather than spelling the three levels out twice.
+`chronos.atomic` (replacing a file without leaving half of one),
+`chronos.alarms` (which reminders are due) and `chronos.tui.reporting`
+(an `Outcome` as toasts, and the hop onto the UI thread) are there for
+the same reason: both halves ask them.
 
 ### TUI (`pony.tui`)
 

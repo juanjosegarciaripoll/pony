@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .message_renderer import AttachmentInfo
 
 from chronos.atomic import write_atomically
+from chronos.outcome import Outcome
 from chronos.paths import activate as activate_calendar
 from chronos.paths import expand_path
 
@@ -30,7 +31,7 @@ from .accounts import (
 )
 from .browser_preview import close_preview
 from .config import ConfigError, load_config, read_raw_config
-from .contact_merge import merged_contact
+from .contact_actions import ImportTally, import_contacts
 from .credentials import build_credentials_provider, encrypt_password
 from .domain import (
     CONFIG_VERSION,
@@ -40,7 +41,6 @@ from .domain import (
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
-    MessageFlag,
     MessageRef,
     MessageStatus,
 )
@@ -48,12 +48,10 @@ from .fixture_flow import run_fixture_ingest
 from .handoff import activate as activate_handoff
 from .imap_client import ImapAuthError, ImapSession
 from .index_store import (
-    ContactEmailConflictError,
     SchemaMismatchError,
     SqliteIndexRepository,
     load_contacts_for_backup,
 )
-from .mailbox_ops import landed_in_folder
 from .paths import (
     PROFILE_STAMP,
     AppPaths,
@@ -1797,6 +1795,12 @@ def run_dedup_folder(
     """
     from datetime import UTC, datetime
 
+    # Which rows are duplicates and which copy survives are
+    # `mailbox_actions.plan_dedup`'s, as the trashing is
+    # `trash_messages`': what is left here is printing the plan and
+    # asking for `--apply`.
+    from .mailbox_actions import Mailboxes, plan_dedup, trash_messages
+
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -1806,63 +1810,30 @@ def run_dedup_folder(
         raise SystemExit(f"No account named {account!r} in config.")
 
     folder_ref = FolderRef(account_name=account, folder_name=folder)
-
-    def _sort_key(msg: IndexedMessage) -> tuple[int, int, int, datetime, int]:
-        useful = msg.local_flags - {MessageFlag.DELETED}
-        return (
-            -len(useful),
-            -int(MessageFlag.ANSWERED in useful),
-            -int(MessageFlag.FLAGGED in useful),
-            msg.received_at,
-            msg.message_ref.id,
-        )
-
     now = datetime.now(tz=UTC)
     with index.connection():
         # Read and write inside the same connection so the snapshot is
         # consistent: a concurrent sync cannot alter flags between the
         # read and the upsert.
-        messages = index.list_folder_messages(folder=folder_ref)
-
-        # Collect only ACTIVE rows that have a UID and a non-empty Message-ID.
-        # Rows without a UID are local-only drafts not yet pushed; TRASHED /
-        # PENDING_MOVE rows are already in flux.
-        groups: dict[str, list[IndexedMessage]] = {}
-        for msg in messages:
-            if not msg.message_id:
-                continue
-            if msg.local_status != MessageStatus.ACTIVE:
-                continue
-            if msg.uid is None:
-                continue
-            groups.setdefault(msg.message_id, []).append(msg)
-
-        dup_groups = {mid: rows for mid, rows in groups.items() if len(rows) > 1}
-
-        if not dup_groups:
+        groups = plan_dedup(index.list_folder_messages(folder=folder_ref))
+        if not groups:
             print(f"No duplicates found in {account}/{folder}.")
             return 0
 
-        all_losers: list[IndexedMessage] = []
-        for mid, rows in sorted(dup_groups.items()):
-            sorted_rows = sorted(rows, key=_sort_key)
-            winner = sorted_rows[0]
-            group_losers = sorted_rows[1:]
-            all_losers.extend(group_losers)
-
-            flag_str = ",".join(sorted(f.value for f in winner.local_flags)) or "(none)"
-            loser_uids = ", ".join(str(m.uid) for m in group_losers)
+        losers = [row for group in groups for row in group.trash]
+        for group in groups:
+            flags = (
+                ",".join(sorted(f.value for f in group.keep.local_flags)) or "(none)"
+            )
+            trashing = ", ".join(str(row.uid) for row in group.trash)
             print(
-                f"  {mid}\n"
-                f"    keep uid={winner.uid} flags=[{flag_str}]\n"
-                f"    trash uid(s): {loser_uids}"
+                f"  {group.message_id}\n"
+                f"    keep uid={group.keep.uid} flags=[{flags}]\n"
+                f"    trash uid(s): {trashing}"
             )
 
-        n_losers = len(all_losers)
-        n_groups = len(dup_groups)
-
         if not apply:
-            print(f"\nWould trash {n_losers} row(s) in {n_groups} group(s).")
+            print(f"\nWould trash {len(losers)} row(s) in {len(groups)} group(s).")
             print("Rerun with --apply to write changes.")
             return 0
 
@@ -1871,16 +1842,14 @@ def run_dedup_folder(
         # overwrote `trashed_at` -- so a row already in the trash had
         # its retention clock reset by a dedup pass, and survived a
         # retention it had already outlived.
-        from .mailbox_actions import Mailboxes, trash_messages
-
         trash_messages(
             Mailboxes(config=config, index=index, mirrors={}),
-            all_losers,
+            losers,
             now=now,
         )
 
     print(
-        f"\nTrashed {n_losers} row(s) in {n_groups} group(s)."
+        f"\nTrashed {len(losers)} row(s) in {len(groups)} group(s)."
         "  Run `pony sync` to propagate deletions to the server."
     )
     return 0
@@ -1971,34 +1940,32 @@ def run_mirror_folder(
         f"Copying {total} message(s) "
         f"from {src_account}/{src_folder} to {dst_account}/{dst_folder}..."
     )
-    copied = 0
-    skipped = 0
-    with index.connection():
-        for msg in src_messages:
-            try:
-                raw = src_mirror.get_message_bytes(
-                    folder=src_ref, storage_key=msg.storage_key
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"\n  Warning: skipping {msg.storage_key} — {exc}")
-                skipped += 1
-                continue
-            dst_key = dst_mirror.store_message(folder=dst_ref, raw_message=raw)
-            # Carry the source row forward rather than re-projecting it.
-            # A fresh projection starts with empty flag sets, so mirroring
-            # a folder used to silently mark every message unread.
-            index.insert_message(
-                message=landed_in_folder(msg, target=dst_ref, storage_key=dst_key)
-            )
-            copied += 1
-            done = copied + skipped
-            if done == total or done % 20 == 0:
-                end = "\n" if done == total else ""
-                print(f"\r  {done}/{total}", end=end, flush=True)
 
-    if skipped:
-        print(f"Skipped {skipped} message(s) whose mirror file was unreadable.")
-    if copied:
+    from .mailbox_actions import Mailboxes, copy_messages
+
+    def _progress(done: int, of: int) -> None:
+        if done == of or done % 20 == 0:
+            print(f"\r  {done}/{of}", end="\n" if done == of else "", flush=True)
+
+    # Through the action: copying a message carries the source row's
+    # flags forward, gives a same-account copy a synthetic Message-ID so
+    # the sync planner cannot mistake it for a move, and flushes the
+    # target mirror -- which this command did not, so an mbox
+    # destination could be reported copied and left unwritten.
+    outcome = copy_messages(
+        Mailboxes(
+            config=config,
+            index=index,
+            mirrors={src_account: src_mirror, dst_account: dst_mirror},
+        ),
+        src_messages,
+        src_ref,
+        dst_ref,
+        progress=_progress,
+    )
+    for notice in outcome.notices:
+        print(f"  {notice.text}")
+    if outcome.changed:
         print(f"Run `pony sync` to upload the copied messages to {dst_account}.")
     return 0
 
@@ -3885,66 +3852,17 @@ def import_bbdb_contacts(
     *,
     index: SqliteIndexRepository,
     bbdb_path: Path,
-) -> tuple[int, int, int]:
-    """Import contacts from a BBDB file, merging with existing records.
+) -> tuple[ImportTally, Outcome]:
+    """Read a BBDB file and import it into the address book.
 
-    For each BBDB contact:
-    - If any of its emails match an existing contact, merge into that
-      record (add new emails/aliases, update name/org/notes if richer).
-    - Otherwise create a new contact.
-
-    Returns ``(created, updated, skipped)`` counts.  A record is
-    skipped when one of its addresses is already held by a third
-    contact, which an import cannot arbitrate.
+    Reading the file is this command's; what happens to each record --
+    which existing contact it merges into, which merge policy applies,
+    and what to say about one an import cannot arbitrate -- is
+    `contact_actions.import_contacts`'.
     """
     from .bbdb import read_bbdb
 
-    imported = read_bbdb(bbdb_path)
-    created = 0
-    updated = 0
-    skipped = 0
-
-    with index.connection():
-        for contact in imported:
-            # Find an existing contact that shares an email.
-            existing = None
-            for email in contact.emails:
-                existing = index.find_contact_by_email(
-                    email_address=email,
-                )
-                if existing is not None:
-                    break
-            if existing is None and not contact.emails:
-                # A record with no address has nothing to match on, so
-                # every re-import created another copy of it — and the
-                # importer re-runs whenever the file is newer.  Fall back
-                # to the name, which is all such a record has.
-                # Only the address-less records are candidates: a
-                # namesake who does have mail must not be merged into.
-                # Asking the index rather than reading the whole address
-                # book per record is what keeps the import from being
-                # quadratic in the size of the book.
-                existing = index.find_address_less_contact_by_name(
-                    first_name=contact.first_name,
-                    last_name=contact.last_name,
-                )
-
-            try:
-                if existing is not None:
-                    # One merge policy for the whole program — the same
-                    # one the contact browser's merge key uses.
-                    index.upsert_contact(contact=merged_contact(existing, contact))
-                    updated += 1
-                else:
-                    index.upsert_contact(contact=contact)
-                    created += 1
-            except ContactEmailConflictError as exc:
-                # A third contact already holds one of these addresses;
-                # importing cannot decide who should own it.
-                print(f"  Skipped {contact.display_name}: {exc}")
-                skipped += 1
-
-    return created, updated, skipped
+    return import_contacts(index, read_bbdb(bbdb_path))
 
 
 def run_contacts_import(
@@ -3976,12 +3894,14 @@ def run_contacts_import(
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
     try:
-        created, updated, skipped = import_bbdb_contacts(index=index, bbdb_path=src)
+        tally, outcome = import_bbdb_contacts(index=index, bbdb_path=src)
     except BbdbError as exc:
         print(f"Could not read {src}: {exc}")
         return 1
-    suffix = f", {skipped} skipped" if skipped else ""
-    print(f"Imported from {src}: {created} new, {updated} updated{suffix}.")
+    for notice in outcome.notices:
+        print(f"  {notice.text}")
+    suffix = f", {tally.skipped} skipped" if tally.skipped else ""
+    print(f"Imported from {src}: {tally.created} new, {tally.updated} updated{suffix}.")
     return 0
 
 

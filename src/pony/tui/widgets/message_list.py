@@ -19,7 +19,7 @@ from ...domain import (
     MessageFlag,
 )
 from ...protocols import IndexRepository
-from ...views import ROW_BATCH, message_row, summary_of
+from ...views import ROW_BATCH, correspondent_label, message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
@@ -119,8 +119,14 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         return max(10, min(40, max(20, self.size.width) // 4))
 
     def _header_text(self) -> str:
+        """The column headings, padded to this table's widths.
+
+        What the correspondent column is *called* is
+        `views.correspondent_label`: the browser labels the same column
+        and used to decide the word for itself.
+        """
         who_w = self._who_width_cached
-        label = "To" if self._show_recipients else "From"
+        label = correspondent_label(shows_recipient=self._show_recipients)
         return f"  {'Date':<{_DATE_WIDTH}} {label:<{who_w}} Subject"
 
     def _cell_for(self, summary: FolderMessageSummary) -> Text:
@@ -279,6 +285,11 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         :meth:`load_folder`: they are what lets the screen re-run a
         search after an action without throwing the cursor back to the
         top of the hit list.
+
+        The rows are shown in the order they arrive.  This used to sort
+        them by date -- a second definition of "newest first", beside
+        the ``ORDER BY m.received_at DESC`` the search already runs, and
+        one that would quietly undo any other order a caller asked for.
         """
         self._in_search = True
         self._marked.clear()
@@ -290,7 +301,6 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         # something.
         self._set_correspondent_column(False)
         msgs = list(messages)
-        msgs.sort(key=lambda m: m.received_at, reverse=True)
         summaries = [summary_of(m) for m in msgs]
         self._summaries = summaries
         self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)

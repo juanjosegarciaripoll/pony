@@ -241,6 +241,40 @@ def replying_account(
 # both need an account, a password and an SMTP socket and nothing else.
 
 
+def sender_for_invitation(
+    config: AppConfig,
+    credentials: CredentialsProvider | None,
+) -> tuple[AnyAccount, str] | Notice:
+    """Who posts an invitation and with what, or why nobody can.
+
+    Both front ends post the same iTIP REQUEST after saving an event,
+    and each asked these two questions and worded both refusals itself
+    -- "no account is configured for sending invitations" in one,
+    "no invitation was sent: No account configured for sending" in the
+    other.
+
+    Every refusal is about the invitation and never about the save: the
+    event is already on the server by the time any of this runs, and a
+    sentence that sounded like a failed save would invite the user to
+    write it twice.
+    """
+    account = replying_account(config, arrived_on=None)
+    if isinstance(account, Notice):
+        return unsent_invitation(account)
+    password = resolve_send_password(credentials, account)
+    if isinstance(password, Notice):
+        return unsent_invitation(password)
+    return account, password
+
+
+def unsent_invitation(reason: Notice) -> Notice:
+    """*reason*, said as what it is: a saved event with no invitation out."""
+    return Notice(
+        f"Event saved, but no invitation was sent: {reason.text}",
+        reason.severity,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class InvitationDelivery:
     """What happened when an invitation was posted."""
@@ -349,4 +383,6 @@ __all__ = [
     "reply_to_invitation",
     "respond_to_invitation",
     "send_event_invitations",
+    "sender_for_invitation",
+    "unsent_invitation",
 ]

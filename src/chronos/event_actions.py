@@ -206,6 +206,46 @@ def default_event_start(day: date, now: datetime) -> datetime:
     return rounded
 
 
+#: How long a new event lasts when nothing else says.  Written out in
+#: the agenda's screen and in the browser's blank form.
+DEFAULT_EVENT_DURATION = timedelta(hours=1)
+
+
+@dataclass(frozen=True, slots=True)
+class NewEventDefaults:
+    """What a blank event form starts with."""
+
+    calendar: CalendarRef
+    dtstart: datetime
+    dtend: datetime
+
+
+def new_event_defaults(
+    calendars: Sequence[CalendarRef],
+    *,
+    day: date,
+    now: datetime,
+    preferred: CalendarRef | None = None,
+) -> NewEventDefaults | None:
+    """Where a new event begins, how long it runs, and where it is filed.
+
+    ``None`` when there is no calendar to file it in, which each front
+    end reports its own way -- that much is about the user interface.
+    The three answers are not: the hour, and that a new event goes to
+    the calendar the user is looking at, were decided in the agenda's
+    screen and again in the browser's blank form.
+    """
+    if not calendars:
+        return None
+    in_view = preferred is not None and preferred in calendars
+    start = default_event_start(day, now)
+    return NewEventDefaults(
+        calendar=preferred if in_view and preferred is not None else calendars[0],
+        dtstart=start,
+        dtend=start + DEFAULT_EVENT_DURATION,
+    )
+
+
 def parse_attendees(raw: str) -> tuple[str, ...]:
     """A comma-separated attendee field, as bare email addresses.
 
@@ -525,13 +565,17 @@ def _store(
 
 
 __all__ = [
+    "DEFAULT_EVENT_DURATION",
     "ENDS_BEFORE_IT_STARTS",
     "NEEDS_A_SUMMARY",
     "Calendars",
     "EditDraft",
+    "NewEventDefaults",
     "SavedEvent",
+    "default_event_start",
     "existing_alarms",
     "import_ics_file",
+    "new_event_defaults",
     "organizer_for",
     "parse_reminders",
     "reminders_text",

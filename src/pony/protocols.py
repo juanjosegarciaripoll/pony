@@ -696,6 +696,16 @@ class CredentialsProvider(Protocol):
 class ContactRepository(Protocol):
     """Interface for the person-centric contacts store."""
 
+    def connection(self) -> AbstractContextManager[None]:
+        """Hold one transaction across a batch of operations.
+
+        Same promise as :meth:`IndexRepository.connection`, and the same
+        implementation behind it.  Importing an address book writes one
+        record per contact, so a transaction is the difference between
+        one commit and thousands.
+        """
+        ...
+
     def upsert_contact(self, *, contact: Contact) -> Contact:
         """Insert or update a contact record.  Returns the saved contact."""
         ...

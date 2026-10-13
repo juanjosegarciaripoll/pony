@@ -134,38 +134,36 @@ class TestResolveViewerCommand(unittest.TestCase):
 
     def test_returns_command_for_matching_content_type(self) -> None:
         from pony.domain import ViewerRule
-        from pony.tui.terminal import resolve_viewer_command
+        from pony.message_export import viewer_command
 
         rules = (ViewerRule("text/calendar", ("chronos", "import")),)
-        self.assertEqual(
-            resolve_viewer_command(rules, "text/calendar"), ("chronos", "import")
-        )
+        self.assertEqual(viewer_command(rules, "text/calendar"), ("chronos", "import"))
 
     def test_match_ignores_case_and_surrounding_space(self) -> None:
         from pony.domain import ViewerRule
-        from pony.tui.terminal import resolve_viewer_command
+        from pony.message_export import viewer_command
 
         rules = (ViewerRule("text/calendar", ("chronos",)),)
-        self.assertEqual(resolve_viewer_command(rules, " TEXT/Calendar "), ("chronos",))
+        self.assertEqual(viewer_command(rules, " TEXT/Calendar "), ("chronos",))
 
     def test_returns_none_for_unlisted_type(self) -> None:
         from pony.domain import ViewerRule
-        from pony.tui.terminal import resolve_viewer_command
+        from pony.message_export import viewer_command
 
         rules = (ViewerRule("text/calendar", ("chronos",)),)
-        self.assertIsNone(resolve_viewer_command(rules, "text/plain"))
+        self.assertIsNone(viewer_command(rules, "text/plain"))
 
     def test_returns_none_without_a_content_type(self) -> None:
         from pony.domain import ViewerRule
-        from pony.tui.terminal import resolve_viewer_command
+        from pony.message_export import viewer_command
 
         rules = (ViewerRule("text/calendar", ("chronos",)),)
-        self.assertIsNone(resolve_viewer_command(rules, None))
+        self.assertIsNone(viewer_command(rules, None))
 
     def test_returns_none_when_no_rules_are_configured(self) -> None:
-        from pony.tui.terminal import resolve_viewer_command
+        from pony.message_export import viewer_command
 
-        self.assertIsNone(resolve_viewer_command((), "text/calendar"))
+        self.assertIsNone(viewer_command((), "text/calendar"))
 
 
 class TestLaunchFile(unittest.TestCase):

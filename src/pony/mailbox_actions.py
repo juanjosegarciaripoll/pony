@@ -330,6 +330,8 @@ def copy_messages(
     messages: Sequence[IndexedMessage],
     source: FolderRef,
     target: FolderRef,
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> Outcome:
     """Copy every message in *messages* from *source* into *target*.
 
@@ -349,8 +351,9 @@ def copy_messages(
 
     log = NoticeLog()
     copied = 0
+    total = len(messages)
     with mailboxes.index.connection():
-        for msg in messages:
+        for done, msg in enumerate(messages, start=1):
             landed = _duplicate_into(
                 mailboxes,
                 msg=msg,
@@ -363,9 +366,80 @@ def copy_messages(
             )
             if landed:
                 copied += 1
+            if progress is not None:
+                progress(done, total)
+    # The rule `flush_mirror` states: every path that mutates a mirror
+    # and then hands control back to the user calls it.  The bytes are
+    # already on disk here -- an mbox `store_message` flushes as it
+    # appends -- but the handle it opened is still held, and on Windows
+    # that stops any other repository replacing the file.
+    flush_mirror(target_mirror)
     if copied:
         log.info(f"Copied to {_where(source, target)}{_count_suffix(copied)}.")
     return log.outcome(copied)
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateGroup:
+    """One Message-ID held by more than one row, and which copy survives."""
+
+    message_id: str
+    keep: IndexedMessage
+    trash: tuple[IndexedMessage, ...]
+
+
+def plan_dedup(messages: Sequence[IndexedMessage]) -> tuple[DuplicateGroup, ...]:
+    """Which rows in *messages* are duplicates, and which copy to keep.
+
+    Two rows are duplicates when they share a ``Message-ID``.  Only
+    ACTIVE rows with a server handle are considered: one with no UID is
+    a local draft the server has not seen, and a TRASHED or
+    PENDING_MOVE row is already in flux.
+
+    The copy kept is the one carrying the most information -- the most
+    flags, answered before flagged -- and among equals the oldest,
+    because its row id is the lowest.  Which record survives is model
+    work for the reason `contact_actions.plan_merge` is: a command or a
+    dialog that decided it would be the only thing that could, and
+    `pony folder dedup` was the only thing that could.
+
+    Groups come back ordered by Message-ID so a report of them is
+    stable between runs.
+    """
+    groups: dict[str, list[IndexedMessage]] = {}
+    for message in messages:
+        if not message.message_id:
+            continue
+        if message.local_status != MessageStatus.ACTIVE:
+            continue
+        if message.uid is None:
+            continue
+        groups.setdefault(message.message_id, []).append(message)
+    planned: list[DuplicateGroup] = []
+    for message_id, rows in sorted(groups.items()):
+        if len(rows) < 2:
+            continue
+        ordered = sorted(rows, key=_dedup_rank)
+        planned.append(
+            DuplicateGroup(
+                message_id=message_id,
+                keep=ordered[0],
+                trash=tuple(ordered[1:]),
+            )
+        )
+    return tuple(planned)
+
+
+def _dedup_rank(message: IndexedMessage) -> tuple[int, int, int, datetime, int]:
+    """Sort key putting the copy worth keeping first."""
+    useful = message.local_flags - {MessageFlag.DELETED}
+    return (
+        -len(useful),
+        -int(MessageFlag.ANSWERED in useful),
+        -int(MessageFlag.FLAGGED in useful),
+        message.received_at,
+        message.message_ref.id,
+    )
 
 
 def check_move_policy(
@@ -739,6 +813,7 @@ def _count_suffix(count: int) -> str:
 
 
 __all__ = [
+    "DuplicateGroup",
     "Mailboxes",
     "FlaggedMessage",
     "add_flag",
@@ -750,6 +825,7 @@ __all__ = [
     "mark_folder_read",
     "merge_outcomes",
     "move_messages",
+    "plan_dedup",
     "resolve_messages",
     "retire_message",
     "set_flag",

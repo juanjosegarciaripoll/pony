@@ -82,6 +82,22 @@ def for_surface(
     return tuple(binding for binding in keymap if binding.surface in wanted)
 
 
+def key_for(keymap: tuple[KeyBinding, ...], action: str) -> str:
+    """Which key runs *action*, for prose that names it.
+
+    A sentence in the interface that tells the user which key to press
+    has to say what the table says, or it is a hand-typed copy that
+    goes stale the day the key moves -- which is what happened to the
+    compose screen's cheatsheet.  Empty when nothing is bound to the
+    action, so a surface that cannot offer it says nothing rather than
+    naming a key that does nothing.
+    """
+    for binding in keymap:
+        if binding.action == action:
+            return binding.key
+    return ""
+
+
 def web_key(key: str) -> str:
     """*key* as a browser reports it in a ``keydown`` event.
 
@@ -401,6 +417,7 @@ __all__ = [
     "CalendarSurface",
     "KeyBinding",
     "for_surface",
+    "key_for",
     "span_label",
     "web_key",
 ]
