@@ -2952,10 +2952,32 @@ class ImapSyncService:
                 uid=uid,
                 message_id=message_id,
             )
-        if len(candidates) != 1:
-            # More than one, and no way to tell which.
-            return False
-        row = candidates[0]
+        # Several rows that say the same thing about themselves are
+        # interchangeable, so one of them is taken rather than a copy
+        # being inserted beside them all.  Which one is arbitrary, and
+        # has to be: it is the same message, and the alternative was to
+        # insert -- a folder holding two identical copies came back from
+        # a UIDVALIDITY change holding four, and the next pass, no longer
+        # a reset, APPENDed the two orphans to the server.  Choosing
+        # among provably identical rows is not the same as guessing
+        # which message a UID belongs to, which is still refused above:
+        # a Message-ID alone never settles it.
+        #
+        # The claim needs no bookkeeping.  Adoption writes the UID, and
+        # both lookups above want ``uid IS NULL``, so a row taken by one
+        # fetched message is not offered to the next.  The lowest id is
+        # taken first only so that a plan replayed on the same index
+        # pairs them the same way.
+        row = min(candidates, key=lambda candidate: candidate.message_ref.id)
+        if len(candidates) > 1:
+            logger.info(
+                "uid=%d in %s/%s matches %d interchangeable rows — taking id=%d",
+                uid,
+                account.name,
+                folder_ref.folder_name,
+                len(candidates),
+                row.message_ref.id,
+            )
         self._index.update_message(
             message=dataclasses.replace(
                 row,
@@ -2978,8 +3000,9 @@ class ImapSyncService:
 
         Compares what the message says about itself — sender, subject
         and date — against the rows still waiting for a UID.  Two
-        genuinely indistinguishable messages stay indistinguishable, and
-        the caller inserts rather than guessing.
+        genuinely indistinguishable messages stay indistinguishable, so
+        the caller takes one of them rather than inserting a third copy
+        beside them.
 
         This runs for *every* fetched message whose Message-ID matched no
         pending row — which in a freshly rebuilt index is all of them,

@@ -3595,9 +3595,10 @@ class UidValidityResetCostTestCase(unittest.TestCase):
     def test_a_shared_message_id_is_downloaded_rather_than_guessed(self) -> None:
         """Two copies of one Message-ID name no row in particular.
 
-        What the fetch path then makes of them is its own affair, and
-        is not what this asserts: a pair of otherwise identical twins
-        is duplicated there, which is a defect of its own standing.
+        The planner will not pair them: it has only the headers, and a
+        Message-ID shared by two UIDs says nothing about which row each
+        belongs to.  They are fetched, and the fetch path decides with
+        the whole message in hand.
         """
         raw = _make_raw_message("twice", "<twice@example.com>")
         folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
@@ -3624,6 +3625,84 @@ class UidValidityResetCostTestCase(unittest.TestCase):
             [0],
             "nothing here is safe to re-key",
         )
+
+    def test_identical_twins_are_taken_over_rather_than_duplicated(self) -> None:
+        """A folder of two identical copies used to come back holding four.
+
+        The planner leaves them to the fetch path, where each arriving
+        message matched *both* UID-less rows on sender, subject and date
+        -- so neither was taken and a third and fourth row were inserted
+        beside them.  The next pass, no longer a reset, then APPENDed the
+        two orphans: two copies on the server became four.
+        """
+        raw = _make_raw_message("twice", "<twice@example.com>")
+        folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
+            "INBOX": {
+                1: ("<twice@example.com>", frozenset(), raw),
+                2: ("<twice@example.com>", frozenset(), raw),
+            }
+        }
+        service, index, mirror, session = _setup(server_folders=folders)
+        service.sync()
+        before = {
+            r.message_ref.id for r in index.list_folder_messages(folder=self.folder)
+        }
+
+        session.uid_validity = 2
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 2, "the twins were duplicated")
+        self.assertEqual(
+            {r.message_ref.id for r in rows}, before, "rows were replaced, not taken"
+        )
+        self.assertEqual(sorted(r.uid for r in rows if r.uid is not None), [1, 2])
+        self.assertEqual(len(mirror.list_messages(folder=self.folder)), 2)
+
+        # And the pass after it has nothing to upload, which is where the
+        # duplication used to reach the server.
+        service.sync()
+        self.assertEqual(len(session.folders["INBOX"]), 2, "orphans were uploaded")
+        self.assertEqual(len(index.list_folder_messages(folder=self.folder)), 2)
+
+    def test_three_identical_copies_each_take_their_own_row(self) -> None:
+        """One claim per arriving message, not one row claimed three times."""
+        raw = _make_raw_message("thrice", "<thrice@example.com>")
+        folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
+            "INBOX": {
+                uid: ("<thrice@example.com>", frozenset(), raw) for uid in (1, 2, 3)
+            }
+        }
+        service, index, _mirror, session = _setup(server_folders=folders)
+        service.sync()
+
+        session.uid_validity = 2
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(sorted(r.uid for r in rows if r.uid is not None), [1, 2, 3])
+
+    def test_a_second_copy_arriving_normally_is_still_its_own_row(self) -> None:
+        """Taking a row over must not collapse two server copies into one.
+
+        The rows this claims are rows with no UID.  A message arriving
+        beside one that already has a handle is new mail, however much
+        it looks like what is already there.
+        """
+        raw = _make_raw_message("again", "<again@example.com>")
+        folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
+            "INBOX": {1: ("<again@example.com>", frozenset(), raw)}
+        }
+        service, index, _mirror, session = _setup(server_folders=folders)
+        service.sync()
+
+        session.folders["INBOX"][2] = ("<again@example.com>", frozenset(), raw)
+        service.sync()
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 2, "the second copy was swallowed")
+        self.assertEqual(sorted(r.uid for r in rows if r.uid is not None), [1, 2])
 
     def test_a_message_with_no_message_id_is_downloaded(self) -> None:
         folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {

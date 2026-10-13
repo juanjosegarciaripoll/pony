@@ -83,21 +83,27 @@ promises is narrower than "the folder, all at once":
 
 ## Message identity
 
-Pony identifies messages by their `Message-ID` header, not by IMAP UIDs.
-This is important because:
+A message is identified by its row: the SQLite autoincrement `id`, scoped to
+one account and folder, which is what a `MessageRef` carries. Neither of the
+obvious alternatives can be the key:
 
 - IMAP UIDs are only valid within one folder and one UIDVALIDITY epoch. If the
-  server rebuilds a mailbox, all UIDs change.
-- `Message-ID` is set by the sending mail server and is stable across copies,
-  moves, and re-deliveries.
+  server rebuilds a mailbox, every UID changes.
+- `Message-ID` is not unique. Resends and mailing-list copies share one, and
+  some messages carry none at all. It is display, threading and
+  duplicate-detection data; two rows in one folder may hold the same value.
+
+So the `Message-ID` is used to *recognise* a message, never to key it -- and
+only where it names exactly one candidate. Where it does not, a fetched
+message is compared against the rows still waiting for a UID on what it says
+about itself: sender, subject and date. Several rows saying the same thing are
+interchangeable, and one of them is taken rather than a copy being inserted
+beside them all.
 
 All message state -- local flags, server flags, UID, and sync timestamp -- is
 stored in a single unified `messages` table in the SQLite index. There is no
 separate server-state table; each message row holds both the local desired state
 and the last-known server state.
-
-When a message has no `Message-ID` header (rare but possible), Pony generates
-a deterministic synthetic ID from the message content.
 
 ---
 
@@ -308,10 +314,11 @@ than 15,000 bodies.
 
 A `Message-ID` is not a key. Resends and mailing-list copies share one and some
 messages carry none, so one is used only where it names exactly one row *and*
-exactly one of the UIDs being planned. Everything else is fetched, and the
-message is matched on arrival against what it says about itself -- sender,
-subject and date -- so two indistinguishable messages stay indistinguishable
-rather than being paired by guess.
+exactly one of the UIDs being planned -- the planner has only the headers, and
+a `Message-ID` shared by two UIDs says nothing about which row each belongs to.
+Everything else is fetched and matched on arrival against what the message says
+about itself (see [Message identity](#message-identity)), which is the
+comparison that can tell the planner's ambiguous cases apart.
 
 Re-keying writes the new UID to the index. The mirror filename keeps the
 handle it was stored with (`,V=<epoch>,U=<uid>`), which is a superseded epoch

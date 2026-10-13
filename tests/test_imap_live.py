@@ -223,6 +223,33 @@ class LiveImapTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 2, "duplicated without a Message-ID to match on")
         self.assertTrue(all(r.uid is not None for r in rows))
 
+    def test_two_identical_copies_do_not_multiply_on_the_server(self) -> None:
+        """Same Message-ID, same everything: a real server's two UIDs.
+
+        The pass after a reset is where this used to show: the folder
+        held four rows, two of them without a handle, and they were
+        APPENDed.  Two copies on the server became four.
+        """
+        raw = _message("identical", "<identical@example.test>")
+        self._deliver(raw, raw)
+        self.service.sync()
+        self.assertEqual(len(self._rows()), 2)
+
+        self.server.bump_uidvalidity("INBOX")
+        self.service.sync()
+        self.service.sync()
+
+        rows = self._rows()
+        self.assertEqual(len(rows), 2, "the copies were duplicated locally")
+        self.assertTrue(all(r.uid is not None for r in rows))
+        session = self.server.raw_session()
+        try:
+            remote = session.fetch_uid_to_message_id("INBOX")
+        finally:
+            session.logout()
+        self.assertEqual(len(remote), 2, "the orphans were uploaded")
+        self.assertEqual({r.uid for r in rows}, set(remote))
+
     def test_an_append_round_trips_through_the_server(self) -> None:
         """A locally composed message is uploaded and keeps one row."""
         from pony.domain import MessageRef

@@ -40,21 +40,6 @@ All v1 capabilities implemented and tested:
 
 ## Queue
 
-- **A UIDVALIDITY reset duplicates two messages that share a Message-ID.**
-  Not the reset's own doing: a UID whose Message-ID names several rows
-  falls through to the body fetch, where `_adopt_existing_row` compares
-  the projection — sender, subject and date — and two indistinguishable
-  copies match several rows there too, so it inserts rather than
-  guessing. The folder then holds both the old UID-less rows and the
-  new ones, and the *next* pass, no longer a reset, plans a
-  `PushAppendOp` for each orphan: a folder with two identical copies
-  comes back with four, on the server. Reproduced with
-  `tests/test_sync.py::UidValidityResetCostTestCase::test_a_shared_message_id_is_downloaded_rather_than_guessed`
-  (2 rows → 4 rows → 4 on the server). The fix is in the fetch path, not
-  the planner: where several UID-less rows are provably interchangeable,
-  claim one per fetched message within the pass instead of inserting a
-  copy. Pairing provably identical rows arbitrarily is not the same as
-  guessing which message a UID is.
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.
