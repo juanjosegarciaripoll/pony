@@ -2,7 +2,7 @@
 
 The screen is normally pushed by the compose flow; here it is driven in
 isolation through a minimal host ``App`` (same approach as
-``tests/test_save_message_screen.py``) plus Textual's ``Pilot``.
+``tests/test_filename_proposals.py``) plus Textual's ``Pilot``.
 
 ``asyncio_mode = "auto"`` (see ``pyproject.toml``) means ``async def test_*``
 coroutines run directly without an explicit decorator.

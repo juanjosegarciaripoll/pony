@@ -137,6 +137,19 @@ without that a kept mirror came back indexed by nothing.
 
 ### Changed
 
+- **A message's parts are numbered, and `s` saves the message**: part `0`
+  is the message as it arrived, part `T` is its body as text with no HTML
+  in it, and `1..N` are the attachments. `s` writes part 0 — one `.eml`,
+  named after the date and the subject, into the downloads directory —
+  where it used to open a checklist of body-as-Markdown plus attachments
+  and then a directory picker, and where the browser already downloaded
+  the `.eml`. `S` and `O` prompt for parts rather than attachments alone,
+  so `S` then `0` is `s`, and `*` is every part. In the open message, a
+  digit opens that part and `ctrl`+digit saves it, with `t` and `ctrl+t`
+  for the text; `0` used to mean *every attachment*, which was the one
+  numbering in the program that did not count parts. The browser lists
+  and serves the same parts, and the Markdown rendering of a body is no
+  longer written by any key.
 - **To: is one address per row, like Cc: and Bcc:**: the three recipient
   fields now behave identically. A comma-separated list splits into one row
   per address when you leave the field or paste it — never while you are

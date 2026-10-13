@@ -3157,7 +3157,7 @@ async def test_open_attachment_numeric_key(
 
 
 async def test_save_attachment_numeric_key() -> None:
-    """Pressing ctrl+1 in the message view saves attachment 1."""
+    """Pressing ctrl+1 in the message view saves part 1."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, config, _paths, _index, _mirrors = build_pony_app(
         label="save-att-numeric",
@@ -3180,7 +3180,8 @@ async def test_save_attachment_numeric_key() -> None:
 
     assert saved.is_file()
     assert saved.read_bytes() == b"%PDF-1.4 fake pdf content"
-    assert any("Saved 1 attachment(s) to" in n for n in notifications)
+    # The notice names the file, which "Saved 1 attachment(s)" did not.
+    assert any("q1-report.pdf" in n for n in notifications)
 
 
 async def test_archive_no_folder_configured_notifies() -> None:
@@ -3332,24 +3333,27 @@ async def test_compose_reply_sends_and_marks_answered(
     assert MessageFlag.ANSWERED in shown.local_flags
 
 
-async def test_save_message_opens_save_screen() -> None:
-    """Pressing s opens the SaveMessageScreen."""
-    from pony.tui.screens.save_message_screen import SaveMessageScreen
-
+async def test_pressing_s_saves_the_message_without_asking() -> None:
+    """``s`` writes the ``.eml`` and says where, in one keystroke."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+    app, cfg, _paths, _index, _mirrors = build_pony_app(
         label="save-msg",
         seed=[(folder, plain_text())],
     )
+    notifications = _capture_notifications(app)
+
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
         await pilot.pause()
         await pilot.press("s")
         await pilot.pause()
-        assert any(isinstance(s, SaveMessageScreen) for s in app.screen_stack)
-        await pilot.click("#cancel")
-        await pilot.pause()
+
+    downloads = cfg.downloads_path
+    assert downloads is not None
+    written = [path for path in downloads.iterdir() if path.suffix == ".eml"]
+    assert len(written) == 1
+    assert any(written[0].name in note for note in notifications)
 
 
 def _cross_account_app(label: str):  # type: ignore[no-untyped-def]
@@ -3828,8 +3832,13 @@ async def test_new_folder_without_a_selected_account_warns() -> None:
     assert any("Select a folder or account first." in n for n in notifications)
 
 
-async def test_save_all_attachments_by_index_zero() -> None:
-    """The ``0`` accelerator saves every attachment on the message."""
+async def test_part_zero_saves_the_message_not_the_attachments() -> None:
+    """``ctrl+0`` is the message itself.
+
+    It used to mean "every attachment", which was the only numbering in
+    the program that did not count parts; every part at once is ``*`` at
+    the ``S`` prompt.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, cfg, _paths, _index, _mirrors = build_pony_app(
         label="save-all-idx",
@@ -3844,14 +3853,18 @@ async def test_save_all_attachments_by_index_zero() -> None:
         screen.action_save_attachment("0")
         await pilot.pause()
 
-    assert any("Saved 1 attachment(s)" in n for n in notifications)
     downloads = cfg.downloads_path
     assert downloads is not None
-    assert (downloads / "q1-report.pdf").is_file()
+    assert not (downloads / "q1-report.pdf").exists()
+    written = [path for path in downloads.iterdir() if path.suffix == ".eml"]
+    assert len(written) == 1
+    assert any(written[0].name in note for note in notifications)
 
 
-async def test_open_all_attachments_on_a_message_without_any() -> None:
-    """``0`` on a plain message opens nothing and launches no viewer."""
+async def test_part_zero_on_a_plain_message_opens_the_message() -> None:
+    """``0`` has something to open on every message, viewer or not."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-all-none",
@@ -3866,59 +3879,34 @@ async def test_open_all_attachments_on_a_message_without_any() -> None:
         assert screen.query_one(MessageViewPanel).attachment_count == 0
         screen.action_open_attachment("0")
         await pilot.pause()
+        assert isinstance(app.screen, EmlViewerScreen)
 
-    # An empty index list means the loop never runs — no viewer, no warning.
     assert notifications == []
 
 
-async def test_save_message_writes_the_body_and_an_attachment(
-    tmp_path: Path,
-) -> None:
-    """Confirming both dialogs writes each chosen item into the folder."""
-    from pony.tui.screens.save_message_screen import SaveItem, SaveMessageScreen
-
+async def test_the_star_selection_saves_every_part() -> None:
+    """``*`` at the ``S`` prompt writes the message and its attachments."""
     folder = FolderRef(account_name="acct", folder_name="INBOX")
-    app, _cfg, _paths, _index, _mirrors = build_pony_app(
+    app, cfg, _paths, _index, _mirrors = build_pony_app(
         label="save-msg-write",
         seed=[(folder, multipart_mixed_attachment())],
     )
     notifications = _capture_notifications(app)
 
-    # A directory where a file is expected makes exactly one item fail.
-    (tmp_path / "blocked.md").mkdir()
-
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
-        screen = app.screen
-        assert isinstance(screen, MainScreen)
-        screen.action_save_message()
+        await pilot.press("S")
+        await pilot.pause()
+        await pilot.press("*")
+        await pilot.press("enter")
         await pilot.pause()
 
-        picker = app.screen
-        assert isinstance(picker, SaveMessageScreen)
-        picker.dismiss(
-            [
-                SaveItem(kind="body", filename="body.md"),
-                SaveItem(kind="attachment:1", filename="q1-report.pdf"),
-                # Out of range: extract_attachment returns None, nothing written.
-                SaveItem(kind="attachment:99", filename="ghost.bin"),
-                # Escapes the destination folder — refused.
-                SaveItem(kind="body", filename="../escaped.md"),
-                # Collides with a directory — the write raises.
-                SaveItem(kind="body", filename="blocked.md"),
-            ]
-        )
-        await pilot.pause()
-
-        folder_picker = app.screen
-        folder_picker.dismiss(tmp_path)
-        await pilot.pause()
-
-    assert (tmp_path / "body.md").is_file()
-    assert (tmp_path / "q1-report.pdf").read_bytes().startswith(b"%PDF")
-    assert not (tmp_path / "ghost.bin").exists()
-    assert not (tmp_path.parent / "escaped.md").exists()
-    assert any("failed" in n for n in notifications)
+    downloads = cfg.downloads_path
+    assert downloads is not None
+    assert (downloads / "q1-report.pdf").read_bytes().startswith(b"%PDF")
+    assert [path for path in downloads.iterdir() if path.suffix == ".eml"]
+    # Both names in one notice, because one key wrote both files.
+    assert any("q1-report.pdf" in note and ".eml" in note for note in notifications)
 
 
 async def test_open_attachment_uses_configured_viewer(

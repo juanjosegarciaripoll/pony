@@ -6,11 +6,11 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from corpus import multipart_mixed_attachment, plain_text
+from textual.widgets import Label
 from tui_helpers import build_pony_app
 
 from pony.domain import FolderRef
 from pony.tui.screens.main_screen import MainScreen
-from pony.tui.screens.save_message_screen import SaveItem
 from pony.tui.widgets.message_view import MessageViewPanel
 
 
@@ -58,8 +58,15 @@ async def test_export_actions_are_silent_with_nothing_selected() -> None:
     assert messages == []
 
 
-async def test_attachment_actions_say_so_when_there_are_none() -> None:
-    """A selected message with no attachments still explains itself."""
+async def test_a_message_with_no_attachments_still_has_a_part_to_offer() -> None:
+    """The prompt opens instead of refusing, because part 0 is there.
+
+    It used to answer "No attachments on this message." and stop, which
+    was true and unhelpful: the message itself is part 0, so ``S`` has
+    something to save on every message.
+    """
+    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
         label="main-io-no-attachments",
@@ -70,14 +77,13 @@ async def test_attachment_actions_say_so_when_there_are_none() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = _main(app)
-        screen.action_attachments_open()
         screen.action_attachments_save()
         await pilot.pause()
+        assert isinstance(app.screen, AttachmentPickerScreen)
+        label = app.screen.query_one("#floating-label", Label)
+        assert "0 = whole message" in str(label.content)
 
-    assert messages == [
-        "No attachments on this message.",
-        "No attachments on this message.",
-    ]
+    assert messages == []
 
 
 async def test_pdf_and_message_export_report_mirror_read_failure() -> None:
@@ -99,7 +105,7 @@ async def test_pdf_and_message_export_report_mirror_read_failure() -> None:
 
     assert messages == [
         "Could not read message from mirror.",
-        "Could not read message from mirror.",
+        "Could not load message for saving.",
     ]
 
 
@@ -123,12 +129,18 @@ async def test_attachment_picker_cancel_and_selection_callbacks() -> None:
         chosen.assert_called_once_with([1])
 
 
-async def test_save_indices_reports_saved_missing_and_errors(
-    monkeypatch, tmp_path: Path
+async def test_saving_parts_names_what_it_wrote_and_what_was_missing(
+    tmp_path: Path,
 ) -> None:
+    """Every part is attempted, and the notice names the files.
+
+    No mock stands in for the writes: the destination is a real
+    directory, one of the chosen parts does not exist, and the notice
+    has to distinguish the two.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
-        label="main-io-save-indices",
+        label="main-io-save-parts",
         seed=[(folder, multipart_mixed_attachment())],
     )
     messages = _notifications(app)
@@ -140,17 +152,44 @@ async def test_save_indices_reports_saved_missing_and_errors(
             accounts=screen._config.accounts,
             downloads_path=tmp_path,
         )
-        monkeypatch.setattr(
-            "pony.tui.screens.main_screen.save_one_attachment",
-            Mock(
-                side_effect=["fictional.pdf", None, OSError("fictional save failure")]
-            ),
-        )
-        screen._save_indices([1, 2, 3])
+        screen._save_indices([0, 1, 9])
 
-    assert any("Could not save attachment 3" in message for message in messages)
-    assert any("Saved 1 attachment(s)" in message for message in messages)
-    assert any("Attachment(s) not found: 2" in message for message in messages)
+    assert (tmp_path / "q1-report.pdf").read_bytes().startswith(b"%PDF")
+    eml = [path for path in tmp_path.iterdir() if path.suffix == ".eml"]
+    assert len(eml) == 1
+    said = " ".join(messages)
+    assert "q1-report.pdf" in said
+    assert eml[0].name in said
+    assert "No part 9 on this message." in said
+
+
+async def test_a_part_that_cannot_be_written_is_reported_on_its_own(
+    tmp_path: Path,
+) -> None:
+    """One unwritable file does not abandon the rest of the selection."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-io-save-denied",
+        seed=[(folder, multipart_mixed_attachment())],
+    )
+    messages = _notifications(app)
+    closed = tmp_path / "closed"
+    closed.mkdir()
+
+    async with app.run_test() as pilot:
+        await _open_message(pilot)
+        screen = _main(app)
+        screen._config = screen._config.__class__(
+            accounts=screen._config.accounts,
+            downloads_path=closed,
+        )
+        closed.chmod(0o500)
+        try:
+            screen._save_indices([1])
+        finally:
+            closed.chmod(0o700)
+
+    assert any("Could not save part 1" in message for message in messages)
 
 
 async def test_open_indices_reports_missing_save_and_launch_errors(
@@ -159,7 +198,7 @@ async def test_open_indices_reports_missing_save_and_launch_errors(
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
         label="main-io-open-indices",
-        seed=[(folder, plain_text())],
+        seed=[(folder, multipart_mixed_attachment())],
     )
     messages = _notifications(app)
     monkeypatch.setattr(
@@ -174,20 +213,40 @@ async def test_open_indices_reports_missing_save_and_launch_errors(
             accounts=screen._config.accounts,
             downloads_path=tmp_path,
         )
-        monkeypatch.setattr(
-            "pony.tui.screens.main_screen.save_one_attachment",
-            Mock(side_effect=[None, OSError("fictional save failure"), "opened.txt"]),
-        )
-        screen._open_indices([1, 2, 3])
+        screen._open_indices([1, 9])
 
-    assert any("Attachment(s) not found: 1" in message for message in messages)
-    assert any("Could not save attachment 2" in message for message in messages)
-    assert any("Could not open opened.txt" in message for message in messages)
+    assert any("No part 9 on this message." in message for message in messages)
+    assert any("Could not open q1-report.pdf" in message for message in messages)
 
 
-async def test_save_message_callbacks_handle_cancel_success_and_traversal(
+async def test_part_zero_opens_in_the_reader_rather_than_a_viewer() -> None:
+    """The message itself goes to the EML viewer, not to the desktop."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-io-open-part-zero",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _open_message(pilot)
+        screen = _main(app)
+        screen._open_indices([0])
+        await pilot.pause()
+        assert isinstance(app.screen, EmlViewerScreen)
+
+
+async def test_pressing_s_writes_the_message_as_it_arrived(
     tmp_path: Path,
 ) -> None:
+    """``s`` is part 0: one file, named after the date and the subject.
+
+    It used to open a checklist of body-as-Markdown plus attachments
+    and then a directory picker, so the keystroke that saved a message
+    was three dialogs and wrote something the other front end never
+    offered.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
         label="main-io-save-message",
@@ -198,27 +257,18 @@ async def test_save_message_callbacks_handle_cancel_success_and_traversal(
     async with app.run_test() as pilot:
         await _open_message(pilot)
         screen = _main(app)
-        app.push_screen = Mock()
-        screen.action_save_message()
-
-        on_items = app.push_screen.call_args.args[1]
-        on_items(None)
-        assert app.push_screen.call_count == 1
-        on_items(
-            [
-                SaveItem(kind="body", filename="message.md"),
-                SaveItem(kind="body", filename="../outside.md"),
-            ]
+        screen._config = screen._config.__class__(
+            accounts=screen._config.accounts,
+            downloads_path=tmp_path,
         )
-        assert app.push_screen.call_count == 2
-        on_folder = app.push_screen.call_args.args[1]
-        on_folder(None)
-        assert not (tmp_path / "message.md").exists()
-        on_folder(tmp_path)
+        screen.action_save_message()
+        await pilot.pause()
 
-    assert (tmp_path / "message.md").is_file()
-    assert not (tmp_path.parent / "outside.md").exists()
-    assert messages[-1].endswith("(1 failed)")
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1
+    assert written[0].suffix == ".eml"
+    assert b"Subject:" in written[0].read_bytes()
+    assert any(written[0].name in message for message in messages)
 
 
 async def test_the_print_pdf_folder_callback_guards_the_destination(
@@ -319,7 +369,7 @@ async def test_opening_an_index_past_the_end_reports_it(tmp_path: Path) -> None:
         screen._open_indices([99])
         await pilot.pause()
 
-    assert any("Attachment(s) not found: 99" in message for message in messages)
+    assert any("No part 99 on this message." in message for message in messages)
 
 
 def _attachment_message(subject: str, attachment: str) -> bytes:

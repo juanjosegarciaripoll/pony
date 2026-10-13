@@ -93,19 +93,34 @@ def _texts(outcome: object) -> list[str]:
 # ----------------------------------------------------------------------
 
 
-def test_add_flag_returns_the_new_row_and_then_nothing() -> None:
+def test_add_flag_returns_the_new_row_and_says_what_it_did() -> None:
+    """A thing plus an outcome, like every other action that returns one.
+
+    It used to return a bare ``IndexedMessage | None``, so a caller had
+    to decide for itself what ``None`` meant and what to say about
+    either case -- the only store mutation outside the ``Outcome``
+    contract.
+    """
     mailboxes, _config = _build("actions-add-flag")
     (message,) = _rows(mailboxes, INBOX)
 
-    updated = mailbox_actions.add_flag(mailboxes, message, MessageFlag.SEEN)
+    flagged = mailbox_actions.add_flag(mailboxes, message, MessageFlag.SEEN)
 
-    assert updated is not None
-    assert MessageFlag.SEEN in updated.local_flags
+    assert flagged.message is not None
+    assert MessageFlag.SEEN in flagged.message.local_flags
+    assert flagged.outcome.changed == 1
+    assert flagged.outcome.notices[0].text == "Marked seen."
     stored = mailboxes.index.get_message(message_ref=message.message_ref)
     assert stored is not None
     assert MessageFlag.SEEN in stored.local_flags
-    # Already set: nothing to write and nothing for a caller to repaint.
-    assert mailbox_actions.add_flag(mailboxes, updated, MessageFlag.SEEN) is None
+
+    # Already set: nothing written, nothing for a caller to repaint, and
+    # an outcome that says which of the two happened.
+    again = mailbox_actions.add_flag(mailboxes, flagged.message, MessageFlag.SEEN)
+    assert again.message is None
+    assert again.outcome.changed == 0
+    assert not again.outcome.failed
+    assert again.outcome.notices[0].text == "Already seen."
 
 
 def test_set_flag_counts_only_the_rows_it_changed() -> None:

@@ -189,9 +189,9 @@ def test_the_open_message_binds_its_own_surface() -> None:
     Twenty-eight bindings were written into the widget, so they existed
     in the terminal and nowhere else: no footer, no help screen, no
     ``/keymap.json``.  Eight of them are the pane's own vocabulary and
-    are now table entries; the twenty attachment digits stay in the
-    widget, because they differ only by the argument they carry and
-    their action lives on the screen.
+    are now table entries; the part accelerators stay in the widget,
+    because they differ only by the argument they carry and their
+    action lives on the screen.
     """
     from pony.keymap import MESSAGE_KEYS
     from pony.tui.widgets.message_view import MessageViewPanel
@@ -199,16 +199,20 @@ def test_the_open_message_binds_its_own_surface() -> None:
     from_table = to_textual(for_surface(MAIL_KEYMAP, Surface.MESSAGE))
     assert from_table == to_textual(MESSAGE_KEYS)
     assert list(MessageViewPanel.BINDINGS[: len(from_table)]) == from_table
-    # And what is left is the digits, and only the digits.
+    # And what is left is the part accelerators, and only those: ten
+    # digits and `t` for the text body, each twice -- plain opens the
+    # part, `ctrl` saves it.
     rest = [
         binding
         for binding in MessageViewPanel.BINDINGS[len(from_table) :]
         if isinstance(binding, Binding)
     ]
-    assert len(rest) == 20
+    assert len(rest) == 22
     assert {binding.key for binding in rest} == {
         *(str(digit) for digit in range(10)),
         *(f"ctrl+{digit}" for digit in range(10)),
+        "t",
+        "ctrl+t",
     }
     assert all("attachment" in str(binding.action) for binding in rest)
 
@@ -350,7 +354,7 @@ _LOCAL_BINDINGS = {
     "AddressInput": "an Input's own editing chords",
     # Named in the audit as the one set the table would make
     # unreadable: ten keys differing only by their argument.
-    "MessageViewPanel": "the twenty attachment digits",
+    "MessageViewPanel": "the part accelerators",
 }
 
 
@@ -393,7 +397,7 @@ def test_every_key_bound_in_a_screen_is_in_the_table_or_named_here() -> None:
         set(local) ^ set(_LOCAL_BINDINGS),
     )
     # The one that is a count rather than a vocabulary.
-    assert len(local["MessageViewPanel"]) == 20
+    assert len(local["MessageViewPanel"]) == 22
 
 
 def test_the_help_screen_is_rendered_from_the_table() -> None:

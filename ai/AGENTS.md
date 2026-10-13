@@ -287,13 +287,15 @@ defensive, so re-deriving it is wasted effort:
 ## Where an operation lives
 
 **An operation goes in an action module, not in a screen.** Archive,
-move, copy, trash, flags, folder creation, sending a message, the
-contact operations, answering an invitation and the calendar's event
-operations each live over the stores (`pony/mailbox_actions.py`,
-`pony/delivery.py`, `pony/contact_actions.py`,
+move, copy, trash, flags, folder creation, sending a message, saving a
+message or one of its parts, the contact operations, answering an
+invitation and the calendar's event operations each live over the
+stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
+`pony/message_export.py`, `pony/contact_actions.py`,
 `pony/invitation_actions.py`, `chronos/event_actions.py`) and return a
 `chronos.outcome.Outcome` — a count of what changed, and the notices to
-show. No `app.notify`, no `query_one`, no Textual import. An operation
+show. An operation that returns something as well returns it beside the
+outcome (`FiledMessage`, `FlaggedMessage`), never instead of it. No `app.notify`, no `query_one`, no Textual import. An operation
 that blocks (SMTP, a sync) is a plain blocking call: the terminal hands
 it to a worker thread, the browser to the thread pool.
 
@@ -309,6 +311,14 @@ The browser marks a key it cannot do as unavailable rather than
 swallowing the press, and `tests/test_web_dispatch.py` fails if the
 server calls an action available that `static/pony.js` does not
 implement, or serves a key no press could produce.
+
+**A message's parts are numbered in one place.** `0` is the message as
+it arrived, `T` is its body as text with no HTML in it, and `1..N` are
+its attachments — `pony/message_export.py` defines that, and the `s`
+key, the `S` prompt, the digit accelerators, the parts list in both
+front ends and `/message/attachment?n=` all read it from there. A front
+end that invents its own numbering is how `s` came to save
+body-as-Markdown in the terminal and the raw `.eml` in the browser.
 
 **A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
 and `chronos/views.py` decide what a row is *of* — and, for the

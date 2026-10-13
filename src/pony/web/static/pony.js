@@ -867,8 +867,8 @@ const clientActions = {
     }
     go(`/message/raw?${params}`);
   },
-  attachments_open: () => openAttachment(),
-  attachments_save: () => openAttachment(),
+  attachments_open: () => choosePart("Open"),
+  attachments_save: () => choosePart("Save"),
   move: async () => {
     const target = await ask("Move to (account/folder)", { list: "folder-names" });
     if (!target) return;
@@ -963,13 +963,21 @@ const clientActions = {
   },
 };
 
-function openAttachment() {
-  const link = document.querySelector(".attachments a[href]");
-  if (!link) {
-    say("This message has no attachments.");
+// Which part to fetch, asked the way the reader asks it. The keys come
+// from the numbering, not from the list on the page: a message with no
+// attachments shows no list and still has part 0 and part T, which is
+// the whole point of numbering them.
+async function choosePart(verb) {
+  const params = messageParams();
+  if (!params) {
+    say("Open a message first.", "warning");
     return;
   }
-  window.location.assign(link.href);
+  const answer = await ask(`${verb} part (0 = message, T = text, 1… = attachments)`, {
+    placeholder: "0",
+  });
+  if (!answer) return;
+  go(`/message/attachment?${params}&n=${encodeURIComponent(answer.trim())}`);
 }
 
 // ── Quitting ───────────────────────────────────────────────────

@@ -46,11 +46,19 @@ from ...invitation_actions import (
 )
 from ...keymap import MAIL_KEYMAP, Surface, for_surface
 from ...mailbox_actions import Mailboxes
+from ...message_export import (
+    WHOLE_MESSAGE,
+    PartKey,
+    part_key,
+    part_payload,
+    save_parts,
+)
 from ...message_renderer import (
     RenderedMessage,
     render_message,
     save_every_attachment,
     save_one_attachment,
+    unique_destination,
 )
 from ...notifications import NotificationCenter
 from ...protocols import (
@@ -1161,10 +1169,12 @@ class MainScreen(Screen[None]):
         message = self._index.get_message(message_ref=summary.message_ref)
         if message is None:
             return
-        updated = mailbox_actions.add_flag(self._mailboxes, message, MessageFlag.SEEN)
-        if updated is None:
+        flagged = mailbox_actions.add_flag(self._mailboxes, message, MessageFlag.SEEN)
+        if flagged.message is None:
+            # Already read.  The outcome says so, and saying it on every
+            # message a reader opens twice is noise, not information.
             return
-        self.query_one(MessageListPanel).update_from_indexed(updated)
+        self.query_one(MessageListPanel).update_from_indexed(flagged.message)
         self._refresh_folder_indicators()
 
     @property
@@ -1799,22 +1809,23 @@ class MainScreen(Screen[None]):
         self,
         *,
         action_label: str,
-        then: collections.abc.Callable[[list[int]], None],
+        then: collections.abc.Callable[[list[PartKey]], None],
     ) -> None:
+        """Ask which parts, and hand them to *then*.
+
+        Part 0 is the message itself, so there is always something to
+        choose and a message with no attachments is no longer refused:
+        ``S`` then ``0`` is ``s``, which is what makes one numbering
+        worth having.
+        """
         current = self._current_message_bytes(noun="attachments")
         if current is None:
             return
         _msg, raw = current
         count = len(render_message(raw).attachments)
-        if count == 0:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "No attachments on this message.",
-                severity="warning",
-            )
-            return
         from .attachment_picker_screen import AttachmentPickerScreen
 
-        def _on_selection(indices: list[int] | None) -> None:
+        def _on_selection(indices: list[PartKey] | None) -> None:
             if indices is None:
                 return
             then(indices)
@@ -1827,162 +1838,89 @@ class MainScreen(Screen[None]):
             _on_selection,
         )
 
-    def _save_indices(self, indices: list[int]) -> None:
+    def _save_indices(self, indices: list[PartKey]) -> None:
         current = self._current_message_bytes(noun="attachments")
         if current is None:
             return
         _msg, raw = current
         self._save_indices_from(raw, indices)
 
-    def _save_indices_from(self, raw: bytes, indices: list[int]) -> None:
-        dest = self._downloads_dir()
-        dest.mkdir(parents=True, exist_ok=True)
-        saved: list[str] = []
-        missing: list[int] = []
-        for idx in indices:
-            try:
-                name = save_one_attachment(raw, idx, dest)
-            except OSError as exc:
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Could not save attachment {idx}: {exc}",
-                    severity="error",
-                )
-                continue
-            if name:
-                saved.append(name)
-            else:
-                missing.append(idx)
-        if saved:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Saved {len(saved)} attachment(s) to {dest}",
-            )
-        if missing:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Attachment(s) not found: {', '.join(str(i) for i in missing)}",
-                severity="warning",
-            )
+    def _save_indices_from(self, raw: bytes, indices: list[PartKey]) -> None:
+        self._report(save_parts(render_message(raw), indices, self._downloads_dir()))
 
-    def _open_indices(self, indices: list[int]) -> None:
+    def _open_indices(self, indices: list[PartKey]) -> None:
         current = self._current_message_bytes(noun="attachments")
         if current is None:
             return
         _msg, raw = current
         self._open_indices_from(raw, indices)
 
-    def _open_indices_from(self, raw: bytes, indices: list[int]) -> None:
-        from ...message_renderer import extract_attachment as _extract_attachment
+    def _open_indices_from(self, raw: bytes, indices: list[PartKey]) -> None:
+        """Open the chosen parts, each in whatever can show it.
+
+        Part 0 and an attached message are the same kind of thing -- a
+        message -- and both go to the reader's own viewer rather than to
+        whatever the desktop would hand an ``.eml`` to.  Everything else
+        is written next to the attachments and launched.
+        """
         from .eml_viewer_screen import EmlViewerScreen
 
+        rendered = render_message(raw)
         dest = self._downloads_dir()
         dest.mkdir(parents=True, exist_ok=True)
-        missing: list[int] = []
+        missing: list[PartKey] = []
         viewers = self._config.viewers
         for idx in indices:
-            command: tuple[str, ...] | None = None
-            if raw is not None:
-                payload = _extract_attachment(raw, idx)
-                if payload is not None and payload.content_type == "message/rfc822":
-                    self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                        EmlViewerScreen(payload.data, dest, viewers=viewers)
-                    )
-                    continue
-                if payload is not None:
-                    command = resolve_viewer_command(viewers, payload.content_type)
+            payload = part_payload(rendered, idx)
+            if payload is None:
+                missing.append(idx)
+                continue
+            if payload.content_type == "message/rfc822":
+                self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+                    EmlViewerScreen(payload.data, dest, viewers=viewers)
+                )
+                continue
+            command = resolve_viewer_command(viewers, payload.content_type)
             try:
-                name = save_one_attachment(raw, idx, dest)
+                out = unique_destination(dest, payload.filename)
+                out.write_bytes(payload.data)
             except OSError as exc:
                 self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Could not save attachment {idx}: {exc}",
+                    f"Could not save part {idx}: {exc}",
                     severity="error",
                 )
                 continue
-            if name:
-                try:
-                    # The default viewer may run in this terminal and alter
-                    # input modes.  Textual's suspend context restores them.
-                    with suspend_for_external_program(self.app):
-                        launch_file(dest / name, command)
-                except OSError as exc:
-                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                        f"Could not open {name}: {exc}",
-                        severity="error",
-                    )
-            else:
-                missing.append(idx)
+            try:
+                # The default viewer may run in this terminal and alter
+                # input modes.  Textual's suspend context restores them.
+                with suspend_for_external_program(self.app):
+                    launch_file(out, command)
+            except OSError as exc:
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Could not open {out.name}: {exc}",
+                    severity="error",
+                )
         if missing:
+            absent = ", ".join(str(i) for i in missing)
             self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Attachment(s) not found: {', '.join(str(i) for i in missing)}",
+                f"No part {absent} on this message.",
                 severity="warning",
             )
 
     def action_save_message(self) -> None:
-        """Save the current message (body as Markdown + attachments) to disk.
+        """Save the message as it arrived: part 0, the whole ``.eml``.
 
-        Opens the item-picker modal first; after the user confirms, opens
-        the folder-picker.  Files are written only when both dialogs are
-        confirmed.
+        One key, one meaning, in both front ends -- the browser's ``s``
+        downloads the same bytes under the same proposed name.  It used
+        to open a checklist of body-as-Markdown plus attachments and
+        then a directory picker; the parts are ``S``'s business now, and
+        ``S`` then ``0`` is this.
         """
-        from ...message_renderer import extract_attachment, render_message_markdown
-        from .save_folder_picker_screen import SaveFolderPickerScreen
-        from .save_message_screen import SaveItem, SaveMessageScreen
-
-        msg = self.get_current_message()
-        if msg is None:
+        current = self._current_message_bytes(noun="saving")
+        if current is None:
             return
-        mirror = self._mirrors[msg.message_ref.account_name]
-        try:
-            raw = mirror.get_message_bytes(
-                folder=FolderRef(
-                    account_name=msg.message_ref.account_name,
-                    folder_name=msg.message_ref.folder_name,
-                ),
-                storage_key=msg.storage_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                "Could not read message from mirror.", severity="error"
-            )
-            return
-        rendered = render_message(raw)
-
-        pending_items: list[SaveItem] = []
-
-        def _on_folder(dest: Path | None) -> None:
-            if dest is None:
-                return
-            dest_resolved = dest.resolve()
-            saved = failed = 0
-            for item in pending_items:
-                try:
-                    out = (dest / item.filename).resolve()
-                    if not out.is_relative_to(dest_resolved):
-                        failed += 1
-                        continue
-                    if item.kind == "body":
-                        md = render_message_markdown(rendered)
-                        out.write_text(md, encoding="utf-8")
-                    else:
-                        idx = int(item.kind.split(":")[1])
-                        payload = extract_attachment(raw, idx)
-                        if payload:
-                            out.write_bytes(payload.data)
-                    saved += 1
-                except Exception:  # noqa: BLE001
-                    failed += 1
-            note = f"Saved {saved} file(s) to {dest}"
-            if failed:
-                note += f" ({failed} failed)"
-            self.app.notify(note)  # pyright: ignore[reportUnknownMemberType]
-
-        def _on_items(items: list[SaveItem] | None) -> None:
-            if not items:
-                return
-            pending_items.extend(items)
-            self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                SaveFolderPickerScreen(), _on_folder
-            )
-
-        self.app.push_screen(SaveMessageScreen(rendered), _on_items)  # pyright: ignore[reportUnknownMemberType]
+        _msg, raw = current
+        self._save_indices_from(raw, [WHOLE_MESSAGE])
 
     def save_attachment(self, index: int, dest_dir: Path) -> str | None:
         """Save one attachment of the highlighted message."""
@@ -2000,28 +1938,32 @@ class MainScreen(Screen[None]):
         _msg, raw = current
         return save_every_attachment(raw, dest_dir)
 
-    def _indices_for(self, raw: bytes, index: str) -> list[int]:
-        """``0`` means every attachment; anything else is that one."""
-        idx = int(index)
-        if idx != 0:
-            return [idx]
-        return list(range(1, len(render_message(raw).attachments) + 1))
-
     def action_open_attachment(self, index: str) -> None:
-        """Open attachment by 1-based index; 0 means open all."""
+        """Open part *index*: 0 the message, T its text, 1..N attachments.
+
+        ``0`` used to mean every attachment.  It is the message itself
+        now, which is the numbering ``s``, ``S`` and the browser all
+        use; every part at once is ``*`` in the ``S`` prompt.
+        """
+        key = part_key(index)
+        if key is None:
+            return
         current = self._current_message_bytes(noun="attachments")
         if current is None:
             return
         _msg, raw = current
-        self._open_indices_from(raw, self._indices_for(raw, index))
+        self._open_indices_from(raw, [key])
 
     def action_save_attachment(self, index: str) -> None:
-        """Save attachment by 1-based index; 0 means save all."""
+        """Save part *index*: 0 the message, T its text, 1..N attachments."""
+        key = part_key(index)
+        if key is None:
+            return
         current = self._current_message_bytes(noun="attachments")
         if current is None:
             return
         _msg, raw = current
-        self._save_indices_from(raw, self._indices_for(raw, index))
+        self._save_indices_from(raw, [key])
 
     def _downloads_dir(self) -> Path:
         return self._config.downloads_path or Path.home() / "Downloads"

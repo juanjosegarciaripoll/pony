@@ -29,6 +29,7 @@ from ..domain import FolderRef, MessageFlag
 from ..folder_utils import shows_recipient
 from ..invitation import CALENDAR_CONTENT_TYPES
 from ..mailbox_actions import folder_unread_counts
+from ..message_export import message_parts
 from ..message_renderer import fmt_size, parse_styled_body, render_message
 from ..views import build_folder_tree, message_row, summary_of
 from . import urls
@@ -689,7 +690,13 @@ def _attachments(
     *,
     answerable: bool = False,
 ) -> Raw | None:
-    """The attachment list, with an Import control where one helps.
+    """The parts of the message, with an Import control where one helps.
+
+    Numbered as the reader numbers them -- ``0`` the message as it
+    arrived, ``T`` its body as text, then the attachments -- so a user
+    who knows ``S`` then ``0`` in the terminal finds the same thing
+    here, and the download names match because both ask
+    :mod:`pony.message_export` for them.
 
     *answerable* says the page is already showing this message's
     invitation with Accept, Decline and Tentative on it.  A
@@ -703,27 +710,32 @@ def _attachments(
     if not rendered.attachments:
         return None
     targets = () if answerable else _calendar_targets(services)
+    by_index = {attachment.index: attachment for attachment in rendered.attachments}
     return element(
         "ul",
         join(
             element(
                 "li",
+                element("span", f"{part.key}", class_="part-key"),
                 element(
                     "a",
-                    attachment.filename,
-                    href=urls.attachment_url(ref, attachment.index),
+                    part.filename,
+                    href=urls.part_url(ref, part.key),
                     download=True,
                 ),
                 element(
                     "span",
-                    f"{attachment.content_type}, {fmt_size(attachment.size_bytes)}",
+                    f"{part.content_type}, {fmt_size(part.size_bytes)}"
+                    + (f" — {part.note}" if part.note else ""),
                     class_="about",
                 ),
-                _import_control(attachment, targets)
-                if _is_calendar_file(attachment)
+                _import_control(by_index[part.key], targets)
+                if isinstance(part.key, int)
+                and part.key in by_index
+                and _is_calendar_file(by_index[part.key])
                 else None,
             )
-            for attachment in rendered.attachments
+            for part in message_parts(rendered)
         ),
         class_="attachments",
     )

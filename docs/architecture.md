@@ -54,6 +54,7 @@ src/pony/
   contact_actions.py   # harvest, list, the form's fields, delete, merge
   contact_merge.py     # what one record holds when two are combined
   invitation_actions.py# file an invitation, answer its organizer
+  message_export.py    # the parts of a message (0 it, T its text, 1..N), saved
   keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
@@ -98,10 +99,9 @@ src/pony/
       link_action_screen.py      # Open / Copy / Cancel dialog for body links
       floating_input_screen.py   # base class for bottom floating-input bars
       save_draft_screen.py       # draft save confirmation
-      save_message_screen.py     # save body + attachments item picker
       save_folder_picker_screen.py # directory picker for saving files
       add_attachment_screen.py   # file picker
-      attachment_picker_screen.py# pick previously-attached files by number
+      attachment_picker_screen.py# pick parts by number (0 = message, T = text)
       eml_viewer_screen.py       # standalone .eml viewer
       invitation_screen.py       # i — accept / decline / file an invitation
       goto_folder_screen.py      # G — fuzzy jump to folder

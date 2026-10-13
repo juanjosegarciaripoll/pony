@@ -18,6 +18,7 @@ from ...authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
 from ...browser_preview import serve_html
 from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
+from ...message_export import message_parts
 from ...message_renderer import (
     RenderedMessage,
     build_browser_html,
@@ -102,12 +103,13 @@ class MessageViewPanel(VerticalScroll):
 
     # The pane's own keys come from `pony.keymap`'s MESSAGE surface, so
     # they reach the footer, both help screens and `/keymap.json`
-    # instead of existing in this file alone.  The twenty attachment
-    # digits stay here: they are the one set the table would make
-    # unreadable -- ten of them differ only by the argument they carry,
-    # and the action lives on the screen rather than on this widget --
-    # and `tests/test_keymap.py` names them as the exception rather than
-    # letting a new hand-written binding in beside them.
+    # instead of existing in this file alone.  The part accelerators
+    # stay here: they are the one set the table would make unreadable
+    # -- eleven of them differ only by the argument they carry, and the
+    # action lives on the screen rather than on this widget -- and
+    # `tests/test_keymap.py` names them as the exception rather than
+    # letting a new hand-written binding in beside them.  `t` is part
+    # `T`, the body as text, which is a part like any other.
     BINDINGS = [
         *MESSAGE_BINDINGS,
         Binding("0", "screen.open_attachment('0')", show=False),
@@ -130,6 +132,8 @@ class MessageViewPanel(VerticalScroll):
         Binding("ctrl+7", "screen.save_attachment('7')", show=False),
         Binding("ctrl+8", "screen.save_attachment('8')", show=False),
         Binding("ctrl+9", "screen.save_attachment('9')", show=False),
+        Binding("t", "screen.open_attachment('T')", show=False),
+        Binding("ctrl+t", "screen.save_attachment('T')", show=False),
     ]
 
     @dataclass
@@ -334,15 +338,21 @@ class MessageViewPanel(VerticalScroll):
         lines.append(f"Subject: {_escape(r.subject)}")
 
         if r.attachments:
+            # Numbered as `pony.message_export` numbers them, part 0
+            # included, so the digit that opens a part is the one beside
+            # it here and the one typed at the `S` prompt.  Only when
+            # there is an attachment: a plain message would otherwise
+            # carry a block naming itself.
             lines.append("")
-            lines.append("Attachments:")
-            for att in r.attachments:
-                name = _escape(att.filename)
-                link = f"[@click=\"screen.open_attachment('{att.index}')\"]"
+            lines.append("Parts:")
+            for part in message_parts(r):
+                name = _escape(part.filename)
+                link = f"[@click=\"screen.open_attachment('{part.key}')\"]"
+                note = f"  {part.note}" if part.note else ""
                 lines.append(
-                    f"  [{att.index}] {link}{name}[/]"
-                    f"  {_escape(att.content_type)}"
-                    f"  ({fmt_size(att.size_bytes)})"
+                    f"  [{part.key}] {link}{name}[/]"
+                    f"  {_escape(part.content_type)}"
+                    f"  ({fmt_size(part.size_bytes)}){note}"
                 )
 
         if self._invitation is not None:

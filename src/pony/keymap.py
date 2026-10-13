@@ -133,9 +133,9 @@ READER_KEYS: tuple[KeyBinding, ...] = (
     # it would have put a key in the browser's own help that could never
     # fire.
     KeyBinding("F", "new_folder", "New folder", Surface.READER),
-    KeyBinding("s", "save_message", "Save", Surface.READER, show=False),
-    KeyBinding("O", "attachments_open", "Open att.", Surface.READER, show=False),
-    KeyBinding("S", "attachments_save", "Save att.", Surface.READER, show=False),
+    KeyBinding("s", "save_message", "Save message", Surface.READER, show=False),
+    KeyBinding("O", "attachments_open", "Open part", Surface.READER, show=False),
+    KeyBinding("S", "attachments_save", "Save part", Surface.READER, show=False),
     KeyBinding("/", "search", "Search", Surface.READER, show=False),
     KeyBinding("G", "goto_folder", "Goto folder", Surface.READER, show=False),
     KeyBinding(

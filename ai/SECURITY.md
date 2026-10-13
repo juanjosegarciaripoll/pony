@@ -74,10 +74,10 @@ second surface.  What stands between them:
 
 | # | Finding | Severity | File(s) | Status |
 |---|---------|----------|---------|--------|
-| 1 | **Path traversal via `Content-Disposition` filename (Save dialog path)** — `filename="../../.bashrc"` pre-populated the Save dialog; `(dest / item.filename).write_bytes()` could write outside the chosen directory. | HIGH | `tui/screens/save_message_screen.py`, `tui/screens/main_screen.py` | Fixed |
+| 1 | **Path traversal via `Content-Disposition` filename (Save dialog path)** — `filename="../../.bashrc"` pre-populated the Save dialog; `(dest / item.filename).write_bytes()` could write outside the chosen directory. | HIGH | `message_renderer.py` (was the save dialog), `tui/screens/main_screen.py` | Fixed |
 | 2 | **Path traversal via `Content-Disposition` filename (direct-save path)** — `save_attachment()` → `_unique_path(dest_dir, payload.filename)` used the raw filename directly, bypassing the dialog-level fix. | HIGH | `tui/widgets/message_view.py` | Fixed |
 | 3 | **Path traversal via Subject-derived `.eml` filename** — nested `message/rfc822` attachments used the raw Subject header as a filename stem. | HIGH | `tui/message_renderer.py` | Fixed |
-| 4 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` as a body filename stem. | MEDIUM | `tui/screens/save_message_screen.py` | Fixed |
+| 4 | **Subject slug admitted `..`** — `_subject_slug()` allowed `.` through, so a subject `".. "` produced the slug `".."` as a body filename stem. | MEDIUM | `message_renderer.py` (was the save dialog) | Fixed |
 | 5 | **Terminal escape injection via email headers** — `_escape()` escaped `[` for Rich markup but did not strip `\x1b` or other C0 control characters.  A Subject or From header containing ANSI escape sequences could corrupt terminal state (clear screen, move cursor, change colours) when the message was displayed. | MEDIUM | `tui/widgets/message_view.py` | Fixed |
 | 6 | **Textual markup injection via contact fields** — `ContactDetailScreen` passed `display_name`, `affix`, `aliases`, `organization`, email addresses and `notes` directly to `Static()` without escaping.  A crafted `From` display name harvested into the contacts database could inject `[link=…]` or other Rich markup tags, creating false clickable links in the contact detail view. | HIGH | `tui/screens/contact_detail_screen.py` | Fixed |
 | 8 | **Cross-site request forgery against every mutating route** — `POST /action/<name>`, `/compose`, `/compose/attachment` and `/contacts/edit` had no origin check of any kind.  Under `--no-token` — the configuration `docs/architecture.md` recommends for a tailnet — any page the user's browser loaded could empty a folder, send mail as them and stop the process, needing no network access at all because the documented `127.0.0.1:8730` default is reachable from their own browser.  Reproduced from a genuinely cross-site origin in headless Chromium.  With a token the attack was refused only by the cookie's `SameSite=strict`, which carried a comment describing it as a convenience for phones. | CRITICAL | `web/app.py` | Fixed |
@@ -99,14 +99,14 @@ second surface.  What stands between them:
   and removes remaining control characters before constructing the output path,
   closing the direct-save path traversal.
 
-**`tui/screens/save_message_screen.py`**
+**`message_renderer.py`** — the three helpers below were the save
+dialog's; they are shared by both front ends now, and the dialog they
+came from is gone.
 
-- New `_sanitize_attachment_filename()`: strips directory components via
+- `safe_attachment_filename()`: strips directory components via
   `Path(filename).name`, removes control characters, and rejects bare `.`/`..`.
-- `_proposed_attachment_filename()` now calls `_sanitize_attachment_filename()`.
-- `_subject_slug()` collapses multi-dot sequences (`..`, `...`) to a single dot.
-
-**`tui/message_renderer.py`**
+- `proposed_attachment_filename()` calls it.
+- `subject_slug()` collapses multi-dot sequences (`..`, `...`) to a single dot.
 
 - New `_safe_filename_stem()` and `_UNSAFE_FILENAME_CHARS_RE`: replaces
   forbidden path characters and strips leading/trailing dots and spaces.

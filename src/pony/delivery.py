@@ -358,8 +358,11 @@ def deliver_message(
         contacts=contacts,
         recipients=(to, cc),
     )
-    if answering is not None:
-        add_flag(mailboxes, answering, MessageFlag.ANSWERED)
+    answered = (
+        ()
+        if answering is None
+        else add_flag(mailboxes, answering, MessageFlag.ANSWERED).outcome.notices
+    )
     refused = (
         None if source_draft is None else _retire_source_draft(mailboxes, source_draft)
     )
@@ -369,6 +372,7 @@ def deliver_message(
         notices=(
             *filed.notices,
             info(f"Message sent to {to} via {host}."),
+            *answered,
             *extra,
         ),
     )

@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 
 if TYPE_CHECKING:
     from ..domain import FolderRef, MessageRef
+    from ..message_export import PartKey
 
 MAIL = "/mail"
 ROWS = "/mail/rows"
@@ -69,8 +70,13 @@ def raw_url(ref: MessageRef) -> str:
     return RAW + _message_query(ref)
 
 
-def attachment_url(ref: MessageRef, index: int) -> str:
-    return ATTACHMENT + _message_query(ref) + f"&n={index}"
+def part_url(ref: MessageRef, key: PartKey) -> str:
+    """Where one part of a message is served: ``n=0``, ``n=T``, ``n=3``.
+
+    The same names the reader's prompt takes, so a link and a keystroke
+    mean the same thing.
+    """
+    return ATTACHMENT + _message_query(ref) + f"&n={key}"
 
 
 def compose_url(
@@ -144,7 +150,7 @@ __all__ = [
     "MESSAGE",
     "RAW",
     "ROWS",
-    "attachment_url",
+    "part_url",
     "body_url",
     "calendar_url",
     "compose_url",

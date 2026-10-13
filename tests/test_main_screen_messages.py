@@ -364,7 +364,7 @@ async def test_setting_a_flag_that_is_already_present_changes_nothing() -> None:
 
 
 def test_marking_an_already_answered_message_is_a_noop() -> None:
-    """``add_flag`` says whether the row changed, so a caller can tell."""
+    """``add_flag`` says whether the row changed, and what it did."""
     from tui_helpers import make_index, make_test_account, make_tmp_paths
 
     from pony import mailbox_actions
@@ -404,12 +404,16 @@ def test_marking_an_already_answered_message_is_a_noop() -> None:
         ),
     )
 
-    changed = mailbox_actions.add_flag(mailboxes, row, MessageFlag.ANSWERED)
-    assert changed is not None
-    assert MessageFlag.ANSWERED in changed.local_flags
+    flagged = mailbox_actions.add_flag(mailboxes, row, MessageFlag.ANSWERED)
+    assert flagged.message is not None
+    assert MessageFlag.ANSWERED in flagged.message.local_flags
+    assert flagged.outcome.changed == 1
 
-    # Already set: nothing to write, and nothing to repaint.
-    assert mailbox_actions.add_flag(mailboxes, changed, MessageFlag.ANSWERED) is None
+    # Already set: nothing to write, nothing to repaint, and an outcome
+    # that says which of the two it was.
+    again = mailbox_actions.add_flag(mailboxes, flagged.message, MessageFlag.ANSWERED)
+    assert again.message is None
+    assert again.outcome.changed == 0
     still = index.get_message(message_ref=row.message_ref)
     assert still is not None
     assert MessageFlag.ANSWERED in still.local_flags

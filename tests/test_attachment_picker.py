@@ -10,11 +10,22 @@ from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
 class ParseAttachmentSelectionTest(unittest.TestCase):
     """Input grammar for the O / S attachment pickers."""
 
-    def test_star_expands_to_full_range(self) -> None:
+    def test_star_expands_to_every_part(self) -> None:
+        """The message, its text, and each attachment."""
         self.assertEqual(
             parse_attachment_selection("*", total=3),
-            [1, 2, 3],
+            [0, "T", 1, 2, 3],
         )
+
+    def test_the_message_and_its_text_are_parts(self) -> None:
+        self.assertEqual(parse_attachment_selection("0", total=3), [0])
+        self.assertEqual(parse_attachment_selection("T", total=3), ["T"])
+        self.assertEqual(parse_attachment_selection("t", total=0), ["T"])
+        self.assertEqual(parse_attachment_selection("0,T,2", total=3), [0, "T", 2])
+
+    def test_a_name_that_is_neither(self) -> None:
+        self.assertIsNone(parse_attachment_selection("x", total=3))
+        self.assertIsNone(parse_attachment_selection("T,T", total=3))
 
     def test_single_index(self) -> None:
         self.assertEqual(parse_attachment_selection("2", total=3), [2])
@@ -40,7 +51,6 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
         self.assertIsNone(parse_attachment_selection("1,foo", total=3))
 
     def test_out_of_range_low_returns_none(self) -> None:
-        self.assertIsNone(parse_attachment_selection("0", total=3))
         self.assertIsNone(parse_attachment_selection("-1", total=3))
 
     def test_out_of_range_high_returns_none(self) -> None:
@@ -50,8 +60,9 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
     def test_duplicates_rejected(self) -> None:
         self.assertIsNone(parse_attachment_selection("1,1", total=3))
 
-    def test_star_with_zero_total(self) -> None:
-        self.assertEqual(parse_attachment_selection("*", total=0), [])
+    def test_star_on_a_message_with_no_attachments(self) -> None:
+        """Still two parts: the message, and the message as text."""
+        self.assertEqual(parse_attachment_selection("*", total=0), [0, "T"])
 
     def test_trailing_comma_tolerated(self) -> None:
         self.assertEqual(parse_attachment_selection("1,", total=3), [1])
@@ -76,7 +87,8 @@ class ParseAttachmentSelectionTest(unittest.TestCase):
 
     def test_range_out_of_bounds_returns_none(self) -> None:
         self.assertIsNone(parse_attachment_selection("1-4", total=3))
-        self.assertIsNone(parse_attachment_selection("0-2", total=3))
+        # A range may start at the message and run into the attachments.
+        self.assertEqual(parse_attachment_selection("0-2", total=3), [0, 1, 2])
 
     def test_range_overlap_duplicates_rejected(self) -> None:
         self.assertIsNone(parse_attachment_selection("1-3, 2", total=3))

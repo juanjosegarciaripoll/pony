@@ -69,27 +69,54 @@ class Mailboxes:
 # ----------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class FlaggedMessage:
+    """The row a flag change produced, and what to say about it.
+
+    ``message`` is the row as it now stands, or ``None`` when nothing
+    was written because the flag was already there.  The shape every
+    other action that returns a thing uses (:class:`FiledMessage`,
+    ``SavedEvent``): a caller that only wants to know whether to
+    repaint reads ``message``, and one that reports to a user reads
+    ``outcome`` rather than inventing its own wording.
+    """
+
+    message: IndexedMessage | None
+    outcome: Outcome
+
+
 def add_flag(
     mailboxes: Mailboxes,
     message: IndexedMessage,
     flag: MessageFlag,
-) -> IndexedMessage | None:
+) -> FlaggedMessage:
     """Add *flag* to one message, returning the row it became.
 
-    Returns ``None`` when the flag was already set, so a caller can tell
-    "nothing to repaint" from "repaint this row".  The index is the only
-    store of flag state — nothing reads flags back out of the mirror, so
-    writing them there would be data no one consumes.
+    A flag that was already set is not a failure and changed nothing,
+    so the outcome counts zero and says so at ``information``: every
+    caller is a reader opening mail it has already read, where there is
+    nothing to tell.  The index is the only store of flag state —
+    nothing reads flags back out of the mirror, so writing them there
+    would be data no one consumes.
     """
     if flag in message.local_flags:
-        return None
+        return FlaggedMessage(
+            message=None,
+            outcome=Outcome(
+                changed=0,
+                notices=(Notice(f"Already {flag.value}."),),
+            ),
+        )
     updated = dataclasses.replace(
         message,
         local_flags=message.local_flags | {flag},
     )
     with mailboxes.index.connection():
         mailboxes.index.upsert_message(message=updated)
-    return updated
+    return FlaggedMessage(
+        message=updated,
+        outcome=Outcome(changed=1, notices=(Notice(f"Marked {flag.value}."),)),
+    )
 
 
 def set_flag(
@@ -713,6 +740,7 @@ def _count_suffix(count: int) -> str:
 
 __all__ = [
     "Mailboxes",
+    "FlaggedMessage",
     "add_flag",
     "archive_messages",
     "check_move_policy",

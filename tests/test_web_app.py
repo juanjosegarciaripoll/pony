@@ -469,6 +469,57 @@ def test_an_attachment_is_served_as_a_download_that_cannot_be_sniffed() -> None:
     assert 'filename="q1-report.pdf"' in response.headers["content-disposition"]
 
 
+def test_the_browser_offers_the_parts_the_reader_offers() -> None:
+    """``0`` the message, ``T`` its text, then the attachments.
+
+    The page listed attachments only, so the two parts a user can ask
+    for by name in the terminal had no link here -- and the numbering
+    beside each one is what makes `S` then `0` and a click the same
+    operation.
+    """
+    services, index = _services(
+        "web-parts",
+        seed=(multipart_mixed_attachment(),),
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        page = client.get(_message(message_id)).text
+        whole = client.get(_message(message_id, path="/message/attachment", n=0))
+        text = client.get(_message(message_id, path="/message/attachment", n="T"))
+        lowercase = client.get(_message(message_id, path="/message/attachment", n="t"))
+        nonsense = client.get(_message(message_id, path="/message/attachment", n="x"))
+
+    assert "the message itself" in page
+    assert "the body as text" in page
+    assert "q1-report.pdf" in page
+
+    assert whole.status_code == 200
+    assert whole.headers["content-type"].startswith("message/rfc822")
+    assert b"Subject:" in whole.content
+
+    assert text.status_code == 200
+    assert text.headers["content-type"].startswith("text/plain")
+    assert ".txt" in text.headers["content-disposition"]
+    assert lowercase.content == text.content
+
+    assert nonsense.status_code == 400
+
+
+def test_the_text_part_of_an_html_message_has_no_html_in_it() -> None:
+    """What `T` means: the reading, not the markup."""
+    services, index = _services("web-part-text-html", seed=(html_only(),))
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.get(_message(message_id, path="/message/attachment", n="T"))
+
+    body = response.content.decode("utf-8")
+    assert response.status_code == 200
+    assert "<" not in body
+    assert body.strip()
+
+
 def _cyrillic_attachment() -> bytes:
     """A message whose attachment is named in a script latin-1 has not got."""
     from email.message import EmailMessage

@@ -618,7 +618,7 @@ def test_every_url_the_module_builds_is_answered_with_what_it_asked_for() -> Non
         # The HTML version, the raw bytes and an attachment all resolve.
         assert client.get(urls.body_url(ref)).status_code == 200
         assert client.get(urls.raw_url(ref)).status_code == 200
-        assert client.get(urls.attachment_url(ref, 1)).status_code in {200, 404}
+        assert client.get(urls.part_url(ref, 1)).status_code in {200, 404}
         # The composer is prefilled from the message the link names.
         writing = client.get(
             urls.compose_url(

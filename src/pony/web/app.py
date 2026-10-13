@@ -53,7 +53,8 @@ from chronos.outcome import Notice, Outcome, Severity, warn
 from .. import contact_actions, mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef
 from ..html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
-from ..message_renderer import build_browser_html, extract_attachment
+from ..message_export import part_key, part_payload
+from ..message_renderer import build_browser_html, render_message
 from . import calendar as calendar_view
 from . import compose as compose_view
 from . import contacts as contacts_view
@@ -500,7 +501,7 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
     before, so three of them were distinguished by the browser's own
     numbering and nothing else.
     """
-    from ..message_renderer import proposed_filename, render_message
+    from ..message_renderer import proposed_filename
 
     raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
@@ -516,18 +517,25 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
 
 
 async def _attachment(services: WebServices, request: Request) -> Response:
-    """One attachment's bytes, by the index the reader lists it under."""
+    """One part's bytes, by the name the reader lists it under.
+
+    ``0`` is the message as it arrived and ``T`` is its body as text,
+    so the browser offers the same parts the terminal's ``S`` prompt
+    takes rather than attachments alone.
+    """
     raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
         return raw
-    index = request.query_params.get("n", "")
-    if not index.isdigit():
-        return PlainTextResponse("Which attachment?", status_code=400)
+    key = part_key(request.query_params.get("n", ""))
+    if key is None:
+        return PlainTextResponse("Which part?", status_code=400)
     # Parsing a multipart message to find part N is the one piece of
     # work here that grows with the attachment.
-    payload = await run_in_threadpool(extract_attachment, raw, int(index))
+    payload = await run_in_threadpool(
+        lambda: part_payload(render_message(raw), key),
+    )
     if payload is None:
-        return PlainTextResponse("No such attachment.", status_code=404)
+        return PlainTextResponse("No such part.", status_code=404)
     return Response(
         payload.data,
         media_type=payload.content_type,

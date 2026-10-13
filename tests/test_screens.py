@@ -1083,11 +1083,11 @@ async def test_contacts_app_search_bar() -> None:
 # ===========================================================================
 
 
-def test_parse_attachment_selection_star_returns_all() -> None:
+def test_parse_attachment_selection_star_returns_every_part() -> None:
     from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
 
     result = parse_attachment_selection("*", total=3)
-    assert result == [1, 2, 3]
+    assert result == [0, "T", 1, 2, 3]
 
 
 def test_parse_attachment_selection_single() -> None:
