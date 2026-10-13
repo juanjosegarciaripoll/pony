@@ -11,6 +11,7 @@ from textual.screen import Screen
 
 from ...domain import ViewerRule
 from ...handoff import handoff_path
+from ...message_export import downloads_dir as resolve_downloads_dir
 from ...message_export import viewer_command
 from ...message_renderer import extract_attachment
 from ..terminal import (
@@ -46,7 +47,7 @@ class EmlViewerScreen(Screen[None]):
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._raw_bytes = raw_bytes
-        self._downloads_dir = downloads_dir or Path.home() / "Downloads"
+        self._downloads_dir = resolve_downloads_dir(downloads_dir)
         self._viewers = viewers
 
     def compose(self) -> ComposeResult:

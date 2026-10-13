@@ -3757,7 +3757,12 @@ def run_eml_viewer(
 
     config = try_load_config(config_path)
     viewers = config.viewers if config is not None else ()
-    EmlViewerApp(raw_bytes=raw_bytes, theme_name=effective_theme, viewers=viewers).run()
+    EmlViewerApp(
+        raw_bytes=raw_bytes,
+        theme_name=effective_theme,
+        viewers=viewers,
+        downloads_dir=config.downloads_path if config is not None else None,
+    ).run()
     return 0
 
 

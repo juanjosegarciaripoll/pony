@@ -688,11 +688,16 @@ class EmlViewerApp(QuitAsksTheScreen):
         raw_bytes: bytes,
         theme_name: str | None = None,
         viewers: Sequence[ViewerRule] = (),
+        downloads_dir: Path | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._raw_bytes = raw_bytes
         self._viewers = viewers
+        # What the configuration says, or nothing and the screen asks
+        # `message_export.downloads_dir`.  Saving a part out of a lone
+        # `.eml` writes it where saving one out of the reader does.
+        self._downloads_dir = downloads_dir
         if theme_name is not None:
             self.theme = theme_name
 
@@ -701,7 +706,13 @@ class EmlViewerApp(QuitAsksTheScreen):
         set_terminal_title("Pony Express — Viewer")
         from .screens.eml_viewer_screen import EmlViewerScreen
 
-        self.push_screen(EmlViewerScreen(self._raw_bytes, viewers=self._viewers))
+        self.push_screen(
+            EmlViewerScreen(
+                self._raw_bytes,
+                self._downloads_dir,
+                viewers=self._viewers,
+            )
+        )
 
     def on_unmount(self) -> None:
         pop_terminal_title()

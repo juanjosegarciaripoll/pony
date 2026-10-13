@@ -705,6 +705,50 @@ async def test_eml_viewer_screen_save_attachment_index_0_all(
     assert len(saved) >= 1
 
 
+async def test_eml_viewer_app_saves_where_it_was_told(tmp_path) -> None:
+    """`pony view`'s app hands its downloads directory to the screen."""
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    app = EmlViewerApp(
+        raw_bytes=corpus.multipart_mixed_attachment(),
+        downloads_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_save_attachment("1")
+        await pilot.pause()
+
+    assert list(tmp_path.glob("*.pdf"))
+
+
+async def test_eml_viewer_asks_message_export_where_downloads_go(tmp_path) -> None:
+    """With nothing configured the viewer does not invent `~/Downloads`.
+
+    It asks `message_export.downloads_dir`, which is the one answer both
+    front ends read, so a lone `.eml` saves a part where the reader does.
+    """
+    from unittest.mock import patch
+
+    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+
+    with patch(
+        "pony.tui.screens.eml_viewer_screen.resolve_downloads_dir",
+        return_value=tmp_path,
+    ) as resolve:
+        app = EmlViewerApp(raw_bytes=corpus.multipart_mixed_attachment())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, EmlViewerScreen)
+            screen.action_save_attachment("1")
+            await pilot.pause()
+
+    resolve.assert_called_once_with(None)
+    assert list(tmp_path.glob("*.pdf"))
+
+
 async def test_eml_viewer_screen_open_attachment_0_opens_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

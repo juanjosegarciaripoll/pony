@@ -3279,6 +3279,54 @@ class AppLaunchingCommandTests(unittest.TestCase):
             (ViewerRule("text/calendar", ("chronos", "import")),),
         )
 
+    def test_the_view_command_passes_the_configured_downloads_path(self) -> None:
+        """A part saved out of a lone `.eml` goes where the config says."""
+        from unittest.mock import patch
+
+        with isolated_app_env(), temporary_config() as config_path:
+            name = f"view-downloads-{uuid4().hex}"
+            # A top-level key, so it has to go in the top-level block:
+            # appended at the end it would land inside the last table.
+            text = config_path.read_text(encoding="utf-8")
+            config_path.write_text(
+                text.replace(
+                    'profile = "test"',
+                    f'profile = "test"\ndownloads_path = "{TMP_ROOT / name}"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            eml = TMP_ROOT / f"downloads-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.plain_text())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("--config", str(config_path), "view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 0)
+        passed = app_cls.call_args.kwargs["downloads_dir"]
+        assert passed is not None
+        # `PONY_ROOT` may relocate it; what matters is that the
+        # configured directory, not `~/Downloads`, is what travelled.
+        self.assertEqual(passed.name, name)
+
+    def test_the_view_command_without_a_config_has_no_downloads_path(self) -> None:
+        """Nothing configured hands `None` down, and the screen decides."""
+        from unittest.mock import patch
+
+        with isolated_app_env():
+            eml = TMP_ROOT / f"nodownloads-{uuid4().hex}.eml"
+            eml.write_bytes(corpus.plain_text())
+            try:
+                with patch("pony.tui.app.EmlViewerApp") as app_cls:
+                    rc = run_cli_ret("view", str(eml))
+            finally:
+                eml.unlink(missing_ok=True)
+
+        self.assertEqual(rc, 0)
+        self.assertIsNone(app_cls.call_args.kwargs["downloads_dir"])
+
     def test_the_view_command_without_a_config_has_no_viewers(self) -> None:
         from unittest.mock import patch
 
