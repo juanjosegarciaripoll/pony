@@ -496,6 +496,33 @@ async def test_both_syncs_run_on_threads_the_app_owns() -> None:
     assert not calendar.started
 
 
+async def test_the_calendar_sync_is_gated_the_same_way_under_either_host() -> None:
+    """One function builds it, because there are two applications.
+
+    `ChronosApp` standalone and `PonyApp` with both halves each built
+    the `PeriodicSync` themselves, and the calendar's own copy was dead
+    whenever Pony hosted -- so the cadence, the callbacks and this gate
+    could drift into being right in one host and wrong in the other.
+    With `background_sync_enabled = false` the thread must not start,
+    and the scheduler must still be wired up, because `ctrl+g` asks it
+    for a single run.
+    """
+    import dataclasses
+
+    runtime = make_calendar_runtime(make_tmp_paths("cal-sync-gate"))
+    runtime = dataclasses.replace(
+        runtime,
+        config=dataclasses.replace(runtime.config, background_sync_enabled=False),
+    )
+    app, *_ = build_pony_app(label="cal-sync-gate", calendar=runtime)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scheduler = app.calendar_services.sync_scheduler
+        assert scheduler is not None, "nothing for the sync key to ask"
+        assert not scheduler.started, "background sync is off in the config"
+
+
 async def test_the_calendar_keeps_its_countdown_across_f2() -> None:
     """Switching halves must not restart the calendar's clock.
 

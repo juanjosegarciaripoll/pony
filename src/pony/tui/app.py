@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,11 +13,13 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
+from chronos.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS
 from chronos.outcome import Notice
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.scheduler import PeriodicSync
-from chronos.tui.app import CALENDAR_CSS
+from chronos.tui.app import CALENDAR_CSS, start_calendar_sync
 from chronos.tui.app import TuiServices as CalendarServices
+from chronos.tui.reporting import on_ui_thread
 from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
 
 from ..calendar import CalendarRuntime
@@ -49,11 +50,9 @@ from .terminal import (
 )
 
 # How often reminders are checked and the two status lines refreshed.
-# Matches the calendar's own alarm poll when it runs standalone.
-_COMPANION_TICK_SECONDS = 30.0
-
-# A reminder stays on screen long enough to be read after looking away.
-_REMINDER_TOAST_SECONDS = 120.0
+# The calendar's own poll interval, so the two halves notice a due
+# reminder at the same cadence whichever one is hosting.
+_COMPANION_TICK_SECONDS = ALARM_POLL_SECONDS
 
 
 @runtime_checkable
@@ -393,20 +392,15 @@ class PonyApp(QuitAsksTheScreen):
         services = self._calendar_services
         if self._calendar is None or services is None:
             return
-        runner = services.sync_runner
-        if runner is None:
-            return
-        scheduler: CalendarSyncScheduler = PeriodicSync(
-            name="calendar-sync",
-            runner=runner,
-            interval=self._calendar.config.background_sync_interval_seconds,
+        # The calendar's own function, so the cadence, the callbacks and
+        # the config gate are the same whether `ChronosApp` or this app
+        # is hosting.
+        start_calendar_sync(
+            services,
             on_started=self._on_calendar_sync_started,
             on_finished=self._on_calendar_sync_finished,
         )
-        self._calendar_sync = scheduler
-        services.sync_scheduler = scheduler
-        if self._calendar.config.background_sync_enabled:
-            scheduler.start()
+        self._calendar_sync = services.sync_scheduler
 
     def _stop_schedulers(self) -> None:
         for scheduler in (self._mail_sync, self._calendar_sync):
@@ -421,25 +415,16 @@ class PonyApp(QuitAsksTheScreen):
     # -- scheduler callbacks, all arriving on a scheduler thread ----------
 
     def _on_mail_sync_started(self) -> None:
-        self._on_ui_thread(self._mail_screen_started)
+        on_ui_thread(self, self._mail_screen_started)
 
     def _on_mail_sync_finished(self, outcome: MailSyncOutcome) -> None:
-        self._on_ui_thread(lambda: self._mail_screen_finished(outcome))
+        on_ui_thread(self, lambda: self._mail_screen_finished(outcome))
 
     def _on_calendar_sync_started(self) -> None:
-        self._on_ui_thread(self._calendar_screen_started)
+        on_ui_thread(self, self._calendar_screen_started)
 
     def _on_calendar_sync_finished(self, outcome: CalendarSyncOutcome) -> None:
-        self._on_ui_thread(lambda: self._calendar_screen_finished(outcome))
-
-    def _on_ui_thread(self, action: Callable[[], None]) -> None:
-        """Hop onto the UI thread, forgiving an application already gone.
-
-        A `RuntimeError` here means the user quit while a sync was in
-        flight, which is ordinary and not worth reporting.
-        """
-        with contextlib.suppress(RuntimeError):
-            self.call_from_thread(action)
+        on_ui_thread(self, lambda: self._calendar_screen_finished(outcome))
 
     def _mail_screen_started(self) -> None:
         screen = self._find_screen(MainScreen)
@@ -537,7 +522,7 @@ class PonyApp(QuitAsksTheScreen):
         """
         if not notification.urgent and notification.source is self._visible_source():
             return
-        timeout = _REMINDER_TOAST_SECONDS if notification.urgent else None
+        timeout = ALARM_TOAST_SECONDS if notification.urgent else None
         self.notify(
             notification.body or notification.title,
             title=notification.title,

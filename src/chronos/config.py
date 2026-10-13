@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import contextlib
-import os
 import re
-import tempfile
 import tomllib
 from pathlib import Path
 from typing import cast
 
+from chronos.atomic import write_atomically
 from chronos.domain import (
     CALENDAR_CONFIG_VERSION,
     DEFAULT_BACKGROUND_SYNC_INTERVAL_SECONDS,
@@ -425,19 +423,7 @@ def dump(config: AppConfig) -> dict[str, object]:
 
 def save(config: AppConfig, path: Path) -> None:
     """Write `config` to `path` atomically (temp-file + rename)."""
-    payload = _dumps_toml(dump(config)).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", suffix=".toml", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
-        raise
+    write_atomically(path, _dumps_toml(dump(config)).encode("utf-8"), suffix=".toml")
 
 
 def _dump_account(account: AccountConfig) -> dict[str, object]:

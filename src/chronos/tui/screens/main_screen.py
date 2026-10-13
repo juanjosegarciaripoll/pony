@@ -29,7 +29,9 @@ from chronos.mutations import all_day_bounds
 from chronos.outcome import Outcome
 from chronos.paths import active
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
+from chronos.sync import describe_sync_result
 from chronos.tui.bindings import main_bindings
+from chronos.tui.reporting import report
 from chronos.tui.screens.confirm_screen import ConfirmScreen
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
 from chronos.tui.screens.event_edit_screen import EventEditScreen
@@ -631,8 +633,7 @@ class MainScreen(Screen[None]):
 
     def _report(self, outcome: Outcome) -> None:
         """Say everything an operation had to say, in the order it said it."""
-        for notice in outcome.notices:
-            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
+        report(self.app, outcome)
 
     def _services(self) -> TuiServices:
         # Whichever app hosts this screen supplies the dependencies:
@@ -901,13 +902,12 @@ class MainScreen(Screen[None]):
                 "Sync errors: " + "; ".join(errors), severity="error"
             )
             return
-        added = sum(r.components_added for r in results)
-        updated = sum(r.components_updated for r in results)
-        removed = sum(r.components_removed for r in results)
-        if manual or added or updated or removed:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Sync complete: +{added} ~{updated} -{removed}"
-            )
+        changed = sum(
+            r.components_added + r.components_updated + r.components_removed
+            for r in results
+        )
+        if manual or changed:
+            self.app.notify(describe_sync_result(results))  # pyright: ignore[reportUnknownMemberType]
 
 
 def _save_last_view(view: ViewKind) -> None:

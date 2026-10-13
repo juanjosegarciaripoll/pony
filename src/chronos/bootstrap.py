@@ -8,15 +8,13 @@ experience.
 
 from __future__ import annotations
 
-import contextlib
-import os
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
 
+from chronos.atomic import write_atomically
 from chronos.config import ConfigError
 from chronos.config import load as load_config
 from chronos.domain import CALENDAR_CONFIG_VERSION
@@ -97,20 +95,7 @@ TEMPLATE_TOML = _TEMPLATE.replace(
 
 def write_template(config_path: Path) -> None:
     """Write `TEMPLATE_TOML` to `config_path` atomically (temp + rename)."""
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=".tmp-", suffix=".toml", dir=config_path.parent
-    )
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(TEMPLATE_TOML)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, config_path)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
-        raise
+    write_atomically(config_path, TEMPLATE_TOML, suffix=".toml")
 
 
 def offer_bootstrap(

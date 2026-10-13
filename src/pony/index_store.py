@@ -1436,7 +1436,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             for email in contact.emails:
                 owner = conn.execute(
                     "SELECT contact_id FROM contact_emails WHERE email_address = ?",
-                    (email.strip().lower(),),
+                    (_normalized_address(email),),
                 ).fetchone()
                 if owner is not None and int(owner[0]) != contact_id:
                     other = self._load_contact_or_none(conn, int(owner[0]))
@@ -1451,7 +1451,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                         (contact_id, email_address)
                     VALUES (?, ?)
                     """,
-                    (contact_id, email.lower().strip()),
+                    (contact_id, _normalized_address(email)),
                 )
             # Replace aliases.
             conn.execute(
@@ -1471,7 +1471,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
     def find_contact_by_email(self, *, email_address: str) -> Contact | None:
         """Look up a contact by one of its email addresses."""
-        addr = email_address.lower().strip()
+        addr = _normalized_address(email_address)
         with self._use() as conn:
             row = conn.execute(
                 "SELECT contact_id FROM contact_emails WHERE email_address = ?",
@@ -2301,6 +2301,20 @@ def _looks_like_address(value: str) -> bool:
     return looks_like_address(value)
 
 
+def _normalized_address(value: str) -> str:
+    """`contact_actions.normalize_address`, for the same reason.
+
+    ``contact_emails.email_address`` is a unique key, so the spelling
+    the store writes has to be the spelling every lookup uses: four
+    sites here wrote `.lower().strip()` and `.strip().lower()` out by
+    hand, next to a function whose docstring says it exists "so two
+    stores cannot disagree".
+    """
+    from .contact_actions import normalize_address
+
+    return normalize_address(value)
+
+
 def _harvest_message_contacts(
     conn: sqlite3.Connection, message: IndexedMessage
 ) -> None:
@@ -2312,7 +2326,7 @@ def _harvest_message_contacts(
     now = datetime_to_sql(datetime.now(tz=UTC))
     raw = ", ".join(filter(None, [message.recipients, message.cc]))
     for display_name, addr in getaddresses([raw]):
-        addr = addr.lower().strip()
+        addr = _normalized_address(addr)
         # getaddresses returns whatever it can make of a malformed
         # header, so a To: line reading "not an address at all" yields
         # the bare word "not".  Requiring an @ with something either

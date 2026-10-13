@@ -303,11 +303,17 @@ def _shake_decrypt(blob: bytes, key: bytes) -> str:
 # -- DPAPI (Windows only) --------------------------------------------------
 
 
-def _dpapi_encrypt(plaintext: str) -> bytes:
+def _dpapi_call(data: bytes, *, protect: bool) -> bytes:
+    """Hand *data* to DPAPI and return what comes back.
+
+    ``CryptProtectData`` and ``CryptUnprotectData`` take and return the
+    same ``DATA_BLOB`` in and out, so one body serves both directions:
+    the pair used to declare the structure, build the input blob, check
+    the return value and free the output twice over, differing in the
+    name of the entry point.
+    """
     import ctypes
     import ctypes.wintypes
-
-    data = plaintext.encode("utf-8")
 
     class _BLOB(ctypes.Structure):
         _fields_ = [
@@ -320,34 +326,20 @@ def _dpapi_encrypt(plaintext: str) -> bytes:
         ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_char)),
     )
     blob_out = _BLOB()
-    if not ctypes.windll.crypt32.CryptProtectData(  # type: ignore[attr-defined, unused-ignore]
+    name = "CryptProtectData" if protect else "CryptUnprotectData"
+    entry_point = getattr(ctypes.windll.crypt32, name)  # type: ignore[attr-defined, unused-ignore]
+    if not entry_point(
         ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
     ):
-        raise ConfigError("DPAPI CryptProtectData failed")
+        raise ConfigError(f"DPAPI {name} failed")
     result = bytes(blob_out.pbData[: blob_out.cbData])
     ctypes.windll.kernel32.LocalFree(blob_out.pbData)  # type: ignore[attr-defined, unused-ignore]
     return result
 
 
+def _dpapi_encrypt(plaintext: str) -> bytes:
+    return _dpapi_call(plaintext.encode("utf-8"), protect=True)
+
+
 def _dpapi_decrypt(blob: bytes) -> str:
-    import ctypes
-    import ctypes.wintypes
-
-    class _BLOB(ctypes.Structure):
-        _fields_ = [
-            ("cbData", ctypes.wintypes.DWORD),
-            ("pbData", ctypes.POINTER(ctypes.c_char)),
-        ]
-
-    blob_in = _BLOB(
-        len(blob),
-        ctypes.cast(ctypes.c_char_p(blob), ctypes.POINTER(ctypes.c_char)),
-    )
-    blob_out = _BLOB()
-    if not ctypes.windll.crypt32.CryptUnprotectData(  # type: ignore[attr-defined, unused-ignore]
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise ConfigError("DPAPI CryptUnprotectData failed")
-    result = bytes(blob_out.pbData[: blob_out.cbData])
-    ctypes.windll.kernel32.LocalFree(blob_out.pbData)  # type: ignore[attr-defined, unused-ignore]
-    return result.decode("utf-8")
+    return _dpapi_call(blob, protect=False).decode("utf-8")

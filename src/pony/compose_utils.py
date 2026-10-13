@@ -10,6 +10,7 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from pathlib import Path
 
+from .contact_actions import normalize_address
 from .message_renderer import RenderedMessage
 
 _QUOTE_BOUNDARY_RE = re.compile(
@@ -208,16 +209,17 @@ def build_reply_all_recipients(
         field = msg[header]
         return [(a.display_name, a.addr_spec) for a in field.addresses] if field else []
 
-    self_norm = self_address.strip().lower()
-    excluded: set[str] = {addr.lower() for _, addr in _addr_pairs("From") if addr}
-    excluded.add(self_norm)
+    excluded: set[str] = {
+        normalize_address(addr) for _, addr in _addr_pairs("From") if addr
+    }
+    excluded.add(normalize_address(self_address))
 
     cc_parts: list[str] = []
     seen: set[str] = set(excluded)
     for name, addr in _addr_pairs("To") + _addr_pairs("Cc"):
         if not addr:
             continue
-        norm = addr.lower()
+        norm = normalize_address(addr)
         if norm in seen:
             continue
         seen.add(norm)

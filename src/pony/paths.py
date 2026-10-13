@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from urllib.parse import quote
 
+from chronos.atomic import write_atomically
+from chronos.paths import expand_path
+
 APP_NAME = "pony"
 ROOT_ENV = "PONY_ROOT"
 PROFILE_STAMP = "profile.toml"
@@ -25,9 +28,7 @@ def sandbox_root() -> Path | None:
     raw = os.environ.get(ROOT_ENV)
     if not raw:
         return None
-    # os.path.expanduser, not Path.expanduser: the latter raises
-    # RuntimeError when there is no home directory to expand to.
-    return Path(os.path.expanduser(os.path.expandvars(raw)))  # noqa: PTH111
+    return expand_path(raw)
 
 
 def _lexically_normal[AnyPath: PurePath](path: AnyPath) -> AnyPath:
@@ -196,10 +197,13 @@ def claim_profile(data_dir: Path, profile: str) -> None:
     """
     found = read_profile(data_dir)
     if found is None:
-        data_dir.mkdir(parents=True, exist_ok=True)
-        (data_dir / PROFILE_STAMP).write_text(
-            f'profile = "{profile}"\n',
-            encoding="utf-8",
+        # The stamp is what stops a second config from pointing at this
+        # directory, so a half-written one -- an interrupted first run,
+        # a full disk -- would leave a directory nothing owns.
+        write_atomically(
+            data_dir / PROFILE_STAMP,
+            f'profile = "{profile}"\n'.encode(),
+            suffix=".toml",
         )
         return
     if found != profile:

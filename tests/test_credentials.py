@@ -448,6 +448,42 @@ class TestCredentialPlatformHelpers(unittest.TestCase):
         self.assertEqual(_decrypt(b"encrypted"), "fictional-secret")
         dpapi_decrypt.assert_called_once_with(b"encrypted")
 
+    def test_both_dpapi_directions_name_their_own_entry_point(self) -> None:
+        """One body, two entry points.
+
+        Protecting and unprotecting declared the ``DATA_BLOB``
+        structure, built the input blob, checked the return value and
+        freed the output twice over, differing only in which crypt32
+        call they made -- and every line of the second copy was one
+        Linux CI can never run.  With the entry point as data, both
+        directions are reachable here, and a failure says which one it
+        was.
+        """
+        import ctypes
+
+        from pony.credentials import _dpapi_call
+
+        called: list[str] = []
+
+        class _Crypt32:
+            def __getattr__(self, name: str) -> object:
+                def _fail(*_args: object) -> int:
+                    called.append(name)
+                    return 0
+
+                return _fail
+
+        class _Windll:
+            crypt32 = _Crypt32()
+
+        with patch.object(ctypes, "windll", _Windll(), create=True):
+            with self.assertRaisesRegex(ConfigError, "CryptProtectData failed"):
+                _dpapi_call(b"secret", protect=True)
+            with self.assertRaisesRegex(ConfigError, "CryptUnprotectData failed"):
+                _dpapi_call(b"secret", protect=False)
+
+        self.assertEqual(called, ["CryptProtectData", "CryptUnprotectData"])
+
     @patch("pony.credentials.platform.node", return_value="fallback-host")
     @patch("pony.credentials.Path.read_text", side_effect=OSError)
     @patch("pony.credentials.sys.platform", "linux")

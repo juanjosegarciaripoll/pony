@@ -19,7 +19,15 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.ical_parser import extract_alarm_triggers, localize_naive, to_utc
+from chronos.ical_parser import (
+    component_get,
+    component_has,
+    component_name,
+    component_str,
+    extract_alarm_triggers,
+    localize_naive,
+    to_utc,
+)
 from chronos.protocols import IndexRepository
 
 logger = logging.getLogger(__name__)
@@ -501,12 +509,12 @@ def _raw_tz_anchor(raw_ics: bytes, uid: str) -> datetime | None:
     except ValueError:
         return None
     for sub in cal.walk():  # pyright: ignore[reportUnknownMemberType]
-        name = _component_name(sub)
+        name = component_name(sub)
         if name not in ("VEVENT", "VTODO"):
             continue
-        if _component_get_str(sub, "UID") != uid:
+        if component_str(sub, "UID") != uid:
             continue
-        if _component_has(sub, "RECURRENCE-ID"):
+        if component_has(sub, "RECURRENCE-ID"):
             continue
         decoder = getattr(sub, "decoded", None)
         if decoder is None:
@@ -537,12 +545,12 @@ def _extract_rules(
     except ValueError:
         return None, [], []
     for sub in cal.walk():  # pyright: ignore[reportUnknownMemberType]
-        name = _component_name(sub)
+        name = component_name(sub)
         if name not in ("VEVENT", "VTODO"):
             continue
-        if _component_get_str(sub, "UID") != uid:
+        if component_str(sub, "UID") != uid:
             continue
-        if _component_has(sub, "RECURRENCE-ID"):
+        if component_has(sub, "RECURRENCE-ID"):
             continue
         return (
             _extract_rrule(sub),
@@ -553,7 +561,7 @@ def _extract_rules(
 
 
 def _extract_rrule(component: object) -> str | None:
-    rrule_val = _component_get(component, "RRULE")
+    rrule_val = component_get(component, "RRULE")
     if rrule_val is None:
         return None
     values: list[object] = (
@@ -572,7 +580,7 @@ def _extract_rrule(component: object) -> str | None:
 
 
 def _extract_date_list(component: object, key: str) -> list[datetime]:
-    value = _component_get(component, key)
+    value = component_get(component, key)
     if value is None:
         return []
     items: list[object] = (
@@ -590,31 +598,6 @@ def _extract_date_list(component: object, key: str) -> list[datetime]:
             elif isinstance(dt, date):
                 collected.append(datetime(dt.year, dt.month, dt.day, tzinfo=UTC))
     return collected
-
-
-def _component_name(component: object) -> str:
-    return str(getattr(component, "name", ""))
-
-
-def _component_get(component: object, key: str) -> object:
-    getter = getattr(component, "get", None)
-    if getter is None:
-        return None
-    return getter(key)
-
-
-def _component_get_str(component: object, key: str) -> str | None:
-    value = _component_get(component, key)
-    if value is None:
-        return None
-    return str(value)
-
-
-def _component_has(component: object, key: str) -> bool:
-    contains = getattr(component, "__contains__", None)
-    if contains is None:
-        return False
-    return bool(contains(key))
 
 
 __all__ = [

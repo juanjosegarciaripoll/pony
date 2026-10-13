@@ -1917,3 +1917,29 @@ def test_a_state_class_is_never_styled_on_its_own() -> None:
     ]
 
     assert loose == []
+
+
+def test_the_move_prompt_offers_a_folder_with_no_directory_yet() -> None:
+    """The prompt's options came from the mirror, the pane's from the index.
+
+    A folder the server has but this host has not materialised, and one
+    that has messages with no directory on disk, are both folders: the
+    pane shows them because it asks `folder_unread_counts`.  Two other
+    loops asked the mirror alone, so the move and go-to prompts offered
+    a different set from the pane beside them -- the divergence the
+    terminal's `action_goto_folder` had.
+    """
+    from pony.domain import FolderSyncState
+    from pony.web.mail import folder_options
+
+    services, index = _services("web-folder-options")
+    index.record_folder_sync_state(
+        state=FolderSyncState(
+            account_name="acct",
+            folder_name="Synced/Elsewhere",
+            uid_validity=1,
+            highest_uid=0,
+        ),
+    )
+
+    assert "acct/Synced/Elsewhere" in folder_options(services)

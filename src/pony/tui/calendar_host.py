@@ -27,6 +27,7 @@ from pathlib import Path
 
 from textual.app import App
 
+from chronos.alarms import ALARM_LOOKBACK, due_alarms
 from chronos.cli import CliContext, build_sync_runner, use_remote_browser_flow
 from chronos.credentials import DefaultCredentialsProvider
 from chronos.domain import OAuthCredential
@@ -55,7 +56,6 @@ NEXT_EVENT_HORIZON = timedelta(days=1)
 
 # A reminder that fell due while the user was away still deserves to be
 # shown, but not indefinitely; this matches the calendar's own window.
-ALARM_LOOKBACK = timedelta(minutes=15)
 
 # Set beside the next event and the unread count when the terminal can
 # render them.  `use_utf8 = false` falls back to a word.
@@ -222,12 +222,13 @@ def mail_status(
 
 @dataclass(slots=True)
 class AlarmPoller:
-    """Turns due reminders into announcements, exactly once each.
+    """Puts the calendar's due reminders into Pony's notification space.
 
-    The calendar records a fired alarm in its own index, so a reminder
-    survives a restart without being shown twice.  Marking happens as
-    each alarm is converted, not in a second pass, so a failure midway
-    cannot replay the ones already announced.
+    Which alarms are due, how far back a poll looks and that each is
+    announced exactly once are `chronos.alarms`' answers, shared with
+    the calendar's own application -- which says the same reminders a
+    different way, through the terminal.  What is left here is the
+    vocabulary: a `Notification` from this source, marked urgent.
     """
 
     index: CalendarIndexRepository
@@ -235,24 +236,16 @@ class AlarmPoller:
 
     def due(self, now: datetime) -> tuple[Notification, ...]:
         """Announcements for every alarm that fell due since the last call."""
-        from chronos.tui.app import alarm_message
-
-        pending = self.index.query_pending_alarms(now - self.lookback, now)
-        notifications: list[Notification] = []
-        for alarm in pending:
-            if alarm.db_id is None:
-                continue
-            notifications.append(
-                Notification(
-                    source=NotificationSource.CALENDAR,
-                    title=alarm.summary or "Reminder",
-                    body=alarm_message(alarm, now),
-                    at=now,
-                    urgent=True,
-                )
+        return tuple(
+            Notification(
+                source=NotificationSource.CALENDAR,
+                title=alarm.title,
+                body=alarm.body,
+                at=now,
+                urgent=True,
             )
-            self.index.mark_alarm_fired(alarm.db_id, now)
-        return tuple(notifications)
+            for alarm in due_alarms(self.index, now, lookback=self.lookback)
+        )
 
 
 def mail_arrival_notification(

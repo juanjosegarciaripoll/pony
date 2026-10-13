@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import os
-import tempfile
 import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
 
+from chronos.atomic import TEMP_PREFIX, write_atomically
 from chronos.domain import ResourceRef
 
 _MAX_ENCODED_UID_LEN = 180
@@ -108,7 +107,7 @@ class VdirMirrorRepository:
         for path in sorted(calendar_dir.iterdir()):
             if not path.is_file() or path.suffix != ".ics":
                 continue
-            if path.name.startswith(".tmp-"):
+            if path.name.startswith(TEMP_PREFIX):
                 continue
             uid = _filename_to_uid(path.name)
             refs.append(
@@ -128,21 +127,7 @@ class VdirMirrorRepository:
             raise ResourceNotFoundError(str(path)) from exc
 
     def write(self, ref: ResourceRef, data: bytes) -> None:
-        path = self._path_for(ref)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            prefix=".tmp-", suffix=".ics", dir=path.parent
-        )
-        try:
-            with os.fdopen(tmp_fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_name, path)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp_name)
-            raise
+        write_atomically(self._path_for(ref), data, suffix=".ics")
 
     def delete(self, ref: ResourceRef) -> None:
         path = self._path_for(ref)
@@ -171,13 +156,45 @@ class VdirMirrorRepository:
 
 
 def _uid_to_filename(uid: str) -> str:
-    encoded = urllib.parse.quote(uid, safe="")
-    if len(encoded) > _MAX_ENCODED_UID_LEN:
-        digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()[:16]
-        return f"{encoded[:_MAX_ENCODED_UID_LEN]}-{digest}.ics"
-    return f"{encoded}.ics"
+    """One ``.ics`` filename for a UID, inverted by `_filename_to_uid`.
+
+    The encoding is `safe_component`'s, not a second one eight lines
+    away: a UID is as untrusted as a calendar name -- it comes off the
+    server -- so the reserved-stem and empty-name guards apply to it
+    too.  A UID of ``NUL`` wrote to the null device on Windows.
+
+    A UID too long to spell out keeps a readable prefix and a digest of
+    the whole thing.  The prefix is built character by character, so it
+    ends between characters: cutting the *encoding* at 180 bytes split
+    ``%E2%82%AC`` into ``...%E2%8``, which is not an escape at all, and
+    what `_filename_to_uid` read back off disk was a UID no index row
+    had -- so the next sync saw the event as one only the server knew
+    about, every time.
+    """
+    encoded = safe_component(uid)
+    if len(encoded) <= _MAX_ENCODED_UID_LEN:
+        return f"{encoded}.ics"
+    digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()[:16]
+    return f"{_encoded_prefix(uid, _MAX_ENCODED_UID_LEN)}-{digest}.ics"
+
+
+def _encoded_prefix(uid: str, limit: int) -> str:
+    """As much of *uid*'s encoding as fits in *limit* characters.
+
+    Encoding each character on its own is what keeps the cut on a
+    character boundary: one character can become nine encoded ones, and
+    neither half of ``%E2%82%AC`` means anything by itself.
+    """
+    out: list[str] = []
+    used = 0
+    for char in uid:
+        piece = urllib.parse.quote(char, safe="")
+        if used + len(piece) > limit:
+            break
+        out.append(piece)
+        used += len(piece)
+    return "".join(out)
 
 
 def _filename_to_uid(filename: str) -> str:
-    stem = filename.removesuffix(".ics")
-    return urllib.parse.unquote(stem)
+    return decode_component(filename.removesuffix(".ics"))

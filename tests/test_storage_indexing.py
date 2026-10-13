@@ -274,6 +274,65 @@ class ScanStateFastPathTestCase(unittest.TestCase):
         self.assertGreater(state["INBOX"], first_mtime)
 
 
+class ProjectedFieldsTestCase(unittest.TestCase):
+    """`rescan` reads the projected field list twice; it is one list.
+
+    One reading notices that a row no longer matches its file, the other
+    copies the difference across.  They were written out separately, so
+    a field added to one and not the other was either never noticed or
+    copied without the rest -- and nothing failed, because both lists
+    parse.
+    """
+
+    def _row(self) -> IndexedMessage:
+        return IndexedMessage(
+            message_ref=MessageRef(account_name="personal", folder_name="INBOX", id=1),
+            message_id="<projected@example.com>",
+            sender="alice@example.com",
+            recipients="bob@example.com",
+            cc="",
+            subject="Subject",
+            body_preview="body",
+            storage_key="key",
+            local_flags=frozenset({MessageFlag.SEEN}),
+            base_flags=frozenset({MessageFlag.SEEN}),
+            local_status=MessageStatus.ACTIVE,
+            received_at=datetime(2026, 4, 10, 10, 0, tzinfo=UTC),
+            has_attachments=False,
+            uid=7,
+        )
+
+    def test_each_projected_field_is_noticed_and_copied(self) -> None:
+        import dataclasses
+
+        from pony.storage_indexing import (
+            _PROJECTED_FIELDS,
+            _projection_matches,
+            _with_projection,
+        )
+
+        changed: dict[str, object] = {
+            "sender": "carol@example.com",
+            "recipients": "dave@example.com",
+            "cc": "erin@example.com",
+            "subject": "Different",
+            "body_preview": "different body",
+            "has_attachments": True,
+            "received_at": datetime(2026, 4, 11, 10, 0, tzinfo=UTC),
+        }
+        self.assertEqual(set(changed), set(_PROJECTED_FIELDS))
+        stored = self._row()
+        for field, value in changed.items():
+            with self.subTest(field=field):
+                fresh = dataclasses.replace(stored, **{field: value})
+                self.assertFalse(_projection_matches(stored, fresh))
+                merged = _with_projection(stored, fresh)
+                self.assertEqual(getattr(merged, field), value)
+                # Nothing the index owns is taken from the projection.
+                self.assertEqual(merged.uid, stored.uid)
+                self.assertEqual(merged.local_flags, stored.local_flags)
+
+
 def sample_message_bytes() -> bytes:
     """Create deterministic RFC 5322 fixture bytes."""
     message = EmailMessage()

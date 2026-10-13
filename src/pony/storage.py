@@ -86,7 +86,44 @@ def _release_writes(writes: _WriteQueue) -> None:
         writes.pool = None
 
 
-class MaildirMirrorRepository(MirrorRepository):
+#: The three directories a Maildir is made of.
+_MAILDIR_SUBDIRS = ("cur", "new", "tmp")
+
+
+def _make_maildir(path: Path) -> Path:
+    """*path* as a Maildir: the directory and its three subdirectories.
+
+    The loop was written out three times, and the third copy opened a
+    folder's directories without touching the ``_ensured_dirs`` cache
+    the other two maintain -- so a folder could be created twice over
+    and the cache still say it had not been.
+    """
+    for subdir in _MAILDIR_SUBDIRS:
+        (path / subdir).mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class _SingleAccountMirror:
+    """The part of a mirror repository that is about one account.
+
+    Each backend mirrors exactly one account, and each answered "is this
+    my account?" with the same two methods, byte for byte.  The check is
+    on every entry point because a mirror that accepted another
+    account's folder would write one account's mail into another's
+    directory.
+    """
+
+    _account_name: str
+
+    def _require_account(self, account_name: str) -> None:
+        if account_name != self._account_name:
+            raise ValueError(f"unknown account: {account_name}")
+
+    def _require_folder(self, folder: FolderRef) -> None:
+        self._require_account(folder.account_name)
+
+
+class MaildirMirrorRepository(_SingleAccountMirror, MirrorRepository):
     """Maildir-backed mirror repository."""
 
     #: A filename can hold `,V=<uidvalidity>,U=<uid>`, so it does.
@@ -101,9 +138,7 @@ class MaildirMirrorRepository(MirrorRepository):
         # Before the first thing that can fail, so an object that never
         # finished being built is still one the finalizer can run on.
         self._finalizer = weakref.finalize(self, _release_writes, self._writes)
-        self._root_dir.mkdir(parents=True, exist_ok=True)
-        for subdir in ("cur", "new", "tmp"):
-            (self._root_dir / subdir).mkdir(parents=True, exist_ok=True)
+        _make_maildir(self._root_dir)
 
     def list_folders(self, *, account_name: str) -> tuple[FolderRef, ...]:
         self._require_account(account_name)
@@ -124,13 +159,11 @@ class MaildirMirrorRepository(MirrorRepository):
 
     def _ensure_folder_dirs(self, folder_name: str) -> Path:
         """Create Maildir subdirs for *folder_name* (cached)."""
-        if folder_name not in self._ensured_dirs:
-            folder_path = self._maildir_folder_path(folder_name)
-            for subdir in ("cur", "new", "tmp"):
-                (folder_path / subdir).mkdir(parents=True, exist_ok=True)
-            self._ensured_dirs.add(folder_name)
-            return folder_path
-        return self._maildir_folder_path(folder_name)
+        if folder_name in self._ensured_dirs:
+            return self._maildir_folder_path(folder_name)
+        folder_path = _make_maildir(self._maildir_folder_path(folder_name))
+        self._ensured_dirs.add(folder_name)
+        return folder_path
 
     def _make_filename(self, *, uid: int | None, uid_validity: int) -> str:
         """Generate a Maildir filename, carrying the server handle if known.
@@ -414,10 +447,7 @@ class MaildirMirrorRepository(MirrorRepository):
             maildir.colon = "!"
             return maildir
 
-        folder_path = self._maildir_folder_path(folder_name)
-        folder_path.mkdir(parents=True, exist_ok=True)
-        for subdir in ("cur", "new", "tmp"):
-            (folder_path / subdir).mkdir(parents=True, exist_ok=True)
+        folder_path = self._ensure_folder_dirs(folder_name)
         maildir = mailbox.Maildir(folder_path, create=True)
         maildir.colon = "!"
         return maildir
@@ -427,13 +457,6 @@ class MaildirMirrorRepository(MirrorRepository):
             return self._root_dir
         encoded = _sanitize_for_path(folder_name)
         return self._root_dir / f".{encoded}"
-
-    def _require_account(self, account_name: str) -> None:
-        if account_name != self._account_name:
-            raise ValueError(f"unknown account: {account_name}")
-
-    def _require_folder(self, folder: FolderRef) -> None:
-        self._require_account(folder.account_name)
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +485,7 @@ def _close_mbox_handles(open_handles: dict[str, mailbox.mbox]) -> None:
     open_handles.clear()
 
 
-class MboxMirrorRepository(MirrorRepository):
+class MboxMirrorRepository(_SingleAccountMirror, MirrorRepository):
     """mbox-backed mirror repository.
 
     mbox files are cached while a batch is active. Parsing the table of
@@ -845,13 +868,6 @@ class MboxMirrorRepository(MirrorRepository):
     def _folder_file(self, folder_name: str) -> Path:
         encoded = encode_folder_name(folder_name)
         return self._root_dir / f"{encoded}.mbox"
-
-    def _require_account(self, account_name: str) -> None:
-        if account_name != self._account_name:
-            raise ValueError(f"unknown account: {account_name}")
-
-    def _require_folder(self, folder: FolderRef) -> None:
-        self._require_account(folder.account_name)
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, RichLog, Static
 
 from chronos.domain import SyncResult
+from chronos.sync import describe_sync_result
 
 SyncRunner = Callable[..., Sequence[SyncResult]]
 """Runner contract — accepts `cancel_event` keyword, returns per-account results."""
@@ -136,15 +137,10 @@ class SyncProgressScreen(ModalScreen[None]):
     def _summary(self) -> str:
         if self._error is not None:
             return f"Error: {self._error}"
-        added = sum(r.components_added for r in self._results)
-        updated = sum(r.components_updated for r in self._results)
-        removed = sum(r.components_removed for r in self._results)
+        line = describe_sync_result(self._results)
         errors = sum(len(r.errors) for r in self._results)
-        line = f"+{added} added  ~{updated} updated  -{removed} removed"
         if errors:
             line += f"   ({errors} error(s))"
-        if not self._results:
-            return "No accounts ran."
         return line
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

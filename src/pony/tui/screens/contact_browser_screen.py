@@ -7,6 +7,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input
 
 from chronos.outcome import Notice, Outcome
+from chronos.tui.reporting import report
 
 from ...contact_actions import (
     MergePlan,
@@ -223,8 +224,7 @@ class ContactBrowserScreen(Screen[None]):
 
     def _report(self, outcome: Outcome) -> None:
         """Say everything an operation had to say."""
-        for notice in outcome.notices:
-            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
+        report(self.app, outcome)
 
     def action_delete_marked(self) -> None:
         """Delete the marked contacts, or the cursor row when none are."""

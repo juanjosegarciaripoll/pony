@@ -1205,6 +1205,40 @@ class SearchSemanticsTest(unittest.TestCase):
         self.assertEqual(self._find(repo, "archived"), {"Archived thing"})
 
 
+class AddressSpellingTest(unittest.TestCase):
+    """One function decides how an address is spelled.
+
+    ``contact_emails.email_address`` is a unique key, so the spelling
+    the store writes has to be the spelling every lookup uses -- and
+    four sites wrote `.lower().strip()` or `.strip().lower()` out by
+    hand, beside a function whose docstring says it exists "so two
+    stores cannot disagree".  Patching that one function and requiring
+    the store to follow it is what a hand-written copy cannot do.
+    """
+
+    def test_the_store_writes_what_contact_actions_decides(self) -> None:
+        import unittest.mock
+
+        repo = _fresh_repo()
+        with unittest.mock.patch(
+            "pony.contact_actions.normalize_address", lambda value: value.upper()
+        ):
+            with repo.connection():
+                repo.upsert_contact(
+                    contact=Contact(
+                        id=None,
+                        first_name="Bob",
+                        last_name="Builder",
+                        emails=("  Bob@Example.com  ",),
+                    )
+                )
+            found = repo.find_contact_by_email(email_address="  bob@example.COM  ")
+
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.emails, ("  BOB@EXAMPLE.COM  ",))
+
+
 class ChunkedParametersTest(unittest.TestCase):
     """A list longer than one statement's parameters keeps its order.
 

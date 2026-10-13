@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from textual import work
 from textual.app import App
 
-from chronos.domain import AlarmRecord, AppConfig, SyncResult
+from chronos.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS, due_alarms
+from chronos.domain import AppConfig, SyncResult
 from chronos.protocols import (
     CalendarSyncOutcome,
     CalendarSyncScheduler,
@@ -21,6 +21,7 @@ from chronos.protocols import (
 )
 from chronos.scheduler import PeriodicSync
 from chronos.tui.bindings import BindingType
+from chronos.tui.reporting import on_ui_thread
 from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.terminal import (
     osc777_notification,
@@ -30,11 +31,6 @@ from chronos.tui.terminal import (
 )
 
 logger = logging.getLogger(__name__)
-
-_ALARM_POLL_SECS = 30.0
-# Reminders stay on screen long enough to be seen after looking away.
-_ALARM_TOAST_SECS = 120.0
-_ALARM_LOOKBACK = timedelta(minutes=15)
 
 # Built-in Textual theme chosen when the user has not set one (config /
 # --theme). flexoki is near-black-on-near-white, the highest-contrast of
@@ -139,6 +135,44 @@ class TuiServices:
     # None when sync is not wired in (most TUI tests), exactly like
     # `sync_runner`.
     sync_scheduler: CalendarSyncScheduler | None = None
+
+
+def start_calendar_sync(
+    services: TuiServices,
+    *,
+    on_started: Callable[[], None],
+    on_finished: Callable[[CalendarSyncOutcome], None],
+) -> None:
+    """Give the calendar its periodic sync, on a thread of its own.
+
+    The hosting application owns it, not `MainScreen`: a screen's timer
+    dies when the screen is popped, and the agenda is popped whenever
+    the user looks at something else.  The screen finds it on
+    `TuiServices` and only observes it.
+
+    Config-gated: `background_sync_enabled = false` leaves the thread
+    unstarted, and the sync key starts a single run without a cadence.
+    Does nothing when no runner is wired in, which is most TUI tests.
+
+    One function because there are two hosts: `ChronosApp` standalone
+    and `PonyApp` with mail and calendar in one program.  Each built
+    the `PeriodicSync` itself, and the calendar's own copy was dead
+    whenever Pony hosted -- so a change to the cadence, the callbacks or
+    the gate reached one host and not the other.
+    """
+    runner = services.sync_runner
+    if runner is None:
+        return
+    scheduler: CalendarSyncScheduler = PeriodicSync(
+        name="calendar-sync",
+        interval=services.config.background_sync_interval_seconds,
+        runner=runner,
+        on_started=on_started,
+        on_finished=on_finished,
+    )
+    services.sync_scheduler = scheduler
+    if services.config.background_sync_enabled:
+        scheduler.start()
 
 
 @runtime_checkable
@@ -305,7 +339,7 @@ class ChronosApp(App[None]):
         self.push_screen(MainScreen())  # pyright: ignore[reportUnknownMemberType]
         if not self.is_headless:
             self._start_mcp_server()
-        self.set_interval(_ALARM_POLL_SECS, self._fire_pending_alarms, name="alarms")
+        self.set_interval(ALARM_POLL_SECONDS, self._fire_pending_alarms, name="alarms")
         self._start_sync_scheduler()
 
     def on_unmount(self) -> None:
@@ -316,29 +350,11 @@ class ChronosApp(App[None]):
     # Background sync ----------------------------------------------------------
 
     def _start_sync_scheduler(self) -> None:
-        """Give the calendar its periodic sync, on a thread of its own.
-
-        The app owns it, not `MainScreen`: a screen's timer dies when the
-        screen is popped, and the agenda is popped whenever the user looks
-        at something else. The screen finds it on `TuiServices` and only
-        observes it.
-
-        Config-gated exactly as before — `background_sync_enabled = false`
-        leaves the thread unstarted, and the sync key starts it.
-        """
-        runner = self.services.sync_runner
-        if runner is None:
-            return
-        scheduler: CalendarSyncScheduler = PeriodicSync(
-            name="calendar-sync",
-            interval=self.services.config.background_sync_interval_seconds,
-            runner=runner,
+        start_calendar_sync(
+            self.services,
             on_started=self._on_sync_started,
             on_finished=self._on_sync_finished,
         )
-        self.services.sync_scheduler = scheduler
-        if self.services.config.background_sync_enabled:
-            scheduler.start()
 
     def _on_sync_started(self) -> None:
         """Scheduler thread: tell the agenda, if anyone is looking at it."""
@@ -349,14 +365,8 @@ class ChronosApp(App[None]):
         self._on_ui_thread(lambda screen: screen.on_sync_finished(outcome))
 
     def _on_ui_thread(self, action: Callable[[MainScreen], None]) -> None:
-        """Run `action` against the agenda screen on the UI thread.
-
-        Called from the scheduler thread, so everything hops through
-        `call_from_thread`; a `RuntimeError` means the application is
-        already gone, which at shutdown is ordinary.
-        """
-        with contextlib.suppress(RuntimeError):
-            self.call_from_thread(self._apply_to_main_screen, action)
+        """Run `action` against the agenda screen on the UI thread."""
+        on_ui_thread(self, lambda: self._apply_to_main_screen(action))
 
     def _apply_to_main_screen(self, action: Callable[[MainScreen], None]) -> None:
         for screen in self.screen_stack:
@@ -385,8 +395,10 @@ class ChronosApp(App[None]):
     def _fire_pending_alarms(self) -> None:
         """Announce every alarm that fell due since the last poll.
 
-        Runs every `_ALARM_POLL_SECS`. Alarms are delivered through the
-        terminal, so they reach the user wherever the TUI is displayed —
+        Runs every `ALARM_POLL_SECONDS`.  Which alarms are due is
+        `chronos.alarms`' answer, shared with the mail half; how to say
+        them is this application's, and it says them through the
+        terminal so they reach the user wherever the TUI is displayed --
         including over SSH, where a desktop notification would land on
         the remote machine: an in-app toast, the terminal bell, and an
         OSC 777 notification for terminals that turn it into a desktop
@@ -394,54 +406,21 @@ class ChronosApp(App[None]):
         """
         now = self.services.now()
         try:
-            pending = self.services.index.query_pending_alarms(
-                now - _ALARM_LOOKBACK, now
-            )
+            due = due_alarms(self.services.index, now)
         except Exception:  # noqa: BLE001
             logger.exception("query_pending_alarms failed")
             return
-        fired = False
-        for alarm in pending:
-            if alarm.db_id is None:
-                continue
-            title = alarm.summary or "Reminder"
-            message = alarm_message(alarm, now)
-            self.notify(message, title=title, timeout=_ALARM_TOAST_SECS)
-            self._write_to_terminal(osc777_notification(title, message))
-            try:
-                self.services.index.mark_alarm_fired(alarm.db_id, now)
-            except Exception:  # noqa: BLE001
-                logger.exception("mark_alarm_fired failed for alarm %s", alarm.db_id)
-            logger.info("alarm fired: %s (%s)", title, message)
-            fired = True
-        if fired:
+        for alarm in due:
+            self.notify(alarm.body, title=alarm.title, timeout=ALARM_TOAST_SECONDS)
+            self._write_to_terminal(osc777_notification(alarm.title, alarm.body))
+            logger.info("alarm fired: %s (%s)", alarm.title, alarm.body)
+        if due:
             self.bell()
 
     def _write_to_terminal(self, data: str) -> None:
         """Send raw control sequences to the terminal, as `App.bell` does."""
         if not self.is_headless and self._driver is not None:
             self._driver.write(data)
-
-
-# Google fills every VALARM with this DESCRIPTION; repeating it in the
-# notification body says nothing the title doesn't.
-_BOILERPLATE_ALARM_TEXT = "This is an event reminder"
-
-
-def alarm_message(alarm: AlarmRecord, now: datetime) -> str:
-    """Notification body: when the event starts, then any alarm text."""
-    start = alarm.occurrence_start.astimezone()
-    local_now = now.astimezone()
-    if start.date() == local_now.date():
-        when = start.strftime("%H:%M")
-    else:
-        when = start.strftime("%a %d %b %H:%M")
-    verb = "Started" if alarm.occurrence_start <= now else "Starts"
-    lines = [f"{verb} {when}"]
-    description = (alarm.description or "").strip()
-    if description and description != _BOILERPLATE_ALARM_TEXT:
-        lines.append(description)
-    return "\n".join(lines)
 
 
 __all__ = [

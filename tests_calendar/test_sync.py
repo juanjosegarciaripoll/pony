@@ -1642,7 +1642,7 @@ class FetchIngestPipelineTest(SyncTestCase):
             )
 
     def test_producer_advances_during_consumer_ingest(self) -> None:
-        # 150 resources with `_FETCH_CHUNK_SIZE = 100` is two chunks.
+        # 150 resources with `MULTIGET_BATCH_SIZE = 100` is two chunks.
         # The blocking-event handshake below deadlocks (and times out)
         # if the network fetch is stuck behind ingest — i.e. if the
         # second `calendar_multiget` only fires after the first chunk

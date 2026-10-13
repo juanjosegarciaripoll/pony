@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from chronos.outcome import Outcome, failure, info, warn
+from chronos.sync import describe_sync_result as describe_calendar_sync
 
 from ..sync import describe_halt, describe_sync_result
 from .actions import Confirmation, Reply
@@ -213,12 +214,7 @@ def _calendar_outcome(results: Sequence[CalendarSyncResult]) -> Outcome:
     removed = sum(result.components_removed for result in results)
     errors = [error for result in results for error in result.errors]
     notes = [note for result in results for note in result.notes]
-    notices = [
-        info(
-            f"Calendar sync complete.  +{added} added, "
-            f"{updated} updated, {removed} removed",
-        ),
-    ]
+    notices = [info(describe_calendar_sync(results))]
     notices.extend(warn(note) for note in notes)
     notices.extend(failure(error) for error in errors)
     return Outcome(changed=added + updated + removed, notices=tuple(notices))

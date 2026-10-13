@@ -47,6 +47,7 @@ from .domain import (
     MessageFlag,
     MessageRef,
     MessageStatus,
+    PendingPush,
     SlowPathRow,
 )
 from .message_projection import project_rfc822_message
@@ -581,6 +582,40 @@ _MASS_DELETE_MIN = 5
 _MASS_PUSH_THRESHOLD = 0.50
 _MASS_PUSH_MIN = 5
 _MASS_PUSH_ABSOLUTE = 50
+
+
+def _pending_move_is_pushable(
+    row: PendingPush,
+    *,
+    account: AccountConfig,
+    target_read_only: bool,
+    uidvalidity_reset_folders: frozenset[str],
+) -> bool:
+    """Can this ``PENDING_MOVE`` row be pushed on this pass?
+
+    Four conditions, and two callers that have to agree on them:
+    `_pushable_pending_move_sources` decides which source folders the
+    planner gathers a remote UID view for, and `_pending_push_ops`
+    decides which rows emit a `PushMoveOp`.  They were written out
+    separately, grouped differently.  A row the second accepts and the
+    first gathered no view for silently disables the interrupted-move
+    recovery arm below it -- the one that turns "the server already
+    moved this" into a `PushAppendOp` -- so the row waits for a move
+    that will never be issued.
+
+    The conditions: the move needs both handles, neither endpoint may be
+    read-only, and the source may not be a folder whose UIDVALIDITY just
+    changed, because its ``source_uid`` names a message from the epoch
+    that ended.  That last one resolves itself: this pass re-adopts the
+    source UID from the new epoch, and the next pass issues a real move.
+    """
+    if row.local_status != MessageStatus.PENDING_MOVE:
+        return False
+    if target_read_only or row.source_folder is None or row.source_uid is None:
+        return False
+    if account.folders.is_read_only(row.source_folder):
+        return False
+    return row.source_folder not in uidvalidity_reset_folders
 
 
 def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
@@ -1161,23 +1196,20 @@ class ImapSyncService:
         """Return source UIDs represented by pushable PENDING_MOVE rows."""
         result: dict[str, set[int]] = {}
         for target_folder in target_folders:
-            if account.folders.is_read_only(target_folder):
-                continue
+            target_read_only = account.folders.is_read_only(target_folder)
             for row in self._index.list_folder_push_candidates(
                 account_name=account.name,
                 folder_name=target_folder,
             ):
-                if (
-                    row.local_status != MessageStatus.PENDING_MOVE
-                    or row.source_folder is None
-                    or row.source_uid is None
+                if not _pending_move_is_pushable(
+                    row,
+                    account=account,
+                    target_read_only=target_read_only,
+                    uidvalidity_reset_folders=uidvalidity_reset_folders,
                 ):
                     continue
-                if (
-                    account.folders.is_read_only(row.source_folder)
-                    or row.source_folder in uidvalidity_reset_folders
-                ):
-                    continue
+                assert row.source_folder is not None
+                assert row.source_uid is not None
                 result.setdefault(row.source_folder, set()).add(row.source_uid)
         return {folder: frozenset(uids) for folder, uids in result.items()}
 
@@ -1526,25 +1558,15 @@ class ImapSyncService:
                 continue
 
             if row.local_status == MessageStatus.PENDING_MOVE:
-                if (
-                    read_only
-                    or row.source_folder is None
-                    or row.source_uid is None
-                    or account.folders.is_read_only(row.source_folder)
+                if not _pending_move_is_pushable(
+                    row,
+                    account=account,
+                    target_read_only=read_only,
+                    uidvalidity_reset_folders=uidvalidity_reset_folders,
                 ):
-                    # Cannot push the move: missing source handle or
-                    # either endpoint is read-only.  Leave the row
-                    # untouched until the user resolves it.
                     continue
-                if row.source_folder in uidvalidity_reset_folders:
-                    # The source handle is a UID from the epoch that just
-                    # ended.  Appending to the target would leave the
-                    # original where it is, so the message would exist in
-                    # both folders on the server.  Wait: this pass
-                    # re-adopts the source UID from the new epoch while
-                    # re-fetching that folder, and the next pass issues a
-                    # real move.
-                    continue
+                assert row.source_folder is not None
+                assert row.source_uid is not None
                 # Interrupted-move recovery: if the source folder was
                 # scanned and ``source_uid`` is no longer there, the
                 # message is gone server-side.  APPEND to the target

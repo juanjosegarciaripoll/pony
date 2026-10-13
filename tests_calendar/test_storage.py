@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 import unittest.mock
+import urllib.parse
 from pathlib import Path
 
 from chronos.domain import ResourceRef
@@ -330,3 +331,102 @@ class UntrustedNameTest(unittest.TestCase):
     def test_an_empty_name_is_refused(self) -> None:
         with self.assertRaises(MirrorError):
             safe_component("")
+
+
+class AtomicWriteTest(unittest.TestCase):
+    """One dance, in `chronos.atomic`, for every file either half replaces.
+
+    It was written out five times inside this package and not at all in
+    the mail half, which used `write_text` for its profile stamp and its
+    `config.toml`.  Two things in it are easy to get subtly wrong when
+    copied, and both are checked here: a failure must leave neither a
+    truncated target nor a stray temporary, and an owner-only file must
+    never exist at the ambient umask -- not even between its creation
+    and a `chmod` after the rename, which is how the OAuth token store
+    used to do it.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_a_failure_leaves_the_old_file_and_no_leftover(self) -> None:
+        from chronos.atomic import write_atomically
+
+        target = self.tmp / "thing.toml"
+        write_atomically(target, b"first", suffix=".toml")
+        with (
+            unittest.mock.patch(
+                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            write_atomically(target, b"second", suffix=".toml")
+
+        self.assertEqual(target.read_bytes(), b"first")
+        self.assertEqual([p.name for p in self.tmp.iterdir()], ["thing.toml"])
+
+    @unittest.skipIf(os.name == "nt", "file modes mean nothing on Windows")
+    def test_an_owner_only_file_is_owner_only_before_the_rename(self) -> None:
+        from chronos.atomic import write_atomically
+
+        target = self.tmp / "tokens.json"
+        seen: list[int] = []
+        real_replace = os.replace
+
+        def _record(source: object, destination: object) -> None:
+            seen.append(Path(str(source)).stat().st_mode & 0o777)
+            real_replace(str(source), str(destination))
+
+        with unittest.mock.patch("chronos.atomic.os.replace", _record):
+            write_atomically(target, b"{}", suffix=".json", owner_only=True)
+
+        self.assertEqual(seen, [0o600])
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+
+class UidFilenameTest(unittest.TestCase):
+    """One encoding for a UID, the same one a calendar name gets.
+
+    `safe_component` and `_uid_to_filename` percent-encoded a name eight
+    lines apart, and only the first had the reserved-stem and
+    empty-name guards -- so a UID of ``NUL`` wrote to the null device on
+    Windows.  The UID encoder also cut its prefix by character count,
+    which can split a ``%XX`` escape in half: what comes back off disk
+    is then a UID no index row has, and the next sync sees the event as
+    one only the server knows about.
+    """
+
+    def test_a_reserved_stem_is_escaped_and_round_trips(self) -> None:
+        from chronos.storage import _filename_to_uid, _uid_to_filename
+
+        name = _uid_to_filename("NUL")
+        self.assertNotEqual(name, "NUL.ics")
+        self.assertEqual(_filename_to_uid(name), "NUL")
+
+    def test_an_empty_uid_is_refused_rather_than_written(self) -> None:
+        from chronos.storage import _uid_to_filename
+
+        with self.assertRaises(MirrorError):
+            _uid_to_filename("")
+
+    def test_a_truncated_prefix_is_cut_between_characters(self) -> None:
+        from chronos.storage import _MAX_ENCODED_UID_LEN, _uid_to_filename
+
+        # Long enough that the prefix is cut, with multi-byte characters
+        # straddling the cut at every alignment.
+        for padding in range(_MAX_ENCODED_UID_LEN - 6, _MAX_ENCODED_UID_LEN):
+            uid = "a" * padding + "€€€€"
+            with self.subTest(padding=padding):
+                stem = _uid_to_filename(uid).removesuffix(".ics")
+                prefix = stem.rsplit("-", 1)[0]
+                # Decodable, and what it decodes to is the start of the
+                # UID rather than something else that happens to parse.
+                decoded = urllib.parse.unquote(prefix, errors="strict")
+                self.assertTrue(uid.startswith(decoded))
+
+    def test_an_ordinary_uid_round_trips(self) -> None:
+        from chronos.storage import _filename_to_uid, _uid_to_filename
+
+        for uid in ("plain@example.com", "with space@example.com", "a/b@example.com"):
+            with self.subTest(uid=uid):
+                self.assertEqual(_filename_to_uid(_uid_to_filename(uid)), uid)

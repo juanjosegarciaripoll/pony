@@ -72,7 +72,7 @@ from chronos.protocols import (
 )
 from chronos.services import ProgressFn, format_report, run_doctor
 from chronos.storage import VdirMirrorRepository
-from chronos.sync import SyncCancelled, sync_account
+from chronos.sync import SyncCancelled, describe_account_sync, sync_account
 
 SessionFactory = Callable[[AccountConfig, Authorization], CalDAVSession]
 ContextFactory = Callable[[Path | None], "CliContext"]
@@ -1004,12 +1004,7 @@ def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> i
         # leaves this unset.
         if auth.on_commit is not None:
             auth.on_commit()
-        ctx.stdout.write(
-            f"{account.name}: {result.calendars_synced} calendars "
-            f"(+{result.components_added} "
-            f"~{result.components_updated} "
-            f"-{result.components_removed})\n"
-        )
+        ctx.stdout.write(f"{describe_account_sync(result)}\n")
         for note in result.notes:
             # A resolved collision is not a failure, so it goes to stdout
             # and does not change the exit status — but it is never

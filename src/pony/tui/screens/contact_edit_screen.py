@@ -8,6 +8,8 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Label, TextArea
 
+from chronos.tui.reporting import report
+
 from ...contact_actions import ContactEdit, save_contact
 from ...domain import Contact
 from ...protocols import ContactRepository
@@ -108,8 +110,7 @@ class ContactEditScreen(Screen[Contact | None]):
         )
         saved, outcome = save_contact(self._contacts, self._contact, edit)
         if saved is None:
-            for notice in outcome.notices:
-                self.notify(notice.text, severity=notice.severity)
+            report(self, outcome)
             return
         self.dismiss(saved)
 

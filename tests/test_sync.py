@@ -2245,6 +2245,46 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         self.assertFalse(session.moves)
         self.assertIn(1, session.folders["INBOX"])
 
+    def test_a_move_the_server_already_made_becomes_an_append(self) -> None:
+        """The interrupted-move recovery arm, and what reaches it.
+
+        "Is this PENDING_MOVE row pushable?" is asked twice: once to
+        decide which source folders the planner fetches a remote UID
+        view for, and once to decide which rows emit an op.  The second
+        reads that view to notice that ``source_uid`` is gone from the
+        server -- the move happened and the pass died before the row was
+        updated -- and appends to the target instead.  If the two
+        answers drift, no view is gathered, the arm never fires, and the
+        row waits for a MOVE of a message that is not there.
+        """
+        from pony.sync import PushAppendOp, PushMoveOp
+
+        raw = _make_raw_message("Half moved", "<halfmoved@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<halfmoved@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+        )
+        service.sync()
+        self._archive_locally(
+            index,
+            source="INBOX",
+            target="Archive",
+            message_id="<halfmoved@example.com>",
+        )
+        # The server performed the move; the pass that asked for it did
+        # not live to update the row.
+        del session.folders["INBOX"][1]
+
+        plan = service.plan()
+        ops = [op for fp in plan.accounts[0].folders for op in fp.ops]
+        self.assertEqual(
+            [type(op).__name__ for op in ops if isinstance(op, PushAppendOp)],
+            ["PushAppendOp"],
+        )
+        self.assertFalse([op for op in ops if isinstance(op, PushMoveOp)])
+
 
 class FastPathTestCase(unittest.TestCase):
     """STATUS-based fast-path gates the full FETCH metadata scan.

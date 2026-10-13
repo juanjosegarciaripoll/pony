@@ -158,6 +158,29 @@ def month_window(viewed: date) -> tuple[datetime, datetime]:
     return _local_midnight(first), _local_midnight(nxt)
 
 
+def relative_day_name(day: date, today: date) -> str | None:
+    """``"Today"``, ``"Tomorrow"``, ``"Yesterday"`` -- or ``None``.
+
+    Three columns label a day, and each decided which days have a name
+    instead of a date for itself.  They agreed on the three; the
+    interest is in them going on agreeing, because a view that stopped
+    saying "Today" would be the only one not saying it.
+    """
+    return {0: "Today", 1: "Tomorrow", -1: "Yesterday"}.get((day - today).days)
+
+
+def format_day(day: date, *, with_year: bool = False) -> str:
+    """A day as a date, in the one field order the calendar uses.
+
+    Weekday, day, month: "Wed 15 May", ten characters in every month,
+    which is what the agenda's Day column pins its width to.  The same
+    date used to be written three ways -- ``%a %d %b``, ``%d %b %a`` and
+    ``%a %d %b %Y`` -- in three columns of one application.  The year is
+    carried only where there is no view title to carry it.
+    """
+    return day.strftime("%a %d %b %Y" if with_year else "%a %d %b")
+
+
 def day_column_label(day: date, today: date) -> str:
     """A timeline column's heading: "Today Sat", "Mon 27 Apr".
 
@@ -166,15 +189,10 @@ def day_column_label(day: date, today: date) -> str:
     where there is one, the date otherwise.  The year comes from the
     view title and never repeats here.
     """
-    delta = (day - today).days
-    weekday = day.strftime("%a")
-    if delta == 0:
-        return f"Today {weekday}"
-    if delta == 1:
-        return f"Tomorrow {weekday}"
-    if delta == -1:
-        return f"Yesterday {weekday}"
-    return day.strftime("%a %d %b")
+    name = relative_day_name(day, today)
+    if name is not None:
+        return f"{name} {day.strftime('%a')}"
+    return format_day(day)
 
 
 def step_viewed(
@@ -325,19 +343,14 @@ def format_friendly_start(start: datetime, today: date) -> str:
     moment_date = moment.date()
     delta = (moment_date - today).days
     time_str = moment.strftime("%H:%M")
-    if delta == 0:
-        return f"Today {time_str}"
-    if delta == 1:
-        return f"Tomorrow {time_str}"
-    if delta == -1:
-        return f"Yesterday {time_str}"
+    name = relative_day_name(moment_date, today)
+    if name is not None:
+        return f"{name} {time_str}"
     if 1 < delta < 7:
         return f"{moment.strftime('%a')} {time_str}"
     if -7 < delta < -1:
         return f"Last {moment.strftime('%a')} {time_str}"
-    if moment.year == today.year:
-        return f"{moment.strftime('%a %d %b')} {time_str}"
-    return f"{moment.strftime('%a %d %b %Y')} {time_str}"
+    return f"{format_day(moment_date, with_year=moment.year != today.year)} {time_str}"
 
 
 def format_duration(start: datetime, end: datetime | None) -> str:
@@ -421,20 +434,13 @@ def _format_event_day(start: datetime, today: date) -> str:
     """Day label for the agenda Day column.
 
     `Yesterday` / `Today` / `Tomorrow` for those three special days;
-    everything else as `DD MMM ddd` ("26 May Tue", "30 Apr Wed").
-    The format is fixed-width-ish (10 chars max) so the column
-    width pin in `EventList` stays predictable, and never includes
-    the year — the view title carries that.
+    everything else as `format_day` writes a date, which is ten
+    characters whatever the month -- the column width pin in
+    `EventList` depends on that -- and never carries the year, because
+    the view title does.
     """
-    moment = start.astimezone()
-    delta = (moment.date() - today).days
-    if delta == 0:
-        return "Today"
-    if delta == 1:
-        return "Tomorrow"
-    if delta == -1:
-        return "Yesterday"
-    return moment.strftime("%d %b %a")
+    moment_date = start.astimezone().date()
+    return relative_day_name(moment_date, today) or format_day(moment_date)
 
 
 def is_full_day(occurrence: Occurrence) -> bool:
@@ -993,6 +999,7 @@ __all__ = [
     "day_rows",
     "day_title",
     "day_window",
+    "format_day",
     "format_duration",
     "format_event_row",
     "format_friendly_start",
@@ -1014,6 +1021,7 @@ __all__ = [
     "month_rows",
     "month_title",
     "month_window",
+    "relative_day_name",
     "render_event_detail",
     "search_components",
     "step_viewed",

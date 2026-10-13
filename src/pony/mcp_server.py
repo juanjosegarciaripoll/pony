@@ -16,14 +16,14 @@ import asyncio
 import base64
 import contextlib
 import json
-import os
 import secrets
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
+
+from chronos.atomic import write_atomically
 
 from .accounts import build_mirrors
 from .config import load_config
@@ -53,29 +53,13 @@ def write_mcp_state(state_file: Path, state: McpState) -> None:
     whole mail index, and it was written with `write_text`: created at
     the ambient umask, so world-readable on most systems, and visible
     half-written to a reader that got there between the open and the
-    flush.  `chronos.mcp_server.write_state` has done
-    mkstemp → fsync → chmod 0600 → replace for the same file shape and
-    the same `secrets.token_hex(32)` since it was written; this is that,
-    not a second answer to it.
+    flush.  `chronos.atomic.write_atomically` is the dance both halves
+    use for a file that must not be found half written, and
+    ``owner_only`` means the content is never readable by anyone else,
+    not even for the instant before a `chmod`.
     """
-    state_file.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"port": state.port, "token": state.token}).encode()
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=".tmp-mcp-",
-        dir=state_file.parent,
-    )
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if os.name != "nt":
-            os.chmod(temporary, 0o600)  # noqa: S103 - 0o600 is owner-only
-        os.replace(temporary, state_file)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
-        raise
+    write_atomically(state_file, payload, suffix=".json", owner_only=True)
 
 
 def read_mcp_state(state_file: Path) -> McpState | None:

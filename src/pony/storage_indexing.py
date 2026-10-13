@@ -6,6 +6,7 @@ import dataclasses
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from chronos.outcome import ProgressGate, progress_stride
 
@@ -267,17 +268,9 @@ def rescan_local_account(
                     storage_key=stored.storage_key,
                 )
                 if force_reproject or not _projection_matches(stored, fresh):
-                    merged = dataclasses.replace(
-                        stored,
-                        sender=fresh.sender,
-                        recipients=fresh.recipients,
-                        cc=fresh.cc,
-                        subject=fresh.subject,
-                        body_preview=fresh.body_preview,
-                        has_attachments=fresh.has_attachments,
-                        received_at=fresh.received_at,
+                    index_repository.update_message(
+                        message=_with_projection(stored, fresh)
                     )
-                    index_repository.update_message(message=merged)
                     reprojected += 1
                 done += 1
                 if progress is not None and gate.due(done, final=done == total):
@@ -441,13 +434,33 @@ def reindex_account_from_mirror(
     )
 
 
+# What `project_rfc822_message` derives from the raw message, and the
+# only fields a reprojection may overwrite: everything else on an
+# `IndexedMessage` belongs to the index (flags, status, the server
+# handle, when it was synced).  Named once because `pony rescan` reads
+# the list twice -- to notice that a row no longer matches its file, and
+# to copy the difference across -- and a field present in one reading
+# and not the other is either never noticed or copied without the rest.
+_PROJECTED_FIELDS = (
+    "sender",
+    "recipients",
+    "cc",
+    "subject",
+    "body_preview",
+    "has_attachments",
+    "received_at",
+)
+
+
 def _projection_matches(stored: IndexedMessage, fresh: IndexedMessage) -> bool:
-    return (
-        stored.sender == fresh.sender
-        and stored.recipients == fresh.recipients
-        and stored.cc == fresh.cc
-        and stored.subject == fresh.subject
-        and stored.body_preview == fresh.body_preview
-        and stored.has_attachments == fresh.has_attachments
-        and stored.received_at == fresh.received_at
+    return all(
+        getattr(stored, field) == getattr(fresh, field) for field in _PROJECTED_FIELDS
     )
+
+
+def _with_projection(stored: IndexedMessage, fresh: IndexedMessage) -> IndexedMessage:
+    """*stored* with every projected field taken from *fresh*."""
+    changes: dict[str, Any] = {
+        field: getattr(fresh, field) for field in _PROJECTED_FIELDS
+    }
+    return dataclasses.replace(stored, **changes)

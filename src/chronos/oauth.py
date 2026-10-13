@@ -26,15 +26,11 @@ or `niquests`/`requests`; all HTTP is done via `urllib.request`.
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import http.server
 import json
-import os
 import secrets
 import socket
-import stat
-import tempfile
 import threading
 import time
 import urllib.error
@@ -45,6 +41,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+
+from chronos.atomic import write_atomically
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -431,21 +429,10 @@ def save_tokens(path: Path, tokens: StoredTokens) -> None:
         },
         indent=2,
     ).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
-        raise
-    # Best-effort permission tightening on POSIX.
-    with contextlib.suppress(OSError):
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    # Owner-only from the moment it exists: these are a refresh token
+    # and an access token, and the file used to be created at the
+    # ambient umask and tightened after the rename.
+    write_atomically(path, payload, suffix=".json", owner_only=True)
 
 
 def load_tokens(path: Path) -> StoredTokens:

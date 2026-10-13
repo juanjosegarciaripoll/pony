@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from itertools import batched
 from urllib.parse import urlsplit
 
 from chronos.caldav.errors import (
@@ -23,11 +24,10 @@ from chronos.caldav.xml import (
     _CALENDARS_PROPFIND_BODY,
     _CTAG_PROPFIND_BODY,
     _CURRENT_USER_PRINCIPAL_BODY,
-    _MULTIGET_BATCH_SIZE,
     _SYNC_TOKEN_PROPFIND_BODY,
+    MULTIGET_BATCH_SIZE,
     _build_multiget_body,
     _build_sync_collection_body,
-    _chunk,
     _parse_calendar_home_set,
     _parse_calendar_query,
     _parse_calendars_propfind,
@@ -225,7 +225,7 @@ def calendar_multiget(
     if not hrefs:
         return []
     path = urlsplit(calendar_url).path or "/"
-    chunks = _chunk(list(hrefs), _MULTIGET_BATCH_SIZE)
+    chunks = list(batched(hrefs, MULTIGET_BATCH_SIZE, strict=False))
     total = len(hrefs)
     if len(chunks) > 1:
         logger.info(
@@ -233,7 +233,7 @@ def calendar_multiget(
             total,
             calendar_url,
             len(chunks),
-            _MULTIGET_BATCH_SIZE,
+            MULTIGET_BATCH_SIZE,
         )
     out: list[tuple[str, str, bytes]] = []
     fetched = 0

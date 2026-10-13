@@ -14,7 +14,17 @@ from pathlib import Path, PurePath
 
 
 def expand_path(raw: str | Path) -> Path:
-    """Expand ``~``, ``$VAR`` and ``%VAR%`` in a configured path."""
+    """Expand ``~``, ``$VAR`` and ``%VAR%`` in a configured path.
+
+    ``os.path.expanduser``, not ``Path.expanduser``: the latter raises
+    ``RuntimeError`` when there is no home directory to expand to, and
+    a configured path that happens to mention ``~`` on a machine with
+    no home is not a reason to refuse to start.
+
+    One function for both halves, because both read paths out of the
+    same configuration file.  It was written out four times, and only
+    one of them carried the comment above.
+    """
     text = str(raw)
     text = os.path.expandvars(text)
     text = os.path.expanduser(text)  # noqa: PTH111

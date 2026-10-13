@@ -4,7 +4,7 @@ import dataclasses
 import tempfile
 import unittest
 import unittest.mock
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from chronos.domain import (
@@ -554,6 +554,56 @@ class AlarmRepositoryTest(unittest.TestCase):
         self.assertEqual(pending[0].trigger_at, trigger)
         self.assertEqual(pending[0].summary, "Team standup")
         self.assertIsNotNone(pending[0].db_id)
+
+    def test_due_alarms_announces_each_one_once(self) -> None:
+        """One answer to "which reminders are due", for two announcers.
+
+        The calendar on its own raises a toast, rings the bell and emits
+        OSC 777; Pony Express publishes through its notification space.
+        Each used to query, decide the lookback and mark the alarm
+        fired itself, with the lookback written out twice -- so a
+        reminder could be shown twice by one half and not at all by the
+        other.
+        """
+        from chronos.alarms import ALARM_LOOKBACK, due_alarms
+
+        occurrence = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+        self.repo.set_alarms(
+            self.ref,
+            occurrence,
+            [self._make_alarm(datetime(2026, 5, 1, 8, 45, tzinfo=UTC))],
+        )
+        now = datetime(2026, 5, 1, 8, 50, tzinfo=UTC)
+
+        first = due_alarms(self.repo, now)
+        self.assertEqual([alarm.title for alarm in first], ["Team standup"])
+        self.assertIn("Starts", first[0].body)
+        # Marked as it was converted, so a second poll says nothing.
+        self.assertEqual(due_alarms(self.repo, now), ())
+
+        # And the lookback is the shared one: an alarm older than it has
+        # been missed, one inside it has not.  A fresh trigger, because
+        # `set_alarms` keeps a `fired_at` for one it has seen before.
+        later_trigger = datetime(2026, 5, 1, 10, 45, tzinfo=UTC)
+        self.repo.set_alarms(
+            self.ref,
+            datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
+            [self._make_alarm(later_trigger)],
+        )
+        self.assertEqual(
+            due_alarms(
+                self.repo, later_trigger + ALARM_LOOKBACK + timedelta(minutes=1)
+            ),
+            (),
+        )
+        self.assertEqual(
+            len(
+                due_alarms(
+                    self.repo, later_trigger + ALARM_LOOKBACK - timedelta(minutes=1)
+                )
+            ),
+            1,
+        )
 
     def test_query_outside_window_returns_empty(self) -> None:
         trigger = datetime(2026, 5, 1, 8, 45, tzinfo=UTC)

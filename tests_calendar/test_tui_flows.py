@@ -527,8 +527,9 @@ class RowFormattingTest(unittest.TestCase):
         # 6 cells: Day, Time, Duration, Summary, Calendar, Location.
         self.assertEqual(len(cells), 6)
         # 2026-06-15 is a Monday, well outside the today/tomorrow/
-        # yesterday window → "DD MMM ddd" form.
-        self.assertEqual(cells[0], "15 Jun Mon")
+        # yesterday window, so it reads as a date -- in the one field
+        # order `views.format_day` writes for every column.
+        self.assertEqual(cells[0], "Mon 15 Jun")
         self.assertEqual(cells[1], "09:00")
         self.assertEqual(cells[2], "1h")
         self.assertEqual(cells[3], "Hello")
@@ -538,7 +539,7 @@ class RowFormattingTest(unittest.TestCase):
     def test_format_event_row_uses_friendly_words_for_today_tomorrow(self) -> None:
         # `Yesterday` / `Today` / `Tomorrow` replace the absolute date
         # in the Day column for those three days only — everything
-        # else uses the literal `DD MMM ddd` form.
+        # else reads as a date.
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         event = _empty_event(ref)
 
@@ -2041,8 +2042,9 @@ class SyncFlowTest(TuiFlowTestCase):
             from textual.widgets import Button, Static
 
             summary = progress.query_one("#sync-progress-summary", Static)
+            # The one sentence `chronos.sync` writes for every surface.
             self.assertIn("+3 added", str(summary.content))
-            self.assertIn("~1 updated", str(summary.content))
+            self.assertIn("1 updated", str(summary.content))
             # The Cancel button is hidden once the worker reports
             # back; the Close button is visible and primary so the
             # user can dismiss the dialog.
@@ -2259,7 +2261,9 @@ class BackgroundSyncTest(TuiFlowTestCase):
             self.assertEqual(len(calls), 1)
             self.assertIsNotNone(calls[0])  # cancel_event is passed
             messages = [n.message for n in pilot.app._notifications]
-            self.assertIn("Sync complete: +2 ~0 -0", messages)
+            self.assertIn(
+                "Calendar sync complete.  +2 added, 0 updated, 0 removed", messages
+            )
             self.assertFalse(self._main(app)._sync_in_progress())
 
     async def test_g_opens_the_dialog_as_it_does_in_the_mail_reader(self) -> None:
@@ -2315,7 +2319,9 @@ class BackgroundSyncTest(TuiFlowTestCase):
             self._main(app).on_sync_finished(self._sync_outcome(manual=False, added=2))
             await pilot.pause()
             messages = [n.message for n in pilot.app._notifications]
-            self.assertIn("Sync complete: +2 ~0 -0", messages)
+            self.assertIn(
+                "Calendar sync complete.  +2 added, 0 updated, 0 removed", messages
+            )
 
     async def test_sync_errors_are_notified(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
@@ -2394,7 +2400,7 @@ class AlarmMessageTest(unittest.TestCase):
         )
 
     def test_start_time_and_description(self) -> None:
-        from chronos.tui.app import alarm_message
+        from chronos.alarms import alarm_message
 
         start = datetime(2026, 5, 1, 10, 0).astimezone()
         message = alarm_message(
@@ -2403,7 +2409,7 @@ class AlarmMessageTest(unittest.TestCase):
         self.assertEqual(message, "Starts 10:00\nBring slides")
 
     def test_google_boilerplate_is_dropped(self) -> None:
-        from chronos.tui.app import alarm_message
+        from chronos.alarms import alarm_message
 
         start = datetime(2026, 5, 1, 10, 0).astimezone()
         message = alarm_message(
@@ -2413,7 +2419,7 @@ class AlarmMessageTest(unittest.TestCase):
         self.assertEqual(message, "Started 10:00")
 
     def test_other_day_shows_date(self) -> None:
-        from chronos.tui.app import alarm_message
+        from chronos.alarms import alarm_message
 
         start = datetime(2026, 5, 2, 9, 30).astimezone()
         message = alarm_message(self._alarm(start, None), start - timedelta(days=1))

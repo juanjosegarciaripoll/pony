@@ -37,6 +37,7 @@ from .actions import (
     Action,
     ActionContext,
     calendar_value,
+    folder_value,
     parse_calendar,
     parse_target,
 )
@@ -119,22 +120,30 @@ def _status(services: WebServices, folder: FolderRef, *, query: str) -> str:
     unread = services.index.unread_counts_by_folder(
         account_name=folder.account_name,
     ).get(folder.folder_name, 0)
-    label = f"{folder.account_name}/{folder.folder_name}"
+    label = folder_value(folder)
     return f"{label} — {unread} unread" if unread else label
+
+
+def all_folders(services: WebServices) -> list[FolderRef]:
+    """Every folder of every account, from everything that knows of one.
+
+    The mirror is not the only place a folder is known: one the index
+    or the sync state has a row for but no directory yet is still a
+    folder, which is why the folder pane asks `folder_unread_counts`.
+    Two other loops asked the mirror alone, so the move and go-to
+    prompts offered a different set from the pane beside them -- the
+    divergence the terminal's `action_goto_folder` had.
+    """
+    return [
+        FolderRef(account_name=account.name, folder_name=name)
+        for account in services.config.accounts
+        for name in folder_unread_counts(services.mailboxes, account.name)
+    ]
 
 
 def folder_options(services: WebServices) -> list[str]:
     """``account/folder`` for every folder, for the move and go-to prompts."""
-    found: list[str] = []
-    for account in services.config.accounts:
-        mirror = services.mirrors.get(account.name)
-        if mirror is None:
-            continue
-        found.extend(
-            f"{account.name}/{ref.folder_name}"
-            for ref in mirror.list_folders(account_name=account.name)
-        )
-    return found
+    return [folder_value(folder) for folder in all_folders(services)]
 
 
 # ----------------------------------------------------------------------
@@ -791,12 +800,9 @@ def _attachments(
 
 def _calendar_targets(services: WebServices) -> tuple[CalendarRef, ...]:
     """The calendars an attachment could be filed into."""
-    from chronos.views import all_calendar_refs
+    from .calendar import calendar_targets
 
-    runtime = services.calendar
-    if runtime is None:
-        return ()
-    return tuple(all_calendar_refs(runtime.config, runtime.mirror))
+    return calendar_targets(services)
 
 
 def _import_control(
@@ -884,9 +890,7 @@ def _invitation_block(
             ),
             class_="invitation",
         )
-    from chronos.views import all_calendar_refs
-
-    targets = all_calendar_refs(calendar.config, calendar.mirror)
+    targets = _calendar_targets(services)
     if not targets:
         return element(
             "section",
@@ -1028,7 +1032,7 @@ def _chosen_target(context: ActionContext) -> FolderRef | Outcome:
     if value not in folder_options(context.services):
         return Outcome.refused(
             warn(
-                f"No folder {target.account_name}/{target.folder_name}."
+                f"No folder {folder_value(target)}."
                 " Choose one from the list, or create it first."
             )
         )

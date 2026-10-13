@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from .calendar import CalendarRuntime
     from .message_renderer import AttachmentInfo
 
+from chronos.atomic import write_atomically
 from chronos.paths import activate as activate_calendar
+from chronos.paths import expand_path
 
 from .accounts import (
     build_mirror,
@@ -651,9 +653,7 @@ def _peek_profile(config_path: Path) -> tuple[Path | None, str]:
     instance = data.get("profile")
     if not isinstance(declared, str) or not declared.strip():
         return None, ""
-    # os.path.expanduser, not Path.expanduser: the latter raises
-    # RuntimeError when there is no home directory to expand to.
-    path = Path(os.path.expanduser(os.path.expandvars(declared)))  # noqa: PTH111
+    path = expand_path(declared)
     if not path.is_absolute():
         return None, ""
     return path, instance if isinstance(instance, str) else ""
@@ -1345,13 +1345,8 @@ def _save_scan_state(path: Path, state: dict[str, ScanState]) -> None:
     """Persist the per-account folder-mtime cache atomically."""
     import json
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(state, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    payload = json.dumps(state, indent=2, sort_keys=True).encode("utf-8")
+    write_atomically(path, payload, suffix=".json")
 
 
 def _build_ops_detail_table(plan: SyncPlan, index: SqliteIndexRepository) -> str:
@@ -3445,7 +3440,6 @@ def starter_config(paths: AppPaths) -> str:
 
 def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
     """Open the config file in the user's editor."""
-    import os
 
     config_file = config_path or paths.config_file
     if not config_file.exists():
@@ -3458,7 +3452,9 @@ def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
             shutil.copy(sample, config_file)
             print(f"Created {config_file} from the sample config.")
         else:
-            config_file.write_text(starter_config(paths), encoding="utf-8")
+            write_atomically(
+                config_file, starter_config(paths).encode("utf-8"), suffix=".toml"
+            )
             print(f"Created {config_file}.")
 
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
@@ -3579,8 +3575,7 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
         f"profile = 'default'\n"
     )
     if not config_file.exists():
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(header + block, encoding="utf-8")
+        write_atomically(config_file, (header + block).encode("utf-8"), suffix=".toml")
         print(f"\nCreated {config_file}")
     else:
         with config_file.open("a", encoding="utf-8") as f:
@@ -3647,9 +3642,7 @@ def _remove_account_from_config(config_file: Path, name: str) -> None:
             skip = False
         if not skip:
             out.append(line)
-    tmp = config_file.with_suffix(config_file.suffix + ".tmp")
-    tmp.write_text("".join(out), encoding="utf-8")
-    tmp.replace(config_file)
+    write_atomically(config_file, "".join(out).encode("utf-8"), suffix=".toml")
 
 
 def _prompt(message: str, default: str = "") -> str:

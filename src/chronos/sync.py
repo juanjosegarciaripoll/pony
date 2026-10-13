@@ -9,6 +9,7 @@ import urllib.parse
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from typing import Literal, cast
 
 from chronos.caldav.errors import (
@@ -16,6 +17,7 @@ from chronos.caldav.errors import (
     CalDAVError,
     SyncTokenExpiredError,
 )
+from chronos.caldav.xml import MULTIGET_BATCH_SIZE
 from chronos.domain import (
     LOCAL_FLAG_DIRTY,
     AccountConfig,
@@ -904,16 +906,9 @@ def _apply_server_deletions(
 
 _INGEST_PROGRESS_INTERVAL = 50
 
-# How many hrefs go into one `calendar-multiget` REPORT. Mirrors
-# `caldav.xml._MULTIGET_BATCH_SIZE` deliberately: the session
-# already chunks internally, but the producer thread here pre-chunks
-# so it can hand each chunk to the consumer as soon as the network
-# returns rather than buffering the entire response set.
-_FETCH_CHUNK_SIZE = 100
-
 # Bound on the producer/consumer queue: at most this many fetched
 # chunks sit between the network worker and the ingest loop. With
-# `_FETCH_CHUNK_SIZE = 100` that's ~200 in-flight resources at peak;
+# `MULTIGET_BATCH_SIZE = 100` that's ~200 in-flight resources at peak;
 # enough to keep the consumer busy across one network round-trip,
 # small enough that a stalled consumer doesn't pile up megabytes of
 # ICS in memory.
@@ -969,7 +964,7 @@ def _fetch_and_ingest(
     if not hrefs:
         return 0
 
-    chunks = _chunk_hrefs(hrefs, _FETCH_CHUNK_SIZE)
+    chunks = list(batched(hrefs, MULTIGET_BATCH_SIZE, strict=False))
     total = len(hrefs)
     total_chunks = len(chunks)
 
@@ -979,7 +974,7 @@ def _fetch_and_ingest(
             total,
             calendar.url,
             total_chunks,
-            _FETCH_CHUNK_SIZE,
+            MULTIGET_BATCH_SIZE,
         )
     if total >= _INGEST_PROGRESS_INTERVAL:
         logger.info("  ingesting %d resources locally...", total)
@@ -1087,10 +1082,6 @@ def _fetch_and_ingest(
     ):
         logger.info("  ingest: %d/%d", processed, total)
     return count
-
-
-def _chunk_hrefs(hrefs: Sequence[str], size: int) -> list[Sequence[str]]:
-    return [hrefs[i : i + size] for i in range(0, len(hrefs), size)]
 
 
 def _put_or_cancel(
@@ -1713,10 +1704,41 @@ def _resolve_calendar(account: AccountConfig, remote: RemoteCalendar) -> Calenda
     )
 
 
+def describe_sync_result(results: Sequence[SyncResult]) -> str:
+    """What a finished calendar sync did, in one line.
+
+    Every surface says the same thing about a sync, so the sentence is
+    built here rather than in the agenda's toast, the progress dialog's
+    summary, the browser's notice and the command's output -- which
+    between them said it three different ways.  The mail half has had
+    exactly one `describe_sync_result` since it grew a second front end.
+    """
+    if not results:
+        return "No calendars synced."
+    added = sum(result.components_added for result in results)
+    updated = sum(result.components_updated for result in results)
+    removed = sum(result.components_removed for result in results)
+    return (
+        f"Calendar sync complete.  +{added} added, {updated} updated, {removed} removed"
+    )
+
+
+def describe_account_sync(result: SyncResult) -> str:
+    """What one account's sync did, for a command that reports each one."""
+    return (
+        f"{result.account_name}: {result.calendars_synced} calendars, "
+        f"+{result.components_added} added, "
+        f"{result.components_updated} updated, "
+        f"{result.components_removed} removed"
+    )
+
+
 __all__ = [
     "CalendarSyncStats",
     "SyncCancelled",
     "SyncError",
     "SyncHaltError",
+    "describe_account_sync",
+    "describe_sync_result",
     "sync_account",
 ]

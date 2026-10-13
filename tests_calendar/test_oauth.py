@@ -124,7 +124,7 @@ class TokenStoreTest(unittest.TestCase):
         )
         with (
             unittest.mock.patch(
-                "chronos.oauth.os.replace", side_effect=KeyboardInterrupt
+                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

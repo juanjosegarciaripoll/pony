@@ -15,13 +15,12 @@ Everything else is a private implementation detail.
 from __future__ import annotations
 
 import json
-import os
 import re
 import tomllib
 from pathlib import Path
 from typing import cast
 
-from chronos.paths import is_half_qualified
+from chronos.paths import expand_path, is_half_qualified
 
 from .domain import (
     CONFIG_VERSION,
@@ -123,9 +122,9 @@ def _parse_app_config(raw: object) -> AppConfig:
     editor = _optional_string(data, "editor")
     markdown_compose = _require_bool(data, "markdown_compose", default=False)
     bbdb_raw = _optional_string(data, "bbdb_path")
-    bbdb_path = _expand_path(bbdb_raw) if bbdb_raw else None
+    bbdb_path = expand_path(bbdb_raw) if bbdb_raw else None
     downloads_raw = _optional_string(data, "downloads_path")
-    downloads_path = _expand_path(downloads_raw) if downloads_raw else None
+    downloads_path = expand_path(downloads_raw) if downloads_raw else None
     theme = _optional_string(data, "theme")
     background_sync_enabled = _require_bool(
         data, "background_sync_enabled", default=False
@@ -350,7 +349,7 @@ def _require_data_dir(data: dict[str, object]) -> Path:
         )
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError("'data_dir' must be a non-empty string")
-    expanded = _expand_path(raw)
+    expanded = expand_path(raw)
     if not expanded.is_absolute():
         raise ConfigError(
             f"'data_dir' must be an absolute path (got {raw!r}); a relative "
@@ -400,7 +399,7 @@ def _parse_mirror(
 ) -> MirrorConfig:
     path_str = _require_string(data, "path")
     # Expand environment variables (e.g. $HOME, %USERPROFILE%).
-    mirror_path = _expand_path(path_str)
+    mirror_path = expand_path(path_str)
     if mirror_path.is_absolute():
         # Contained like `data_dir` above, and for the same reason:
         # `PONY_ROOT` is documented as relocating every directory a run
@@ -493,11 +492,6 @@ def _require_int(data: dict[str, object], key: str, *, default: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ConfigError(f"{key!r} must be an integer")
     return value
-
-
-def _expand_path(raw: str) -> Path:
-    """Expand ``~``, ``$VAR``, and ``%VAR%`` in a path string."""
-    return Path(os.path.expanduser(os.path.expandvars(raw)))
 
 
 def _optional_string(data: dict[str, object], key: str) -> str | None:

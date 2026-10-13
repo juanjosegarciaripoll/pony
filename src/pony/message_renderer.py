@@ -477,7 +477,6 @@ def _extract_body_and_attachments(
 
     for part in msg.walk():
         content_type = part.get_content_type()
-        disposition = part.get_content_disposition() or ""
 
         # Detect attached emails and render a header separator.
         if content_type == "message/rfc822":
@@ -514,14 +513,13 @@ def _extract_body_and_attachments(
         if part.get_content_maintype() == "multipart":
             continue
 
-        if disposition == "attachment" or part.get_filename():
-            filename = part.get_filename() or "(unnamed)"
+        if is_attachment_part(part):
             payload = part.get_payload(decode=True)
             size = len(payload) if isinstance(payload, bytes) else 0
             attachments.append(
                 AttachmentInfo(
                     index=attach_index,
-                    filename=filename,
+                    filename=attachment_display_name(part),
                     content_type=content_type,
                     size_bytes=size,
                 )
@@ -544,27 +542,6 @@ def _extract_body_and_attachments(
                 if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     html_parts.append(payload.decode(charset, errors="replace"))
-
-        else:
-            # Inline part with an unrecognised content-type (e.g. text/calendar).
-            # Expose it as a named attachment so the user can see and extract it.
-            payload = part.get_payload(decode=True)
-            size = len(payload) if isinstance(payload, bytes) else 0
-            subtype = (
-                content_type.split("/")[-1] if "/" in content_type else content_type
-            )
-            filename = _INLINE_ATTACHMENT_FILENAMES.get(
-                content_type, f"attachment.{subtype}"
-            )
-            attachments.append(
-                AttachmentInfo(
-                    index=attach_index,
-                    filename=filename,
-                    content_type=content_type,
-                    size_bytes=size,
-                )
-            )
-            attach_index += 1
 
     links: list[tuple[str, str]] = []
     if body_parts:
@@ -981,7 +958,6 @@ def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None
     found = 0
     for part in msg.walk():
         content_type = part.get_content_type()
-        disposition = part.get_content_disposition() or ""
 
         if content_type == "message/rfc822":
             inner = part.get_payload()
@@ -1003,33 +979,14 @@ def extract_attachment(raw_bytes: bytes, index: int) -> AttachmentPayload | None
         if part.get_content_maintype() == "multipart":
             continue
 
-        if disposition == "attachment" or part.get_filename():
+        if is_attachment_part(part):
             found += 1
             if found == index:
                 payload = part.get_payload(decode=True)
                 if not isinstance(payload, bytes):
                     return None
                 return AttachmentPayload(
-                    filename=part.get_filename() or "(unnamed)",
-                    content_type=content_type,
-                    size_bytes=len(payload),
-                    data=payload,
-                )
-        elif content_type not in ("text/plain", "text/html"):
-            # Inline unrecognised type — mirrors _extract_body_and_attachments.
-            found += 1
-            if found == index:
-                payload = part.get_payload(decode=True)
-                if not isinstance(payload, bytes):
-                    return None
-                subtype = (
-                    content_type.split("/")[-1] if "/" in content_type else content_type
-                )
-                filename = _INLINE_ATTACHMENT_FILENAMES.get(
-                    content_type, f"attachment.{subtype}"
-                )
-                return AttachmentPayload(
-                    filename=filename,
+                    filename=attachment_display_name(part),
                     content_type=content_type,
                     size_bytes=len(payload),
                     data=payload,

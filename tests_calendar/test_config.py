@@ -662,7 +662,7 @@ class SaveRoundTripTest(unittest.TestCase):
         original_bytes = path.read_bytes()
         with (
             unittest.mock.patch(
-                "chronos.config.os.replace", side_effect=KeyboardInterrupt
+                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

@@ -17,12 +17,15 @@ from chronos.domain import ComponentRef, LocalStatus, Occurrence, VEvent
 from chronos.views import (
     OccurrenceRow,
     compute_hour_range,
+    day_column_label,
     day_columns,
+    format_friendly_start,
     full_day_dates,
     full_day_rows,
     grid_dates,
     local_days,
     month_buckets,
+    relative_day_name,
     timed_day_minutes,
 )
 
@@ -215,3 +218,53 @@ class TimelineGeometryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneDayLabelTest(unittest.TestCase):
+    """Three columns label a day, and they used to decide separately.
+
+    The timeline heading, the agenda's Day column and
+    `format_friendly_start` each answered "which days have a name
+    instead of a date" for itself, and wrote the date three different
+    ways when the answer was none: `%a %d %b`, `%d %b %a` and
+    `%a %d %b %Y`, three field orders for the same date in one
+    application.
+    """
+
+    TODAY = date(2026, 5, 20)  # Wednesday
+
+    def _moment(self, day: date) -> datetime:
+        return datetime.combine(day, time(9, 0)).astimezone()
+
+    def test_the_three_labels_name_the_same_three_days(self) -> None:
+        from chronos.views import _format_event_day
+
+        for offset, name in ((0, "Today"), (1, "Tomorrow"), (-1, "Yesterday")):
+            day = self.TODAY + timedelta(days=offset)
+            with self.subTest(name=name):
+                self.assertEqual(relative_day_name(day, self.TODAY), name)
+                self.assertTrue(day_column_label(day, self.TODAY).startswith(name))
+                self.assertEqual(_format_event_day(self._moment(day), self.TODAY), name)
+                self.assertTrue(
+                    format_friendly_start(self._moment(day), self.TODAY).startswith(
+                        name
+                    )
+                )
+
+    def test_a_day_with_no_name_is_written_one_way(self) -> None:
+        from chronos.views import _format_event_day
+
+        day = date(2026, 8, 12)  # Wednesday, a season away
+        self.assertIsNone(relative_day_name(day, self.TODAY))
+        self.assertEqual(day_column_label(day, self.TODAY), "Wed 12 Aug")
+        self.assertEqual(_format_event_day(self._moment(day), self.TODAY), "Wed 12 Aug")
+        self.assertEqual(
+            format_friendly_start(self._moment(day), self.TODAY), "Wed 12 Aug 09:00"
+        )
+
+    def test_a_day_in_another_year_carries_it(self) -> None:
+        day = date(2014, 9, 30)  # Tuesday
+        self.assertEqual(
+            format_friendly_start(self._moment(day), self.TODAY),
+            "Tue 30 Sep 2014 09:00",
+        )

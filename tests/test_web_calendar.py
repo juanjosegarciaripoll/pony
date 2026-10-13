@@ -562,6 +562,34 @@ def test_the_calendar_can_be_synced_from_the_browser() -> None:
     }
 
 
+def test_every_surface_says_the_same_thing_about_a_calendar_sync() -> None:
+    """One sentence, written in `chronos.sync`.
+
+    The agenda's toast, the progress dialog's summary, this route's
+    notice and `chronos sync`'s output each spelled it out, in three
+    wordings between them: "Sync complete: +2 ~0 -0",
+    "+2 added  ~0 updated  -0 removed" and "Calendar sync complete.".
+    The mail half has had exactly one `describe_sync_result` since it
+    grew a second front end.
+    """
+    from chronos.domain import SyncResult
+    from chronos.sync import describe_sync_result
+    from pony.web.syncing import _calendar_outcome
+
+    results = (
+        SyncResult(
+            account_name=ACCOUNT,
+            calendars_synced=1,
+            components_added=2,
+            components_updated=1,
+            components_removed=0,
+            errors=(),
+        ),
+    )
+
+    assert _calendar_outcome(results).notices[0].text == describe_sync_result(results)
+
+
 def test_a_calendar_sync_error_is_reported() -> None:
     from unittest.mock import patch
 

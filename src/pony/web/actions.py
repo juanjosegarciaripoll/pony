@@ -170,6 +170,16 @@ def held_for_confirmation(
     return Reply(Outcome(), confirm=Confirmation(question, {"confirm": "1"}))
 
 
+def folder_value(ref: FolderRef) -> str:
+    """``account/folder``, as a prompt, a label and a refusal spell it.
+
+    The inverse of :func:`parse_target`, beside it, so the two cannot
+    drift: the prompt's options and what it accepts back are one
+    spelling.
+    """
+    return f"{ref.account_name}/{ref.folder_name}"
+
+
 def parse_target(value: str) -> FolderRef | None:
     """``account/folder`` as the move and copy prompts spell it.
 
@@ -216,6 +226,7 @@ __all__ = [
     "Confirmation",
     "Reply",
     "calendar_value",
+    "folder_value",
     "held_for_confirmation",
     "holds_form",
     "parse_calendar",

@@ -812,12 +812,7 @@ def _first_calendar(services: WebServices, request: Request) -> str:
     The first one in view, as it is in the terminal: creating an event
     while looking at one calendar files it there.
     """
-    from chronos.views import all_calendar_refs
-
-    runtime = services.calendar
-    if runtime is None:
-        return ""
-    refs = all_calendar_refs(runtime.config, runtime.mirror)
+    refs = calendar_view.calendar_targets(services)
     view = calendar_view.read_view(
         _multi(request),
         today=datetime.now(UTC).astimezone().date(),
@@ -1145,13 +1140,7 @@ def _raw_from(services: WebServices, request: Request) -> bytes | Response:
 
 
 def _first_folder(services: WebServices) -> FolderRef | None:
-    for account in services.config.accounts:
-        mirror = services.mirrors.get(account.name)
-        if mirror is None:
-            continue
-        for ref in mirror.list_folders(account_name=account.name):
-            return ref
-    return None
+    return next(iter(mail_view.all_folders(services)), None)
 
 
 __all__ = [

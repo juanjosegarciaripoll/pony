@@ -30,8 +30,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +37,7 @@ from typing import Any, cast
 
 from tinymcp import McpServer
 
+from chronos.atomic import write_atomically
 from chronos.domain import (
     CalendarRef,
     ComponentKind,
@@ -65,21 +64,8 @@ class McpServerState:
 
 
 def write_state(state_file: Path, state: McpServerState) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"port": state.port, "token": state.token}).encode()
-    fd, tmp = tempfile.mkstemp(prefix=".tmp-mcp-", dir=state_file.parent)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if os.name != "nt":
-            os.chmod(tmp, 0o600)
-        os.replace(tmp, state_file)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        raise
+    write_atomically(state_file, payload, suffix=".json", owner_only=True)
 
 
 def read_state(state_file: Path) -> McpServerState | None:

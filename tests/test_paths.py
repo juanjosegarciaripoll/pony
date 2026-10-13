@@ -289,3 +289,58 @@ class DefaultLocationTest(unittest.TestCase):
 
         self.assertEqual(paths.config_file, Path(tmpdir) / "cfg/pony/config.toml")
         self.assertEqual(paths.data_dir, Path(tmpdir) / "data/pony")
+
+
+class ProfileStampTest(unittest.TestCase):
+    """The stamp is what stops a second config owning a data directory.
+
+    It was written with `write_text`, so an interrupted first run could
+    leave a truncated `profile.toml` -- a directory nothing owns and no
+    config can adopt.  It goes through `chronos.atomic` now, like every
+    other file either half replaces.
+    """
+
+    def test_an_interrupted_stamp_leaves_nothing_behind(self) -> None:
+        from pony.paths import PROFILE_STAMP, claim_profile, read_profile
+
+        with tempfile.TemporaryDirectory() as raw:
+            data_dir = Path(raw) / "data"
+            with (
+                patch("chronos.atomic.os.replace", side_effect=KeyboardInterrupt),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                claim_profile(data_dir, "default")
+
+            self.assertFalse((data_dir / PROFILE_STAMP).exists())
+            self.assertEqual(list(data_dir.iterdir()), [])
+            self.assertIsNone(read_profile(data_dir))
+
+
+class ExpandPathTest(unittest.TestCase):
+    """One expansion, used wherever a configured path is read.
+
+    `~`, `$VAR` and `%VAR%` were expanded in four places -- the sandbox
+    root, `data_dir`, `mirror.path` and the calendar's own paths -- and
+    only one of them carried the comment saying why it is
+    `os.path.expanduser` rather than `Path.expanduser`.
+    """
+
+    def test_every_reader_of_a_configured_path_uses_the_same_function(self) -> None:
+        import chronos.paths
+        import pony.cli
+        import pony.config
+        import pony.paths
+
+        one = chronos.paths.expand_path
+        self.assertIs(pony.paths.expand_path, one)
+        self.assertIs(pony.config.expand_path, one)
+        self.assertIs(pony.cli.expand_path, one)
+
+    def test_a_variable_and_a_home_reference_both_expand(self) -> None:
+        from chronos.paths import expand_path
+
+        with patch.dict(os.environ, {"PONY_TEST_DIR": "/somewhere"}):
+            self.assertEqual(
+                expand_path("$PONY_TEST_DIR/mail"), Path("/somewhere/mail")
+            )
+        self.assertFalse(str(expand_path("~/mail")).startswith("~"))

@@ -177,7 +177,7 @@ def calendar_page(
         )
     now = datetime.now(UTC)
     today = now.astimezone().date()
-    calendars = all_calendar_refs(calendar.config, calendar.mirror)
+    calendars = calendar_targets(services)
     rows = gather_occurrences(
         index=calendar.index,
         calendars=calendars,
@@ -233,6 +233,20 @@ def _matching(
         )
     }
     return tuple(row for row in rows if row.component.ref in matched)
+
+
+def calendar_targets(services: WebServices) -> tuple[CalendarRef, ...]:
+    """Every calendar there is, or nothing when there is no calendar.
+
+    `chronos.views.all_calendar_refs` needs a configured runtime, so
+    four places wrapped it in the same "is the calendar there?" check --
+    each spelling the empty answer slightly differently: ``()``, ``[]``,
+    and a branch around the call.
+    """
+    runtime = services.calendar
+    if runtime is None:
+        return ()
+    return tuple(all_calendar_refs(runtime.config, runtime.mirror))
 
 
 def _search_window(now: datetime) -> tuple[datetime, datetime]:
@@ -877,12 +891,7 @@ def event_form_page(
     notices: Sequence[Notice] = (),
 ) -> str:
     """One event's fields, new or existing."""
-    calendar = services.calendar
-    targets = (
-        []
-        if calendar is None
-        else list(all_calendar_refs(calendar.config, calendar.mirror))
-    )
+    targets = calendar_targets(services)
     heading = form.summary or "New event"
     return page(
         title=f"{heading} — Pony Express",

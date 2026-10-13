@@ -584,6 +584,8 @@ hosts its screens.
 ```
 src/chronos/
   config.py domain.py paths.py protocols.py outcome.py
+  atomic.py            # replacing a file without leaving half of one
+  alarms.py            # which reminders are due, and what each one says
   storage.py index_store.py storage_indexing.py locking.py scheduler.py
   ical_parser.py recurrence.py mutations.py ingest.py
   event_actions.py     # save / reschedule / trash / import, over the stores
@@ -594,6 +596,7 @@ src/chronos/
   cli.py mcp_server.py
   tui/
     app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS
+    reporting.py       # an Outcome as toasts, and the hop onto the UI thread
     screens/           # agenda, day, grid, month, event edit, …
     widgets/           # calendar panel, timeline grid, month grid, …
 ```

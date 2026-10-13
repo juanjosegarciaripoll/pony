@@ -26,6 +26,7 @@ from textual.widgets import (
 )
 
 from chronos.outcome import Outcome
+from chronos.tui.reporting import report
 
 from ...compose_utils import (
     build_email_message,
@@ -538,8 +539,7 @@ class ComposeScreen(Screen[bool]):
 
     def _report(self, outcome: Outcome) -> None:
         """Say everything an operation had to say, in the order it said it."""
-        for notice in outcome.notices:
-            self.notify(notice.text, severity=notice.severity)
+        report(self, outcome)
 
     def _build_message(self, account: AnyAccount) -> EmailMessage:
         """Assemble the current form state into an ``EmailMessage``.

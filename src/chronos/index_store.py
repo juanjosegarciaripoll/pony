@@ -7,6 +7,7 @@ import threading
 from collections.abc import Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from itertools import batched
 from pathlib import Path
 from typing import cast
 
@@ -1105,8 +1106,7 @@ def chunked[T](values: Sequence[T]) -> Iterator[Sequence[T]]:
     was promised an order has to restore it over the concatenation --
     as ``query_occurrences`` and ``contacts_by_ids`` both do.
     """
-    for start in range(0, len(values), _MAX_SQL_PARAMETERS):
-        yield values[start : start + _MAX_SQL_PARAMETERS]
+    yield from batched(values, _MAX_SQL_PARAMETERS, strict=False)
 
 
 def datetime_to_sql(value: datetime | None) -> str | None:

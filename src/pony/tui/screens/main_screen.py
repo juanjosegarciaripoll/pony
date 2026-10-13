@@ -18,6 +18,7 @@ from textual.widgets import Footer, Header
 from textual.worker import Worker
 
 from chronos.outcome import Notice, Outcome
+from chronos.tui.reporting import report
 
 from ... import mailbox_actions
 from ...composer import (
@@ -1184,8 +1185,7 @@ class MainScreen(Screen[None]):
 
     def _report(self, outcome: Outcome) -> None:
         """Say everything an action had to say, in the order it said it."""
-        for notice in outcome.notices:
-            self.app.notify(notice.text, severity=notice.severity)  # pyright: ignore[reportUnknownMemberType]
+        report(self.app, outcome)
 
     def _targets(self) -> list[FolderMessageSummary]:
         """Summaries to act on: marked rows if any, else the cursor row."""

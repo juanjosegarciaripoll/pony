@@ -18,7 +18,12 @@ _CS_NS = "http://calendarserver.org/ns/"
 # return `getetag` with the calendar-query REPORT.
 _MISSING_SERVER_ETAG = ""
 
-_MULTIGET_BATCH_SIZE = 100
+# How many hrefs go into one `calendar-multiget` REPORT.  Named here
+# because this is the module that writes the REPORT body, and read by
+# `chronos.sync`, which pre-chunks the same way so it can hand each
+# chunk to the ingest loop as the network returns it rather than
+# buffering the whole response set.
+MULTIGET_BATCH_SIZE = 100
 
 # Register the namespaces once so `ET.tostring` emits the conventional
 # `d:` / `c:` prefixes used by all CalDAV servers we've tested.
@@ -418,10 +423,6 @@ def _absolute_href(href: str, *, base_url: str) -> str:
         return unquote(href)
     parsed = urlsplit(base_url)
     return urlunsplit((parsed.scheme, parsed.netloc, unquote(href), "", ""))
-
-
-def _chunk(items: Sequence[str], size: int) -> list[Sequence[str]]:
-    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def _content_etag(ics: bytes) -> str:

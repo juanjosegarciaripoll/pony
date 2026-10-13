@@ -716,6 +716,26 @@ class MaildirMissingKeyTestCase(unittest.TestCase):
         self.assertIn("unknown account", str(ctx.exception))
 
 
+class MaildirDirectoryCacheTestCase(unittest.TestCase):
+    """The three places that made a Maildir's directories are one.
+
+    `_ensured_dirs` exists so a folder's ``cur``/``new``/``tmp`` are
+    created once per process.  One of the three copies of that loop
+    created them without recording it, so the cache kept saying the
+    folder had never been seen and the next write did the work again.
+    """
+
+    def test_opening_a_folder_records_that_its_directories_exist(self) -> None:
+        root = TMP_ROOT / "maildir-cache" / uuid4().hex
+        repo = MaildirMirrorRepository(account_name="acct", root_dir=root)
+
+        repo._open_maildir(folder_name="Later")  # noqa: SLF001
+
+        self.assertIn("Later", repo._ensured_dirs)  # noqa: SLF001
+        for subdir in ("cur", "new", "tmp"):
+            self.assertTrue((root / ".Later" / subdir).is_dir())
+
+
 class MaildirFolderListingTestCase(unittest.TestCase):
     """``list_folders`` reads the maildir layout off disk."""
 

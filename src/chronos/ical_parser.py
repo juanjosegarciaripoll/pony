@@ -58,7 +58,7 @@ def parse_method(raw: bytes) -> str | None:
         cal = Calendar.from_ical(raw)
     except ValueError as exc:
         raise IcalParseError(f"invalid iCalendar data: {exc}") from exc
-    method = _call_get(cal, "METHOD")
+    method = component_get(cal, "METHOD")
     if method is None:
         return None
     return str(method).strip().upper() or None
@@ -67,34 +67,27 @@ def parse_method(raw: bytes) -> str | None:
 def _project(component: object, kind: ComponentKind) -> ParsedComponent:
     return ParsedComponent(
         kind=kind,
-        uid=_get_str(component, "UID"),
+        uid=component_str(component, "UID"),
         recurrence_id=_get_recurrence_id(component),
-        summary=_get_str(component, "SUMMARY"),
-        description=_get_str(component, "DESCRIPTION"),
-        location=_get_str(component, "LOCATION"),
+        summary=component_str(component, "SUMMARY"),
+        description=component_str(component, "DESCRIPTION"),
+        location=component_str(component, "LOCATION"),
         dtstart=_get_datetime(component, "DTSTART"),
         dtend=_end_of(component, "DTEND"),
         due=_end_of(component, "DUE"),
-        status=_get_str(component, "STATUS"),
+        status=component_str(component, "STATUS"),
         sequence=_get_int(component, "SEQUENCE"),
     )
 
 
 def _get_int(component: object, key: str) -> int | None:
-    value = _call_get(component, key)
+    value = component_get(component, key)
     if value is None:
         return None
     try:
         return int(str(value))
     except (TypeError, ValueError):
         return None
-
-
-def _get_str(component: object, key: str) -> str | None:
-    value = _call_get(component, key)
-    if value is None:
-        return None
-    return str(value)
 
 
 def _get_datetime(component: object, key: str) -> datetime | None:
@@ -181,13 +174,6 @@ def local_tzinfo() -> tzinfo:
     return tz or UTC
 
 
-def _call_get(component: object, key: str) -> object:
-    getter = getattr(component, "get", None)
-    if getter is None:
-        return None
-    return getter(key)
-
-
 def _decoded(component: object, key: str) -> object:
     contains = getattr(component, "__contains__", None)
     if contains is None or not contains(key):
@@ -217,12 +203,12 @@ def extract_alarm_triggers(raw_ics: bytes, uid: str) -> list[ParsedAlarm]:
         return []
     out: list[ParsedAlarm] = []
     for sub in cal.walk():  # pyright: ignore[reportUnknownMemberType]
-        name = _component_name(sub)
+        name = component_name(sub)
         if name not in ("VEVENT", "VTODO"):
             continue
-        if _component_get_str(sub, "UID") != uid:
+        if component_str(sub, "UID") != uid:
             continue
-        if _component_has(sub, "RECURRENCE-ID"):
+        if component_has(sub, "RECURRENCE-ID"):
             continue
         for valarm in sub.walk("VALARM"):  # pyright: ignore[reportUnknownMemberType]
             parsed = _parse_valarm(valarm)
@@ -290,14 +276,14 @@ def extract_organizer(raw_ics: bytes, uid: str) -> str | None:
     component = _find_master_component(raw_ics, uid)
     if component is None:
         return None
-    value = _call_get(component, "ORGANIZER")
+    value = component_get(component, "ORGANIZER")
     if value is None:
         return None
     return _mailto_value(value)
 
 
 def _parse_valarm(valarm: object) -> ParsedAlarm | None:
-    action_raw = str(_call_get(valarm, "ACTION") or "DISPLAY").upper()
+    action_raw = str(component_get(valarm, "ACTION") or "DISPLAY").upper()
     if action_raw not in _SUPPORTED_ALARM_ACTIONS:
         return None
     action = AlarmAction(action_raw)
@@ -307,14 +293,14 @@ def _parse_valarm(valarm: object) -> ParsedAlarm | None:
         return None
 
     if isinstance(trigger_val, timedelta):
-        raw_prop = _call_get(valarm, "TRIGGER")
+        raw_prop = component_get(valarm, "TRIGGER")
         params = getattr(raw_prop, "params", {})
         related = str(params.get("RELATED", "START")).upper()
         return ParsedAlarm(
             action=action,
             trigger_offset=trigger_val,
             trigger_related=related,
-            description=_get_str(valarm, "DESCRIPTION"),
+            description=component_str(valarm, "DESCRIPTION"),
         )
     if isinstance(trigger_val, datetime):
         utc_trigger = (
@@ -326,23 +312,38 @@ def _parse_valarm(valarm: object) -> ParsedAlarm | None:
             action=action,
             trigger_offset=utc_trigger,
             trigger_related="START",
-            description=_get_str(valarm, "DESCRIPTION"),
+            description=component_str(valarm, "DESCRIPTION"),
         )
     return None
 
 
-def _component_name(component: object) -> str:
+# The accessors an icalendar component is read through.  Public, and
+# only here: `recurrence` walks the same components and had a
+# byte-identical copy of all four, with `component_str` written out
+# twice inside this file as well.  `icalendar` types its components
+# loosely enough that every read goes through `getattr`, which is
+# exactly the kind of code that is easier to copy than to find.
+
+
+def component_name(component: object) -> str:
     return str(getattr(component, "name", ""))
 
 
-def _component_get_str(component: object, key: str) -> str | None:
-    value = _call_get(component, key)
+def component_get(component: object, key: str) -> object:
+    getter = getattr(component, "get", None)
+    if getter is None:
+        return None
+    return getter(key)
+
+
+def component_str(component: object, key: str) -> str | None:
+    value = component_get(component, key)
     if value is None:
         return None
     return str(value)
 
 
-def _component_has(component: object, key: str) -> bool:
+def component_has(component: object, key: str) -> bool:
     contains = getattr(component, "__contains__", None)
     if contains is None:
         return False
@@ -355,19 +356,19 @@ def _find_master_component(raw_ics: bytes, uid: str) -> object | None:
     except ValueError:
         return None
     for sub in cal.walk():  # pyright: ignore[reportUnknownMemberType]
-        name = _component_name(sub)
+        name = component_name(sub)
         if name not in ("VEVENT", "VTODO"):
             continue
-        if _component_get_str(sub, "UID") != uid:
+        if component_str(sub, "UID") != uid:
             continue
-        if _component_has(sub, "RECURRENCE-ID"):
+        if component_has(sub, "RECURRENCE-ID"):
             continue
         return sub
     return None
 
 
 def _component_values(component: object, key: str) -> tuple[object, ...]:
-    value = _call_get(component, key)
+    value = component_get(component, key)
     if value is None:
         return ()
     if isinstance(value, list):
