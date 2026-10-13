@@ -157,6 +157,27 @@ def folder_options(services: WebServices) -> list[str]:
 # ----------------------------------------------------------------------
 
 
+def panes(
+    services: WebServices,
+    folder: FolderRef,
+    *,
+    open_id: int | None = None,
+    query: str = "",
+) -> Raw:
+    """The list and the folder tree in one fragment.
+
+    The unread counts beside the folders are a projection of the same
+    rows the list is, so what an action changes it changes in both.
+    Rendering them together is what lets the page repaint in one round
+    trip rather than two, and what stops it showing a list from after
+    the action beside counts from before it.
+    """
+    return fragment(
+        rows(services, folder, open_id=open_id, query=query),
+        folder_pane(services, folder),
+    )
+
+
 def folder_pane(services: WebServices, selected: FolderRef | None) -> Raw:
     sections: list[Raw] = []
     for account in services.config.accounts:
@@ -1169,6 +1190,7 @@ __all__ = [
     "folder_pane",
     "list_pane",
     "mail_page",
+    "panes",
     "raw_bytes",
     "reader_pane",
     "rows",

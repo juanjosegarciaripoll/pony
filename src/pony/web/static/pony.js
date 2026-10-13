@@ -506,7 +506,12 @@ async function refresh() {
   // folder after every action.
   const was = selectedRow();
   const wasId = was ? was.dataset.id : null;
-  const response = await fetch(`/mail/rows?${mailParams()}`);
+  // One request for both panes. The unread counts are a projection of
+  // the rows, so fetching them separately cost a second round trip on
+  // every action and left a window -- however short -- in which the
+  // list was repainted from after it and the counts still said what
+  // they had said before.
+  const response = await fetch(`/mail/panes?${mailParams()}`);
   const markup = await response.text();
   const parsed = new DOMParser().parseFromString(markup, "text/html");
   const fresh = parsed.getElementById("rows");
@@ -551,14 +556,10 @@ async function refresh() {
     window.location.reload();
     return;
   }
-  // The unread counts beside the folders are now out of date, and they
-  // are a pane of their own, so they come back the same way.
+  // The folder tree came back in the same document, counts and all.
   const tree = document.getElementById("folders");
   if (!tree) return;
-  const folders = await fetch(`/folders?${mailParams()}`);
-  const refreshed = new DOMParser()
-    .parseFromString(await folders.text(), "text/html")
-    .getElementById("folders");
+  const refreshed = parsed.getElementById("folders");
   if (refreshed) {
     // The replacement starts at the top and fully open, so carry the
     // position and the folds over.

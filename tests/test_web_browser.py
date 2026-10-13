@@ -160,7 +160,7 @@ HARNESS = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script>
 "use strict";
 const KEYMAP = __KEYMAP__;
-const report = { steps: [], posts: [], unmatched: [] };
+const report = { steps: [], posts: [], asked: [], unmatched: [] };
 const out = () => {
   document.getElementById("report").textContent = JSON.stringify(report);
 };
@@ -213,7 +213,12 @@ function intercept(win, answer) {
   const real = win.fetch.bind(win);
   win.fetch = async (url, options = {}) => {
     const where = String(url);
-    if (!where.includes("/action/")) return real(url, options);
+    if (!where.includes("/action/")) {
+      // What repainting costs, which is the thing a round trip is
+      // spent on: the path without its parameters, in order.
+      report.asked.push(where.split("?")[0]);
+      return real(url, options);
+    }
     const body = options.body ? String(options.body) : "";
     report.posts.push({
       url: where,
@@ -286,8 +291,18 @@ async function run() {
     changed: 1,
     notices: [{ text: "Archived to Archive.", severity: "information" }],
   });
+  // What the page fetches to repaint itself. The list and the unread
+  // counts are one response now: two cost a second round trip that
+  // could not start until the first had landed.
+  const askedBefore = report.asked.length;
+  // The tree element itself, to see whether the refresh replaced it:
+  // the counts beside the folders have to come back with the rows,
+  // and this is the half that used to arrive a round trip later.
+  const treeBefore = doc.getElementById("folders");
   press(doc.body, "A", { shiftKey: true });
   await sleep(400);
+  report.refreshAsked = report.asked.slice(askedBefore);
+  report.treeSwapped = doc.getElementById("folders") !== treeBefore;
   report.notice = doc.getElementById("notices").textContent;
   report.markedAfter = marked(doc);
   report.rowsAfter = doc.querySelectorAll("#rows .row").length;
@@ -876,6 +891,27 @@ def test_the_part_prompt_saves_what_it_names_without_leaving_the_page() -> None:
     assert "it has no attachments" in report["partsRefused"]
     assert report["partsRefusedSaved"] == 0
     assert report["partsHere"] is True
+
+
+def test_one_request_repaints_both_panes_after_an_action() -> None:
+    """A refresh is one round trip, and both halves of it agree.
+
+    The page used to fetch the list, swap it, and only then fetch the
+    folder tree -- a second trip that could not start until the first
+    had landed, and a window in which the list was repainted from
+    after the action while the counts beside it still said what they
+    had said before.  Reading the script shows one `fetch`; only a
+    browser shows that one request was enough to leave the page right.
+    """
+    report = _report()
+
+    # One request, and the route that answers with both panes. A
+    # streamed batch would be a second `/mail/rows` here.
+    assert report["refreshAsked"] == ["/mail/panes"]
+    # And that one request repainted the tree as well as the list: the
+    # element is a new one, built from the same response the rows came
+    # out of.
+    assert report["treeSwapped"] is True
 
 
 def test_a_held_action_is_confirmed_in_ponys_own_dialog() -> None:

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 MAIL = "/mail"
 ROWS = "/mail/rows"
+PANES = "/mail/panes"
 MESSAGE = "/message"
 BODY = "/message/body"
 RAW = "/message/raw"
@@ -161,6 +162,7 @@ __all__ = [
     "EVENT_FORM",
     "MAIL",
     "MESSAGE",
+    "PANES",
     "PARTS",
     "RAW",
     "ROWS",

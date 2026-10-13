@@ -769,18 +769,68 @@ def test_a_message_whose_file_vanished_reports_that_it_is_gone() -> None:
     assert "The message file is missing" in page.text
 
 
-def test_the_folder_fragment_and_row_fragment_are_servable_on_their_own() -> None:
+def test_the_fragments_a_refresh_puts_back_are_servable_on_their_own() -> None:
     """The page refreshes a part of itself rather than reloading."""
     services, _index = _services("web-fragments")
 
     with _client(services) as client:
         rows = client.get("/mail/rows?account=acct&folder=INBOX")
-        folders = client.get("/folders?account=acct&folder=INBOX")
+        panes = client.get("/mail/panes?account=acct&folder=INBOX")
 
     assert rows.status_code == 200
     assert rows.text.startswith("<ol")
-    assert folders.status_code == 200
-    assert 'class="pane' in folders.text
+    # Both panes in one response: the list, and the tree whose unread
+    # counts are a projection of the same rows.
+    assert panes.status_code == 200
+    assert panes.text.startswith("<ol")
+    assert 'id="folders"' in panes.text
+    assert 'class="pane' in panes.text
+
+
+def test_a_refresh_sees_one_state_of_the_folder_in_both_panes() -> None:
+    """The rows and the counts come from one read, so they agree.
+
+    Two requests meant the list could be repainted from after an
+    action while the counts still said what they had said before it --
+    a window the reader could see, and the reason this is one route.
+    """
+    services, index = _services(
+        "web-one-state",
+        seed=(plain_text(), plain_text()),
+    )
+    first, second = index.list_folder_message_summaries(folder=INBOX)
+
+    with _client(services) as client:
+        before = client.get("/mail/panes?account=acct&folder=INBOX").text
+        acted = client.post(
+            "/action/mark_read",
+            data={
+                "account": "acct",
+                "folder": "INBOX",
+                "id": str(first.message_ref.id),
+            },
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+        after = client.get("/mail/panes?account=acct&folder=INBOX").text
+
+    assert acted.status_code == 200
+    # Two unread before, one after -- in the tree *and* in the rows,
+    # out of the same response each time.
+    assert '<span class="unread">2</span>' in _tree_half(before)
+    assert '<span class="unread">1</span>' in _tree_half(after)
+    assert _rows_half(after).count("unread") < _rows_half(before).count("unread")
+    # The message that is still unread is still listed.
+    assert str(second.message_ref.id) in _rows_half(after)
+
+
+def _rows_half(markup: str) -> str:
+    """The list, out of a combined refresh."""
+    return markup.partition('<section id="folders"')[0]
+
+
+def _tree_half(markup: str) -> str:
+    """The folder tree, out of a combined refresh."""
+    return markup.partition('<section id="folders"')[2]
 
 
 def test_an_empty_folder_says_so() -> None:

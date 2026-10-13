@@ -176,6 +176,14 @@ without that a kept mirror came back indexed by nothing.
 
 ### Fixed
 
+- **One request repaints the browser's page after an action**: the list and
+  the unread counts beside the folders were two fetches, the second not
+  starting until the first had landed — two round trips on every archive
+  and every mark-as-read, and a window in which the list had been
+  repainted from after the action while the counts still said what they
+  had said before it. The counts are a projection of those same rows, so
+  `/mail/panes` answers with both and the page swaps each half into place.
+
 - **`S` in the browser takes the selection it offers**: the prompt invited
   `0`, `T`, `1,3`, `1-3` or `*`, then sent whatever was typed to the part
   route as a single part name — so anything but one bare number was

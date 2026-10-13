@@ -167,7 +167,7 @@ def build_web_app(services: WebServices) -> Starlette:
         Route("/", _handler(services, _index_page)),
         Route(urls.MAIL, _handler(services, _mail_page)),
         Route(urls.ROWS, _handler(services, _rows_fragment)),
-        Route("/folders", _handler(services, _folders_fragment)),
+        Route(urls.PANES, _handler(services, _panes_fragment)),
         Route(urls.MESSAGE, _handler(services, _message_page)),
         Route(urls.BODY, _handler(services, _message_body)),
         Route(urls.RAW, _handler(services, _message_raw)),
@@ -432,11 +432,35 @@ async def _rows_fragment(services: WebServices, request: Request) -> Response:
     )
 
 
-async def _folders_fragment(services: WebServices, request: Request) -> Response:
+async def _panes_fragment(services: WebServices, request: Request) -> Response:
+    """The list and the folder tree together, for one refresh.
+
+    The unread counts beside the folders are a projection of the same
+    rows the list is, so answering both in one response is a round
+    trip saved on every archive and every mark-as-read -- and it
+    closes the window the two requests left open, in which the list
+    had been repainted from after the action and the counts still said
+    what they had said before it.
+
+    Two fragments in one document: the page parses it once and swaps
+    each half into place.
+    """
+    identifier = request.query_params.get("id", "")
     folder = _folder_from(request)
+    open_id = int(identifier) if identifier.isdigit() else None
+    query = request.query_params.get("q", "")
+
     return HTMLResponse(
-        # Every folder of every account, with an unread count each.
-        await run_in_threadpool(lambda: mail_view.folder_pane(services, folder)),
+        # One hop into the pool for both halves, where two requests
+        # made two.
+        await run_in_threadpool(
+            lambda: mail_view.panes(
+                services,
+                folder,
+                open_id=open_id,
+                query=query,
+            ),
+        ),
     )
 
 

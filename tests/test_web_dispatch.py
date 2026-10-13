@@ -496,6 +496,29 @@ def test_the_dispatcher_implements_nothing_no_key_names() -> None:
     assert client_actions(source) >= CLIENT_ACTIONS
 
 
+def test_a_refresh_asks_for_one_thing_and_gets_both_panes() -> None:
+    """One round trip per action, and no window between the halves.
+
+    A refresh used to fetch ``/mail/rows``, swap it, and only then
+    fetch ``/folders`` -- a second trip that could not start until the
+    first had landed, and a moment in which the list was repainted
+    from after the action while the unread counts beside it still said
+    what they had said before.  The counts are a projection of those
+    same rows, so one response carries both.
+    """
+    refresh = _function(script(), "refresh")
+
+    # Exactly one request, and it is the one that answers with both.
+    # `fetched_paths` would also count the navigation a message that
+    # left the folder falls back to, which is not a round trip spent
+    # repainting.
+    asked = [url.partition("?")[0] for url in re.findall(r"fetch\(`([^`]+)`", refresh)]
+    assert asked == ["/mail/panes"]
+    # The tree comes out of the document already parsed, not another
+    # request: `parsed` is the one response.
+    assert 'parsed.getElementById("folders")' in refresh
+
+
 def test_the_dispatcher_calls_only_functions_it_defines() -> None:
     """``Q`` was dead for exactly this reason.
 
