@@ -79,7 +79,7 @@ def project_rfc822_message(
     subject = _decode_header(header_map.get(b"subject", b""))
     received_at = _parse_date(header_map.get(b"date", b""))
     has_attachments = _detect_attachments(headers, raw_message)
-    body_preview = _extract_body_preview(body, raw_message)
+    body_text = _extract_body_text(body, raw_message)
     message_id_raw = header_map.get(b"message-id", b"")
     message_id = " ".join(message_id_raw.decode("ascii", errors="replace").split())
     if not message_id:
@@ -96,7 +96,7 @@ def project_rfc822_message(
         recipients=recipients,
         cc=cc,
         subject=subject,
-        body_preview=body_preview,
+        body_text=body_text,
         storage_key=storage_key,
         local_flags=frozenset(),
         base_flags=frozenset(),
@@ -263,7 +263,7 @@ def _decode_text(decoded: bytes, part_headers: bytes) -> str:
 
     Reading an ``iso-8859-1`` message as UTF-8 does not merely make the
     list column ugly (``Ni?o caf?`` where the reader shows
-    ``Niño café``): ``body_preview`` is what the full-text index is built
+    ``Niño café``): ``body_text`` is what the full-text index is built
     from, so the message becomes unfindable by its own words.  Every
     other decoder in the program consults ``get_content_charset`` --
     :mod:`pony.message_renderer`, :mod:`pony.compose_utils` -- and this
@@ -286,7 +286,7 @@ def _decode_text(decoded: bytes, part_headers: bytes) -> str:
     return decoded.decode("utf-8", errors="replace").replace("\x00", "")
 
 
-def _extract_body_preview(body: bytes, raw_message: bytes) -> str:
+def _extract_body_text(body: bytes, raw_message: bytes) -> str:
     """Extract a short plain-text preview for indexing.
 
     For simple text/plain messages, decodes the body directly.

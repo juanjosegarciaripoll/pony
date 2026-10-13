@@ -64,7 +64,6 @@ def _ingest_one(
     folder: FolderRef,
     storage_key: str,
     uid: int | None = None,
-    uid_validity: int = 0,
 ) -> None:
     raw_message = mirror_repository.get_message_bytes(
         folder=folder,
@@ -81,13 +80,11 @@ def _ingest_one(
         storage_key=storage_key,
     )
     if uid is not None:
-        # The epoch travels with the UID.  `domain.IndexedMessage`
-        # documents `uid_validity` as "the server's UIDVALIDITY at the
-        # moment `uid` was assigned", and a row that carried the number
-        # without the epoch claimed a handle on epoch 0 while the folder
-        # watermark beside it said 42 -- the planner's one query for
-        # stale UIDs reads the row, not the watermark.
-        projected = dataclasses.replace(projected, uid=uid, uid_validity=uid_validity)
+        # The epoch the UID belongs to is the folder's, recorded once in
+        # `folder_sync_state` by the caller -- a row cannot be in a
+        # different epoch from the folder it sits in, and the filename
+        # it came from carries the pair anyway.
+        projected = dataclasses.replace(projected, uid=uid)
     index_repository.insert_message(message=projected)
 
 
@@ -391,7 +388,6 @@ def reindex_account_from_mirror(
                         folder=folder,
                         storage_key=key,
                         uid=uid,
-                        uid_validity=epoch,
                     )
                     added += 1
                     if uid is None:
@@ -403,7 +399,6 @@ def reindex_account_from_mirror(
                     folder=folder,
                     storage_key=key,
                     uid=uid,
-                    uid_validity=epoch,
                 ):
                     adopted += 1
                     claimed.add(uid)
@@ -446,7 +441,7 @@ _PROJECTED_FIELDS = (
     "recipients",
     "cc",
     "subject",
-    "body_preview",
+    "body_text",
     "has_attachments",
     "received_at",
 )

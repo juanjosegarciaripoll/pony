@@ -41,18 +41,21 @@ from .protocols import ContactRepository, IndexRepository
 # is the per-row identity rewrite documented under "Schema" in
 # docs/synchronization.md: the messages table loses its
 # (account, folder, message_id) primary key and gains an
-# autoincrement ``id`` plus ``source_folder`` / ``source_uid`` /
-# ``uid_validity`` columns.  ``initialize`` migrates a v2 DB in place
-# (dropping synthetic-mid orphans en route); anything older is refused
-# and pointed at the reset workflow.
-_SCHEMA_VERSION = 3
+# autoincrement ``id`` plus ``source_folder`` / ``source_uid`` columns.
+# Version 4 drops the per-row ``uid_validity`` -- the epoch belongs to
+# the folder and to the mirror filename, and nothing ever read the
+# column -- and renames ``body_preview`` to ``body_text``, which is
+# what it holds.  ``initialize`` migrates a v2 or v3 DB in place (a v2
+# one through both steps, dropping synthetic-mid orphans en route);
+# anything older is refused and pointed at the reset workflow.
+_SCHEMA_VERSION = 4
 
 # How many writes a batch accumulates before it commits and opens a new
 # transaction.  Small enough that a killed rebuild loses a second of
 # work and the WAL stays checkpointable; large enough that the commit
 # cost disappears into the work.
 _BATCH_COMMIT_ROWS = 500
-_MIGRATABLE_FROM = 2
+_MIGRATABLE_FROM: tuple[int, ...] = (2, 3)
 
 
 class ContactEmailConflictError(RuntimeError):
@@ -98,13 +101,12 @@ _FULL_COLS: tuple[str, ...] = (
     "account_name",
     "folder_name",
     "uid",
-    "uid_validity",
     "message_id",
     "sender",
     "recipients",
     "cc",
     "subject",
-    "body_preview",
+    "body_text",
     "storage_key",
     "has_attachments",
     "local_flags",
@@ -132,13 +134,12 @@ def _row_params(message: IndexedMessage) -> tuple[object, ...]:
         message.message_ref.account_name,
         message.message_ref.folder_name,
         message.uid,
-        message.uid_validity,
         message.message_id,
         message.sender,
         message.recipients,
         message.cc,
         message.subject,
-        message.body_preview,
+        message.body_text,
         message.storage_key,
         int(message.has_attachments),
         _flags_to_csv(message.local_flags),
@@ -247,6 +248,89 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     # The old pending_operations table was the never-implemented
     # write-ahead buffer; the rewrite drops it.
     conn.execute("DROP TABLE IF EXISTS pending_operations")
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Migrate the v3 messages table to v4: no per-row epoch, named body.
+
+    Runs inside the calling transaction.  Two changes, both of them
+    subtractions:
+
+    ``uid_validity`` goes.  A UID is only ever looked up for the folder
+    it was found in, so the epoch is the folder's -- it lives in
+    ``folder_sync_state``, which is what a sync compares against the
+    server, and in the mirror filename, which is what ``pony reindex``
+    reads when the index is gone.  The column was backfilled so "the
+    planner can detect stale UIDs in one query without a join"; that
+    query was never written and nothing else read it.
+
+    ``body_preview`` becomes ``body_text``.  It holds the whole body as
+    text, not a prefix of one, and the FTS index is built from it.
+
+    The table is rebuilt rather than altered with ``DROP COLUMN`` and
+    ``RENAME COLUMN``: both exist only in newer SQLite, and which one a
+    user's Python bundles is not something a migration should depend
+    on.  The FTS triggers and the FTS table go first because they name
+    the old column; the caller recreates and repopulates them.
+    """
+    for trigger in ("messages_ai", "messages_ad", "messages_au"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    conn.execute("DROP TABLE IF EXISTS messages_fts")
+
+    conn.execute(
+        """
+        CREATE TABLE messages_new (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_name     TEXT    NOT NULL,
+            folder_name      TEXT    NOT NULL,
+            uid              INTEGER,
+            message_id       TEXT    NOT NULL DEFAULT '',
+            sender           TEXT    NOT NULL,
+            recipients       TEXT    NOT NULL,
+            cc               TEXT    NOT NULL,
+            subject          TEXT    NOT NULL,
+            body_text        TEXT    NOT NULL,
+            storage_key      TEXT    NOT NULL DEFAULT '',
+            has_attachments  INTEGER NOT NULL DEFAULT 0,
+            local_flags      TEXT    NOT NULL,
+            base_flags       TEXT    NOT NULL,
+            server_flags     TEXT    NOT NULL DEFAULT '',
+            extra_imap_flags TEXT    NOT NULL DEFAULT '',
+            local_status     TEXT    NOT NULL,
+            received_at      TEXT    NOT NULL,
+            trashed_at       TEXT,
+            synced_at        TEXT,
+            source_folder    TEXT,
+            source_uid       INTEGER
+        )
+        """
+    )
+    # ``id`` is carried over explicitly: it is the row identity every
+    # ``MessageRef`` holds, and anything that remembered one -- the
+    # reader's last view, a pending move's source row -- would point at
+    # a different message if the rebuild renumbered them.
+    conn.execute(
+        """
+        INSERT INTO messages_new (
+            id, account_name, folder_name, uid, message_id,
+            sender, recipients, cc, subject, body_text,
+            storage_key, has_attachments,
+            local_flags, base_flags, server_flags, extra_imap_flags,
+            local_status, received_at, trashed_at, synced_at,
+            source_folder, source_uid
+        )
+        SELECT
+            id, account_name, folder_name, uid, message_id,
+            sender, recipients, cc, subject, body_preview,
+            storage_key, has_attachments,
+            local_flags, base_flags, server_flags, extra_imap_flags,
+            local_status, received_at, trashed_at, synced_at,
+            source_folder, source_uid
+        FROM messages
+        """
+    )
+    conn.execute("DROP TABLE messages")
+    conn.execute("ALTER TABLE messages_new RENAME TO messages")
 
 
 class SqliteIndexRepository(IndexRepository, ContactRepository):
@@ -368,7 +452,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             )
 
             if has_messages and version not in (
-                _MIGRATABLE_FROM,
+                *_MIGRATABLE_FROM,
                 _SCHEMA_VERSION,
             ):
                 # A messages table at any unrecognised version is a
@@ -381,9 +465,13 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     expected=_SCHEMA_VERSION,
                 )
 
-            migrated = has_messages and version == _MIGRATABLE_FROM
-            if migrated:
+            migrated = has_messages and version in _MIGRATABLE_FROM
+            # One step at a time, so a v2 database arrives at v4 through
+            # the same v3 rewrite a v3 one was built by.
+            if has_messages and version == 2:
                 _migrate_v2_to_v3(conn)
+            if has_messages and version in (2, 3):
+                _migrate_v3_to_v4(conn)
 
             conn.execute(
                 """
@@ -392,13 +480,12 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     account_name     TEXT    NOT NULL,
                     folder_name      TEXT    NOT NULL,
                     uid              INTEGER,
-                    uid_validity     INTEGER NOT NULL DEFAULT 0,
                     message_id       TEXT    NOT NULL DEFAULT '',
                     sender           TEXT    NOT NULL,
                     recipients       TEXT    NOT NULL,
                     cc               TEXT    NOT NULL,
                     subject          TEXT    NOT NULL,
-                    body_preview     TEXT    NOT NULL,
+                    body_text        TEXT    NOT NULL,
                     storage_key      TEXT    NOT NULL DEFAULT '',
                     has_attachments  INTEGER NOT NULL DEFAULT 0,
                     local_flags      TEXT    NOT NULL,
@@ -855,7 +942,6 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         folder: FolderRef,
         storage_key: str,
         uid: int,
-        uid_validity: int,
     ) -> bool:
         """Give an existing handle-less row the handle its file carries.
 
@@ -874,12 +960,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._use() as conn:
             try:
                 cursor = conn.execute(
-                    "UPDATE messages SET uid = ?, uid_validity = ? "
+                    "UPDATE messages SET uid = ? "
                     "WHERE account_name = ? AND folder_name = ? "
                     "AND storage_key = ? AND uid IS NULL",
                     (
                         uid,
-                        uid_validity,
                         folder.account_name,
                         folder.folder_name,
                         storage_key,
@@ -1341,11 +1426,11 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         event triggers when UIDVALIDITY is unchanged.
 
         The rows keep everything except the UID.  The server re-reports
-        the same messages under the new epoch and ``_adopt_existing_row``
-        gives each row its new UID back, so no message is re-downloaded,
-        re-uploaded or duplicated.  A row with no counterpart on the
-        server is then genuinely local-only and is pushed, which is the
-        non-destructive answer.
+        the same messages under the new epoch and the planner pairs each
+        one with the row it belongs to (``AdoptUidOp``), so no message is
+        re-downloaded, re-uploaded or duplicated.  A row with no
+        counterpart on the server is then genuinely local-only and is
+        pushed, which is the non-destructive answer.
         """
         with self._use_atomic() as conn:
             # Every row, whatever its status: a stale UID must not
@@ -1354,7 +1439,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
             conn.execute(
                 """
                 UPDATE messages
-                SET uid = NULL, uid_validity = 0,
+                SET uid = NULL,
                     server_flags = '', extra_imap_flags = '',
                     synced_at = NULL
                 WHERE account_name = ? AND folder_name = ?
@@ -1947,11 +2032,11 @@ def _build_fts_match(query: SearchQuery) -> str:
     if query.subject.strip():
         parts.append(_fts5_field_match("subject", query.subject))
     if query.body.strip():
-        parts.append(_fts5_field_match("body_preview", query.body))
+        parts.append(_fts5_field_match("body_text", query.body))
     if query.text.strip():
         parts.append(
             " AND ".join(
-                f"(subject:{term} OR body_preview:{term})"
+                f"(subject:{term} OR body_text:{term})"
                 for term in _fts5_terms(query.text)
             )
         )
@@ -1963,7 +2048,7 @@ def _create_fts_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            sender, recipients, cc, subject, body_preview,
+            sender, recipients, cc, subject, body_text,
             content='messages',
             content_rowid='rowid',
             tokenize='unicode61 remove_diacritics 2'
@@ -2005,10 +2090,10 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
         """
         CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(
-                rowid, sender, recipients, cc, subject, body_preview
+                rowid, sender, recipients, cc, subject, body_text
             ) VALUES (
                 new.rowid, new.sender, new.recipients, new.cc,
-                new.subject, new.body_preview
+                new.subject, new.body_text
             );
         END
         """
@@ -2017,10 +2102,10 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
         """
         CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
             INSERT INTO messages_fts(
-                messages_fts, rowid, sender, recipients, cc, subject, body_preview
+                messages_fts, rowid, sender, recipients, cc, subject, body_text
             ) VALUES (
                 'delete', old.rowid, old.sender, old.recipients, old.cc,
-                old.subject, old.body_preview
+                old.subject, old.body_text
             );
         END
         """
@@ -2029,16 +2114,16 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
         """
         CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
             INSERT INTO messages_fts(
-                messages_fts, rowid, sender, recipients, cc, subject, body_preview
+                messages_fts, rowid, sender, recipients, cc, subject, body_text
             ) VALUES (
                 'delete', old.rowid, old.sender, old.recipients, old.cc,
-                old.subject, old.body_preview
+                old.subject, old.body_text
             );
             INSERT INTO messages_fts(
-                rowid, sender, recipients, cc, subject, body_preview
+                rowid, sender, recipients, cc, subject, body_text
             ) VALUES (
                 new.rowid, new.sender, new.recipients, new.cc,
-                new.subject, new.body_preview
+                new.subject, new.body_text
             );
         END
         """
@@ -2170,46 +2255,44 @@ def _create_fts_triggers(conn: sqlite3.Connection) -> None:
 
 def _indexed_message_from_row(row: sqlite3.Row) -> IndexedMessage:
     """Hydrate a row using the order in :data:`_FULL_COLS`."""
-    # 0 id  1 account_name  2 folder_name
-    # 3 uid  4 uid_validity  5 message_id
-    # 6 sender  7 recipients  8 cc  9 subject  10 body_preview
-    # 11 storage_key  12 has_attachments
-    # 13 local_flags  14 base_flags  15 server_flags  16 extra_imap_flags
-    # 17 local_status  18 received_at
-    # 19 trashed_at  20 synced_at  21 source_folder  22 source_uid
+    # 0 id  1 account_name  2 folder_name  3 uid  4 message_id
+    # 5 sender  6 recipients  7 cc  8 subject  9 body_text
+    # 10 storage_key  11 has_attachments
+    # 12 local_flags  13 base_flags  14 server_flags  15 extra_imap_flags
+    # 16 local_status  17 received_at
+    # 18 trashed_at  19 synced_at  20 source_folder  21 source_uid
     uid = int(str(row[3])) if row[3] is not None else None
-    extra_raw = str(row[16]) if row[16] is not None else ""
+    extra_raw = str(row[15]) if row[15] is not None else ""
     extras: frozenset[str] = (
         frozenset(extra_raw.split(",")) - {""} if extra_raw else frozenset()
     )
-    trashed_at = _sql_datetime_or_none(row[19])
-    synced_at = _sql_datetime_or_none(row[20])
+    trashed_at = _sql_datetime_or_none(row[18])
+    synced_at = _sql_datetime_or_none(row[19])
     return IndexedMessage(
         message_ref=MessageRef(
             account_name=str(row[1]),
             folder_name=str(row[2]),
             id=int(str(row[0])),
         ),
-        message_id=str(row[5]),
-        sender=str(row[6]),
-        recipients=str(row[7]),
-        cc=str(row[8]),
-        subject=str(row[9]),
-        body_preview=str(row[10]),
-        storage_key=str(row[11]),
-        has_attachments=bool(row[12]),
-        local_flags=_flags_from_csv(str(row[13])),
-        base_flags=_flags_from_csv(str(row[14])),
-        server_flags=_flags_from_csv(str(row[15])),
+        message_id=str(row[4]),
+        sender=str(row[5]),
+        recipients=str(row[6]),
+        cc=str(row[7]),
+        subject=str(row[8]),
+        body_text=str(row[9]),
+        storage_key=str(row[10]),
+        has_attachments=bool(row[11]),
+        local_flags=_flags_from_csv(str(row[12])),
+        base_flags=_flags_from_csv(str(row[13])),
+        server_flags=_flags_from_csv(str(row[14])),
         extra_imap_flags=extras,
-        local_status=MessageStatus(str(row[17])),
-        received_at=_sql_datetime(row[18]),
+        local_status=MessageStatus(str(row[16])),
+        received_at=_sql_datetime(row[17]),
         uid=uid,
-        uid_validity=int(str(row[4])) if row[4] is not None else 0,
         trashed_at=trashed_at,
         synced_at=synced_at,
-        source_folder=str(row[21]) if row[21] is not None else None,
-        source_uid=int(str(row[22])) if row[22] is not None else None,
+        source_folder=str(row[20]) if row[20] is not None else None,
+        source_uid=int(str(row[21])) if row[21] is not None else None,
     )
 
 

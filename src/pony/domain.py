@@ -406,9 +406,19 @@ class IndexedMessage:
 
     ``uid`` is the IMAP UID for this message in its folder.  It is
     ``None`` for local-only rows (compose drafts, pending moves not yet
-    pushed) and for messages whose UIDVALIDITY has been reset.
-    ``uid_validity`` is the server's UIDVALIDITY at the moment ``uid``
-    was assigned; ``0`` means UID has never been recorded.
+    pushed) and for messages whose UIDVALIDITY has been reset.  The
+    epoch that number belongs to is the folder's, in
+    ``folder_sync_state.uid_validity``: a UID is only ever read for the
+    folder it was found in, and a row cannot be in a different epoch
+    from the folder it sits in.  The mirror filename keeps its own copy
+    (``,V=<epoch>,U=<uid>``), which is what ``pony reindex`` reads when
+    there is no index left to ask.
+
+    ``body_text`` is the message's body as plain text -- decoded, and
+    stripped of markup if the only body was HTML.  It is what the
+    full-text index is built from, and what a row shows as its preview;
+    it is the whole body rather than a prefix of one, so a search can
+    find a word in the middle of a long message.
 
     ``local_flags`` is what the user intends the flags to be.
     ``base_flags`` is the server's flag state at the last successful sync;
@@ -433,7 +443,7 @@ class IndexedMessage:
     recipients: str
     cc: str
     subject: str
-    body_preview: str
+    body_text: str
     storage_key: str  # mirror's internal key (Maildir filename / mbox integer)
     local_flags: frozenset[MessageFlag]
     base_flags: frozenset[MessageFlag]
@@ -441,7 +451,6 @@ class IndexedMessage:
     received_at: datetime
     message_id: str = ""
     uid: int | None = None
-    uid_validity: int = 0
     server_flags: frozenset[MessageFlag] = frozenset()
     extra_imap_flags: frozenset[str] = frozenset()
     has_attachments: bool = False

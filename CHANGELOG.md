@@ -49,6 +49,16 @@ command says so, and a whole folder of them trips the mass-upload safety
 halt. Run `pony sync --dry-run` and read the plan before letting a sync
 proceed on a freshly reindexed mirror.
 
+**The index schema is version 4, and it upgrades itself.** Opening a
+version 2 or 3 index with this release migrates it in place, inside one
+transaction: the `messages` table loses the per-message `uid_validity`
+column and renames `body_preview` to `body_text`. Nothing is lost —
+the column had no reader, and the UID epoch a sync compares against the
+server is the folder's, in `folder_sync_state`, with a second copy in
+each mirror filename. The search index is rebuilt on the way through,
+because the rename replaces it. An index older than version 2 is still
+refused and pointed at the export-then-reset flow.
+
 **`pony reset` keeps a local account's mirror.** A local account has no
 server to re-fetch from — its mirror *is* the mail — so "delete it all
 and re-sync" has nothing to re-sync from and the directory is left

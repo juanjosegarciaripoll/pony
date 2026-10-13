@@ -66,14 +66,14 @@ class ReindexFromMirrorTest(unittest.TestCase):
         self.assertEqual(result.with_uid, 1)
         self.assertEqual(result.local_only, 0)
 
-    def test_a_recovered_handle_carries_the_epoch_it_was_assigned_on(self) -> None:
-        """A UID without its epoch is a handle the planner cannot check.
+    def test_a_recovered_handle_lands_in_the_epoch_its_filename_names(self) -> None:
+        """The UID is the row's; the epoch it belongs to is the folder's.
 
-        `domain.IndexedMessage` documents `uid_validity` as the server's
-        UIDVALIDITY at the moment `uid` was assigned, and the planner's
-        one query for stale UIDs reads the row rather than the folder
-        watermark beside it.  A rebuilt row used to claim its UID on
-        epoch 0 while the watermark the same pass stamped said 7.
+        A rebuilt folder has only the filenames to go on, and each one
+        carries the pair it was stored with.  The row takes the number
+        and the folder watermark takes the epoch, so a sync comparing
+        that watermark against the server knows whether these handles
+        still mean anything.
         """
         self._store("alpha", uid=42, uid_validity=7)
 
@@ -81,13 +81,12 @@ class ReindexFromMirrorTest(unittest.TestCase):
 
         (row,) = self.index.list_folder_messages(folder=INBOX)
         self.assertEqual(42, row.uid)
-        self.assertEqual(7, row.uid_validity)
         state = self.index.get_folder_sync_state(
             account_name="personal",
             folder_name="INBOX",
         )
         assert state is not None
-        self.assertEqual(state.uid_validity, row.uid_validity)
+        self.assertEqual(7, state.uid_validity)
 
     def test_two_files_claiming_one_handle_do_not_take_the_rebuild_down(
         self,
@@ -224,7 +223,6 @@ class ReindexFromMirrorTest(unittest.TestCase):
                 folder=INBOX,
                 storage_key=next(iter(self.mirror.list_messages(folder=INBOX))),
                 uid=99,
-                uid_validity=7,
             )
         )
         (row,) = self.index.list_folder_messages(folder=INBOX)

@@ -55,18 +55,6 @@ All v1 capabilities implemented and tested:
   claim one per fetched message within the pass instead of inserting a
   copy. Pairing provably identical rows arbitrarily is not the same as
   guessing which message a UID is.
-- **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump — which is the one below.
-- **Drop `messages.uid_validity` (schema v4).** The v2→v3 migration
-  backfilled it "so the planner can detect stale UIDs in one query
-  without a join"; that query was never written, nothing reads the
-  column, and the reset fix does not need it either. The epoch keeps
-  its two live carriers: `folder_sync_state.uid_validity`, which is
-  what a sync compares against the server, and the Maildir filename's
-  `,V=<epoch>,U=<uid>`, which `reindex` checks and which survives
-  losing the index. Rebuild the table as `_migrate_v2_to_v3` does
-  rather than `ALTER TABLE DROP COLUMN`, so the migration does not
-  depend on which SQLite a user's Python bundles. Carry the
-  `body_preview` rename in the same bump.
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.

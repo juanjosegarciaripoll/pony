@@ -42,7 +42,7 @@ class DegenerateHeaderTests(unittest.TestCase):
 
         self.assertEqual(projected.subject, "Truncated before the body")
         self.assertIn("alice@example.com", projected.sender)
-        self.assertEqual(projected.body_preview, "")
+        self.assertEqual(projected.body_text, "")
 
     def test_the_first_occurrence_of_a_repeated_header_wins(self) -> None:
         """Duplicate headers must not let a later value override the first."""
@@ -78,22 +78,22 @@ class DegenerateBodyTests(unittest.TestCase):
     def test_a_body_that_lies_about_being_base64_is_kept_verbatim(self) -> None:
         projected = _project(corpus.corrupt_base64_body())
 
-        self.assertIn("not base64", projected.body_preview)
+        self.assertIn("not base64", projected.body_text)
 
     def test_an_oversized_body_is_truncated_to_the_preview_cap(self) -> None:
         """The cap is a byte budget, and the result must stay valid UTF-8."""
         raw = corpus.oversized_body()
         projected = _project(raw)
 
-        self.assertEqual(len(projected.body_preview), 256 * 1024)
-        self.assertLess(len(projected.body_preview), len(raw))
-        projected.body_preview.encode("utf-8")  # must not raise
+        self.assertEqual(len(projected.body_text), 256 * 1024)
+        self.assertLess(len(projected.body_text), len(raw))
+        projected.body_text.encode("utf-8")  # must not raise
 
     def test_an_html_only_multipart_previews_the_stripped_html(self) -> None:
         """With no text/plain part the preview falls back to stripped HTML."""
         projected = _project(corpus.html_first_multipart())
 
-        self.assertEqual(projected.body_preview, "Hello there")
+        self.assertEqual(projected.body_text, "Hello there")
         self.assertTrue(projected.has_attachments)
 
 

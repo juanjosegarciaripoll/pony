@@ -82,7 +82,7 @@ def _row(
         recipients="reader@example.com",
         cc="",
         subject="Status report",
-        body_preview="Body",
+        body_text="Body",
         storage_key=storage_key,
         local_flags=frozenset({MessageFlag.SEEN}),
         base_flags=frozenset(),

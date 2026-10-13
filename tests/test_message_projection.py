@@ -44,8 +44,8 @@ class PlainTextProjectionTest(unittest.TestCase):
         self.assertEqual(self.msg.cc, "Carol White <carol@example.com>")
         self.assertEqual(self.msg.subject, "Tuesday meeting confirmed")
 
-    def test_body_preview_contains_text(self) -> None:
-        self.assertIn("Tuesday", self.msg.body_preview)
+    def test_body_text_contains_text(self) -> None:
+        self.assertIn("Tuesday", self.msg.body_text)
 
     def test_no_attachments(self) -> None:
         self.assertFalse(self.msg.has_attachments)
@@ -61,8 +61,8 @@ class MultipartAlternativeProjectionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.msg = _project(corpus.multipart_alternative())
 
-    def test_body_preview_is_plain_text_not_html(self) -> None:
-        preview = self.msg.body_preview
+    def test_body_text_is_plain_text_not_html(self) -> None:
+        preview = self.msg.body_text
         self.assertIn("Tuesday", preview)
         self.assertNotIn("<", preview)
         self.assertNotIn(">", preview)
@@ -80,8 +80,8 @@ class MultipartMixedAttachmentProjectionTest(unittest.TestCase):
     def test_has_attachments(self) -> None:
         self.assertTrue(self.msg.has_attachments)
 
-    def test_body_preview_is_text_not_pdf(self) -> None:
-        preview = self.msg.body_preview
+    def test_body_text_is_text_not_pdf(self) -> None:
+        preview = self.msg.body_text
         self.assertIn("Q1 report", preview)
         self.assertNotIn("%PDF", preview)
 
@@ -95,21 +95,21 @@ class MultipartMixedMultiAttachmentProjectionTest(unittest.TestCase):
     def test_has_attachments(self) -> None:
         self.assertTrue(self.msg.has_attachments)
 
-    def test_body_preview_from_text_part(self) -> None:
-        self.assertIn("files", self.msg.body_preview)
+    def test_body_text_from_text_part(self) -> None:
+        self.assertIn("files", self.msg.body_text)
 
 
 class HtmlOnlyProjectionTest(unittest.TestCase):
-    """HTML-only message: body_preview must fall back to stripped HTML."""
+    """HTML-only message: body_text must fall back to stripped HTML."""
 
     def setUp(self) -> None:
         self.msg = _project(corpus.html_only())
 
-    def test_body_preview_not_empty(self) -> None:
-        self.assertNotEqual(self.msg.body_preview, "")
+    def test_body_text_not_empty(self) -> None:
+        self.assertNotEqual(self.msg.body_text, "")
 
-    def test_body_preview_contains_text_not_tags(self) -> None:
-        preview = self.msg.body_preview
+    def test_body_text_contains_text_not_tags(self) -> None:
+        preview = self.msg.body_text
         self.assertIn("Tuesday", preview)
         self.assertNotIn("<html>", preview)
         self.assertNotIn("<p>", preview)
@@ -119,7 +119,7 @@ class HtmlOnlyProjectionTest(unittest.TestCase):
 
 
 class HtmlStyleScriptProjectionTest(unittest.TestCase):
-    """HTML body_preview must strip <style>/<script> content, not just tags."""
+    """HTML body_text must strip <style>/<script> content, not just tags."""
 
     @staticmethod
     def _html_message(html_body: str) -> bytes:
@@ -135,7 +135,7 @@ class HtmlStyleScriptProjectionTest(unittest.TestCase):
             "<html><head><style>.foo { color: red; }</style></head>"
             "<body><p>Hello world</p></body></html>"
         )
-        preview = _project(raw).body_preview
+        preview = _project(raw).body_text
         self.assertIn("Hello world", preview)
         self.assertNotIn("color", preview)
         self.assertNotIn(".foo", preview)
@@ -144,7 +144,7 @@ class HtmlStyleScriptProjectionTest(unittest.TestCase):
         raw = self._html_message(
             "<html><body><script>var x = 1;</script><p>Visible text</p></body></html>"
         )
-        preview = _project(raw).body_preview
+        preview = _project(raw).body_text
         self.assertIn("Visible text", preview)
         self.assertNotIn("var x", preview)
 
@@ -167,8 +167,8 @@ class EncodedHeadersProjectionTest(unittest.TestCase):
         self.assertIn("André", self.msg.sender)
         self.assertNotIn("=?UTF-8", self.msg.sender)
 
-    def test_body_preview_present(self) -> None:
-        self.assertIn("Corps", self.msg.body_preview)
+    def test_body_text_present(self) -> None:
+        self.assertIn("Corps", self.msg.body_text)
 
 
 class UnknownCharsetHeaderProjectionTest(unittest.TestCase):
@@ -213,9 +213,9 @@ class MissingMessageIdProjectionTest(unittest.TestCase):
         msg = _project(corpus.missing_message_id())
         self.assertEqual(msg.subject, "No message-id header")
 
-    def test_body_preview_present(self) -> None:
+    def test_body_text_present(self) -> None:
         msg = _project(corpus.missing_message_id())
-        self.assertIn("message-id", msg.body_preview)
+        self.assertIn("message-id", msg.body_text)
 
 
 class EmptySubjectProjectionTest(unittest.TestCase):
@@ -248,8 +248,8 @@ class InlineImageProjectionTest(unittest.TestCase):
     def test_inline_image_counted_as_attachment(self) -> None:
         self.assertTrue(self.msg.has_attachments)
 
-    def test_body_preview_from_plain_fallback(self) -> None:
-        self.assertIn("Hello", self.msg.body_preview)
+    def test_body_text_from_plain_fallback(self) -> None:
+        self.assertIn("Hello", self.msg.body_text)
 
 
 class AttachmentFlagAgreesWithTheReaderTest(unittest.TestCase):
@@ -309,7 +309,7 @@ class QuotedPrintableBodyProjectionTest(unittest.TestCase):
         self.msg = _project(corpus.quoted_printable_body())
 
     def test_qp_sequences_decoded(self) -> None:
-        preview = self.msg.body_preview
+        preview = self.msg.body_text
         # =C3=A9 → é,  =C3=BC → ü,  =C3=B6 → ö
         self.assertIn("Café", preview)
         self.assertNotIn("=C3", preview)
@@ -344,7 +344,7 @@ class LegacyProjectionTest(unittest.TestCase):
         self.assertEqual(indexed.recipients, "Bob <bob@example.com>")
         self.assertEqual(indexed.cc, "Carol <carol@example.com>")
         self.assertEqual(indexed.subject, "Status Update")
-        self.assertEqual(indexed.body_preview, "Line one. Line two.")
+        self.assertEqual(indexed.body_text, "Line one. Line two.")
 
 
 class Base64BodyProjectionTest(unittest.TestCase):
@@ -354,8 +354,8 @@ class Base64BodyProjectionTest(unittest.TestCase):
         self.msg = _project(corpus.base64_body())
 
     def test_body_decoded(self) -> None:
-        self.assertIn("base64-encoded", self.msg.body_preview)
-        self.assertNotIn("VGhpcw", self.msg.body_preview)  # no raw b64
+        self.assertIn("base64-encoded", self.msg.body_text)
+        self.assertNotIn("VGhpcw", self.msg.body_text)  # no raw b64
 
 
 class NonAsciiSenderProjectionTest(unittest.TestCase):
@@ -369,7 +369,7 @@ class NonAsciiSenderProjectionTest(unittest.TestCase):
         self.assertIn("山田太郎", self.msg.sender)
 
     def test_body_present(self) -> None:
-        self.assertIn("CJK sender", self.msg.body_preview)
+        self.assertIn("CJK sender", self.msg.body_text)
 
 
 class EmptyBodyProjectionTest(unittest.TestCase):
@@ -381,8 +381,8 @@ class EmptyBodyProjectionTest(unittest.TestCase):
     def test_no_crash(self) -> None:
         self.assertEqual(self.msg.subject, "Empty body")
 
-    def test_body_preview_empty(self) -> None:
-        self.assertEqual(self.msg.body_preview, "")
+    def test_body_text_empty(self) -> None:
+        self.assertEqual(self.msg.body_text, "")
 
 
 class VeryLongSubjectProjectionTest(unittest.TestCase):
@@ -403,7 +403,7 @@ class NestedForwardProjectionTest(unittest.TestCase):
         self.msg = _project(corpus.nested_forward())
 
     def test_body_from_outer_text(self) -> None:
-        self.assertIn("FYI", self.msg.body_preview)
+        self.assertIn("FYI", self.msg.body_text)
 
     def test_subject(self) -> None:
         self.assertIn("Fwd:", self.msg.subject)
@@ -618,7 +618,7 @@ class TextCalendarAttachmentProjectionTest(unittest.TestCase):
 class DeclaredCharsetTest(unittest.TestCase):
     """The preview is decoded in the charset the part declares.
 
-    ``body_preview`` is what the FTS index is built from, so a message
+    ``body_text`` is what the FTS index is built from, so a message
     read in the wrong charset is not merely mojibake in the list -- it
     cannot be found by its own words.
     """
@@ -635,7 +635,7 @@ class DeclaredCharsetTest(unittest.TestCase):
             b"\r\n" + "Niño café".encode("iso-8859-1") + b"\r\n"
         )
         msg = _project(raw)
-        self.assertEqual(msg.body_preview, "Niño café")
+        self.assertEqual(msg.body_text, "Niño café")
 
     def test_a_quoted_charset_in_a_multipart_part_is_honoured(self) -> None:
         body = "Grüße".encode("iso-8859-15")
@@ -654,7 +654,7 @@ class DeclaredCharsetTest(unittest.TestCase):
             b"--b--\r\n"
         )
         msg = _project(raw)
-        self.assertEqual(msg.body_preview, "Grüße")
+        self.assertEqual(msg.body_text, "Grüße")
 
     def test_a_charset_no_codec_knows_falls_back_to_utf_8(self) -> None:
         raw = (
@@ -669,7 +669,7 @@ class DeclaredCharsetTest(unittest.TestCase):
             b"caf\xc3\xa9\r\n"
         )
         msg = _project(raw)
-        self.assertEqual(msg.body_preview, "café")
+        self.assertEqual(msg.body_text, "café")
 
     def test_a_nul_in_the_body_does_not_reach_the_index(self) -> None:
         """Legal in SQLite text, and a terminator to nearly everything
@@ -686,4 +686,4 @@ class DeclaredCharsetTest(unittest.TestCase):
             b"before\x00after\r\n"
         )
         msg = _project(raw)
-        self.assertEqual(msg.body_preview, "beforeafter")
+        self.assertEqual(msg.body_text, "beforeafter")

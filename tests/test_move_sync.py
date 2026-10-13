@@ -111,7 +111,6 @@ def _simulate_tui_move_cross_account(
         message_id=new_mid,
         storage_key=new_key,
         uid=None,
-        uid_validity=0,
         base_flags=frozenset(),
         server_flags=frozenset(),
         extra_imap_flags=frozenset(),

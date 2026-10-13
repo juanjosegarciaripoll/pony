@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     rescan_parser = subparsers.add_parser(
         "rescan",
         help="Re-project indexed messages from the local mirror (refresh cached "
-        "fields like body_preview without re-downloading).",
+        "fields like body_text without re-downloading).",
     )
     rescan_parser.add_argument(
         "--account",

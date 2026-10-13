@@ -133,7 +133,7 @@ class CliTestCase(unittest.TestCase):
             self.assertTrue(paths.data_dir.is_dir())
             self.assertTrue(paths.log_dir.is_dir())
 
-    def test_rescan_refreshes_body_preview(self) -> None:
+    def test_rescan_refreshes_body_text(self) -> None:
         """`pony rescan` re-projects stored rows and fixes stale previews."""
         from email.message import EmailMessage
 
@@ -169,7 +169,7 @@ class CliTestCase(unittest.TestCase):
             )
             folder = FolderRef(account_name=account.name, folder_name="INBOX")
             storage_key = mirror.store_message(folder=folder, raw_message=raw)
-            # Seed the index with a row whose body_preview simulates the
+            # Seed the index with a row whose body_text simulates the
             # pre-fix bug (CSS text leaked into the preview).
             projected = project_rfc822_message(
                 message_ref=MessageRef(
@@ -184,7 +184,7 @@ class CliTestCase(unittest.TestCase):
 
             stale = dataclasses.replace(
                 projected,
-                body_preview=".x{color:red} Real body text",
+                body_text=".x{color:red} Real body text",
                 local_status=MessageStatus.ACTIVE,
             )
             index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -197,9 +197,9 @@ class CliTestCase(unittest.TestCase):
 
             refreshed = index.get_message(message_ref=saved.message_ref)
             assert refreshed is not None
-            self.assertNotIn("color:red", refreshed.body_preview)
-            self.assertNotIn(".x{", refreshed.body_preview)
-            self.assertIn("Real body text", refreshed.body_preview)
+            self.assertNotIn("color:red", refreshed.body_text)
+            self.assertNotIn(".x{", refreshed.body_text)
+            self.assertIn("Real body text", refreshed.body_text)
 
     def test_rescan_preserves_sync_state(self) -> None:
         """Rescan must not overwrite flags, uid, or other sync-state fields."""
@@ -250,7 +250,7 @@ class CliTestCase(unittest.TestCase):
                 local_flags=frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
                 base_flags=frozenset({MessageFlag.SEEN}),
                 local_status=MessageStatus.ACTIVE,
-                body_preview="stale preview",
+                body_text="stale preview",
             )
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
@@ -266,8 +266,8 @@ class CliTestCase(unittest.TestCase):
                 frozenset({MessageFlag.SEEN, MessageFlag.FLAGGED}),
             )
             self.assertEqual(refreshed.base_flags, frozenset({MessageFlag.SEEN}))
-            self.assertIn("plain body", refreshed.body_preview)
-            self.assertNotEqual(refreshed.body_preview, "stale preview")
+            self.assertIn("plain body", refreshed.body_text)
+            self.assertNotEqual(refreshed.body_text, "stale preview")
 
     def test_rescan_force_upserts_unchanged_rows(self) -> None:
         """`pony rescan --force` upserts every row even when projection matches."""
@@ -1573,7 +1573,7 @@ def _make_indexed(message_id: str):  # type: ignore[no-untyped-def]
         recipients="acct@example.com",
         cc="",
         subject="Subject",
-        body_preview="Body",
+        body_text="Body",
         storage_key="key",
         local_flags=frozenset(),
         base_flags=frozenset(),

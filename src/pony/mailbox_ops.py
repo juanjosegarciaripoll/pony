@@ -69,8 +69,8 @@ def landed_in_folder(
     inserts it rather than updating in place.
 
     Every server-side identity is cleared, because the message does not
-    exist upstream yet: no UID, no UID validity, and no server flags.
-    ``uid=None`` is what makes the sync planner emit a ``PushAppendOp``.
+    exist upstream yet: no UID and no server flags.  ``uid=None`` is
+    what makes the sync planner emit a ``PushAppendOp``.
     Nothing is carried over from a previous move either, so a row that
     was mid-move upstream does not arrive here still pointing at it.
 
@@ -87,7 +87,6 @@ def landed_in_folder(
         message_id=message.message_id if message_id is None else message_id,
         storage_key=storage_key,
         uid=None,
-        uid_validity=0,
         base_flags=frozenset(),
         server_flags=frozenset(),
         extra_imap_flags=frozenset(),

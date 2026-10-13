@@ -113,7 +113,7 @@ class HarvestPathsAgreeTest(unittest.TestCase):
                     recipients=recipients,
                     cc="",
                     subject="Subject",
-                    body_preview="Body",
+                    body_text="Body",
                     storage_key="key",
                     local_flags=frozenset(),
                     base_flags=frozenset(),

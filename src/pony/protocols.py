@@ -366,7 +366,7 @@ class IndexRepository(Protocol):
         """Return a narrow projection of messages in one folder for list display.
 
         Loads only the columns the folder list renders — no recipients,
-        cc, body_preview, base_flags, server_flags, extra_imap_flags,
+        cc, body_text, base_flags, server_flags, extra_imap_flags,
         trashed_at or synced_at — and skips their parsing cost.
         ``active_only`` filters to ``local_status IN ('active',
         'pending_move')`` in SQL — pending-move rows are visible in
@@ -394,7 +394,6 @@ class IndexRepository(Protocol):
         folder: FolderRef,
         storage_key: str,
         uid: int,
-        uid_validity: int,
     ) -> bool:
         """Give an existing ``uid IS NULL`` row the handle its file has."""
         ...

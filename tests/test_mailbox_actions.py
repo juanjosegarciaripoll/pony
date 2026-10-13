@@ -716,7 +716,7 @@ class PlanDedupTest(unittest.TestCase):
             recipients="bob@example.com",
             cc="",
             subject="Duplicate",
-            body_preview="",
+            body_text="",
             storage_key=f"key-{row_id}",
             local_flags=flags,
             base_flags=flags,

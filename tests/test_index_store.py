@@ -138,7 +138,7 @@ class SearchTestCase(unittest.TestCase):
                 recipients="bob@example.com",
                 cc="carol@example.com",
                 subject="Quarterly Report",
-                body_preview="Please review the attached report.",
+                body_text="Please review the attached report.",
             )
         )
         self.repo.upsert_message(
@@ -148,7 +148,7 @@ class SearchTestCase(unittest.TestCase):
                 recipients="alice@example.com",
                 cc="",
                 subject="Re: Quarterly Report",
-                body_preview="Thanks, looks good.",
+                body_text="Thanks, looks good.",
             )
         )
 
@@ -236,7 +236,7 @@ class SearchTestCase(unittest.TestCase):
             "m-3",
             account_name="work",
             subject="Work thing",
-            body_preview="quarterly numbers",
+            body_text="quarterly numbers",
         )
         self.repo.upsert_message(message=other)
 
@@ -251,7 +251,7 @@ class SearchTestCase(unittest.TestCase):
             "m-3",
             account_name="work",
             subject="Work thing",
-            body_preview="quarterly numbers",
+            body_text="quarterly numbers",
         )
         self.repo.upsert_message(message=other)
 
@@ -271,7 +271,7 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
             message=_make_message(
                 "m-1",
                 subject="Carta de María",
-                body_preview="contenido cualquiera",
+                body_text="contenido cualquiera",
             ),
         )
         hits = repo.search(
@@ -308,7 +308,7 @@ class DiacriticAndCaseFoldingSearchTestCase(unittest.TestCase):
                 "m-1",
                 sender="foo@example.com",
                 subject="an unrelated subject",
-                body_preview="some body",
+                body_text="some body",
             ),
         )
         # "foo" appears only in the sender column — a subject-scoped
@@ -415,9 +415,13 @@ class SchemaVersionGateTestCase(unittest.TestCase):
 
 
 class V2ToV3MigrationTestCase(unittest.TestCase):
-    """The v2 → v3 in-place migration drops synthetic-mid orphans and
-    backfills uid_validity from folder_sync_state, while preserving
-    every real row."""
+    """The v2 → v3 in-place migration drops synthetic-mid orphans while
+    preserving every real row.
+
+    A v2 database arrives at the current schema through this step and
+    then the v3 → v4 one, so these drive ``initialize`` and check what
+    comes out the far end.
+    """
 
     def _build_v2_db(self, path: Path) -> None:
         """Create a minimal v2 (synthetic-mid era) database at *path*."""
@@ -547,9 +551,6 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
         self.assertIn("<real@example.com>", ids)
         self.assertIn("<synthetic-cafe@pony.local>", ids)
         self.assertNotIn("<synthetic-deadbeef@pony.local>", ids)
-        # uid_validity is backfilled from folder_sync_state on every
-        # surviving row.
-        self.assertTrue(all(r.uid_validity == 42 for r in rows))
         # Every row got a fresh autoincrement id.
         self.assertEqual(len({r.message_ref.id for r in rows}), len(rows))
 
@@ -586,6 +587,36 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
         finally:
             conn.close()
         self.assertIsNone(row, "pending_operations table must be dropped")
+
+    def test_a_v2_database_arrives_at_the_current_schema(self) -> None:
+        """Two steps, one ``initialize``: v2 → v3 → v4."""
+        import sqlite3
+
+        path = TMP_ROOT / "v2-to-v4" / f"{uuid4().hex}.sqlite3"
+        self._build_v2_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        conn = sqlite3.connect(path)
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
+            }
+        finally:
+            conn.close()
+        self.assertEqual(version, 4)
+        self.assertNotIn("uid_validity", columns)
+        self.assertNotIn("body_preview", columns)
+        self.assertIn("body_text", columns)
+
+        folder = FolderRef(account_name="personal", folder_name="INBOX")
+        rows = repo.list_folder_messages(folder=folder)
+        self.assertEqual(
+            {r.message_id for r in rows},
+            {"<real@example.com>", "<synthetic-cafe@pony.local>"},
+        )
 
     def test_load_contacts_for_backup_reads_legacy_db(self) -> None:
         """The emergency loader must work on a DB initialize() refuses."""
@@ -647,6 +678,209 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
 
         path = TMP_ROOT / "missing" / f"{uuid4().hex}.sqlite3"
         self.assertEqual(load_contacts_for_backup(database_path=path), [])
+
+
+class V3ToV4MigrationTestCase(unittest.TestCase):
+    """v4 drops the per-row epoch and names the body column for what it is.
+
+    Nothing read ``messages.uid_validity``: a UID is only ever looked up
+    for the folder it belongs to, and that folder's epoch is in
+    ``folder_sync_state``.  ``body_preview`` holds the whole body as
+    text, so it is ``body_text`` now.  The table is rebuilt rather than
+    altered, which is the part worth testing: every row, and every
+    ``id`` a ``MessageRef`` may be holding, has to come through.
+    """
+
+    def _build_v3_db(self, path: Path) -> None:
+        """A v3 database with two rows, one of them handle-less."""
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE messages (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_name     TEXT    NOT NULL,
+                    folder_name      TEXT    NOT NULL,
+                    uid              INTEGER,
+                    uid_validity     INTEGER NOT NULL DEFAULT 0,
+                    message_id       TEXT    NOT NULL DEFAULT '',
+                    sender           TEXT    NOT NULL,
+                    recipients       TEXT    NOT NULL,
+                    cc               TEXT    NOT NULL,
+                    subject          TEXT    NOT NULL,
+                    body_preview     TEXT    NOT NULL,
+                    storage_key      TEXT    NOT NULL DEFAULT '',
+                    has_attachments  INTEGER NOT NULL DEFAULT 0,
+                    local_flags      TEXT    NOT NULL,
+                    base_flags       TEXT    NOT NULL,
+                    server_flags     TEXT    NOT NULL DEFAULT '',
+                    extra_imap_flags TEXT    NOT NULL DEFAULT '',
+                    local_status     TEXT    NOT NULL,
+                    received_at      TEXT    NOT NULL,
+                    trashed_at       TEXT,
+                    synced_at        TEXT,
+                    source_folder    TEXT,
+                    source_uid       INTEGER
+                );
+                CREATE TABLE folder_sync_state (
+                    account_name   TEXT NOT NULL,
+                    folder_name    TEXT NOT NULL,
+                    uid_validity   INTEGER NOT NULL,
+                    highest_uid    INTEGER NOT NULL,
+                    uidnext        INTEGER NOT NULL DEFAULT 0,
+                    highest_modseq INTEGER NOT NULL DEFAULT 0,
+                    synced_at      TEXT NOT NULL,
+                    PRIMARY KEY (account_name, folder_name)
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO folder_sync_state VALUES "
+                "('personal','INBOX',42,7,8,12345,'2026-04-20T00:00:00+00:00')",
+            )
+            conn.execute(
+                "INSERT INTO messages (id, account_name, folder_name, uid,"
+                " uid_validity, message_id, sender, recipients, cc, subject,"
+                " body_preview, storage_key, has_attachments, local_flags,"
+                " base_flags, server_flags, extra_imap_flags, local_status,"
+                " received_at, trashed_at, synced_at, source_folder, source_uid)"
+                " VALUES (17,'personal','INBOX',7,42,'<real@example.com>',"
+                "'a@example.com','b@example.com','','Quarterly numbers',"
+                "'the numbers are inside','maildir-key',0,'seen','seen','seen',"
+                "'','active','2026-04-20T10:00:00+00:00',NULL,"
+                "'2026-04-20T10:00:01+00:00',NULL,NULL)",
+            )
+            conn.execute(
+                "INSERT INTO messages (id, account_name, folder_name, uid,"
+                " uid_validity, message_id, sender, recipients, cc, subject,"
+                " body_preview, storage_key, has_attachments, local_flags,"
+                " base_flags, server_flags, extra_imap_flags, local_status,"
+                " received_at, trashed_at, synced_at, source_folder, source_uid)"
+                " VALUES (18,'personal','Sent',NULL,0,'<draft@example.com>',"
+                "'b@example.com','a@example.com','','Reply to you',"
+                "'written here, not sent yet','draft-key',0,'','','',"
+                "'','active','2026-04-21T10:00:00+00:00',NULL,NULL,NULL,NULL)",
+            )
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_the_column_goes_and_the_body_keeps_its_contents(self) -> None:
+        import sqlite3
+
+        path = TMP_ROOT / "v3-migration" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        conn = sqlite3.connect(path)
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
+            }
+        finally:
+            conn.close()
+        self.assertEqual(version, 4)
+        self.assertNotIn("uid_validity", columns)
+        self.assertNotIn("body_preview", columns)
+
+        rows = repo.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX")
+        )
+        self.assertEqual([r.body_text for r in rows], ["the numbers are inside"])
+
+    def test_every_row_and_every_id_comes_through(self) -> None:
+        """A remembered ``MessageRef`` must still name the same message."""
+        path = TMP_ROOT / "v3-migration-ids" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        inbox = repo.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX")
+        )
+        sent = repo.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="Sent")
+        )
+        self.assertEqual([r.message_ref.id for r in inbox], [17])
+        self.assertEqual([r.message_ref.id for r in sent], [18])
+        self.assertEqual(inbox[0].uid, 7)
+        self.assertIsNone(sent[0].uid, "a handle-less row must stay handle-less")
+
+    def test_the_folder_epoch_is_untouched(self) -> None:
+        """What the row loses, the folder was already keeping."""
+        path = TMP_ROOT / "v3-migration-epoch" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        state = repo.get_folder_sync_state(account_name="personal", folder_name="INBOX")
+        assert state is not None
+        self.assertEqual(state.uid_validity, 42)
+        self.assertEqual(state.highest_uid, 7)
+
+    def test_the_search_index_still_finds_the_migrated_rows(self) -> None:
+        """The rename rebuilds the FTS table, which has to be repopulated.
+
+        The copy happens before the triggers exist, so nothing fills the
+        index on the way through; an external-content FTS5 table has to
+        be told to catch up or every search comes back empty and no
+        ordinary sync ever repairs it.
+        """
+        from pony.domain import SearchQuery
+
+        path = TMP_ROOT / "v3-migration-fts" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+
+        hits = repo.search(query=SearchQuery(text="numbers"), account_name="personal")
+        self.assertEqual([h.message_ref.id for h in hits], [17])
+        body_hits = repo.search(
+            query=SearchQuery(body="inside"), account_name="personal"
+        )
+        self.assertEqual([h.message_ref.id for h in body_hits], [17])
+
+    def test_running_initialize_again_changes_nothing(self) -> None:
+        path = TMP_ROOT / "v3-migration-idem" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize()
+        repo.initialize()
+
+        rows = repo.list_folder_messages(
+            folder=FolderRef(account_name="personal", folder_name="INBOX")
+        )
+        self.assertEqual([r.message_ref.id for r in rows], [17])
+
+    def test_a_newer_schema_is_still_refused(self) -> None:
+        """Only 2, 3 and the current version are recognised."""
+        import sqlite3
+
+        from pony.index_store import SchemaMismatchError
+
+        path = TMP_ROOT / "v5-db" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("PRAGMA user_version = 5")
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo = SqliteIndexRepository(database_path=path)
+        with self.assertRaises(SchemaMismatchError):
+            repo.initialize()
 
 
 class BatchedTransactionTestCase(unittest.TestCase):
@@ -839,7 +1073,7 @@ def _make_message(
     recipients: str = "recipient@example.com",
     cc: str = "",
     subject: str = "Test Subject",
-    body_preview: str = "Test body preview.",
+    body_text: str = "Test body preview.",
     local_flags: frozenset[MessageFlag] = frozenset(),
     base_flags: frozenset[MessageFlag] = frozenset(),
     local_status: MessageStatus = MessageStatus.ACTIVE,
@@ -859,7 +1093,7 @@ def _make_message(
         recipients=recipients,
         cc=cc,
         subject=subject,
-        body_preview=body_preview,
+        body_text=body_text,
         storage_key=message_id if storage_key is None else storage_key,
         local_flags=local_flags,
         base_flags=base_flags,
@@ -892,7 +1126,7 @@ class MarkFolderReadTestCase(unittest.TestCase):
                 recipients="bob@x.com",
                 cc="",
                 subject=f"Message {i}",
-                body_preview="",
+                body_text="",
                 storage_key=f"key{i}",
                 local_flags=frozenset(),
                 base_flags=frozenset(),
@@ -923,7 +1157,7 @@ class MarkFolderReadTestCase(unittest.TestCase):
             recipients="bob@x.com",
             cc="",
             subject="Already seen",
-            body_preview="",
+            body_text="",
             storage_key="key",
             local_flags=frozenset({MessageFlag.SEEN}),
             base_flags=frozenset({MessageFlag.SEEN}),
@@ -966,7 +1200,7 @@ class MarkFolderReadTestCase(unittest.TestCase):
                 recipients="bob@x.com",
                 cc="",
                 subject="Order",
-                body_preview="",
+                body_text="",
                 storage_key="key",
                 local_flags=flags,
                 base_flags=flags,
@@ -1116,19 +1350,19 @@ class SearchSemanticsTest(unittest.TestCase):
     def _seed(self, repo: SqliteIndexRepository) -> None:
         repo.insert_message(
             message=_make_message(
-                "<a@x>", subject="Invoice #3 paid", body_preview="thanks"
+                "<a@x>", subject="Invoice #3 paid", body_text="thanks"
             )
         )
         repo.insert_message(
             message=_make_message(
-                "<b@x>", subject="Paid the invoice", body_preview="regards"
+                "<b@x>", subject="Paid the invoice", body_text="regards"
             )
         )
         repo.insert_message(
             message=_make_message(
                 "<c@x>",
                 subject="Meeting notes",
-                body_preview="please pay the invoice today",
+                body_text="please pay the invoice today",
             )
         )
 
@@ -1275,12 +1509,7 @@ class ChunkedParametersTest(unittest.TestCase):
         uids = list(range(1, 451))
         with repo.connection():
             for uid in uids:
-                repo.insert_message(
-                    message=dataclasses.replace(
-                        _make_message(f"<u{uid}@x>", uid=uid),
-                        uid_validity=1,
-                    )
-                )
+                repo.insert_message(message=_make_message(f"<u{uid}@x>", uid=uid))
 
         rows = repo.list_folder_slow_path_rows_by_uid(
             account_name=folder.account_name,

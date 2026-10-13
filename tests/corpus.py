@@ -195,7 +195,7 @@ def multipart_alternative() -> bytes:
 def multipart_mixed_attachment() -> bytes:
     """text/plain body with one named PDF attachment.
 
-    has_attachments must be True; body_preview must come from the text part.
+    has_attachments must be True; body_text must come from the text part.
     """
     msg = MIMEMultipart("mixed")
     msg["From"] = FROM_ADDR
@@ -260,7 +260,7 @@ def multipart_mixed_multi() -> bytes:
 def html_only() -> bytes:
     """HTML-only message with no text/plain part.
 
-    body_preview must fall back to the HTML part with tags stripped.
+    body_text must fall back to the HTML part with tags stripped.
     """
     msg = MIMEMultipart("alternative")
     msg["From"] = FROM_ADDR
@@ -361,7 +361,7 @@ def inline_image() -> bytes:
 def quoted_printable_body() -> bytes:
     """Body encoded with Content-Transfer-Encoding: quoted-printable.
 
-    The projection must decode the transfer encoding so that body_preview
+    The projection must decode the transfer encoding so that body_text
     contains the decoded Unicode text, not QP escape sequences.
     """
     # é = =C3=A9 in UTF-8 QP encoding
@@ -382,7 +382,7 @@ def quoted_printable_body() -> bytes:
 def base64_body() -> bytes:
     """Body encoded with Content-Transfer-Encoding: base64.
 
-    The projection must decode the transfer encoding so that body_preview
+    The projection must decode the transfer encoding so that body_text
     contains readable text, not base64 gibberish.
     """
     import base64 as _b64
@@ -424,7 +424,7 @@ def non_ascii_sender() -> bytes:
 def empty_body() -> bytes:
     """Message with headers but zero-length body.
 
-    The projection must not crash; body_preview should be empty.
+    The projection must not crash; body_text should be empty.
     """
     msg = EmailMessage()
     msg["From"] = FROM_ADDR

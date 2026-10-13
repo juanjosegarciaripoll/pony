@@ -423,9 +423,8 @@ CREATE TABLE messages (
     account_name     TEXT    NOT NULL,
     folder_name      TEXT    NOT NULL,
     uid              INTEGER,                       -- NULL = pending push
-    uid_validity     INTEGER NOT NULL DEFAULT 0,
     message_id       TEXT    NOT NULL DEFAULT '',   -- display only
-    sender, recipients, cc, subject, body_preview,
+    sender, recipients, cc, subject, body_text,
     storage_key      TEXT    NOT NULL DEFAULT '',
     has_attachments  INTEGER NOT NULL DEFAULT 0,
     local_flags, base_flags, server_flags, extra_imap_flags,
@@ -452,9 +451,13 @@ CREATE INDEX ix_messages_unseen                   -- unread counts per folder
     ON messages (account_name, local_status, folder_name, local_flags);
 ```
 
-`MessageRef = (account_name, folder_name, id)`. The `folder_sync_state` table
-holds UIDVALIDITY, the highest known UID, UIDNEXT and HIGHESTMODSEQ as
-watermarks. It has no message count: the one the fast path compares against
+`MessageRef = (account_name, folder_name, id)`. A row carries no epoch of its
+own: a UID is only ever looked up for the folder it was found in, so the epoch
+is the folder's, and the mirror filename keeps the pair (`,V=<epoch>,U=<uid>`)
+for `pony reindex` to read when there is no index left. `body_text` is the
+body as plain text -- the whole of it, which is what the FTS index is built
+from. The `folder_sync_state` table holds UIDVALIDITY, the highest known UID,
+UIDNEXT and HIGHESTMODSEQ as watermarks. It has no message count: the one the fast path compares against
 `STATUS MESSAGES` is counted from the index rows that carry a UID
 (`count_uids_for_folder`).
 

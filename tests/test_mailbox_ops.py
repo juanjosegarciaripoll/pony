@@ -34,12 +34,11 @@ def _synced_message() -> IndexedMessage:
         recipients="me@example.com",
         cc="",
         subject="Tuesday meeting",
-        body_preview="preview",
+        body_text="preview",
         received_at=datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
         message_id="<original@example.com>",
         storage_key="key-1",
         uid=1234,
-        uid_validity=99,
         base_flags=frozenset({MessageFlag.SEEN}),
         server_flags=frozenset({MessageFlag.SEEN}),
         extra_imap_flags=frozenset({"$Important"}),
@@ -70,7 +69,6 @@ class LandedInFolderTest(unittest.TestCase):
         # would point the planner at an unrelated server message.
         row = landed_in_folder(_synced_message(), target=TARGET, storage_key="k")
         self.assertIsNone(row.uid)
-        self.assertEqual(row.uid_validity, 0)
         self.assertEqual(row.base_flags, frozenset())
         self.assertEqual(row.server_flags, frozenset())
         self.assertEqual(row.extra_imap_flags, frozenset())
@@ -147,13 +145,6 @@ class MovedToFolderTest(unittest.TestCase):
         self.assertIsNone(row.synced_at)
         self.assertEqual(row.server_flags, frozenset())
         self.assertEqual(row.extra_imap_flags, frozenset())
-
-    def test_uid_validity_is_preserved(self) -> None:
-        # Unlike an arrival, a move stays within the same mailbox
-        # generation -- the row still refers to the same server folder
-        # lineage until sync resolves it.
-        row = moved_to_folder(_synced_message(), target=TARGET, storage_key="k")
-        self.assertEqual(row.uid_validity, 99)
 
     def test_local_flags_survive_a_move(self) -> None:
         row = moved_to_folder(_synced_message(), target=TARGET, storage_key="k")

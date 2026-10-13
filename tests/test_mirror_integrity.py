@@ -62,7 +62,7 @@ def _index_message(
             recipients="b@test.com",
             cc="",
             subject="Test",
-            body_preview="",
+            body_text="",
             storage_key=storage_key,
             local_flags=frozenset(),
             base_flags=frozenset(),
