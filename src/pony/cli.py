@@ -1142,6 +1142,7 @@ def run_sync(
             f.appended_to_server + f.reuploaded_to_server for f in active
         )
         total_purged = sum(f.purged_local for f in active)
+        total_rekeyed = sum(f.rekeyed for f in active)
         skipped_suffix = (
             f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""
         )
@@ -1155,6 +1156,10 @@ def run_sync(
             f"{total_moved} move(s), "
             f"{total_expunged} expunge(s), "
             f"{total_purged} local purge(s)"
+            # Only after a UIDVALIDITY change, and then it is the
+            # headline: a folder of mail kept without downloading any
+            # of it would otherwise be reported as nothing happening.
+            + (f", {total_rekeyed} re-keyed" if total_rekeyed else "")
         )
         for f in active:
             print(

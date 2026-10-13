@@ -246,6 +246,35 @@ class LiveImapTestCase(unittest.TestCase):
         self.assertEqual(len(rows), 1, "the appended message came back as a duplicate")
         self.assertIsNotNone(rows[0].uid, "no UID captured from APPEND")
 
+    def test_a_uidvalidity_change_downloads_nothing_it_already_holds(self) -> None:
+        """The server re-numbers the folder; the bodies stay where they are."""
+        self._deliver(*(_message(f"n{i}", f"<n{i}@example.test>") for i in range(20)))
+        self.service.sync()
+
+        fetched: list[int] = []
+        service = ImapSyncService(
+            config=self.server.config(self.account),
+            mirror_factory=lambda _account: self.mirror,
+            index=self.index,
+            credentials=FixedCredentials(),
+            session_factory=self.server.counting_session_factory(fetched),
+        )
+
+        self.server.bump_uidvalidity("INBOX")
+        service.sync()
+
+        self.assertEqual(fetched, [], "the folder came down the wire again")
+        rows = self._rows()
+        self.assertEqual(len(rows), 20, "messages were duplicated or lost")
+        self.assertTrue(all(r.uid is not None for r in rows), "UIDs not re-keyed")
+        # The numbers really are the server's new ones.
+        session = self.server.raw_session()
+        try:
+            remote = set(session.fetch_uid_to_message_id("INBOX"))
+        finally:
+            session.logout()
+        self.assertEqual({r.uid for r in rows}, remote)
+
     def test_a_folder_of_two_hundred_messages_adopts_cleanly(self) -> None:
         """Adoption is per-message; make sure it holds up past a handful."""
         self._deliver(

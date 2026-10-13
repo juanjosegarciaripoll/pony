@@ -24,6 +24,7 @@ import os
 import socket
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
@@ -131,6 +132,34 @@ class Dovecot:
 
         def factory(_account: AccountConfig, password: str) -> ImapClientSession:
             return ImapSession(
+                host=_HOST,
+                port=_PORT,
+                ssl=False,
+                username=self.username,
+                password=password,
+            )
+
+        return factory
+
+    def counting_session_factory(self, fetched: list[int]):  # type: ignore[no-untyped-def]
+        """Like :meth:`session_factory`, recording every body it downloads.
+
+        What a UIDVALIDITY change costs cannot be seen in the index
+        afterwards: a row looks the same whether its body came off the
+        local disk or down the wire.  Only the FETCHes say which.
+        """
+
+        class _Recording(ImapSession):
+            def fetch_messages_batch(
+                self,
+                folder_name: str,
+                uids: Sequence[int],
+            ) -> dict[int, bytes]:
+                fetched.extend(uids)
+                return super().fetch_messages_batch(folder_name, uids)
+
+        def factory(_account: AccountConfig, password: str) -> ImapClientSession:
+            return _Recording(
                 host=_HOST,
                 port=_PORT,
                 ssl=False,

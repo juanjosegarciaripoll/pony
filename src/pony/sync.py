@@ -130,6 +130,7 @@ class FolderSyncResult:
     appended_to_server: int = 0
     reuploaded_to_server: int = 0
     purged_local: int = 0
+    rekeyed: int = 0
     scan_ms: int = 0
     fetch_ms: int = 0
     ingest_ms: int = 0
@@ -147,6 +148,7 @@ class FolderSyncResult:
             or self.appended_to_server
             or self.reuploaded_to_server
             or self.purged_local
+            or self.rekeyed
         )
 
 
@@ -183,6 +185,24 @@ class FetchNewOp:
     """Download a new message from the server and insert a fresh row."""
 
     uid: int
+    message_id: str
+    server_flags: frozenset[MessageFlag]
+    extra_imap_flags: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class AdoptUidOp:
+    """Give a row the UID the server now reports for the message it holds.
+
+    A UIDVALIDITY change does not change the mail, only the numbers on
+    it: the server re-reports the same messages under a new epoch.  The
+    headers the planner has already read name each one, so the row is
+    re-keyed where it used to be re-downloaded -- the whole folder, body
+    by body, for mail that was already on disk.
+    """
+
+    uid: int
+    message_ref: MessageRef
     message_id: str
     server_flags: frozenset[MessageFlag]
     extra_imap_flags: frozenset[str] = frozenset()
@@ -289,6 +309,7 @@ class UidValidityResetOp:
 
 type SyncOp = (
     FetchNewOp
+    | AdoptUidOp
     | ServerDeleteOp
     | PullFlagsOp
     | PushFlagsOp
@@ -385,6 +406,7 @@ class SyncPlan:
 
 _OP_LABELS: tuple[tuple[str, str], ...] = (
     ("download", "{n} new message(s) to download"),
+    ("adopt_uid", "{n} message(s) to re-key under the new UIDVALIDITY"),
     ("server_delete", "{n} deleted on server (move to trash)"),
     ("push_move", "{n} moved locally (push to server)"),
     ("push_append", "{n} new local message(s) to upload"),
@@ -404,6 +426,8 @@ def _categorize_ops(ops: tuple[SyncOp, ...]) -> dict[str, int]:
     for op in ops:
         if isinstance(op, FetchNewOp):
             key = "download"
+        elif isinstance(op, AdoptUidOp):
+            key = "adopt_uid"
         elif isinstance(op, ServerDeleteOp):
             key = "server_delete"
         elif isinstance(op, PushMoveOp):
@@ -618,14 +642,63 @@ def _pending_move_is_pushable(
     return row.source_folder not in uidvalidity_reset_folders
 
 
+def _adoptions_after_reset(
+    *,
+    rows: collections.abc.Sequence[SlowPathRow],
+    uid_to_mid: dict[int, str],
+    uids: set[int],
+) -> dict[int, SlowPathRow]:
+    """Which of *uids* name messages this folder already holds.
+
+    A reset invalidates every UID in the folder, so the server reports
+    all of its mail as new.  Almost none of it is: the bodies are on
+    disk and the rows are in the index, waiting for a number.  The
+    Message-IDs come out of the headers-only fetch the planner has
+    already done, so the pairing costs nothing on top of it.
+
+    A Message-ID is not a key.  Resends and list copies share one and
+    plenty of messages have none, so one is used only where it names
+    exactly one row *and* exactly one of the UIDs being planned.
+    Anything else falls through to the body fetch, where
+    ``_adopt_existing_row`` can compare what the message says about
+    itself before deciding.  A row with no body on disk falls through
+    too: re-keying it would leave a message in the index that nothing
+    can open.
+    """
+    rows_by_mid: dict[str, list[SlowPathRow]] = {}
+    for row in rows:
+        if not row.message_id or not row.storage_key:
+            continue
+        if row.local_status not in (MessageStatus.ACTIVE, MessageStatus.TRASHED):
+            continue
+        rows_by_mid.setdefault(row.message_id, []).append(row)
+
+    uids_by_mid: dict[str, list[int]] = {}
+    for uid in uids:
+        mid = uid_to_mid.get(uid, "")
+        if mid and mid in rows_by_mid:
+            uids_by_mid.setdefault(mid, []).append(uid)
+
+    matched: dict[int, SlowPathRow] = {}
+    for mid, candidate_uids in uids_by_mid.items():
+        candidate_rows = rows_by_mid[mid]
+        if len(candidate_uids) != 1 or len(candidate_rows) != 1:
+            continue
+        matched[candidate_uids[0]] = candidate_rows[0]
+    return matched
+
+
 def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
     """Flag a folder plan whose uploads would rewrite much of the folder."""
     push_count = sum(1 for op in plan.ops if isinstance(op, (PushAppendOp, ReUploadOp)))
     if push_count < _MASS_PUSH_MIN:
         return plan
-    # What the folder is known to hold: rows already carrying a UID
-    # plus whatever this pass will fetch.
-    fetches = sum(1 for op in plan.ops if isinstance(op, FetchNewOp))
+    # What the folder is known to hold: rows already carrying a UID,
+    # plus whatever this pass will fetch or re-key.  A message re-keyed
+    # after a UIDVALIDITY change is one the folder holds as surely as a
+    # downloaded one -- counting only fetches would have made a reset
+    # look like a folder with nothing in it.
+    fetches = sum(1 for op in plan.ops if isinstance(op, (FetchNewOp, AdoptUidOp)))
     known = plan.known_total + fetches
     over_ratio = bool(known) and push_count > known * _MASS_PUSH_THRESHOLD
     if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
@@ -1373,11 +1446,32 @@ class ImapSyncService:
             )
         )
 
-        # Step: new UIDs on the server.
+        # Step: new UIDs on the server.  After a reset most of them are
+        # not new mail at all, so each one is matched against the rows
+        # the folder already holds before anything is downloaded.
+        adoptions = (
+            _adoptions_after_reset(rows=rows, uid_to_mid=uid_to_mid, uids=new_uids)
+            if uidvalidity_reset
+            else {}
+        )
+        adopt_ops: list[SyncOp] = []
+        fetch_ops: list[SyncOp] = []
         for uid in new_uids:
             mid = uid_to_mid.get(uid, "")
             server, extra = uid_to_flags.get(uid, (frozenset(), frozenset()))
-            ops.append(
+            matched = adoptions.get(uid)
+            if matched is not None:
+                adopt_ops.append(
+                    AdoptUidOp(
+                        uid=uid,
+                        message_ref=matched.message_ref,
+                        message_id=mid,
+                        server_flags=server,
+                        extra_imap_flags=extra,
+                    )
+                )
+                continue
+            fetch_ops.append(
                 FetchNewOp(
                     uid=uid,
                     message_id=mid,
@@ -1385,6 +1479,12 @@ class ImapSyncService:
                     extra_imap_flags=extra,
                 )
             )
+        # The fetches go in one run.  The executor's producer batches
+        # consecutive fetches into one FETCH and flushes the batch
+        # whenever any other op comes along, so interleaving these two
+        # kinds would turn one round trip into one per message.
+        ops.extend(adopt_ops)
+        ops.extend(fetch_ops)
 
         # Step: UIDs gone server-side.
         for uid in gone_uids:
@@ -1865,6 +1965,7 @@ class ImapSyncService:
             "appended_to_server": 0,
             "reuploaded_to_server": 0,
             "purged_local": 0,
+            "rekeyed": 0,
         }
 
         # Two phases: phase-1 (fetch-heavy ops with a producer thread
@@ -2127,6 +2228,7 @@ class ImapSyncService:
             appended_to_server=counters["appended_to_server"],
             reuploaded_to_server=counters["reuploaded_to_server"],
             purged_local=counters["purged_local"],
+            rekeyed=counters["rekeyed"],
             scan_ms=plan.scan_ms,
             fetch_ms=sum(fetch_ns) // 1_000_000,
             ingest_ms=sum(ingest_ns) // 1_000_000,
@@ -2352,6 +2454,14 @@ class ImapSyncService:
                         folder_name,
                     )
                 return True
+
+            case AdoptUidOp():
+                return self._execute_adopt_uid(
+                    op,
+                    account=account,
+                    folder_name=folder_name,
+                    counters=counters,
+                )
 
             case UidValidityResetOp():
                 self._execute_uidvalidity_reset(
@@ -2606,6 +2716,61 @@ class ImapSyncService:
                     synced_at=None,
                 )
             )
+        return True
+
+    def _execute_adopt_uid(
+        self,
+        op: AdoptUidOp,
+        *,
+        account: AccountConfig,
+        folder_name: str,
+        counters: dict[str, int],
+    ) -> bool:
+        """Re-key the row the planner paired with *op.uid*.
+
+        The row is read again here because planning and execution are
+        separate calls and the index can move in between -- the user
+        trashing the message, a ``reindex`` giving the row a handle of
+        its own.  Where the pairing no longer holds this does nothing
+        and says so: the next pass sees the UID as new and fetches it,
+        which is the answer that needs no guess.
+        """
+        row = self._index.get_message(message_ref=op.message_ref)
+        if row is None:
+            logger.info(
+                "Row %d is gone in %s/%s — leaving uid=%d to the next pass",
+                op.message_ref.id,
+                account.name,
+                folder_name,
+                op.uid,
+            )
+            return True
+        if row.uid is not None:
+            logger.info(
+                "Row %d already holds uid=%d in %s/%s — leaving uid=%d"
+                " to the next pass",
+                op.message_ref.id,
+                row.uid,
+                account.name,
+                folder_name,
+                op.uid,
+            )
+            return True
+        # The same fields the post-fetch adoption writes, and the same
+        # ones it leaves alone: ``local_flags`` and ``local_status`` are
+        # the user's intent, and the three-way merge reconciles them on
+        # the next pass.
+        self._index.update_message(
+            message=dataclasses.replace(
+                row,
+                uid=op.uid,
+                base_flags=op.server_flags,
+                server_flags=op.server_flags,
+                extra_imap_flags=op.extra_imap_flags,
+                synced_at=datetime.now(tz=UTC),
+            )
+        )
+        counters["rekeyed"] += 1
         return True
 
     def _execute_uidvalidity_reset(

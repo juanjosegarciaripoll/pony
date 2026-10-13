@@ -294,9 +294,31 @@ Progress is reported via a `ProgressInfo` dataclass carrying `message`,
 
 IMAP servers assign a `UIDVALIDITY` value to each folder. If this value
 changes (e.g. after a server rebuild or mailbox migration), all cached UIDs
-become meaningless. Pony detects this automatically during planning and, during
-execution, drops stale UID-bearing rows before refetching the folder in the new
-UID epoch. Local-only rows are preserved.
+become meaningless. Pony detects this automatically during planning. The mail
+is not meaningless, only its numbering: the bodies stay in the mirror and the
+rows stay in the index, and execution clears the UID epoch rather than deleting
+anything.
+
+The server then reports the whole folder as new UIDs. Most of them are not new
+mail, so the planner pairs them with the rows the folder already holds, using
+the `Message-ID`s from the headers-only scan it has already done. A paired UID
+is **re-keyed**: the row is given the new number without the body being
+downloaded again. A folder of 15,000 archived messages costs one scan rather
+than 15,000 bodies.
+
+A `Message-ID` is not a key. Resends and mailing-list copies share one and some
+messages carry none, so one is used only where it names exactly one row *and*
+exactly one of the UIDs being planned. Everything else is fetched, and the
+message is matched on arrival against what it says about itself -- sender,
+subject and date -- so two indistinguishable messages stay indistinguishable
+rather than being paired by guess.
+
+Re-keying writes the new UID to the index. The mirror filename keeps the
+handle it was stored with (`,V=<epoch>,U=<uid>`), which is a superseded epoch
+until the message is stored again; `pony reindex` reads the epoch from the
+filenames themselves, so a folder rebuilt from such a mirror comes back under
+the old epoch and the next sync re-keys it again -- cheaply, by the same
+path.
 
 ---
 
@@ -457,7 +479,12 @@ A folder takes the cheapest path its watermarks allow:
     - `TRASHED` + uid set → `PushDeleteOp`.
     - `TRASHED` + `uid IS NULL` → `PurgeLocalOp`.
     - Flag drift on a UID-bearing row → `PushFlagsOp`.
-4. `new_uids` → one `FetchNewOp` each.
+4. `new_uids` → one `FetchNewOp` each, except after a UIDVALIDITY change,
+   where a UID whose `Message-ID` names exactly one row in the folder (and
+   which is itself the only UID carrying that `Message-ID`) becomes an
+   `AdoptUidOp` instead: the row is re-keyed, nothing is downloaded. The
+   adoptions are emitted before the fetches, because any other op flushes the
+   executor's fetch batch.
 5. `gone_uids`: `local_flags != base_flags` and folder writable → `ReUploadOp`;
    otherwise `ServerDeleteOp` (mark TRASHED).
 6. `remote ∩ local`: flag reconciliation → `PullFlagsOp`, `PushFlagsOp` or
@@ -502,7 +529,7 @@ sync adopts it via `FetchNewOp`.
 |---|---|---|
 | **C-1** | UID in `gone_uids` and `local_flags != base_flags` | `ReUploadOp` |
 | **C-2** | Locally trashed, server has it in a read-only folder | Restore `ACTIVE`, pull flags |
-| **C-4** | UIDVALIDITY reset | Reset op, drop stale UID-bearing rows, refetch in the new epoch |
+| **C-4** | UIDVALIDITY reset | Reset op clears the UID epoch; rows re-keyed from the headers where a `Message-ID` names one, the rest refetched |
 | **C-6** | More than 20% of UIDs gone | Confirmation required |
 | **C-7** | Uploads would rewrite over half the folder, or 50 messages | Confirmation required |
 

@@ -40,34 +40,33 @@ All v1 capabilities implemented and tested:
 
 ## Queue
 
+- **A UIDVALIDITY reset duplicates two messages that share a Message-ID.**
+  Not the reset's own doing: a UID whose Message-ID names several rows
+  falls through to the body fetch, where `_adopt_existing_row` compares
+  the projection — sender, subject and date — and two indistinguishable
+  copies match several rows there too, so it inserts rather than
+  guessing. The folder then holds both the old UID-less rows and the
+  new ones, and the *next* pass, no longer a reset, plans a
+  `PushAppendOp` for each orphan: a folder with two identical copies
+  comes back with four, on the server. Reproduced with
+  `tests/test_sync.py::UidValidityResetCostTestCase::test_a_shared_message_id_is_downloaded_rather_than_guessed`
+  (2 rows → 4 rows → 4 on the server). The fix is in the fetch path, not
+  the planner: where several UID-less rows are provably interchangeable,
+  claim one per fetched message within the pass instead of inserting a
+  copy. Pairing provably identical rows arbitrarily is not the same as
+  guessing which message a UID is.
 - **`body_preview` → `body_text` rename.** Column name is stale; defer to next schema bump — which is the one below.
-- **A UIDVALIDITY reset re-downloads the whole folder.** On a reset the
-  planner empties `local_uids` (`sync.py:1320`), so every remote UID is
-  new and `fetch_messages_batch` pulls every body; `_adopt_existing_row`
-  then matches each one to its UID-less row by Message-ID and keeps the
-  mirror file, the local flags and the local status. Nothing is
-  duplicated or lost — the download is what is wasted. The planner
-  already holds `uid → Message-ID` for the folder from a headers-only
-  fetch (`imap_client.py:398`) and `SlowPathRow` already carries
-  `message_id`, so the adoption can be planned and only genuinely new
-  UIDs fetched. A Message-ID is not a key: rows sharing one, and rows
-  with none, fall back to the body fetch rather than being paired by
-  guess.
 - **Drop `messages.uid_validity` (schema v4).** The v2→v3 migration
   backfilled it "so the planner can detect stale UIDs in one query
   without a join"; that query was never written, nothing reads the
-  column, and the reset fix above does not need it either. The epoch
-  keeps its two live carriers: `folder_sync_state.uid_validity`, which
-  is what a sync compares against the server, and the Maildir
-  filename's `,V=<epoch>,U=<uid>`, which `reindex` checks and which
-  survives losing the index. Rebuild the table as `_migrate_v2_to_v3`
-  does rather than `ALTER TABLE DROP COLUMN`, so the migration does not
-  depend on which SQLite a user's Python bundles. Takes the field off
-  `IndexedMessage`, `_FULL_COLS`, `adopt_uid`, `_ingest_one` and
-  `clear_uids_for_folder`, and the paragraph at `domain.py:410` with
-  it; `store_message_async(uid_validity=...)` stays, because that is
-  what writes the filename. Carry the `body_preview` rename in the same
-  bump.
+  column, and the reset fix does not need it either. The epoch keeps
+  its two live carriers: `folder_sync_state.uid_validity`, which is
+  what a sync compares against the server, and the Maildir filename's
+  `,V=<epoch>,U=<uid>`, which `reindex` checks and which survives
+  losing the index. Rebuild the table as `_migrate_v2_to_v3` does
+  rather than `ALTER TABLE DROP COLUMN`, so the migration does not
+  depend on which SQLite a user's Python bundles. Carry the
+  `body_preview` rename in the same bump.
 - **Gmail label multi-folder support** (aggregate folders currently warned + excluded).
 - **TUI coverage gaps:** snapshot tests deferred until UI stabilises; `ContactBrowserScreen` edit/merge and `SyncConfirmScreen` phase transitions not yet Pilot-tested (worker-thread interaction non-trivial).
 - **Code simplification backlog:** see `ai/SIMPLIFICATIONS.md`.

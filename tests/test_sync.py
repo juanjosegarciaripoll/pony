@@ -89,6 +89,10 @@ class FakeImapSession:
         self.scan_count: int = 0
         # Count of cheap CHANGEDSINCE fetches — medium-path indicator.
         self.changedsince_count: int = 0
+        # Every UID whose body was downloaded, in order.  A UIDVALIDITY
+        # change used to re-download a whole folder of mail that was
+        # already on disk, and nothing but this could show it.
+        self.body_fetches: list[int] = []
 
     def _bump_modseq(self, folder_name: str, uid: int) -> None:
         """Advance the folder's HIGHESTMODSEQ and stamp it on *uid*."""
@@ -155,12 +159,14 @@ class FakeImapSession:
         uids: Sequence[int],
     ) -> dict[int, bytes]:
         folder = self.folders.get(folder_name, {})
+        self.body_fetches.extend(uid for uid in uids if uid in folder)
         return {uid: folder[uid][2] for uid in uids if uid in folder}
 
     def fetch_message_bytes(self, folder_name: str, uid: int) -> bytes:
         folder = self.folders.get(folder_name, {})
         if uid not in folder:
             raise KeyError(f"UID {uid} not found in {folder_name!r}")
+        self.body_fetches.append(uid)
         return folder[uid][2]
 
     def store_flags(
@@ -3510,6 +3516,197 @@ class UidValidityResetPreservesMailTestCase(unittest.TestCase):
         service.sync()
         remaining = {v[0] for v in session.folders["INBOX"].values()}
         self.assertNotIn(row.message_id, remaining)
+
+
+class UidValidityResetCostTestCase(unittest.TestCase):
+    """A reset re-numbers the mail; it does not have to re-download it.
+
+    The planner emptied ``local_uids`` on a reset, so every UID the
+    server reported counted as new and every body came down the wire --
+    for a 15,000-message archive, the whole archive -- only for
+    ``_adopt_existing_row`` to recognise each message on arrival and
+    throw the bytes away.  The headers-only fetch the planner already
+    does says which row each UID belongs to, so the pairing happens
+    before anything is downloaded.
+    """
+
+    folder = FolderRef(account_name="personal", folder_name="INBOX")
+
+    def _ten(
+        self,
+        *,
+        first_uid: int = 1,
+    ) -> dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]]:
+        return {
+            "INBOX": {
+                first_uid + i: (
+                    f"<m{i}@example.com>",
+                    frozenset(),
+                    _make_raw_message(f"m{i}", f"<m{i}@example.com>"),
+                )
+                for i in range(10)
+            }
+        }
+
+    def test_a_reset_downloads_nothing_it_already_holds(self) -> None:
+        service, index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+        before = {
+            r.message_id: r.message_ref.id
+            for r in index.list_folder_messages(folder=self.folder)
+        }
+        self.assertEqual(len(session.body_fetches), 10, "first pass downloads")
+
+        # The server comes back as a restored backup does: same mail,
+        # new epoch, new numbers.
+        session.folders.update(self._ten(first_uid=500))
+        session.uid_validity = 2
+        session.body_fetches.clear()
+        service.sync()
+
+        self.assertEqual(session.body_fetches, [], "the folder was downloaded again")
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 10, "messages were duplicated")
+        self.assertEqual(
+            {r.message_id: r.message_ref.id for r in rows},
+            before,
+            "rows were replaced rather than re-keyed",
+        )
+        self.assertEqual(
+            sorted(r.uid for r in rows if r.uid is not None),
+            sorted(session.folders["INBOX"]),
+            "the rows do not carry the server's new UIDs",
+        )
+
+    def test_the_pass_says_how_many_it_re_keyed(self) -> None:
+        service, _index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+
+        session.folders.update(self._ten(first_uid=500))
+        session.uid_validity = 2
+        result = service.sync()
+
+        folders = [
+            f for a in result.accounts for f in a.folders if f.folder_name == "INBOX"
+        ]
+        self.assertEqual([f.rekeyed for f in folders], [10])
+        self.assertEqual([f.fetched for f in folders], [0])
+
+    def test_a_shared_message_id_is_downloaded_rather_than_guessed(self) -> None:
+        """Two copies of one Message-ID name no row in particular.
+
+        What the fetch path then makes of them is its own affair, and
+        is not what this asserts: a pair of otherwise identical twins
+        is duplicated there, which is a defect of its own standing.
+        """
+        raw = _make_raw_message("twice", "<twice@example.com>")
+        folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
+            "INBOX": {
+                1: ("<twice@example.com>", frozenset(), raw),
+                2: ("<twice@example.com>", frozenset(), raw),
+            }
+        }
+        service, index, _mirror, session = _setup(server_folders=folders)
+        service.sync()
+
+        session.uid_validity = 2
+        session.body_fetches.clear()
+        result = service.sync()
+
+        self.assertEqual(sorted(session.body_fetches), [1, 2], "paired by guess")
+        self.assertEqual(
+            [
+                f.rekeyed
+                for a in result.accounts
+                for f in a.folders
+                if f.folder_name == "INBOX"
+            ],
+            [0],
+            "nothing here is safe to re-key",
+        )
+
+    def test_a_message_with_no_message_id_is_downloaded(self) -> None:
+        folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]] = {
+            "INBOX": {
+                1: ("", frozenset(), _make_raw_message("anonymous", "")),
+                2: (
+                    "<named@example.com>",
+                    frozenset(),
+                    _make_raw_message("named", "<named@example.com>"),
+                ),
+            }
+        }
+        service, _index, _mirror, session = _setup(server_folders=folders)
+        service.sync()
+
+        session.uid_validity = 2
+        session.body_fetches.clear()
+        service.sync()
+
+        self.assertEqual(session.body_fetches, [1], "the nameless one was re-keyed")
+
+    def test_a_trashed_row_is_re_keyed_so_the_delete_can_be_pushed(self) -> None:
+        service, index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+        row = index.list_folder_messages(folder=self.folder)[0]
+        index.update_message(
+            message=dataclasses.replace(row, local_status=MessageStatus.TRASHED)
+        )
+
+        session.folders.update(self._ten(first_uid=500))
+        session.uid_validity = 2
+        session.body_fetches.clear()
+        service.sync()
+
+        self.assertEqual(session.body_fetches, [])
+        same = [
+            r
+            for r in index.list_folder_messages(folder=self.folder)
+            if r.message_id == row.message_id
+        ]
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0].local_status, MessageStatus.TRASHED)
+        self.assertIsNotNone(same[0].uid, "no handle, so the delete is stranded")
+
+    def test_the_plan_names_the_re_keying(self) -> None:
+        from pony.sync import AdoptUidOp, FetchNewOp
+
+        service, _index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+
+        session.folders.update(self._ten(first_uid=500))
+        session.uid_validity = 2
+        plan = service.plan()
+
+        ops = [op for a in plan.accounts for f in a.folders for op in f.ops]
+        self.assertEqual(len([op for op in ops if isinstance(op, AdoptUidOp)]), 10)
+        self.assertEqual([op for op in ops if isinstance(op, FetchNewOp)], [])
+
+    def test_a_row_that_moved_between_plan_and_execute_is_left_alone(self) -> None:
+        """Planning and execution are separate calls, and the index can move."""
+        service, index, _mirror, session = _setup(server_folders=self._ten())
+        service.sync()
+
+        session.folders.update(self._ten(first_uid=500))
+        session.uid_validity = 2
+        plan = service.plan()
+
+        # Somebody deletes the row the plan was going to re-key.
+        row = index.list_folder_messages(folder=self.folder)[0]
+        index.delete_message(message_ref=row.message_ref)
+
+        session.body_fetches.clear()
+        service.execute(plan)
+
+        rows = index.list_folder_messages(folder=self.folder)
+        self.assertEqual(len(rows), 9, "the pass invented a row for the dead one")
+        self.assertEqual(session.body_fetches, [], "nothing should be downloaded here")
+
+        # The UID that lost its row is simply new mail next time.
+        session.body_fetches.clear()
+        service.sync()
+        self.assertEqual(len(index.list_folder_messages(folder=self.folder)), 10)
+        self.assertEqual(len(session.body_fetches), 1)
 
 
 class StaleUidEpochTestCase(unittest.TestCase):
