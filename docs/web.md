@@ -264,7 +264,7 @@ knowing is where the browser differs:
 |---|---|
 | ++g++ / ++ctrl+g++ | Both fetch mail; a request is already out of the way of the page, so there is nothing for a second, quieter sync key to mean. On the Calendar tab, ++g++ syncs the calendar |
 | ++w++ / ++ctrl+p++ | Open the message's HTML in a new tab — the second one for printing |
-| ++s++ | Download the `.eml`; ++shift+o++ and ++shift+s++ download the first attachment |
+| ++s++ | Download the `.eml`; ++shift+o++ and ++shift+s++ ask which parts — `0`, `T`, `1,3`, `1-3` or `*`, as the terminal's prompt does — and download each one |
 | ++slash++ ++shift+g++ ++shift+m++ ++shift+y++ ++shift+f++ | Search, go to a folder, move, copy, new folder: a one-line prompt, completing against every folder, where the terminal opens a dialog |
 | ++ctrl+left++ ++ctrl+right++ ++ctrl+up++ ++ctrl+down++ | Resize the panes; the sizes are remembered per browser, because it is that window they describe |
 | ++enter++ | Open whatever the cursor is on |

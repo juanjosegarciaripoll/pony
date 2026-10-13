@@ -176,6 +176,15 @@ without that a kept mirror came back indexed by nothing.
 
 ### Fixed
 
+- **`S` in the browser takes the selection it offers**: the prompt invited
+  `0`, `T`, `1,3`, `1-3` or `*`, then sent whatever was typed to the part
+  route as a single part name — so anything but one bare number was
+  answered with a bare "Which part?" page that replaced the application.
+  The grammar now lives in `pony.message_export` where both front ends
+  reach it, the answer comes back as the parts it names, and each one
+  downloads with the page left where it was. A message with no part of
+  that name says so in a notice instead of a navigation.
+
 - **A pasted address list keeps every line**: Textual's input pastes only the
   first line of the clipboard, so a list copied one address per line out of
   another mail client silently lost every recipient after the first. Newlines

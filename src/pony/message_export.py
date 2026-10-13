@@ -45,6 +45,7 @@ __all__ = [
     "downloads_dir",
     "listed_parts",
     "message_parts",
+    "parse_part_selection",
     "part_key",
     "part_payload",
     "parts_to_open",
@@ -143,6 +144,61 @@ def listed_parts(rendered: RenderedMessage) -> tuple[MessagePart, ...]:
         for part in message_parts(rendered)
         if not part.is_whole_message and not part.is_text_body
     )
+
+
+def parse_part_selection(text: str, *, total: int) -> list[PartKey] | None:
+    """Read a part selection, or ``None`` when it names nothing.
+
+    Part ``0`` is the message itself, ``T`` is its body as text with no
+    HTML in it, and ``1..total`` are its attachments.
+
+    Accepted forms:
+        "*"         -> every part (``[0, "T", 1..total]``)
+        "0"         -> ``[0]``, the message as it arrived
+        "T"         -> ``["T"]``, the body as text (``t`` too)
+        "1,3, 5"    -> ``[1, 3, 5]`` (whitespace tolerated)
+        "1-3"       -> ``[1, 2, 3]`` (inclusive range)
+        "0,T,1-3"   -> the lot, named one way or another
+
+    Returns ``None`` on empty input, unknown tokens, malformed or
+    reversed ranges, out-of-range indices, or duplicates -- the caller
+    surfaces the error.
+
+    This lived in the terminal's picker screen, where the browser could
+    not reach it: ``S`` there took a single part and answered anything
+    else with a bare "Which part?" page, so the grammar the prompt
+    advertised worked in one front end only.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    if text == "*":
+        return [WHOLE_MESSAGE, TEXT_BODY, *range(1, total + 1)]
+    parts: list[PartKey] = []
+    for token in (t.strip() for t in text.split(",")):
+        if not token:
+            continue
+        if "-" in token:
+            lo_text, _, hi_text = token.partition("-")
+            try:
+                lo, hi = int(lo_text.strip()), int(hi_text.strip())
+            except ValueError:
+                return None
+            if lo > hi:
+                return None
+            parts.extend(range(lo, hi + 1))
+            continue
+        key = part_key(token)
+        if key is None:
+            return None
+        parts.append(key)
+    if not parts:
+        return None
+    if any(isinstance(key, int) and not 0 <= key <= total for key in parts):
+        return None
+    if len(set(parts)) != len(parts):
+        return None
+    return parts
 
 
 def _text_payload(rendered: RenderedMessage) -> AttachmentPayload:

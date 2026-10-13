@@ -1026,11 +1026,49 @@ async function choosePart(verb) {
     say("Open a message first.", "warning");
     return;
   }
-  const answer = await ask(`${verb} part (0 = message, T = text, 1… = attachments)`, {
-    placeholder: "0",
-  });
+  const answer = await ask(
+    `${verb} parts (0 = message, T = text, 1… = attachments, * = all)`,
+    { placeholder: "0" },
+  );
   if (!answer) return;
-  go(`/message/attachment?${params}&n=${encodeURIComponent(answer.trim())}`);
+  // The server parses the selection, because the grammar is the
+  // terminal's and lives in `pony.message_export`. Typing it here used
+  // to send the whole answer as one part name, so `0,T` -- which the
+  // prompt invites -- navigated the application away to a bare
+  // "Which part?" page.
+  let resolved;
+  try {
+    const response = await fetch(
+      `/message/parts?${params}&select=${encodeURIComponent(answer)}`,
+    );
+    resolved = await response.json();
+  } catch (error) {
+    say(`The server did not answer: ${error}`, "error");
+    return;
+  }
+  if (resolved.error) {
+    say(resolved.error, "warning");
+    return;
+  }
+  for (const part of resolved.parts) download(part.url, part.filename);
+  say(`Downloading ${resolved.parts.map((part) => part.filename).join(", ")}`);
+}
+
+// Save one part without leaving the page. Every part is served with
+// `Content-Disposition: attachment`, so a link click downloads it and
+// the application stays where it is; `location.assign` would have been
+// the same for a file and a navigation for anything else, which is how
+// an unparsable answer replaced the page. Several parts are several
+// clicks -- the browser may ask once whether to allow more than one
+// download, which is its question to ask.
+function download(url, filename) {
+  const link = document.createElement("a");
+  link.href = url;
+  if (filename) link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 // ── Quitting ───────────────────────────────────────────────────

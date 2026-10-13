@@ -501,6 +501,53 @@ async function run() {
   report.steps.push("compose");
   out();
 
+  // `S` asks which parts, and takes the grammar the terminal's prompt
+  // takes. Part 0 is the message itself and `T` is its body as text,
+  // so this answers on a message with no attachment at all -- and
+  // typing the pair used to send `0,T` to `/message/attachment?n=` as
+  // a single part name, whose 400 page replaced the application.
+  //
+  // The link click each part ends in is recorded rather than run: a
+  // real download never finishes under `--virtual-time-budget`, so
+  // letting it happen hangs the browser instead of failing. What the
+  // page asks for is the part worth seeing anyway.
+  const parts = document.getElementById("reader");
+  await ready(parts);
+  const partsWin = parts.contentWindow;
+  const partsDoc = parts.contentDocument;
+  const saved = [];
+  const realClick = partsWin.HTMLAnchorElement.prototype.click;
+  partsWin.HTMLAnchorElement.prototype.click = function () {
+    saved.push({ href: this.href, name: this.download });
+  };
+  const answerParts = async (typed) => {
+    press(partsDoc.body, "S", { shiftKey: true });
+    await sleep(200);
+    const asking = partsDoc.getElementById("prompt");
+    const text = asking ? asking.textContent : "";
+    asking.querySelector("input").value = typed;
+    asking.querySelector("button.primary").click();
+    await sleep(400);
+    return text;
+  };
+  const partsFrom = partsWin.location.href;
+  report.partsAsked = await answerParts("0,T");
+  report.partsSaved = saved.map((link) => ({
+    n: new partsWin.URL(link.href).searchParams.get("n"),
+    name: link.name,
+  }));
+  report.partsNotice = partsDoc.getElementById("notices").textContent;
+  // A selection that names nothing is answered on the page, not
+  // navigated to: the reader keeps the message they were reading.
+  saved.length = 0;
+  await answerParts("9");
+  report.partsRefused = partsDoc.getElementById("notices").textContent;
+  report.partsRefusedSaved = saved.length;
+  report.partsHere = partsWin.location.href === partsFrom;
+  partsWin.HTMLAnchorElement.prototype.click = realClick;
+  report.steps.push("parts");
+  out();
+
   // Quitting, in the other frame, because it stops that page for good.
   const reader = document.getElementById("reader");
   await ready(reader);
@@ -745,6 +792,7 @@ def test_the_harness_got_all_the_way_through() -> None:
         "close",
         "event-sync",
         "compose",
+        "parts",
         "quit",
     ]
 
@@ -796,6 +844,38 @@ def test_a_key_acts_on_the_marks_and_then_clears_them() -> None:
     # It used to drop to the first row, so the *next* press — Archive,
     # Trash or Move — ran over somebody else's mail.
     assert report["selectedAfter"] == report["cursor"][-1]
+
+
+def test_the_part_prompt_saves_what_it_names_without_leaving_the_page() -> None:
+    """``S`` then ``0,T``: two files, and the message still open.
+
+    The dispatcher sent the typed answer to
+    ``/message/attachment?n=`` as one part name, so every form of the
+    selection but a bare number -- ``0,T``, ``1-3``, ``*``, all of
+    which the prompt invites and the terminal takes -- was answered
+    with a 400 page that *replaced the application*.  Only a browser
+    shows that: reading the script finds a function that exists and a
+    URL that is a real route.
+    """
+    report = _report()
+
+    assert "parts" in report["steps"]
+    # The prompt says what can be asked for, including the whole set.
+    assert "0 = message" in report["partsAsked"]
+    assert "* = all" in report["partsAsked"]
+    # One download per part, each the part that was named.
+    assert [part["n"] for part in report["partsSaved"]] == ["0", "T"]
+    assert report["partsSaved"][0]["name"].endswith(".eml")
+    assert report["partsSaved"][1]["name"].endswith(".txt")
+    # And it says which ones, by name, as the terminal's notices do.
+    assert ".eml" in report["partsNotice"]
+    assert ".txt" in report["partsNotice"]
+    # A part this message does not have is a notice, not a navigation:
+    # nothing was fetched and the reader is still on the message.
+    assert "Which parts?" in report["partsRefused"]
+    assert "it has no attachments" in report["partsRefused"]
+    assert report["partsRefusedSaved"] == 0
+    assert report["partsHere"] is True
 
 
 def test_a_held_action_is_confirmed_in_ponys_own_dialog() -> None:

@@ -53,7 +53,12 @@ from chronos.outcome import Notice, Outcome, Severity, warn
 from .. import contact_actions, mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef
 from ..html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
-from ..message_export import part_key, part_payload
+from ..message_export import (
+    message_parts,
+    parse_part_selection,
+    part_key,
+    part_payload,
+)
 from ..message_renderer import build_browser_html, render_message
 from . import calendar as calendar_view
 from . import compose as compose_view
@@ -167,6 +172,7 @@ def build_web_app(services: WebServices) -> Starlette:
         Route(urls.BODY, _handler(services, _message_body)),
         Route(urls.RAW, _handler(services, _message_raw)),
         Route(urls.ATTACHMENT, _handler(services, _attachment)),
+        Route(urls.PARTS, _handler(services, _parts)),
         Route(urls.COMPOSE, _handler(services, _compose_page)),
         Route(urls.COMPOSE, _handler(services, _compose_post), methods=["POST"]),
         Route(
@@ -531,6 +537,63 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
         media_type="message/rfc822",
         headers={"Content-Disposition": _content_disposition(name)},
     )
+
+
+async def _parts(services: WebServices, request: Request) -> Response:
+    """What a typed part selection names, as JSON the dispatcher can use.
+
+    ``select`` is the grammar the terminal's ``S`` prompt takes --
+    ``0``, ``T``, ``1,3``, ``1-3``, ``*`` -- parsed by the one function
+    that defines it (:func:`pony.message_export.parse_part_selection`).
+    The browser had no way to reach that grammar, so ``S`` there sent
+    whatever was typed to ``/message/attachment?n=`` as a single part
+    name and anything else landed on a bare "Which part?" page, with
+    the application navigated away from.  Now the answer comes back
+    here and the page stays where it is.
+    """
+    raw = await run_in_threadpool(_raw_from, services, request)
+    if isinstance(raw, Response):
+        return raw
+    ref = _optional_ref(request)
+    if ref is None:  # pragma: no cover - _raw_from answered 404 already
+        return JSONResponse({"error": "No such message."}, status_code=404)
+    rendered = await run_in_threadpool(render_message, raw)
+    total = len(rendered.attachments)
+    keys = parse_part_selection(request.query_params.get("select", ""), total=total)
+    if keys is None:
+        return JSONResponse({"error": _part_help(total)}, status_code=400)
+    # Every part can be named, listed or not: `0` and `T` are what the
+    # page stopped showing, not what it stopped serving.
+    names = {part.key: part.filename for part in message_parts(rendered)}
+    return JSONResponse(
+        {
+            "parts": [
+                {
+                    "key": str(key),
+                    "filename": names.get(key, ""),
+                    "url": urls.part_url(ref, key),
+                }
+                for key in keys
+            ]
+        }
+    )
+
+
+def _part_help(total: int) -> str:
+    """What to type, for a selection that named nothing.
+
+    Says what this message has rather than only what the grammar is: a
+    reader who typed ``3`` at a message with one attachment wants to
+    know that, not to read the syntax again.
+    """
+    has = (
+        f"1-{total} are its attachments"
+        if total > 1
+        else "1 is its attachment"
+        if total == 1
+        else "it has no attachments"
+    )
+    return f"Which parts? 0 is the message, T its text as a file, {has}."
 
 
 async def _attachment(services: WebServices, request: Request) -> Response:

@@ -559,6 +559,7 @@ BROWSER_METHODS = frozenset(
         "Number.toFixed",
         "Object.entries",
         "document.addEventListener",
+        "document.body.append",
         "document.body.classList.toggle",
         "document.body.replaceChildren",
         "document.createElement",

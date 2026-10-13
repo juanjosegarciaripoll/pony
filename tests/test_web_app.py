@@ -508,6 +508,86 @@ def test_the_browser_serves_every_part_and_lists_the_attachments() -> None:
     assert nonsense.status_code == 400
 
 
+def test_a_typed_selection_names_several_parts_to_download() -> None:
+    """``S`` then ``0,T`` in the browser, as in the terminal.
+
+    The dispatcher sent what was typed to ``/message/attachment?n=``
+    as one part name, so every form the prompt advertises but a bare
+    ``0`` navigated the application away to a 400 page.  The grammar
+    is parsed here instead, and the answer says what to fetch.
+    """
+    services, index = _services(
+        "web-select",
+        seed=(multipart_mixed_attachment(),),
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        chosen = client.get(_message(message_id, path="/message/parts", select="0,T"))
+        everything = client.get(_message(message_id, path="/message/parts", select="*"))
+
+    assert chosen.status_code == 200
+    parts = chosen.json()["parts"]
+    assert [part["key"] for part in parts] == ["0", "T"]
+    assert parts[0]["filename"].endswith(".eml")
+    assert parts[1]["filename"].endswith(".txt")
+    assert parts[0]["url"].endswith("&n=0")
+    # Every part is named, listed or not: the page stopped showing 0
+    # and T, not serving them.
+    assert all(part["filename"] for part in parts)
+
+    assert [part["key"] for part in everything.json()["parts"]] == ["0", "T", "1"]
+
+
+def test_a_selection_that_names_nothing_is_answered_not_navigated_to() -> None:
+    """The reader keeps their page, and is told what this message has.
+
+    A 400 with the help in it, because the dispatcher shows it as a
+    notice -- the bare "Which part?" page the old path reached had
+    replaced the application by the time it was read.
+    """
+    services, index = _services(
+        "web-select-bad",
+        seed=(multipart_mixed_attachment(),),
+    )
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        nonsense = client.get(_message(message_id, path="/message/parts", select="x"))
+        high = client.get(_message(message_id, path="/message/parts", select="3"))
+        empty = client.get(_message(message_id, path="/message/parts", select=""))
+
+    for response in (nonsense, high, empty):
+        assert response.status_code == 400
+        assert "parts" not in response.json()
+    # One attachment on this message, and the message says so rather
+    # than repeating the syntax at someone who mistyped a number.
+    assert high.json()["error"] == (
+        "Which parts? 0 is the message, T its text as a file, 1 is its attachment."
+    )
+
+
+def test_the_help_counts_the_attachments_it_has() -> None:
+    """Three readings: several files, one, none."""
+    services, index = _services("web-select-help", seed=(plain_text(),))
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        none = client.get(_message(message_id, path="/message/parts", select="1"))
+
+    assert none.status_code == 400
+    assert "it has no attachments" in none.json()["error"]
+
+
+def test_a_selection_for_a_message_that_is_not_there() -> None:
+    services, _index = _services("web-select-missing")
+
+    with _client(services) as client:
+        response = client.get(_message(9999, path="/message/parts", select="0"))
+
+    assert response.status_code == 404
+
+
 def test_the_text_part_of_an_html_message_has_no_html_in_it() -> None:
     """What `T` means: the reading, not the markup."""
     services, index = _services("web-part-text-html", seed=(html_only(),))

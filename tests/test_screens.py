@@ -1123,53 +1123,12 @@ async def test_contacts_app_search_bar() -> None:
 
 
 # ===========================================================================
-# AttachmentPickerScreen + parse_attachment_selection
+# AttachmentPickerScreen
 # ===========================================================================
-
-
-def test_parse_attachment_selection_star_returns_every_part() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    result = parse_attachment_selection("*", total=3)
-    assert result == [0, "T", 1, 2, 3]
-
-
-def test_parse_attachment_selection_single() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    result = parse_attachment_selection("1", total=3)
-    assert result == [1]
-
-
-def test_parse_attachment_selection_comma_separated() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    result = parse_attachment_selection("1, 3", total=3)
-    assert result == [1, 3]
-
-
-def test_parse_attachment_selection_empty_returns_none() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    assert parse_attachment_selection("", total=3) is None
-
-
-def test_parse_attachment_selection_non_numeric_returns_none() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    assert parse_attachment_selection("abc", total=3) is None
-
-
-def test_parse_attachment_selection_out_of_range_returns_none() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    assert parse_attachment_selection("5", total=3) is None
-
-
-def test_parse_attachment_selection_duplicates_returns_none() -> None:
-    from pony.tui.screens.attachment_picker_screen import parse_attachment_selection
-
-    assert parse_attachment_selection("1,1", total=3) is None
+#
+# The grammar it parses is `pony.message_export.parse_part_selection`,
+# which both front ends read; `tests/test_part_selection.py` is where
+# it is pinned.  Seven copies of those cases used to sit here as well.
 
 
 async def test_attachment_picker_screen_submit_returns_indices() -> None:

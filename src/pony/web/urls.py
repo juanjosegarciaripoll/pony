@@ -31,6 +31,7 @@ MESSAGE = "/message"
 BODY = "/message/body"
 RAW = "/message/raw"
 ATTACHMENT = "/message/attachment"
+PARTS = "/message/parts"
 COMPOSE = "/compose"
 CONTACTS = "/contacts"
 CONTACT_FORM = "/contacts/edit"
@@ -160,6 +161,7 @@ __all__ = [
     "EVENT_FORM",
     "MAIL",
     "MESSAGE",
+    "PARTS",
     "RAW",
     "ROWS",
     "part_url",
