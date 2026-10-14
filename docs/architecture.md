@@ -58,7 +58,6 @@ src/pony/
     program.py         # the one parser, the dispatch, the launchers
     mail.py            # the mail commands
     calendar.py        # the calendar's commands (`pony calendar ...`)
-  mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
 
 src/pony/mail/         # the mail model
   domain.py            # typed core data models
@@ -137,6 +136,11 @@ src/pony/tui/          # the terminal front end
       contact_suggester.py   # autocomplete dropdown
       address_input.py       # address field that keeps pasted lists whole
       edge_drag.py           # mouse-draggable pane borders
+
+src/pony/mcp/          # the MCP front end
+  state.py             # the endpoint a running application publishes
+  mail.py              # the mail tools
+  calendar.py          # the calendar's tools
 
 src/pony/web/          # the browser front end (extra: pony[web])
   app.py               # Starlette routes over the same actions
@@ -557,13 +561,24 @@ it is not a browser being aimed at the mailbox by a page the user
 happened to open. The token cookie is `SameSite=strict` for the same
 reason, not for the phone's convenience.
 
-### MCP (`pony.mcp_server`)
+### MCP (`pony.mcp`)
 
-Read-only server built on `tinymcp` rather than the MCP SDK's HTTP stack. When
-the TUI is running it serves on `127.0.0.1` over TCP behind a per-session token
-held in a state file; `pony mcp` finds that file and proxies stdio↔TCP, so the
-consumer never opens a competing SQLite handle. With no TUI running, `pony mcp`
-opens its own connections and serves stdio directly.
+A front end like the terminal and the browser: tools over the same
+models, built on `tinymcp` rather than the MCP SDK's HTTP stack.
+`pony.mcp.mail` registers the mail tools and `pony.mcp.calendar` the
+calendar's; neither lives in the model it reads, which is where the
+calendar's used to be.
+
+When the terminal application is running it serves on `127.0.0.1` over
+TCP behind a per-session token, and publishes the port and token through
+`pony.mcp.state`; `pony mcp` finds that endpoint and proxies stdio↔TCP,
+so the consumer never opens a competing SQLite handle. With nothing
+running, `pony mcp` opens its own connections and serves stdio directly.
+
+`pony.mcp.state` is one record for both halves. It probes the published
+port before handing it to a bridge, because an application that was
+killed rather than closed leaves its file behind, and a bridge that
+trusts the file connects to a port nobody is listening on.
 
 ### Message rendering (`pony.mail.message_renderer`, `pony.tui.mail.pdf_export`)
 
@@ -636,7 +651,6 @@ src/pony/calendar/
   views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   bootstrap.py         # the [calendar] template a first run writes
-  mcp_server.py
 
 src/pony/tui/calendar/
   app.py               # TuiServices, CalendarHost, CALENDAR_CSS
@@ -801,9 +815,14 @@ one `--config`, Pony's, in front of the subcommand.
 
 ### Known limitation
 
-The MCP server a running TUI exposes is still the mail one. The calendar's
-MCP tools are reachable through `pony calendar mcp`, not through the single
-session endpoint.
+The MCP server a running application exposes is still the mail one, and
+it publishes to the program's endpoint file; the calendar's tools are
+reachable through `pony calendar mcp`, which reads the calendar's own.
+Two endpoint files, two tool sets, one program: what this wants is one
+server registering both halves' tools, and one published endpoint. Until
+then `pony calendar reset` cannot tell that a running application is
+holding the calendar's index, because that application publishes the
+other file.
 
 ## Data flow
 

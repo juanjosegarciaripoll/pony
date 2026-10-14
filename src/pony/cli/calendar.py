@@ -1035,9 +1035,9 @@ def cmd_reset(
         return 0
 
     if not force:
-        from pony.calendar.mcp_server import is_server_reachable
+        from pony.mcp import state as mcp_state
 
-        live = is_server_reachable(mcp_state_file or ctx.paths.mcp_state_file)
+        live = mcp_state.live(mcp_state_file or ctx.paths.mcp_state_file)
         if live is not None:
             ctx.stderr.write(
                 f"refusing to reset: the calendar TUI / MCP server is running "
@@ -1293,7 +1293,7 @@ def cmd_mcp(ctx: CliContext) -> int:
     """
     import asyncio
 
-    from pony.calendar.mcp_server import run_mcp_stdio
+    from pony.mcp.calendar import run_mcp_stdio
 
     asyncio.run(
         run_mcp_stdio(

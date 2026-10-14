@@ -783,7 +783,7 @@ async def test_mcp_server_error_no_config_path(monkeypatch: pytest.MonkeyPatch) 
     silently swallowed so the app continues to run normally.
     """
     start_server = AsyncMock(side_effect=OSError("no test config"))
-    monkeypatch.setattr("pony.mcp_server.start_tcp_mcp_server", start_server)
+    monkeypatch.setattr("pony.mcp.mail.start_tcp_mcp_server", start_server)
     app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mcp-no-config")
     # Exercise the no-path branch only after MCP startup has been isolated.
     app._config_path = None  # noqa: SLF001

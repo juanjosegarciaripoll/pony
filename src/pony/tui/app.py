@@ -548,7 +548,7 @@ class PonyApp(QuitAsksTheScreen):
 
     async def _start_mcp_tcp_server(self) -> None:
         from ..config import ConfigError
-        from ..mcp_server import start_tcp_mcp_server
+        from ..mcp.mail import start_tcp_mcp_server
 
         paths = resolve(self._config_path, data_dir=self._config.data_dir)
         state_file = paths.mcp_state_file
@@ -560,7 +560,7 @@ class PonyApp(QuitAsksTheScreen):
         self._mcp_state_file = state_file
 
     async def on_unmount(self) -> None:
-        from ..mcp_server import clear_mcp_state
+        from ..mcp import state as mcp_state
 
         self._stop_schedulers()
 
@@ -568,7 +568,7 @@ class PonyApp(QuitAsksTheScreen):
             self._mcp_tcp_task.cancel()
             await asyncio.gather(self._mcp_tcp_task, return_exceptions=True)
         if self._mcp_state_file is not None:
-            clear_mcp_state(self._mcp_state_file)
+            mcp_state.clear(self._mcp_state_file)
         pop_terminal_title()
 
 

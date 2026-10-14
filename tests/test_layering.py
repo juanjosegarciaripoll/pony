@@ -66,7 +66,9 @@ _BACKEND_MODULES = (
     "pony.mail.credentials",
     "pony.services",
     "pony.mail.bbdb",
-    "pony.mcp_server",
+    "pony.mcp.mail",
+    "pony.mcp.calendar",
+    "pony.mcp.state",
     "pony.cli",
     # Added after an audit found the list hand-kept and these missing:
     # the browser reaches every one of them, directly or through
@@ -196,19 +198,22 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
                 self.assertFalse(_imports_textual(module))
 
 
-#: The program is five components, and only the direction of the
-#: imports between them keeps them apart: the two models (the mail
-#: stores plus IMAP, the calendar stores plus CalDAV), and the three
-#: front ends over them (terminal, browser, command line).  A front end
-#: may use either model; a model may use neither front end; and the
-#: command line is a front end like the other two, not a library for
-#: them to call into.
+#: The program is two models and the front ends over them, and only the
+#: direction of the imports between them keeps them apart: the mail
+#: stores plus IMAP, the calendar stores plus CalDAV, and the terminal,
+#: the browser, the command line and MCP above.  A front end may use
+#: either model; a model may use no front end; and the command line is a
+#: front end like the others, not a library for them to call into.
 #:
 #: That last one is what this grew out of: the calendar's sync runner
 #: sat in a command-line module, so the terminal UI and the browser both
 #: imported one to run a sync, and the host's own calendar glue imported
 #: one to find out where a configuration lives.
-_FRONT_END_PREFIXES = ("pony.tui", "pony.web")
+#:
+#: MCP is here for the same reason: its tools are a front end over the
+#: models, and they sat inside them -- the calendar's server was a
+#: module of the calendar model.
+_FRONT_END_PREFIXES = ("pony.tui", "pony.web", "pony.mcp")
 #: The two models.  Each owns a store, a sync and the operations over
 #: them, and neither may reach into the other: mail does not open the
 #: calendar's index and the calendar does not open a mailbox.  What the

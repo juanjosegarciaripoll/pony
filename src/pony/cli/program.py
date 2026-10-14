@@ -927,7 +927,7 @@ def run_mcp_server_command(*, config_path: Path | None, paths: AppPaths) -> int:
     Bridges to the TUI's TCP server when one is running; otherwise opens
     local connections and serves via stdio.
     """
-    from ..mcp_server import run_mcp_server
+    from ..mcp.mail import run_mcp_server
 
     run_mcp_server(config_path=config_path, state_file=paths.mcp_state_file)
     return 0

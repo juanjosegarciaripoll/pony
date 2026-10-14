@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from tinymcp import McpServer  # noqa: I001
+from tinymcp import McpServer
 
 from pony.calendar.domain import (
     CalendarRef,
@@ -30,8 +30,8 @@ from pony.calendar.domain import (
     VTodo,
 )
 from pony.calendar.index_store import SqliteIndexRepository
-from pony.calendar.mcp_server import SERVER_NAME, build_mcp_server
 from pony.calendar.storage import VdirMirrorRepository
+from pony.mcp.calendar import SERVER_NAME, build_mcp_server
 
 # ---------------------------------------------------------------------------
 # Lightweight in-process MCP client (no external SDK)
@@ -654,7 +654,7 @@ class ServerMetadataTest(McpServerTestCase):
             # a list_tools to confirm the server is responsive.
             tools = await session.list_tools()
         self.assertTrue(tools.tools)
-        self.assertEqual(SERVER_NAME, "chronos")
+        self.assertEqual(SERVER_NAME, "Pony Express Calendar")
 
 
 # Reference type alias to satisfy basedpyright unused-import rule

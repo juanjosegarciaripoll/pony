@@ -15,65 +15,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import json
 import secrets
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
+from tinymcp import McpServer, run_mcp, serve_tcp
 
-from pony.atomic import write_atomically
-
-from .config import load_config
-from .mail.accounts import build_mirrors
-from .mail.domain import AccountConfig, SearchQuery
-from .mail.index_store import SqliteIndexRepository
-from .mail.message_renderer import AttachmentPayload, extract_attachment, render_message
-from .mail.protocols import MirrorRepository
-from .paths import resolve
-
-# ---------------------------------------------------------------------------
-# MCP state (TUI ↔ bridge IPC)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class McpState:
-    """Port and auth token published by the TUI's embedded TCP MCP server."""
-
-    port: int
-    token: str
-
-
-def write_mcp_state(state_file: Path, state: McpState) -> None:
-    """Publish the port and token, the way the calendar publishes its own.
-
-    This token authorises a loopback server with read access to the
-    whole mail index, and it was written with `write_text`: created at
-    the ambient umask, so world-readable on most systems, and visible
-    half-written to a reader that got there between the open and the
-    flush.  `pony.atomic.write_atomically` is the dance both halves
-    use for a file that must not be found half written, and
-    ``owner_only`` means the content is never readable by anyone else,
-    not even for the instant before a `chmod`.
-    """
-    payload = json.dumps({"port": state.port, "token": state.token}).encode()
-    write_atomically(state_file, payload, suffix=".json", owner_only=True)
-
-
-def read_mcp_state(state_file: Path) -> McpState | None:
-    try:
-        data = json.loads(state_file.read_bytes())
-        return McpState(port=int(data["port"]), token=str(data["token"]))
-    except (FileNotFoundError, KeyError, ValueError, TypeError, OSError):
-        return None
-
-
-def clear_mcp_state(state_file: Path) -> None:
-    with contextlib.suppress(Exception):
-        state_file.unlink()
-
+from ..config import load_config
+from ..mail.accounts import build_mirrors
+from ..mail.domain import AccountConfig, SearchQuery
+from ..mail.index_store import SqliteIndexRepository
+from ..mail.message_renderer import (
+    AttachmentPayload,
+    extract_attachment,
+    render_message,
+)
+from ..mail.protocols import MirrorRepository
+from ..paths import resolve
+from . import state as endpoint_state
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -282,7 +241,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
 
         Use *search_messages* for full-text search across folders.
         """
-        from .mail.domain import FolderRef
+        from ..mail.domain import FolderRef
 
         folder_ref = FolderRef(account_name=account, folder_name=folder)
         # The cap belongs in the query: slicing afterwards built an
@@ -319,7 +278,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
         message_id: str,
     ) -> bytes | None:
         """Resolve Message-ID → mirror bytes (or ``None`` on miss)."""
-        from .mail.domain import FolderRef
+        from ..mail.domain import FolderRef
 
         mirror = mirrors.get(account)
         if mirror is None:
@@ -486,7 +445,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
 async def start_tcp_mcp_server(
     config_path: Path | None,
     state_file: Path,
-) -> tuple[asyncio.Task[None], McpState]:
+) -> tuple[asyncio.Task[None], endpoint_state.Endpoint]:
     """Start the embedded TCP MCP server for the TUI.
 
     Binds to a random loopback port, writes the port and a fresh auth token
@@ -496,9 +455,9 @@ async def start_tcp_mcp_server(
     token = secrets.token_hex(32)
     mcp = build_mcp_server(config_path)
     port, task = await serve_tcp(mcp, port=0, token=token)
-    state = McpState(port=port, token=token)
-    write_mcp_state(state_file, state)
-    return task, state
+    endpoint = endpoint_state.Endpoint(port=port, token=token)
+    endpoint_state.publish(state_file, endpoint)
+    return task, endpoint
 
 
 def run_mcp_server(
@@ -517,6 +476,10 @@ async def _run_mcp_server_async(
     config_path: Path | None,
     state_file: Path | None,
 ) -> None:
-    state = read_mcp_state(state_file) if state_file is not None else None
-    remote = (LOOPBACK_HOST, state.port, state.token) if state is not None else None
+    endpoint = endpoint_state.live(state_file) if state_file is not None else None
+    remote = (
+        (endpoint_state.LOOPBACK_HOST, endpoint.port, endpoint.token)
+        if endpoint is not None
+        else None
+    )
     await run_mcp(build_mcp_server(config_path), remote=remote)

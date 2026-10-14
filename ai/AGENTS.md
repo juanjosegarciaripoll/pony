@@ -176,6 +176,8 @@ Key test infrastructure:
 | Invitations in the reader | `tests/test_invitation_flows.py` |
 | Invitations out of the calendar | `tests/test_invitation_sending.py` |
 | `pony calendar ...` | `tests/test_cli_calendar.py` |
+| The MCP tools | `tests/test_mcp_mail.py`, `tests/test_mcp_calendar.py` |
+| The MCP endpoint and bridge | `tests/test_mcp_state.py`, `tests/test_mcp_transport.py` |
 | Everything calendar-internal | `tests_calendar/` — the calendar model's own suite |
 | Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
 | Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
@@ -201,13 +203,14 @@ depending on file order. The contact-suggester tests in
 directly instead of driving `asyncio.get_event_loop()`, so the trap is one
 step less sharp, but the rule stands.
 
-`tests_calendar/` still has three `IsolatedAsyncioTestCase` classes
-(`test_tui_flows.py`, `test_mcp_server.py`, `test_mcp_transport.py`), carried
-over with the calendar. They used to be harmless because `testpaths` ran
-`tests/` first; under `-n auto` there is no such order at all — each worker
-takes whole files as they come free, so what runs after a closed event loop
-is now down to the scheduler. Do not add a fourth, and do not write a test
-that depends on anything another file did.
+There are still three `IsolatedAsyncioTestCase` classes
+(`tests_calendar/test_tui_flows.py`, `tests/test_mcp_calendar.py`,
+`tests/test_mcp_transport.py`), carried over with the calendar. They used
+to be harmless because `testpaths` ran `tests/` first; under `-n auto`
+there is no such order at all — each worker takes whole files as they
+come free, so what runs after a closed event loop is now down to the
+scheduler. Do not add a fourth, and do not write a test that depends on
+anything another file did.
 
 Rank by **absolute uncovered statements+branches**, not percentage. Regenerate
 the ranking rather than trusting this list — it is a snapshot:

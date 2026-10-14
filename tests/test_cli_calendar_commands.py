@@ -277,7 +277,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_refuses_when_mcp_server_reachable(self) -> None:
         import socket
 
-        from pony.calendar.mcp_server import McpServerState, write_state
+        from pony.mcp.state import Endpoint, publish
 
         self._seed_server()
 
@@ -296,7 +296,7 @@ class SyncCommandTest(CliTestCase):
                 Path(self.enterContext(tempfile.TemporaryDirectory()))
                 / "mcp_server.json"
             )
-            write_state(state_file, McpServerState(port=port, token="tok"))
+            publish(state_file, Endpoint(port=port, token="tok"))
             index_path = self.index._path  # type: ignore[attr-defined]
             mirror_dir = self.mirror._root  # type: ignore[attr-defined]
             code = cli.cmd_reset(
@@ -351,7 +351,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_force_bypasses_presence_checks(self) -> None:
         import socket
 
-        from pony.calendar.mcp_server import McpServerState, write_state
+        from pony.mcp.state import Endpoint, publish
 
         self._seed_server()
 
@@ -370,7 +370,7 @@ class SyncCommandTest(CliTestCase):
                 Path(self.enterContext(tempfile.TemporaryDirectory()))
                 / "mcp_server.json"
             )
-            write_state(state_file, McpServerState(port=port, token="tok"))
+            publish(state_file, Endpoint(port=port, token="tok"))
             index_path = self.index._path  # type: ignore[attr-defined]
             mirror_dir = self.mirror._root  # type: ignore[attr-defined]
             code = cli.cmd_reset(
@@ -391,7 +391,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_proceeds_when_state_file_stale(self) -> None:
         import socket
 
-        from pony.calendar.mcp_server import McpServerState, write_state
+        from pony.mcp.state import Endpoint, publish
 
         self._seed_server()
 
@@ -409,7 +409,7 @@ class SyncCommandTest(CliTestCase):
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         state_file = tmp / "mcp_server.json"
-        write_state(state_file, McpServerState(port=port, token="tok"))
+        publish(state_file, Endpoint(port=port, token="tok"))
 
         index_path = self.index._path  # type: ignore[attr-defined]
         mirror_dir = self.mirror._root  # type: ignore[attr-defined]

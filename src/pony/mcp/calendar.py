@@ -28,16 +28,13 @@ stdio (default)
 
 from __future__ import annotations
 
-import contextlib
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
 from tinymcp import McpServer
 
-from pony.atomic import write_atomically
 from pony.calendar.domain import (
     CalendarRef,
     ComponentKind,
@@ -49,54 +46,9 @@ from pony.calendar.domain import (
 )
 from pony.calendar.protocols import IndexRepository, MirrorRepository
 
-SERVER_NAME = "chronos"
+from . import state as endpoint_state
 
-
-# ---------------------------------------------------------------------------
-# State file (port + auth token for the running TCP server)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class McpServerState:
-    port: int
-    token: str
-
-
-def write_state(state_file: Path, state: McpServerState) -> None:
-    payload = json.dumps({"port": state.port, "token": state.token}).encode()
-    write_atomically(state_file, payload, suffix=".json", owner_only=True)
-
-
-def read_state(state_file: Path) -> McpServerState | None:
-    try:
-        data = json.loads(state_file.read_bytes())
-        return McpServerState(port=int(data["port"]), token=str(data["token"]))
-    except (FileNotFoundError, KeyError, ValueError, TypeError):
-        return None
-
-
-def remove_state(state_file: Path) -> None:
-    with contextlib.suppress(FileNotFoundError):
-        state_file.unlink()
-
-
-def is_server_reachable(
-    state_file: Path, *, timeout: float = 0.1
-) -> McpServerState | None:
-    """Return live state if its TCP port answers, else clear stale file."""
-    import socket
-
-    state = read_state(state_file)
-    if state is None:
-        return None
-    try:
-        conn = socket.create_connection(("127.0.0.1", state.port), timeout=timeout)
-        conn.close()
-        return state
-    except OSError:
-        remove_state(state_file)
-        return None
+SERVER_NAME = "Pony Express Calendar"
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +162,18 @@ async def run_mcp_stdio(
     process-wide global, so which server this bridged to depended on
     which calendar root had been activated last.
     """
-    from tinymcp import LOOPBACK_HOST, run_mcp
+    from tinymcp import run_mcp
 
-    state = read_state(state_file)
-    remote = (LOOPBACK_HOST, state.port, state.token) if state is not None else None
+    endpoint = endpoint_state.live(state_file)
+    remote = (
+        (endpoint_state.LOOPBACK_HOST, endpoint.port, endpoint.token)
+        if endpoint is not None
+        else None
+    )
     await run_mcp(
         build_mcp_server(index=index, mirror=mirror),
         remote=remote,
-        on_unreachable=lambda: remove_state(state_file),
+        on_unreachable=lambda: endpoint_state.clear(state_file),
     )
 
 
@@ -244,10 +200,12 @@ async def start_tcp_server(
 
     try:
         actual_port, serve_task = await serve_tcp(server, port=port, token=token)
-        write_state(state_file, McpServerState(port=actual_port, token=token))
+        endpoint_state.publish(
+            state_file, endpoint_state.Endpoint(port=actual_port, token=token)
+        )
         await serve_task
     finally:
-        remove_state(state_file)
+        endpoint_state.clear(state_file)
 
 
 # ---------------------------------------------------------------------------
@@ -425,12 +383,8 @@ def _parse_datetime(value: str, *, label: str) -> datetime:
 
 
 __all__ = [
-    "McpServerState",
     "SERVER_NAME",
     "build_mcp_server",
-    "read_state",
-    "remove_state",
     "run_mcp_stdio",
     "start_tcp_server",
-    "write_state",
 ]

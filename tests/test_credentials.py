@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -32,7 +31,6 @@ from pony.mail.domain import (
     SmtpConfig,
 )
 from pony.mail.index_store import SqliteIndexRepository
-from pony.mcp_server import McpState, clear_mcp_state, read_mcp_state, write_mcp_state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -235,77 +233,6 @@ class TestBuildCredentialsProvider(unittest.TestCase):
         provider = build_credentials_provider(config, idx)
         result = provider.get_password(account_name="cmddisp")
         self.assertEqual(result, "cmd-dispatched")
-
-
-# ---------------------------------------------------------------------------
-# MCP state write/read round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestMcpStateRoundTrip(unittest.TestCase):
-    def _state_file(self) -> Path:
-        return TMP_ROOT / "mcp-state" / f"{uuid4().hex}.json"
-
-    def test_write_then_read_returns_same_state(self) -> None:
-        state_file = self._state_file()
-        original = McpState(port=54321, token="tok-abc-123")
-        write_mcp_state(state_file, original)
-        recovered = read_mcp_state(state_file)
-        self.assertIsNotNone(recovered)
-        assert recovered is not None
-        self.assertEqual(recovered.port, original.port)
-        self.assertEqual(recovered.token, original.token)
-
-    def test_the_token_file_is_owner_only_and_never_half_written(self) -> None:
-        """It authorises read access to the whole mail index.
-
-        `write_text` created it at the ambient umask -- world-readable
-        on most systems -- and a reader that arrived between the open
-        and the flush saw a truncated file. The calendar's half has
-        done mkstemp → fsync → chmod 0600 → replace for the same file
-        shape since it was written.
-        """
-        import os
-        import stat
-
-        state_file = self._state_file()
-
-        write_mcp_state(state_file, McpState(port=4242, token="s3cret"))
-
-        if os.name != "nt":
-            mode = stat.S_IMODE(state_file.stat().st_mode)
-            self.assertEqual(mode, 0o600, oct(mode))
-        # Nothing left behind by the rename, either.
-        leftovers = [
-            path.name
-            for path in state_file.parent.iterdir()
-            if path.name.startswith(".tmp-mcp-")
-        ]
-        self.assertEqual(leftovers, [])
-
-    def test_clear_mcp_state_removes_file(self) -> None:
-        state_file = self._state_file()
-        write_mcp_state(state_file, McpState(port=1234, token="tok"))
-        self.assertTrue(state_file.exists())
-        clear_mcp_state(state_file)
-        self.assertFalse(state_file.exists())
-
-    def test_clear_mcp_state_noop_when_file_absent(self) -> None:
-        state_file = self._state_file()
-        # Must not raise
-        clear_mcp_state(state_file)
-
-    def test_read_mcp_state_missing_file_returns_none(self) -> None:
-        missing = TMP_ROOT / "no-such-dir" / "no-such-file.json"
-        result = read_mcp_state(missing)
-        self.assertIsNone(result)
-
-    def test_read_mcp_state_corrupt_file_returns_none(self) -> None:
-        state_file = self._state_file()
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text("not-valid-json")
-        result = read_mcp_state(state_file)
-        self.assertIsNone(result)
 
 
 class TestCommandCredentialsProviderErrors(unittest.TestCase):
