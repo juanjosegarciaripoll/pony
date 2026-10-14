@@ -95,6 +95,19 @@ own and may not import the mail half. The calendar only binds the key.
 """
 
 
+def available_theme_names() -> list[str]:
+    """Names of every Textual theme bundled in this install, sorted.
+
+    Asked by whoever offers the choice -- `--list-themes` on the
+    command line, and the theme a configuration names being validated
+    before the app starts. It lived in the calendar's CLI, which made
+    listing themes a reason to import a command-line module.
+    """
+    from textual.app import App
+
+    return sorted(App().available_themes)
+
+
 @dataclass
 class TuiServices:
     """Dependencies the TUI needs.

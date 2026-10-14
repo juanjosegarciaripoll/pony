@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -497,3 +499,44 @@ def _dump_credential(spec: CredentialSpec) -> dict[str, object]:
     if spec.token_path is not None:
         out["token_path"] = str(spec.token_path)
     return out
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigDocument:
+    """Where the configuration lives, and how to read and write it.
+
+    Standalone, it is a file of this program's own: the whole file is
+    the configuration.  Hosted by Pony, the configuration is one table
+    inside a larger file that the mail client also owns, so reading and
+    writing it are the host's to define and arrive here as this.
+
+    `label` is how to name it to a user -- the path on its own when the
+    file is the configuration, and the table and the path when it is
+    not.
+    """
+
+    path: Path
+    label: str
+    load: Callable[[], AppConfig]
+    save: Callable[[AppConfig], None]
+    # Does this text parse as a configuration?  Raises `ConfigError`.
+    # Hosted, the whole file has to parse, not just the calendar's
+    # table: an edit that breaks the mail half breaks the program.
+    validate: Callable[[Path], None]
+    editable_in_place: bool = True
+
+
+def _parses_or_raises(path: Path) -> None:
+    """Raise `ConfigError` unless *path* is a loadable configuration."""
+    load(path)
+
+
+def file_document(path: Path) -> ConfigDocument:
+    """The standalone document: this file is the configuration."""
+    return ConfigDocument(
+        path=path,
+        label=str(path),
+        load=lambda: load(path),
+        save=lambda config: save(config, path),
+        validate=_parses_or_raises,
+    )

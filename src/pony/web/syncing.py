@@ -17,7 +17,6 @@ terminal left open is not a reason for the phone to refuse.
 
 from __future__ import annotations
 
-import io
 import logging
 import threading
 import time
@@ -149,19 +148,15 @@ class SyncGate:
         runtime = self.calendar
         if runtime is None:
             return Outcome.refused(warn("No calendar configured."))
-        from chronos.cli import CliContext, build_sync_runner
+        from chronos.services import CalendarServices, build_sync_runner
 
         runner = build_sync_runner(
-            CliContext(
+            CalendarServices(
                 config=runtime.config,
                 mirror=runtime.mirror,
                 index=runtime.index,
                 creds=runtime.credentials,
                 paths=runtime.paths,
-                # The runner returns its results rather than printing
-                # them, but a context needs both streams.
-                stdout=io.StringIO(),
-                stderr=io.StringIO(),
                 now=datetime.now(UTC),
             ),
         )

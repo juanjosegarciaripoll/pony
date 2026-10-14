@@ -50,7 +50,7 @@ from .config import ConfigError, load_config, read_raw_config
 from .domain import CONFIG_VERSION
 
 if TYPE_CHECKING:
-    from chronos.cli import ConfigDocument
+    from chronos.config import ConfigDocument
 from .paths import AppPaths, resolve
 
 # The example above quotes the schema version the loader actually
@@ -245,7 +245,7 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
     than a file of their own to write.  Without this they wrote a
     standalone file nothing here reads, and reported success.
     """
-    from chronos.cli import ConfigDocument as _Document
+    from chronos.config import ConfigDocument as _Document
 
     def _load() -> CalendarConfig:
         config = parse_calendar_config(read_raw_config(path))

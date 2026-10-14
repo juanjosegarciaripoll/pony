@@ -546,7 +546,7 @@ def test_the_calendar_can_be_synced_from_the_browser() -> None:
     )
 
     with (
-        patch("chronos.cli.build_sync_runner", return_value=lambda: (result,)),
+        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})
@@ -606,7 +606,7 @@ def test_a_calendar_sync_error_is_reported() -> None:
     )
 
     with (
-        patch("chronos.cli.build_sync_runner", return_value=lambda: (result,)),
+        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})
@@ -639,7 +639,7 @@ def test_a_resolved_conflict_is_reported_rather_than_swallowed() -> None:
     )
 
     with (
-        patch("chronos.cli.build_sync_runner", return_value=lambda: (result,)),
+        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})

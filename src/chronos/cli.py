@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TextIO
 
-from chronos.authorization import Authorization
 from chronos.bootstrap import (
     IsInteractiveFn,
     PromptFn,
@@ -27,10 +26,9 @@ from chronos.bootstrap import (
     offer_bootstrap,
     write_template,
 )
-from chronos.caldav import CalDAVError, CalDAVHttpSession
-from chronos.config import ConfigError, mirror_roots
+from chronos.caldav import CalDAVError
+from chronos.config import ConfigDocument, ConfigError, file_document, mirror_roots
 from chronos.config import load as load_config
-from chronos.config import save as save_config
 from chronos.credentials import CredentialResolutionError, DefaultCredentialsProvider
 from chronos.domain import (
     CALENDAR_CONFIG_VERSION,
@@ -47,7 +45,6 @@ from chronos.domain import (
     OAuthCredential,
     PlaintextCredential,
     StoredComponent,
-    SyncResult,
     VEvent,
     VTodo,
 )
@@ -62,19 +59,26 @@ from chronos.oauth import (
     run_loopback_flow,
     run_paste_redirect_flow,
     save_tokens,
+    use_remote_browser_flow,
 )
 from chronos.paths import CalendarPaths
 from chronos.protocols import (
-    CalDAVSession,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from chronos.services import ProgressFn, format_report, run_doctor
+from chronos.services import (
+    CalendarServices,
+    ProgressFn,
+    SessionFactory,
+    build_sync_runner,
+    default_session_factory,
+    format_report,
+    run_doctor,
+)
 from chronos.storage import VdirMirrorRepository
-from chronos.sync import SyncCancelled, describe_account_sync, sync_account
+from chronos.sync import describe_account_sync, sync_account
 
-SessionFactory = Callable[[AccountConfig, Authorization], CalDAVSession]
 ContextFactory = Callable[[Path | None], "CliContext"]
 EditorFn = Callable[[Path], None]
 InputFn = Callable[[str], str]
@@ -82,6 +86,13 @@ InputFn = Callable[[str], str]
 
 @dataclass
 class CliContext:
+    """What a command works with: the stores, and where to report.
+
+    The stores and the layout travel on to the model as a
+    `CalendarServices` (see `services`); the two streams are this
+    layer's own, because printing is what a command line is.
+    """
+
     config: AppConfig
     mirror: MirrorRepository
     index: IndexRepository
@@ -95,6 +106,18 @@ class CliContext:
     stderr: TextIO
     now: datetime
     session_factory: SessionFactory | None = None
+
+    def services(self) -> CalendarServices:
+        """The model's half of this context."""
+        return CalendarServices(
+            config=self.config,
+            mirror=self.mirror,
+            index=self.index,
+            creds=self.creds,
+            paths=self.paths,
+            now=self.now,
+            session_factory=self.session_factory,
+        )
 
 
 def main(
@@ -144,7 +167,7 @@ def main(
         default_level=logging.INFO if args.command == "sync" else logging.WARNING,
     )
     config_path: Path = args.config or paths.config_file
-    document = config_document or _file_document(config_path)
+    document = config_document or file_document(config_path)
 
     # Config-editing commands work on the document without needing the
     # mirror / index / credential plumbing.
@@ -163,7 +186,9 @@ def main(
     # needs no config, mirror, or index, so handle it before the data-path
     # plumbing below.
     if args.command == "tui" and getattr(args, "list_themes", False):
-        for name in _available_theme_names():
+        from chronos.tui.app import available_theme_names
+
+        for name in available_theme_names():
             out.write(f"{name}\n")
         return 0
 
@@ -250,47 +275,6 @@ def _default_context_factory(
         stdout=sys.stdout,
         stderr=sys.stderr,
         now=datetime.now(UTC),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class ConfigDocument:
-    """Where the configuration lives, and how to read and write it.
-
-    Standalone, it is a file of this program's own: the whole file is
-    the configuration.  Hosted by Pony, the configuration is one table
-    inside a larger file that the mail client also owns, so reading and
-    writing it are the host's to define and arrive here as this.
-
-    `label` is how to name it to a user -- the path on its own when the
-    file is the configuration, and the table and the path when it is
-    not.
-    """
-
-    path: Path
-    label: str
-    load: Callable[[], AppConfig]
-    save: Callable[[AppConfig], None]
-    # Does this text parse as a configuration?  Raises `ConfigError`.
-    # Hosted, the whole file has to parse, not just the calendar's
-    # table: an edit that breaks the mail half breaks the program.
-    validate: Callable[[Path], None]
-    editable_in_place: bool = True
-
-
-def _parses_or_raises(path: Path) -> None:
-    """Raise `ConfigError` unless *path* is a loadable configuration."""
-    load_config(path)
-
-
-def _file_document(path: Path) -> ConfigDocument:
-    """The standalone document: this file is the configuration."""
-    return ConfigDocument(
-        path=path,
-        label=str(path),
-        load=lambda: load_config(path),
-        save=lambda config: save_config(config, path),
-        validate=_parses_or_raises,
     )
 
 
@@ -984,7 +968,7 @@ def cmd_sync(
 
 
 def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> int:
-    factory = ctx.session_factory or _default_session_factory
+    factory = ctx.session_factory or default_session_factory
     fails = 0
     for account in accounts:
         try:
@@ -1284,7 +1268,7 @@ def cmd_rm(ctx: CliContext, *, uid: str) -> int:
 
 def cmd_doctor(ctx: CliContext, *, remote: bool = False, debug: bool = False) -> int:
     session_factory = (
-        (ctx.session_factory or _default_session_factory) if remote else None
+        (ctx.session_factory or default_session_factory) if remote else None
     )
     progress: ProgressFn | None = None
     if debug:
@@ -1525,13 +1509,6 @@ def _resolve_import_calendar(
     return calendars[choice - 1]
 
 
-def _available_theme_names() -> list[str]:
-    """Names of every Textual theme bundled in this install, sorted."""
-    from textual.app import App
-
-    return sorted(App().available_themes)
-
-
 def _resolve_theme(
     cli_theme: str | None, config_theme: str | None
 ) -> tuple[str | None, int | None]:
@@ -1541,10 +1518,10 @@ def _resolve_theme(
     `(name, None)` on success, or `(None, error_code)` when the requested
     name is not a known theme (so the caller can exit non-zero).
     """
-    from chronos.tui.app import DEFAULT_THEME
+    from chronos.tui.app import DEFAULT_THEME, available_theme_names
 
     effective = cli_theme or config_theme or DEFAULT_THEME
-    available = _available_theme_names()
+    available = available_theme_names()
     if effective not in available:
         names = ", ".join(available)
         print(
@@ -1574,7 +1551,6 @@ def cmd_tui(
     def tui_authorizer(
         account_name: str, spec: OAuthCredential, _token_path: Path
     ) -> StoredTokens:
-        import threading
 
         result_box: list[StoredTokens | BaseException] = []
         done = threading.Event()
@@ -1610,7 +1586,7 @@ def cmd_tui(
         creds=tui_ctx.creds,
         paths=tui_ctx.paths,
         now=lambda: datetime.now(UTC),
-        sync_runner=build_sync_runner(tui_ctx),
+        sync_runner=build_sync_runner(tui_ctx.services()),
         startup_ics_path=startup_ics_path,
     )
     app = ChronosApp(services, theme_name=theme)
@@ -1661,91 +1637,6 @@ class _LogRedirector:
             self._file_handler.close()
         root.handlers = self._previous_handlers
         root.setLevel(self._previous_level)
-
-
-def build_sync_runner(
-    ctx: CliContext,
-) -> Callable[..., Sequence[SyncResult]]:
-    """Closure that runs `sync_account` over every configured account.
-
-    Mirrors `cmd_sync`, but returns the per-account `SyncResult`s
-    instead of writing to stdout. Per-account exceptions are caught
-    and reported in the result's `errors` tuple so a single bad
-    credential doesn't take the whole sync down.
-
-    The runner accepts an optional `cancel_event` keyword. The TUI
-    sets this event from another thread to interrupt a long-running
-    sync; `sync_account` checks it at calendar boundaries and raises
-    `SyncCancelled`, which the runner translates into a per-account
-    error rather than letting it tear through the worker.
-    """
-    factory = ctx.session_factory or _default_session_factory
-
-    def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
-        try:
-            with acquire_sync_lock(ctx.paths.lock_file):
-                return _run_locked(cancel_event)
-        except SyncLockError as exc:
-            # Surface the lock contention as a SyncResult so the TUI's
-            # banner shows the message instead of crashing the worker.
-            return (_failure_result("(sync)", str(exc)),)
-
-    def _run_locked(
-        cancel_event: threading.Event | None,
-    ) -> Sequence[SyncResult]:
-        results: list[SyncResult] = []
-        for account in ctx.config.accounts:
-            if cancel_event is not None and cancel_event.is_set():
-                results.append(_failure_result(account.name, "sync cancelled"))
-                continue
-            try:
-                auth = ctx.creds.build_auth(account)
-            except CredentialResolutionError as exc:
-                results.append(_failure_result(account.name, str(exc)))
-                continue
-            try:
-                session = factory(account, auth)
-            except NotImplementedError as exc:
-                results.append(_failure_result(account.name, str(exc)))
-                continue
-            except CalDAVError as exc:
-                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
-                continue
-            try:
-                result = sync_account(
-                    account=account,
-                    session=session,
-                    mirror=ctx.mirror,
-                    index=ctx.index,
-                    now=ctx.now,
-                    cancel_event=cancel_event,
-                )
-            except SyncCancelled:
-                results.append(_failure_result(account.name, "sync cancelled"))
-                continue
-            except CalDAVError as exc:
-                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
-                continue
-            except OAuthError as exc:
-                results.append(_failure_result(account.name, f"OAuth: {exc}"))
-                continue
-            if auth.on_commit is not None:
-                auth.on_commit()
-            results.append(result)
-        return tuple(results)
-
-    return run
-
-
-def _failure_result(account_name: str, message: str) -> SyncResult:
-    return SyncResult(
-        account_name=account_name,
-        calendars_synced=0,
-        components_added=0,
-        components_updated=0,
-        components_removed=0,
-        errors=(message,),
-    )
 
 
 def cmd_init(stdout: TextIO, stderr: TextIO, *, document: ConfigDocument) -> int:
@@ -2155,80 +2046,6 @@ def _default_remote_browser_flow(
         show_authorization_url=show_authorization_url,
         read_callback_url=lambda: read_input("Redirect URL: "),
     )
-
-
-def _oauth_flow_mode(
-    env: Mapping[str, str] | None = None,
-) -> Literal["auto", "browser", "remote-browser"]:
-    value = (env if env is not None else os.environ).get("CHRONOS_OAUTH_FLOW", "")
-    normalized = value.strip().lower().replace("_", "-")
-    if normalized in {"", "auto"}:
-        return "auto"
-    if normalized in {"browser", "loopback", "local-browser"}:
-        return "browser"
-    if normalized in {"remote", "remote-browser", "paste"}:
-        return "remote-browser"
-    raise OAuthError(
-        "invalid CHRONOS_OAUTH_FLOW; expected auto, browser, or remote-browser"
-    )
-
-
-_TEXT_MODE_BROWSERS = frozenset(
-    {
-        "browsh",
-        "elinks",
-        "links",
-        "links2",
-        "lynx",
-        "w3m",
-        "www-browser",
-    }
-)
-
-
-def use_remote_browser_flow() -> bool:
-    oauth_flow = _oauth_flow_mode()
-    return oauth_flow == "remote-browser" or (
-        oauth_flow == "auto" and not _has_local_graphical_browser()
-    )
-
-
-def _has_local_graphical_browser(
-    env: Mapping[str, str] | None = None,
-    platform: str | None = None,
-) -> bool:
-    real_env = env if env is not None else os.environ
-    real_platform = platform if platform is not None else sys.platform
-    if not _browser_env_allows_graphical(real_env):
-        return False
-    if real_platform.startswith(("darwin", "win")):
-        return True
-    return bool(real_env.get("DISPLAY") or real_env.get("WAYLAND_DISPLAY"))
-
-
-def _browser_env_allows_graphical(env: Mapping[str, str]) -> bool:
-    raw = env.get("BROWSER", "")
-    if not raw.strip():
-        return True
-    entries = [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
-    if not entries:
-        return True
-    for entry in entries:
-        try:
-            parts = _split_command(entry)
-        except ValueError:
-            parts = entry.split()
-        if not parts:
-            continue
-        if Path(parts[0]).name.lower() not in _TEXT_MODE_BROWSERS:
-            return True
-    return False
-
-
-def _default_session_factory(
-    account: AccountConfig, authorization: Authorization
-) -> CalDAVSession:
-    return CalDAVHttpSession(url=account.url, authorization=authorization)
 
 
 def _collect_components(

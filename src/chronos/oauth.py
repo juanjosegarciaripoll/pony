@@ -29,20 +29,23 @@ import base64
 import hashlib
 import http.server
 import json
+import os
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from chronos.atomic import write_atomically
+from chronos.shell import split_command
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -610,7 +613,90 @@ def _unused_loopback_redirect_uri() -> str:
     return f"http://127.0.0.1:{port}/"
 
 
+# ---------------------------------------------------------------------------
+# Which flow a machine can run
+# ---------------------------------------------------------------------------
+#
+# Whether there is a browser to open a window on is a fact about the
+# environment, not a decision of either front end: the CLI prints a URL
+# to paste and the TUI opens a progress screen, but both ask this.  It
+# lived in the calendar's CLI, which is why the terminal UI imported a
+# command-line module to find out.
+
+
+def oauth_flow_mode(
+    env: Mapping[str, str] | None = None,
+) -> Literal["auto", "browser", "remote-browser"]:
+    value = (env if env is not None else os.environ).get("CHRONOS_OAUTH_FLOW", "")
+    normalized = value.strip().lower().replace("_", "-")
+    if normalized in {"", "auto"}:
+        return "auto"
+    if normalized in {"browser", "loopback", "local-browser"}:
+        return "browser"
+    if normalized in {"remote", "remote-browser", "paste"}:
+        return "remote-browser"
+    raise OAuthError(
+        "invalid CHRONOS_OAUTH_FLOW; expected auto, browser, or remote-browser"
+    )
+
+
+_TEXT_MODE_BROWSERS = frozenset(
+    {
+        "browsh",
+        "elinks",
+        "links",
+        "links2",
+        "lynx",
+        "w3m",
+        "www-browser",
+    }
+)
+
+
+def use_remote_browser_flow() -> bool:
+    oauth_flow = oauth_flow_mode()
+    return oauth_flow == "remote-browser" or (
+        oauth_flow == "auto" and not has_local_graphical_browser()
+    )
+
+
+def has_local_graphical_browser(
+    env: Mapping[str, str] | None = None,
+    platform: str | None = None,
+) -> bool:
+    real_env = env if env is not None else os.environ
+    real_platform = platform if platform is not None else sys.platform
+    if not browser_env_allows_graphical(real_env):
+        return False
+    if real_platform.startswith(("darwin", "win")):
+        return True
+    return bool(real_env.get("DISPLAY") or real_env.get("WAYLAND_DISPLAY"))
+
+
+def browser_env_allows_graphical(env: Mapping[str, str]) -> bool:
+    raw = env.get("BROWSER", "")
+    if not raw.strip():
+        return True
+    entries = [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
+    if not entries:
+        return True
+    for entry in entries:
+        try:
+            parts = split_command(entry)
+        except ValueError:
+            parts = entry.split()
+        if not parts:
+            continue
+        if Path(parts[0]).name.lower() not in _TEXT_MODE_BROWSERS:
+            return True
+    return False
+
+
 __all__ = [
+    "browser_env_allows_graphical",
+    "has_local_graphical_browser",
+    "oauth_flow_mode",
+    "use_remote_browser_flow",
     "AuthorizationRequest",
     "BearerTokenAuth",
     "InvalidGrantError",

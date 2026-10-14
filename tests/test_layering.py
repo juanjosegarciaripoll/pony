@@ -14,9 +14,11 @@ imported Textual.
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 # Modules that make up the headless backend surface.  `chronos.scheduler`
 # is in here because the mail half runs the periodic sync off it: the
@@ -64,9 +66,10 @@ _BACKEND_MODULES = (
     "pony.cli",
     # Added after an audit found the list hand-kept and these missing:
     # the browser reaches every one of them, directly or through
-    # `pony.web.syncing`, which imports `chronos.cli` at call time.
+    # `pony.web.syncing`, which imports the calendar's sync runner at
+    # call time.
     "chronos.sync",
-    "chronos.cli",
+    "chronos.services",
     "chronos.ingest",
     "chronos.mutations",
     "chronos.ical_parser",
@@ -187,6 +190,125 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
         ):
             with self.subTest(module=module):
                 self.assertFalse(_imports_textual(module))
+
+
+#: The program is five components, and only the direction of the
+#: imports between them keeps them apart: the two models (the mail
+#: stores plus IMAP, the calendar stores plus CalDAV), and the three
+#: front ends over them (terminal, browser, command line).  A front end
+#: may use either model; a model may use neither front end; and the
+#: command line is a front end like the other two, not a library for
+#: them to call into.
+#:
+#: That last one is what this grew out of: the calendar's sync runner
+#: lived in `chronos/cli.py`, so the terminal UI and the browser both
+#: imported a command-line module to run a sync, and the host's own
+#: calendar glue imported one to find out where a configuration lives.
+_FRONT_END_PREFIXES = ("pony.tui", "pony.web", "chronos.tui")
+_COMMAND_LINE_MODULES = ("pony.cli", "chronos.cli")
+#: The program's entry point, which is above all five: starting the
+#: command line is what it is for.
+_ENTRY_POINTS = ("pony.__main__",)
+
+
+def _module_name(path: Path, root: Path) -> str:
+    """Dotted name of the module at *path*, relative to *root*."""
+    relative = path.relative_to(root).with_suffix("")
+    parts = [part for part in relative.parts if part != "__init__"]
+    return ".".join(parts)
+
+
+def _imported_modules(path: Path, root: Path) -> set[str]:
+    """Every module *path* imports, relative imports resolved.
+
+    Read rather than imported: a late import inside a function is still
+    one component reaching into another, and it is exactly how these
+    crossings hid -- `pony.web.syncing` imported the calendar's CLI from
+    inside a method.
+    """
+    own = _module_name(path, root)
+    package = own.rsplit(".", 1)[0] if "." in own else own
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+            else:
+                upward = package.split(".")
+                trimmed = upward[: len(upward) - node.level + 1]
+                base = ".".join([*trimmed, node.module] if node.module else trimmed)
+            found.add(base)
+            found.update(f"{base}.{alias.name}" for alias in node.names)
+    return found
+
+
+def _source_files() -> list[tuple[str, Path]]:
+    root = Path(__file__).resolve().parent.parent / "src"
+    return [
+        (_module_name(path, root), path)
+        for path in sorted(root.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    ]
+
+
+def _belongs_to(module: str, prefixes: tuple[str, ...]) -> bool:
+    return any(
+        module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes
+    )
+
+
+class ComponentsStayApartTest(unittest.TestCase):
+    """The five components, and who is allowed to know about whom."""
+
+    def test_no_model_module_imports_a_front_end(self) -> None:
+        root = Path(__file__).resolve().parent.parent / "src"
+        offenders: list[str] = []
+        for module, path in _source_files():
+            if (
+                _belongs_to(module, _FRONT_END_PREFIXES)
+                or module in _COMMAND_LINE_MODULES
+                or module in _ENTRY_POINTS
+            ):
+                continue
+            for imported in _imported_modules(path, root):
+                if _belongs_to(
+                    imported, (*_FRONT_END_PREFIXES, *_COMMAND_LINE_MODULES)
+                ):
+                    offenders.append(f"{module} -> {imported}")
+
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "a model module reaches into a front end: " + ", ".join(sorted(offenders)),
+        )
+
+    def test_no_front_end_imports_the_command_line(self) -> None:
+        """The terminal and the browser go through the models, not the CLI."""
+        root = Path(__file__).resolve().parent.parent / "src"
+        offenders: list[str] = []
+        for module, path in _source_files():
+            if not _belongs_to(module, _FRONT_END_PREFIXES):
+                continue
+            for imported in _imported_modules(path, root):
+                if _belongs_to(imported, _COMMAND_LINE_MODULES):
+                    offenders.append(f"{module} -> {imported}")
+
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "a front end reaches into the command line: "
+            + ", ".join(sorted(offenders)),
+        )
+
+    def test_the_scan_sees_a_late_import(self) -> None:
+        """Guards the test itself: a function-level import counts."""
+        root = Path(__file__).resolve().parent.parent / "src"
+        found = _imported_modules(root / "pony" / "web" / "syncing.py", root)
+
+        # This module imports the calendar's sync runner inside a method.
+        self.assertIn("chronos.services", found)
 
 
 class ArchitectureListingTest(unittest.TestCase):

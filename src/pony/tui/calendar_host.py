@@ -18,7 +18,6 @@ rather than a dependency of the mail code.
 
 from __future__ import annotations
 
-import io
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -28,11 +27,11 @@ from pathlib import Path
 from textual.app import App
 
 from chronos.alarms import ALARM_LOOKBACK, due_alarms
-from chronos.cli import CliContext, build_sync_runner, use_remote_browser_flow
 from chronos.credentials import DefaultCredentialsProvider
 from chronos.domain import OAuthCredential
-from chronos.oauth import StoredTokens
+from chronos.oauth import StoredTokens, use_remote_browser_flow
 from chronos.protocols import IndexRepository as CalendarIndexRepository
+from chronos.services import CalendarServices, build_sync_runner
 from chronos.tui.app import AttendeeCompleter, InvitationSender, TuiServices
 from chronos.tui.bindings import BindingType
 from chronos.views import (
@@ -90,17 +89,16 @@ def build_calendar_services(
     credentials = DefaultCredentialsProvider(
         interactive_authorizer=_in_app_authorizer(host), paths=runtime.paths
     )
-    context = CliContext(
+    # The model's bundle, not the command line's context: a sync is a
+    # model operation that returns its results, and this module used to
+    # build a `CliContext` -- two dead streams included -- to ask for
+    # one.
+    services = CalendarServices(
         config=runtime.config,
         mirror=runtime.mirror,
         index=runtime.index,
         creds=credentials,
         paths=runtime.paths,
-        # `build_sync_runner` returns its results rather than printing
-        # them, but `CliContext` requires both streams and a running TUI
-        # owns the terminal, so they go nowhere.
-        stdout=io.StringIO(),
-        stderr=io.StringIO(),
         now=datetime.now(UTC),
     )
     return TuiServices(
@@ -110,7 +108,7 @@ def build_calendar_services(
         creds=credentials,
         paths=runtime.paths,
         now=now if now is not None else (lambda: datetime.now(UTC)),
-        sync_runner=build_sync_runner(context),
+        sync_runner=build_sync_runner(services),
         startup_ics_path=startup_ics_path,
         invitation_sender=invitation_sender,
         attendee_completer=(

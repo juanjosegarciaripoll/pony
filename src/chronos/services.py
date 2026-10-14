@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 from chronos.authorization import Authorization
+from chronos.caldav import CalDAVError, CalDAVHttpSession
 from chronos.credentials import CredentialResolutionError
 from chronos.domain import (
     AccountConfig,
@@ -14,18 +17,145 @@ from chronos.domain import (
     CalendarRef,
     ComponentKind,
     StoredComponent,
+    SyncResult,
     VEvent,
     VTodo,
 )
 from chronos.ical_parser import IcalParseError, parse_vcalendar
+from chronos.locking import SyncLockError, acquire_sync_lock
+from chronos.oauth import OAuthError
+from chronos.paths import CalendarPaths
 from chronos.protocols import (
     CalDAVSession,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
+from chronos.sync import SyncCancelled, sync_account
 
 SessionFactory = Callable[[AccountConfig, Authorization], CalDAVSession]
+
+# ---------------------------------------------------------------------------
+# What an operation works over
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarServices:
+    """The stores a calendar operation works over, and where they are.
+
+    One bundle, so a front end hands over the same thing for a sync, a
+    doctor run or an event action instead of six arguments in an order
+    each caller gets to choose.  It holds no stream and no screen: what
+    an operation has to say it returns, and reporting it belongs to
+    whoever asked.  That is the line this type is here to keep -- the
+    sync runner below used to take the *command line's* context, so the
+    terminal UI and the browser both imported a CLI module to run a
+    sync.
+    """
+
+    config: AppConfig
+    mirror: MirrorRepository
+    index: IndexRepository
+    creds: CredentialsProvider
+    paths: CalendarPaths
+    now: datetime
+    #: How to open a CalDAV session for an account; the default talks
+    #: to the real server.
+    session_factory: SessionFactory | None = None
+
+
+def build_sync_runner(
+    services: CalendarServices,
+) -> Callable[..., Sequence[SyncResult]]:
+    """Closure that runs `sync_account` over every configured account.
+
+    Returns the per-account `SyncResult`s rather than reporting
+    anything: every front end has its own way of saying what happened.
+    Per-account exceptions are caught
+    and reported in the result's `errors` tuple so a single bad
+    credential doesn't take the whole sync down.
+
+    The runner accepts an optional `cancel_event` keyword. The TUI
+    sets this event from another thread to interrupt a long-running
+    sync; `sync_account` checks it at calendar boundaries and raises
+    `SyncCancelled`, which the runner translates into a per-account
+    error rather than letting it tear through the worker.
+    """
+    factory = services.session_factory or default_session_factory
+
+    def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
+        try:
+            with acquire_sync_lock(services.paths.lock_file):
+                return _run_locked(cancel_event)
+        except SyncLockError as exc:
+            # Surface the lock contention as a SyncResult so the TUI's
+            # banner shows the message instead of crashing the worker.
+            return (_failure_result("(sync)", str(exc)),)
+
+    def _run_locked(
+        cancel_event: threading.Event | None,
+    ) -> Sequence[SyncResult]:
+        results: list[SyncResult] = []
+        for account in services.config.accounts:
+            if cancel_event is not None and cancel_event.is_set():
+                results.append(_failure_result(account.name, "sync cancelled"))
+                continue
+            try:
+                auth = services.creds.build_auth(account)
+            except CredentialResolutionError as exc:
+                results.append(_failure_result(account.name, str(exc)))
+                continue
+            try:
+                session = factory(account, auth)
+            except NotImplementedError as exc:
+                results.append(_failure_result(account.name, str(exc)))
+                continue
+            except CalDAVError as exc:
+                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
+                continue
+            try:
+                result = sync_account(
+                    account=account,
+                    session=session,
+                    mirror=services.mirror,
+                    index=services.index,
+                    now=services.now,
+                    cancel_event=cancel_event,
+                )
+            except SyncCancelled:
+                results.append(_failure_result(account.name, "sync cancelled"))
+                continue
+            except CalDAVError as exc:
+                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
+                continue
+            except OAuthError as exc:
+                results.append(_failure_result(account.name, f"OAuth: {exc}"))
+                continue
+            if auth.on_commit is not None:
+                auth.on_commit()
+            results.append(result)
+        return tuple(results)
+
+    return run
+
+
+def _failure_result(account_name: str, message: str) -> SyncResult:
+    return SyncResult(
+        account_name=account_name,
+        calendars_synced=0,
+        components_added=0,
+        components_updated=0,
+        components_removed=0,
+        errors=(message,),
+    )
+
+
+def default_session_factory(
+    account: AccountConfig, authorization: Authorization
+) -> CalDAVSession:
+    return CalDAVHttpSession(url=account.url, authorization=authorization)
+
 
 # Live progress sink for the remote probe. Each call is a single short
 # step description, emitted *before* a potentially-blocking network call
@@ -456,12 +586,15 @@ def format_report(report: DoctorReport) -> str:
 
 
 __all__ = [
+    "CalendarServices",
     "DiagnosticResult",
     "DiagnosticStatus",
     "DoctorReport",
     "ProgressFn",
     "SessionFactory",
+    "build_sync_runner",
     "check_local_integrity",
+    "default_session_factory",
     "format_report",
     "run_doctor",
 ]

@@ -12,7 +12,7 @@ from typing import Any
 from unittest import mock
 
 from chronos import cli
-from chronos.config import mirror_roots
+from chronos.config import file_document, mirror_roots
 from chronos.credentials import DefaultCredentialsProvider
 from chronos.domain import (
     AccountConfig,
@@ -25,8 +25,13 @@ from chronos.domain import (
     VEvent,
 )
 from chronos.index_store import SqliteIndexRepository
+from chronos.oauth import (
+    has_local_graphical_browser,
+)
 from chronos.paths import CalendarPaths
+from chronos.services import build_sync_runner, default_session_factory
 from chronos.storage import VdirMirrorRepository
+from chronos.tui.app import available_theme_names
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -136,7 +141,7 @@ class ResolveThemeTest(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(theme, DEFAULT_THEME)
         # The default must itself be a real, known theme.
-        self.assertIn(DEFAULT_THEME, cli._available_theme_names())
+        self.assertIn(DEFAULT_THEME, available_theme_names())
 
     def test_unknown_theme_returns_error(self) -> None:
         stderr = io.StringIO()
@@ -158,7 +163,7 @@ class ResolveThemeTest(unittest.TestCase):
         printed = stdout.getvalue().split()
         # Every printed name is a real theme; flexoki (the default) is present.
         self.assertIn("flexoki", printed)
-        self.assertEqual(printed, cli._available_theme_names())
+        self.assertEqual(printed, available_theme_names())
 
 
 class IcsShortcutParseTest(unittest.TestCase):
@@ -547,9 +552,8 @@ class SyncCommandTest(CliTestCase):
     def test_sync_without_factory_builds_caldav_http_session(self) -> None:
         from chronos.authorization import Authorization
         from chronos.caldav import CalDAVHttpSession
-        from chronos.cli import _default_session_factory
 
-        session = _default_session_factory(
+        session = default_session_factory(
             _account(), Authorization(basic=("user@example.com", "pw"))
         )
         self.assertIsInstance(session, CalDAVHttpSession)
@@ -634,7 +638,7 @@ class SyncLockReleaseTest(CliTestCase):
         under_tmp = CalendarPaths(root=tmp)
         ctx = self._ctx(session_factory=factory, paths=under_tmp)
 
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         with self.assertRaises(KeyboardInterrupt):
             runner()
 
@@ -642,7 +646,7 @@ class SyncLockReleaseTest(CliTestCase):
         # acquire it without blocking or raising SyncLockError.
         ctx2 = self._ctx(session_factory=lambda *_: self.session, paths=under_tmp)
         self._seed()  # idempotent
-        runner2 = cli.build_sync_runner(ctx2)
+        runner2 = build_sync_runner(ctx2)
         results = runner2()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].errors, ())
@@ -693,7 +697,7 @@ class BuildSyncRunnerTest(CliTestCase):
             return self.session
 
         ctx = self._ctx(session_factory=factory)
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].account_name, "personal")
@@ -705,7 +709,7 @@ class BuildSyncRunnerTest(CliTestCase):
             _account(credential=EnvCredential(variable="UNSET_FOR_TEST"))
         )
         ctx = self._ctx(config=bad_config, creds_env={})
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].errors[0].count("UNSET_FOR_TEST"), 1)
@@ -727,7 +731,7 @@ class BuildSyncRunnerTest(CliTestCase):
             return session
 
         ctx = self._ctx(session_factory=broken_factory)
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("simulated network failure", results[0].errors[0])
@@ -741,7 +745,7 @@ class BuildSyncRunnerTest(CliTestCase):
             raise NotImplementedError("session factory not configured")
 
         ctx = self._ctx(session_factory=unimplemented_factory)
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("session factory not configured", results[0].errors[0])
@@ -759,7 +763,7 @@ class BuildSyncRunnerTest(CliTestCase):
             raise CalDAVError("session construction blew up")
 
         ctx = self._ctx(session_factory=broken_factory)
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("session construction blew up", results[0].errors[0])
@@ -794,7 +798,7 @@ class BuildSyncRunnerTest(CliTestCase):
             now=NOW,
             session_factory=factory,
         )
-        runner = cli.build_sync_runner(ctx)
+        runner = build_sync_runner(ctx)
         runner()
         self.assertEqual(committed, [1])
         # Silence unused-import lint for the type-only import above.
@@ -2024,7 +2028,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         code = cli.cmd_oauth_authorize(
             self.stdout,
             self.stderr,
-            document=cli._file_document(self.config_path),
+            document=file_document(self.config_path),
             paths=CalendarPaths(root=self.tmp),
             account_name="google",
             auth_flow=fake_flow,
@@ -2108,7 +2112,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         code = cli.cmd_oauth_authorize(
             self.stdout,
             self.stderr,
-            document=cli._file_document(self.config_path),
+            document=file_document(self.config_path),
             paths=CalendarPaths(root=self.tmp),
             account_name="google",
             auth_flow=fake_flow,
@@ -2134,13 +2138,13 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         )
         with (
-            mock.patch("chronos.cli._has_local_graphical_browser", return_value=False),
+            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
             mock.patch("chronos.cli._default_remote_browser_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                document=cli._file_document(self.config_path),
+                document=file_document(self.config_path),
                 paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
@@ -2161,13 +2165,13 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         )
         with (
-            mock.patch("chronos.cli._has_local_graphical_browser", return_value=True),
+            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
             mock.patch("chronos.cli._default_loopback_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                document=cli._file_document(self.config_path),
+                document=file_document(self.config_path),
                 paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
@@ -2206,7 +2210,7 @@ class CliAuthorizerTest(unittest.TestCase):
         with (
             mock.patch("chronos.cli.sys.stdin") as stdin,
             mock.patch("chronos.cli.sys.stdout") as stdout,
-            mock.patch("chronos.cli._has_local_graphical_browser", return_value=True),
+            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
             mock.patch("chronos.cli._default_loopback_flow", flow),
         ):
             stdin.isatty.return_value = True
@@ -2230,7 +2234,7 @@ class CliAuthorizerTest(unittest.TestCase):
         with (
             mock.patch("chronos.cli.sys.stdin") as stdin,
             mock.patch("chronos.cli.sys.stdout") as stdout,
-            mock.patch("chronos.cli._has_local_graphical_browser", return_value=False),
+            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
             mock.patch("chronos.cli._default_remote_browser_flow", flow),
         ):
             stdin.isatty.return_value = True
@@ -2245,7 +2249,7 @@ class CliAuthorizerTest(unittest.TestCase):
 class OAuthFlowModeTest(unittest.TestCase):
     def test_w3m_browser_env_is_not_graphical(self) -> None:
         self.assertFalse(
-            cli._has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
+            has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
                 env={"DISPLAY": ":1", "BROWSER": "w3m"},
                 platform="linux",
             )
@@ -2253,7 +2257,7 @@ class OAuthFlowModeTest(unittest.TestCase):
 
     def test_graphical_browser_env_is_graphical(self) -> None:
         self.assertTrue(
-            cli._has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
+            has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
                 env={"DISPLAY": ":1", "BROWSER": "firefox"},
                 platform="linux",
             )
@@ -2261,7 +2265,7 @@ class OAuthFlowModeTest(unittest.TestCase):
 
     def test_mixed_browser_env_allows_graphical_fallback(self) -> None:
         self.assertTrue(
-            cli._has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
+            has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
                 env={"DISPLAY": ":1", "BROWSER": "w3m:firefox"},
                 platform="linux",
             )
