@@ -113,14 +113,21 @@ with no mail code in the way.
    nothing about another. Pin both ends of a time range explicitly in tests
    rather than relying on a default.
 
-   Known, pre-existing, and **not** CI-blocking: three timeline-grid tests
-   in `tests_calendar/` fail east of about UTC+9
-   (`test_is_full_day_rejects_timed_events`,
-   `test_compute_hour_range_default_when_all_events_inside`,
-   `test_mouse_click_on_timed_event_opens_detail_modal`, plus
-   `test_enter_on_event_cell_pushes_detail_modal` at UTC+14). They fail in
-   the calendar's own repository too; the day-boundary arithmetic in the
-   grid is what needs fixing, not the tests.
+   Both suites are green from UTC-9:30 to UTC+14, and that is worth
+   keeping: `TZ=Pacific/Marquesas`, `TZ=Pacific/Kiritimati` and
+   `TZ=Europe/Madrid` (a zone that moves) alongside `TZ=UTC` catch what
+   UTC alone cannot. Two shapes break a test:
+
+   - **A moment pinned in UTC, read as a local day.** The views draw
+     local days, so `datetime(2026, 5, 1, 9, tzinfo=UTC)` is 30 April at
+     UTC-9:30 and 2 May at UTC+14. Build the moment in local wall time
+     (`datetime(2026, 5, 1, 9).astimezone()`) or anchor off the fixture's
+     own instant — `tests_calendar/test_tui_flows.py` has
+     `simple_event_day()` and `seeded_month_day()` for exactly that.
+   - **A rule that reads the reader's zone, with the reader's zone
+     ambient.** `is_all_day_span` accepts a UTC *or* a local midnight
+     anchor, so what is "not all-day" depends on where the reader is.
+     Pin it with `tests_calendar.zones.local_zone("Europe/Madrid")`.
 
 10. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
 

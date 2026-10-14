@@ -133,7 +133,7 @@ def is_all_day_span(dtstart: datetime | None, dtend: datetime | None) -> bool:
     # and a second binding of the name would be a second place to pin.
     return (
         dtstart.astimezone(UTC).time() == time.min
-        or dtstart.astimezone(ical_parser.local_tzinfo()).time() == time.min
+        or dtstart.astimezone(ical_parser.local_tzinfo(dtstart)).time() == time.min
     )
 
 
@@ -302,7 +302,7 @@ def all_day_date(dt: datetime) -> date:
     as_utc = dt.astimezone(UTC)
     if as_utc.time() == time.min:
         return as_utc.date()
-    local = dt.astimezone(ical_parser.local_tzinfo())
+    local = dt.astimezone(ical_parser.local_tzinfo(dt))
     if local.time() == time.min:
         return local.date()
     return as_utc.date()

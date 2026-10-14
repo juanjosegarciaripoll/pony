@@ -93,6 +93,28 @@ from pony.tui.calendar.widgets.event_list import EventList, component_ref_for_ro
 from pony.tui.calendar.widgets.event_view import EventView
 from pony.tui.reporting import on_ui_thread
 from tests_calendar import corpus
+from tests_calendar.zones import local_zone
+
+
+def simple_event_day() -> date:
+    """The local day `corpus.simple_event` falls on.
+
+    It is stamped `DTSTART:20260501T090000Z`, and the views draw local
+    days: that instant is 30 April at UTC-9:30 and 2 May at UTC+14, so a
+    test that views `date(2026, 5, 1)` finds an empty grid there.
+    """
+    return datetime(2026, 5, 1, 9, tzinfo=UTC).astimezone().date()
+
+
+def seeded_month_day() -> date:
+    """A local day inside the month the fixtures seed their events in.
+
+    Noon UTC mid-month, because no offset on earth moves that out of
+    May -- where `simple_event_day` lands on 30 April at UTC-9:30, which
+    is a month with nothing in it.
+    """
+    return datetime(2026, 5, 15, 12, tzinfo=UTC).astimezone().date()
+
 
 ACCOUNT_NAME = "personal"
 WORK_CAL = "work"
@@ -552,7 +574,10 @@ class RowFormattingTest(unittest.TestCase):
         event = _empty_event(ref)
 
         for delta, label in ((-1, "Yesterday"), (0, "Today"), (1, "Tomorrow")):
-            start = datetime(2026, 4, 25 + delta, 9, tzinfo=UTC)
+            # A local wall time on the intended day: the Day cell is the
+            # *local* date of the start, so 09:00 UTC is already the day
+            # before at UTC-9:30.
+            start = datetime(2026, 4, 25 + delta, 9).astimezone()
             row = OccurrenceRow(
                 occurrence=Occurrence(
                     ref=ref,
@@ -1339,7 +1364,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
             await pilot.pause()
             await pilot.press("m")  # Month window catches more rows
             await pilot.pause()
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = simple_event_day()
             screen.refresh_view()
             await pilot.pause()
 
@@ -1444,7 +1469,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
             await pilot.pause()
             await pilot.press("m")
             await pilot.pause()
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = seeded_month_day()
             screen.refresh_view()
             await pilot.pause()
 
@@ -1748,7 +1773,7 @@ class EditExistingEventTest(TuiFlowTestCase):
             await pilot.pause()
             await pilot.press("m")
             await pilot.pause()
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = simple_event_day()
             screen.refresh_view()
             await pilot.pause()
             before = _agenda_cells(screen)
@@ -1911,7 +1936,7 @@ class DeleteFlowTest(TuiFlowTestCase):
             await pilot.pause()
             await pilot.press("m")
             await pilot.pause()
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = simple_event_day()
             screen.refresh_view()
             await pilot.pause()
             await pilot.press("D")
@@ -3771,10 +3796,11 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_full_day(short.occurrence))
 
         # A 24h-long event that is NOT anchored at midnight is timed, not
-        # all-day — guards the midnight-anchor requirement. The zone is
-        # pinned rather than ambient: `_is_full_day` also accepts a UTC
-        # midnight anchor, and 09:00 local *is* UTC midnight at UTC+9, so
-        # an ambient-zone shift would make this read as all-day in Tokyo.
+        # all-day — guards the midnight-anchor requirement. Both zones
+        # are pinned, the event's and the reader's: the rule accepts
+        # either a UTC midnight or a *local* midnight anchor, so 09:00
+        # Madrid reads as all-day for a reader at UTC+9 (where it is UTC
+        # midnight) or at UTC-7 (where it is local midnight).
         offset_zone = ZoneInfo("Europe/Madrid")
         day_long_offset = self._all_day_row(
             "offset",
@@ -3782,7 +3808,8 @@ class TimelineGridHelpersTest(unittest.TestCase):
             datetime(2026, 5, 1, 9, 0, tzinfo=offset_zone),
             datetime(2026, 5, 2, 9, 0, tzinfo=offset_zone),
         )
-        self.assertFalse(is_full_day(day_long_offset.occurrence))
+        with local_zone("Europe/Madrid"):
+            self.assertFalse(is_full_day(day_long_offset.occurrence))
 
     def test_cell_for_slot_skips_local_midnight_all_day_event(self) -> None:
         from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
@@ -4076,7 +4103,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             await pilot.press("1")
             await pilot.pause()
             await pilot.pause()  # call_after_refresh for focus needs a tick
-            screen._viewed_date = date(2026, 5, 1)  # has the simple_event seed
+            screen._viewed_date = simple_event_day()
             screen.refresh_view()
             await pilot.pause()
             timeline = screen.query_one(TimelineGrid)
@@ -4115,7 +4142,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = simple_event_day()
             screen.action_select_span(1)
             await pilot.pause()
             timeline = screen.query_one(TimelineGrid)
@@ -4159,7 +4186,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
-            screen._viewed_date = date(2026, 5, 1)
+            screen._viewed_date = simple_event_day()
             screen.action_select_span(1)
             await pilot.pause()
             timeline = screen.query_one(TimelineGrid)
@@ -4614,7 +4641,7 @@ class AgendaKeysTest(TuiFlowTestCase):
         await pilot.pause()
         await pilot.press("m")
         await pilot.pause()
-        screen._viewed_date = date(2026, 5, 1)
+        screen._viewed_date = simple_event_day()
         screen.refresh_view()
         await pilot.pause()
         screen.query_one(EventList).focus()
@@ -4664,7 +4691,7 @@ class ViewRepaintTest(TuiFlowTestCase):
         await pilot.press("m")
         await pilot.pause()
         # Pinned, not clock-derived: CI runs in UTC and machines do not.
-        screen._viewed_date = date(2026, 5, 1)
+        screen._viewed_date = seeded_month_day()
         screen.refresh_view()
         await pilot.pause()
         return screen
@@ -4717,8 +4744,11 @@ class ViewRepaintTest(TuiFlowTestCase):
                 EditDraft(
                     target=CalendarRef(ACCOUNT_NAME, WORK_CAL),
                     summary="Added in the timeline",
-                    dtstart=datetime(2026, 5, 2, 10, 0, tzinfo=UTC),
-                    dtend=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+                    # The timeline draws local days, so the event has to
+                    # be at a local wall time on the viewed one: 10:00
+                    # UTC on 2 May is already 3 May at UTC+14.
+                    dtstart=datetime(2026, 5, 2, 10, 0).astimezone(),
+                    dtend=datetime(2026, 5, 2, 11, 0).astimezone(),
                     location="",
                     description="",
                     attendees=(),

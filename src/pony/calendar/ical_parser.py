@@ -166,12 +166,24 @@ def localize_naive(value: datetime) -> datetime:
     :mod:`pony.calendar.recurrence`, which anchors rrule expansion on the same
     reading.
     """
-    return value.replace(tzinfo=local_tzinfo())
+    return value.replace(tzinfo=local_tzinfo(value))
 
 
-def local_tzinfo() -> tzinfo:
-    tz = datetime.now().astimezone().tzinfo
-    return tz or UTC
+def local_tzinfo(when: datetime) -> tzinfo:
+    """The local zone as it stood at *when*.
+
+    It takes the moment because a zone is not an offset: Madrid is
+    +01:00 in January and +02:00 in July, and this used to answer with
+    whichever offset was in force *now*.  Every caller then read a date
+    on the other side of a transition an hour out -- a floating event in
+    January was anchored at +02:00 when read in summer, an all-day event
+    at local midnight stopped looking all-day, and the date written for
+    a ``VALUE=DATE`` moved a day.
+
+    A naive *when* is read as local wall time, which is what a floating
+    DTSTART is.
+    """
+    return when.astimezone().tzinfo or UTC
 
 
 def _decoded(component: object, key: str) -> object:
