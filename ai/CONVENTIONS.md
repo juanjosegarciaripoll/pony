@@ -14,7 +14,7 @@ uv run basedpyright src
 uv run python -m pytest
 ```
 
-`uv run mypy` with no path checks both packages from the `pyproject.toml`
+`uv run mypy` with no path checks the whole package from the `pyproject.toml`
 configuration; a path would check only part of the project.
 
 `pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`

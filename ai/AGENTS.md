@@ -38,7 +38,7 @@ with no mail code in the way.
 ## Rules
 
 1. **Read first.** Use `docs/architecture.md` to locate the right module.
-2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks both packages), `basedpyright`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
+2. **Quality gates after every change:** `ruff check src tests tests_calendar`, `ruff format --check src tests tests_calendar`, `uv run mypy` (checks the whole package), `basedpyright`, `pytest`. Run `uv run python -m pytest` — never pass `--no-cov`; it runs **both** suites (`tests/` and `tests_calendar/`). The CI enforces **85 % combined statement+branch coverage** (`--cov-fail-under=85` in `pyproject.toml`). New code must ship with tests; do not lower the coverage percentage.
 
    A development environment needs the web extra as well as the dev
    group, because the suite covers both front ends:
@@ -130,7 +130,7 @@ with no mail code in the way.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **92.2 %** across both packages, measured on the full suite after the browser front end landed — mail alone sat at 96.20 % before the calendar merge, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.16 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -216,33 +216,32 @@ the ranking rather than trusting this list — it is a snapshot:
 uv run python -m pytest --cov-report=json:cov.json   # then sort files by missing_lines + missing_branches
 ```
 
-Largest remaining gaps, by absolute missing statements+branches, across
-both packages:
+Largest remaining gaps, by absolute missing statements+branches:
 
 | Missing | File | % |
 |---:|---|---:|
-| 292 | `pony/cli/calendar.py` | 77.59 |
-| 117 | `pony/cli/program.py` | 94.85 |
-| 94 | `pony/tui/calendar/screens/main_screen.py` | 84.84 |
-| 94 | `pony/calendar/sync.py` | 87.02 |
-| 70 | `pony/calendar/recurrence.py` | 83.41 |
+| 225 | `pony/cli/calendar.py` | 79.56 |
+| 80 | `pony/calendar/sync.py` | 89.16 |
+| 76 | `pony/tui/calendar/screens/main_screen.py` | 86.67 |
+| 65 | `pony/calendar/oauth.py` | 80.71 |
 | 63 | `pony/calendar/ingest.py` | 82.20 |
 | 61 | `pony/calendar/locking.py` | 46.02 |
-| 59 | `pony/tui/app.py` | 85.29 |
-| 50 | `pony/storage.py` | 92.78 |
-| 49 | `pony/tui/mail/screens/main_screen.py` | 95.71 |
+| 60 | `pony/calendar/recurrence.py` | 85.00 |
+| 59 | `pony/tui/mail/screens/main_screen.py` | 94.60 |
+| 59 | `pony/mail/sync.py` | 95.85 |
+| 52 | `pony/tui/app.py` | 87.13 |
 
 The calendar's files dominate this list because its suite was written to
 its own 85 % floor, not Pony's habits — that is where the headroom is.
 `pony/calendar/locking.py` is the calendar's `credentials.py`: half of it is the
 Windows branch and cannot run on Linux CI.
 
-`pony/credentials.py` is platform-gated and cannot rise on Linux CI
-(below). Pony's command line, `sync.py` and `main_screen.py` are mostly the
-verified-unreachable arms below — read that section before spending effort
-on them. `pony/cli/program.py` rose in missing lines when `pony web` gained its
-credentials and scheduler wiring: launching a real server is not
-something the suite does, so those lines sit with `run_tui`'s.
+`pony/mail/credentials.py` is platform-gated and cannot rise on Linux CI
+(below). The mail command line, `mail/sync.py` and the reader's
+`main_screen.py` are mostly the verified-unreachable arms below — read
+that section before spending effort on them. `pony/cli/program.py` holds
+what launching a real server and a real terminal app costs, which the
+suite does not do.
 
 The browser front end does not appear in that list: every module in
 `pony/web` is at 92 % or better, and what is left uncovered is the
