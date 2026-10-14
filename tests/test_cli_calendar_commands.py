@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from pony import cli_calendar as cli
 from pony.calendar.config import ConfigDocument, file_document, mirror_roots
 from pony.calendar.credentials import DefaultCredentialsProvider
 from pony.calendar.domain import (
@@ -32,6 +31,7 @@ from pony.calendar.oauth import (
 from pony.calendar.paths import CalendarPaths
 from pony.calendar.services import build_sync_runner, default_session_factory
 from pony.calendar.storage import VdirMirrorRepository
+from pony.cli import calendar as cli
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -73,7 +73,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     tests build. The calendar used to have a parser of its own and this
     is what called it.
     """
-    from pony.cli import build_parser
+    from pony.cli.program import build_parser
 
     return build_parser().parse_args(["calendar", *argv])
 
@@ -181,7 +181,7 @@ class ParserTest(CliTestCase):
         so `pony calendar --help` was another program's help and
         nothing listed both.
         """
-        from pony.cli import build_parser
+        from pony.cli.program import build_parser
 
         top = build_parser().format_help()
         self.assertIn("calendar", top)
@@ -334,7 +334,7 @@ class SyncCommandTest(CliTestCase):
             raise SyncLockError("another calendar sync is already running (pid=1234)")
             yield  # the bare yield is what makes this a generator
 
-        with mock.patch("pony.cli_calendar.acquire_sync_lock", new=_contended):
+        with mock.patch("pony.cli.calendar.acquire_sync_lock", new=_contended):
             code = cli.cmd_reset(
                 ctx,
                 yes=True,
@@ -2059,7 +2059,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
         # cmd_oauth_authorize supports an injected auth_flow; call
         # it directly for the cleanest test.
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         code = cli.cmd_oauth_authorize(
             self.stdout,
@@ -2143,7 +2143,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
                 scope=credential.scope,
             )
 
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         code = cli.cmd_oauth_authorize(
             self.stdout,
@@ -2177,7 +2177,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             mock.patch(
                 "pony.calendar.oauth.has_local_graphical_browser", return_value=False
             ),
-            mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
+            mock.patch("pony.cli.calendar._default_remote_browser_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
@@ -2206,7 +2206,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             mock.patch(
                 "pony.calendar.oauth.has_local_graphical_browser", return_value=True
             ),
-            mock.patch("pony.cli_calendar._default_loopback_flow", flow),
+            mock.patch("pony.cli.calendar._default_loopback_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
@@ -2229,8 +2229,8 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
 
         spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
         with (
-            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
-            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
+            mock.patch("pony.cli.calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli.calendar.sys.stdout") as stdout,
         ):
             stdin.isatty.return_value = False
             stdout.isatty.return_value = False
@@ -2248,12 +2248,12 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         )
         flow = mock.MagicMock(return_value=tokens)
         with (
-            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
-            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
+            mock.patch("pony.cli.calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli.calendar.sys.stdout") as stdout,
             mock.patch(
                 "pony.calendar.oauth.has_local_graphical_browser", return_value=True
             ),
-            mock.patch("pony.cli_calendar._default_loopback_flow", flow),
+            mock.patch("pony.cli.calendar._default_loopback_flow", flow),
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
@@ -2274,12 +2274,12 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         )
         flow = mock.MagicMock(return_value=tokens)
         with (
-            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
-            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
+            mock.patch("pony.cli.calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli.calendar.sys.stdout") as stdout,
             mock.patch(
                 "pony.calendar.oauth.has_local_graphical_browser", return_value=False
             ),
-            mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
+            mock.patch("pony.cli.calendar._default_remote_browser_flow", flow),
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True

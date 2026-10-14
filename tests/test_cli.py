@@ -22,7 +22,7 @@ from conftest import (
     resolve_fixture,
 )
 
-from pony.cli import main
+from pony.cli.program import main
 from pony.mail.domain import MessageFlag
 from pony.paths import AppPaths
 
@@ -556,7 +556,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(lines, sorted(lines))
 
     def test_theme_flag_parsed(self) -> None:
-        from pony.cli import build_parser
+        from pony.cli.program import build_parser
 
         args = build_parser().parse_args(["--theme", "nord", "tui"])
         self.assertEqual(args.theme, "nord")
@@ -1586,7 +1586,7 @@ class EmlViewerCliTest(unittest.TestCase):
     """Tests for the ``pony view`` command and EML viewer error paths."""
 
     def test_view_nonexistent_file_exits_with_error(self) -> None:
-        from pony.cli import run_eml_viewer
+        from pony.cli.mail import run_eml_viewer
 
         with isolated_app_env():
             rc = run_eml_viewer(path=Path("/no/such/file.eml"))
@@ -1595,7 +1595,7 @@ class EmlViewerCliTest(unittest.TestCase):
     def test_view_command_not_a_file_exits(self) -> None:
         import tempfile
 
-        from pony.cli import run_eml_viewer
+        from pony.cli.mail import run_eml_viewer
 
         with isolated_app_env(), tempfile.TemporaryDirectory() as tmpdir:
             rc = run_eml_viewer(path=Path(tmpdir))
@@ -1649,7 +1649,7 @@ class ContactsCommandsTest(unittest.TestCase):
 
     def test_contacts_export_no_path_writes_ponys_own_copy(self) -> None:
         """No path means <data_dir>/contacts.bbdb, never the user's file."""
-        from pony.cli import run_contacts_export
+        from pony.cli.mail import run_contacts_export
 
         with isolated_app_env():
             paths = isolated_paths()
@@ -1690,7 +1690,7 @@ class CliHelperFunctionsTest(unittest.TestCase):
         """_maildir_folders discovers INBOX plus dot-prefixed subdirs."""
         import tempfile
 
-        from pony.cli import _maildir_folders
+        from pony.cli.mail import _maildir_folders
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1715,7 +1715,7 @@ class CliHelperFunctionsTest(unittest.TestCase):
         self.assertEqual(result["Sent"], 1)
 
     def test_maildir_folders_nonexistent_returns_empty(self) -> None:
-        from pony.cli import _maildir_folders
+        from pony.cli.mail import _maildir_folders
 
         result = _maildir_folders(Path("/no/such/dir"))
         self.assertEqual(result, {})
@@ -1723,7 +1723,7 @@ class CliHelperFunctionsTest(unittest.TestCase):
     def test_mbox_folders_with_mbox_files(self) -> None:
         import tempfile
 
-        from pony.cli import _mbox_folders
+        from pony.cli.mail import _mbox_folders
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1737,7 +1737,7 @@ class CliHelperFunctionsTest(unittest.TestCase):
     def test_mbox_folders_empty_dir_has_inbox(self) -> None:
         import tempfile
 
-        from pony.cli import _mbox_folders
+        from pony.cli.mail import _mbox_folders
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _mbox_folders(Path(tmpdir))
@@ -1746,18 +1746,18 @@ class CliHelperFunctionsTest(unittest.TestCase):
         self.assertIsNone(result["INBOX"])
 
     def test_fmt_size_bytes(self) -> None:
-        from pony.cli import _fmt_size
+        from pony.cli.mail import _fmt_size
 
         self.assertIn("B", _fmt_size(500))
 
     def test_fmt_size_kilobytes(self) -> None:
-        from pony.cli import _fmt_size
+        from pony.cli.mail import _fmt_size
 
         result = _fmt_size(2048)
         self.assertIn("KB", result)
 
     def test_fmt_size_megabytes(self) -> None:
-        from pony.cli import _fmt_size
+        from pony.cli.mail import _fmt_size
 
         result = _fmt_size(2 * 1024 * 1024)
         self.assertIn("MB", result)
@@ -1801,7 +1801,7 @@ class MoreCliCommandsTest(unittest.TestCase):
             fresh.parent.mkdir(parents=True, exist_ok=True)
             with (
                 patch("subprocess.run", return_value=mock_result),
-                patch("pony.cli.sample_config_path", return_value=None),
+                patch("pony.cli.mail.sample_config_path", return_value=None),
             ):
                 output = run_cli("--config", str(fresh), "config", "edit")
             self.assertIn(f"Created {fresh}", output)
@@ -1981,7 +1981,7 @@ class HelpPromisesTests(unittest.TestCase):
 
     def test_the_reset_docstring_agrees_with_its_help(self) -> None:
         """The docstring is the next reader's version of the same claim."""
-        from pony.cli import run_reset
+        from pony.cli.mail import run_reset
 
         self.assertIsNotNone(run_reset.__doc__)
         doc = " ".join((run_reset.__doc__ or "").split())
@@ -2336,7 +2336,7 @@ class OpsDetailTableTest(unittest.TestCase):
         return index
 
     def test_every_op_kind_appears(self) -> None:
-        from pony.cli import _build_ops_detail_table
+        from pony.cli.mail import _build_ops_detail_table
         from pony.mail.domain import MessageRef
         from pony.mail.sync import (
             AccountSyncPlan,
@@ -2398,7 +2398,7 @@ class OpsDetailTableTest(unittest.TestCase):
         operation.  Each line is a primary-key lookup now, remembered
         so a repeated ref costs one.
         """
-        from pony.cli import _build_ops_detail_table
+        from pony.cli.mail import _build_ops_detail_table
         from pony.mail.domain import MessageRef
         from pony.mail.sync import (
             AccountSyncPlan,
@@ -2462,7 +2462,7 @@ class OpsDetailTableTest(unittest.TestCase):
         self.assertEqual(len(keyed), 1, "looked the same row up twice")
 
     def test_empty_flag_sets_render_as_dash(self) -> None:
-        from pony.cli import _build_ops_detail_table
+        from pony.cli.mail import _build_ops_detail_table
         from pony.mail.domain import MessageRef
         from pony.mail.sync import (
             AccountSyncPlan,
@@ -2882,7 +2882,7 @@ class DoctorReportRenderingTests(unittest.TestCase):
         return ServiceStatus(paths=isolated_paths(), checks=tuple(checks))  # type: ignore[arg-type]
 
     def test_a_clean_run_reports_all_checks_passed(self) -> None:
-        from pony.cli import render_doctor_report
+        from pony.cli.program import render_doctor_report
         from pony.services import CheckStatus, DoctorCheck
 
         report = render_doctor_report(
@@ -2895,7 +2895,7 @@ class DoctorReportRenderingTests(unittest.TestCase):
         self.assertIn("All 2 checks passed.", report)
 
     def test_warnings_and_errors_are_counted_separately(self) -> None:
-        from pony.cli import render_doctor_report
+        from pony.cli.program import render_doctor_report
         from pony.services import CheckStatus, DoctorCheck
 
         report = render_doctor_report(
@@ -3400,7 +3400,7 @@ class PagerFallbackTests(unittest.TestCase):
     def test_long_text_pages_until_the_user_quits(self) -> None:
         from unittest.mock import patch
 
-        from pony.cli import _run_pager
+        from pony.cli.mail import _run_pager
 
         text = "\n".join(f"line {i}" for i in range(200))
         with (
@@ -3419,7 +3419,7 @@ class PagerFallbackTests(unittest.TestCase):
     def test_a_closed_stdin_ends_the_pager(self) -> None:
         from unittest.mock import patch
 
-        from pony.cli import _run_pager
+        from pony.cli.mail import _run_pager
 
         text = "\n".join(f"line {i}" for i in range(200))
         with (
@@ -3435,7 +3435,7 @@ class PagerFallbackTests(unittest.TestCase):
     def test_short_text_never_prompts(self) -> None:
         from unittest.mock import patch
 
-        from pony.cli import _run_pager
+        from pony.cli.mail import _run_pager
 
         with (
             patch("shutil.which", return_value=None),
@@ -3452,13 +3452,13 @@ class FormattingHelperTests(unittest.TestCase):
     """Human-readable formatters used across the summary commands."""
 
     def test_durations_switch_to_seconds_past_a_thousand_ms(self) -> None:
-        from pony.cli import _fmt_ms
+        from pony.cli.mail import _fmt_ms
 
         self.assertEqual(_fmt_ms(999), "999ms")
         self.assertEqual(_fmt_ms(1500), "1.5s")
 
     def test_sizes_climb_to_terabytes(self) -> None:
-        from pony.cli import _fmt_size
+        from pony.cli.mail import _fmt_size
 
         self.assertEqual(_fmt_size(512), "512 B")
         self.assertEqual(_fmt_size(3 * 1024**4), "3.0 TB")
@@ -3468,7 +3468,7 @@ class CorruptIndexQueryTests(unittest.TestCase):
     """``local-summary`` reads the index directly and must survive a bad file."""
 
     def test_a_corrupt_database_yields_empty_results(self) -> None:
-        from pony.cli import _query_index
+        from pony.cli.mail import _query_index
 
         bad = TMP_ROOT / f"corrupt-{uuid4().hex}.sqlite3"
         bad.write_bytes(b"this is definitely not a sqlite database")
@@ -3521,7 +3521,7 @@ class RemainingCommandArmTests(unittest.TestCase):
 
     def test_mbox_folders_are_listed_without_counting_them(self) -> None:
         """Counting an mbox means parsing it, so the summary shows paths only."""
-        from pony.cli import _mbox_folders
+        from pony.cli.mail import _mbox_folders
 
         root = TMP_ROOT / f"mbox-summary-{uuid4().hex}"
         root.mkdir(parents=True, exist_ok=True)
@@ -3538,7 +3538,7 @@ class RemainingCommandArmTests(unittest.TestCase):
         self.assertEqual(listed, {"INBOX": None, "Archive/Work": None})
 
     def test_an_empty_mbox_root_still_reports_an_inbox(self) -> None:
-        from pony.cli import _mbox_folders
+        from pony.cli.mail import _mbox_folders
 
         root = TMP_ROOT / f"mbox-empty-{uuid4().hex}"
         root.mkdir(parents=True, exist_ok=True)
@@ -3549,7 +3549,7 @@ class RemainingCommandArmTests(unittest.TestCase):
 
     def test_the_index_query_reports_counts_and_last_sync(self) -> None:
         """``local-summary`` reads the index directly rather than via the repo."""
-        from pony.cli import _query_index
+        from pony.cli.mail import _query_index
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Counted", body="body")
@@ -3727,7 +3727,7 @@ class SearchQueryLanguageTests(unittest.TestCase):
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Subject", body="body")
-            with patch("pony.cli.parse_query", side_effect=parse_query) as spy:
+            with patch("pony.cli.mail.parse_query", side_effect=parse_query) as spy:
                 run_cli("--config", str(config_path), "search", "from:alice")
 
         spy.assert_called_once_with("from:alice")
@@ -3854,7 +3854,7 @@ class BareFilenameShortcutTests(unittest.TestCase):
         """Run main(*argv*) with the viewer stubbed; return (kwargs, rc)."""
         from unittest.mock import patch
 
-        with patch("pony.cli.run_eml_viewer", return_value=0) as viewer:
+        with patch("pony.cli.mail.run_eml_viewer", return_value=0) as viewer:
             try:
                 rc: int | None = main(argv)
             except SystemExit as exc:
@@ -3897,8 +3897,8 @@ class BareFilenameShortcutTests(unittest.TestCase):
         shadow.write_bytes(corpus.plain_text())
         with (
             contextlib.chdir(self.dir),
-            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
-            patch("pony.cli.run_sync", return_value=0) as sync,
+            patch("pony.cli.mail.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.mail.run_sync", return_value=0) as sync,
             contextlib.suppress(SystemExit),
         ):
             main(["sync"])
@@ -3913,8 +3913,8 @@ class BareFilenameShortcutTests(unittest.TestCase):
         config = self.dir / "pony.toml"
         config.write_text("version = 2\n", encoding="utf-8")
         with (
-            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
-            patch("pony.cli.run_tui", return_value=0) as tui,
+            patch("pony.cli.mail.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.program.run_tui", return_value=0) as tui,
             contextlib.suppress(SystemExit),
         ):
             main(["--config", str(config)])
@@ -3925,8 +3925,8 @@ class BareFilenameShortcutTests(unittest.TestCase):
         from unittest.mock import patch
 
         with (
-            patch("pony.cli.run_eml_viewer", return_value=0) as viewer,
-            patch("pony.cli.run_tui", return_value=0) as tui,
+            patch("pony.cli.mail.run_eml_viewer", return_value=0) as viewer,
+            patch("pony.cli.program.run_tui", return_value=0) as tui,
             contextlib.suppress(SystemExit),
         ):
             main([])
@@ -3998,7 +3998,7 @@ class ProfileStampTestCase(unittest.TestCase):
         mine = self._config(profile="mine")
         errors = io.StringIO()
         with (
-            patch("pony.cli.run_sync", return_value=0) as handler,
+            patch("pony.cli.mail.run_sync", return_value=0) as handler,
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(main(["--config", str(mine), "doctor"]), 0)
@@ -4122,7 +4122,7 @@ class UnsafeDeleteTestCase(unittest.TestCase):
         self.data.mkdir(parents=True, exist_ok=True)
 
     def _reason(self, target: Path) -> str | None:
-        from pony.cli import unsafe_to_delete
+        from pony.cli.mail import unsafe_to_delete
 
         return unsafe_to_delete(target, data_dir=self.data)
 
@@ -4168,7 +4168,7 @@ class MirrorShapedDeleteTestCase(unittest.TestCase):
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def _reason(self, target: Path) -> str | None:
-        from pony.cli import not_a_mirror
+        from pony.cli.mail import not_a_mirror
 
         return not_a_mirror(target)
 

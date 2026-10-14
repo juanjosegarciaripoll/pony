@@ -9,7 +9,8 @@ from unittest import mock
 
 import pytest
 
-import pony.cli as cli
+import pony.cli.mail as cli
+import pony.cli.program as program
 from pony.config import ConfigError
 from pony.mail.domain import AppConfig
 from pony.mail.storage_indexing import RescanResult
@@ -105,11 +106,11 @@ def test_rescan_progress_reports_unchanged_state(
 def test_run_pager_uses_less_when_it_succeeds() -> None:
     completed = SimpleNamespace(returncode=0)
     with (
-        mock.patch.object(cli.shutil, "which", return_value="/usr/bin/less"),
-        mock.patch.object(cli.subprocess, "run", return_value=completed) as run,
-        mock.patch.object(cli, "print") as fallback_print,
+        mock.patch.object(program.shutil, "which", return_value="/usr/bin/less"),
+        mock.patch.object(program.subprocess, "run", return_value=completed) as run,
+        mock.patch.object(program, "print") as fallback_print,
     ):
-        cli._run_pager("one\ntwo")
+        program._run_pager("one\ntwo")
 
     run.assert_called_once_with(
         ["/usr/bin/less", "-FRSX"],
@@ -121,33 +122,33 @@ def test_run_pager_uses_less_when_it_succeeds() -> None:
 
 def test_run_pager_falls_back_and_stops_when_user_quits() -> None:
     with (
-        mock.patch.object(cli.shutil, "which", return_value=None),
+        mock.patch.object(program.shutil, "which", return_value=None),
         mock.patch.object(
-            cli.shutil,
+            program.shutil,
             "get_terminal_size",
             return_value=os.terminal_size((80, 3)),
         ),
-        mock.patch.object(cli, "input", return_value="q"),
-        mock.patch.object(cli, "print") as output,
+        mock.patch.object(program, "input", return_value="q"),
+        mock.patch.object(program, "print") as output,
     ):
-        cli._run_pager("one\ntwo\nthree")
+        program._run_pager("one\ntwo\nthree")
 
     output.assert_called_once_with("one")
 
 
 def test_run_pager_recovers_from_less_terminal_and_input_errors() -> None:
     with (
-        mock.patch.object(cli.shutil, "which", return_value="less"),
-        mock.patch.object(cli.subprocess, "run", side_effect=OSError("cannot run")),
+        mock.patch.object(program.shutil, "which", return_value="less"),
+        mock.patch.object(program.subprocess, "run", side_effect=OSError("cannot run")),
         mock.patch.object(
-            cli.shutil,
+            program.shutil,
             "get_terminal_size",
             side_effect=OSError("no terminal"),
         ),
-        mock.patch.object(cli, "input", side_effect=EOFError),
-        mock.patch.object(cli, "print") as output,
+        mock.patch.object(program, "input", side_effect=EOFError),
+        mock.patch.object(program, "print") as output,
     ):
-        cli._run_pager("\n".join(str(line) for line in range(30)))
+        program._run_pager("\n".join(str(line) for line in range(30)))
 
     assert output.call_count == 1
 
@@ -155,11 +156,11 @@ def test_run_pager_recovers_from_less_terminal_and_input_errors() -> None:
 def test_require_config_noninteractive_reports_original_error(tmp_path: Path) -> None:
     error = ConfigError("broken value")
     with (
-        mock.patch.object(cli, "load_config", side_effect=error),
-        mock.patch.object(cli.sys.stdin, "isatty", return_value=False),
+        mock.patch.object(program, "load_config", side_effect=error),
+        mock.patch.object(program.sys.stdin, "isatty", return_value=False),
         pytest.raises(SystemExit, match="Configuration error: broken value"),
     ):
-        cli.require_config(tmp_path / "config.toml")
+        program.require_config(tmp_path / "config.toml")
 
 
 def test_require_config_can_run_setup_then_reload(tmp_path: Path) -> None:
@@ -167,29 +168,29 @@ def test_require_config_can_run_setup_then_reload(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     with (
         mock.patch.object(
-            cli,
+            program,
             "load_config",
             side_effect=[ConfigError("missing"), config],
         ),
-        mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli, "resolve", return_value=paths),
-        mock.patch.object(cli, "input", return_value=""),
+        mock.patch.object(program.sys.stdin, "isatty", return_value=True),
+        mock.patch.object(program, "resolve", return_value=paths),
+        mock.patch.object(program, "input", return_value=""),
         mock.patch.object(cli, "run_account_add_interactive", return_value=0),
     ):
-        assert cli.require_config(paths.config_file) is config
+        assert program.require_config(paths.config_file) is config
 
 
 def test_require_config_declined_setup_reports_error(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     with (
-        mock.patch.object(cli, "load_config", side_effect=ConfigError("missing")),
-        mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli, "resolve", return_value=paths),
-        mock.patch.object(cli, "input", return_value="no"),
+        mock.patch.object(program, "load_config", side_effect=ConfigError("missing")),
+        mock.patch.object(program.sys.stdin, "isatty", return_value=True),
+        mock.patch.object(program, "resolve", return_value=paths),
+        mock.patch.object(program, "input", return_value="no"),
         mock.patch.object(cli, "run_account_add_interactive") as setup,
         pytest.raises(SystemExit, match="Configuration error: missing"),
     ):
-        cli.require_config(paths.config_file)
+        program.require_config(paths.config_file)
 
     setup.assert_not_called()
 
@@ -201,16 +202,16 @@ def test_require_config_can_edit_then_reload(tmp_path: Path) -> None:
     paths.config_file.touch()
     with (
         mock.patch.object(
-            cli,
+            program,
             "load_config",
             side_effect=[ConfigError("broken"), config],
         ),
-        mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli, "resolve", return_value=paths),
-        mock.patch.object(cli, "input", return_value="yes"),
+        mock.patch.object(program.sys.stdin, "isatty", return_value=True),
+        mock.patch.object(program, "resolve", return_value=paths),
+        mock.patch.object(program, "input", return_value="yes"),
         mock.patch.object(cli, "run_config_edit") as edit,
     ):
-        assert cli.require_config(paths.config_file) is config
+        assert program.require_config(paths.config_file) is config
 
     edit.assert_called_once_with(paths=paths, config_path=paths.config_file)
 
@@ -221,16 +222,16 @@ def test_require_config_reports_failed_retry_after_edit(tmp_path: Path) -> None:
     paths.config_file.touch()
     with (
         mock.patch.object(
-            cli,
+            program,
             "load_config",
             side_effect=[ConfigError("broken"), ConfigError("still broken")],
         ),
-        mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
-        mock.patch.object(cli, "resolve", return_value=paths),
-        mock.patch.object(cli, "input", return_value="yes"),
+        mock.patch.object(program.sys.stdin, "isatty", return_value=True),
+        mock.patch.object(program, "resolve", return_value=paths),
+        mock.patch.object(program, "input", return_value="yes"),
         mock.patch.object(cli, "run_config_edit") as edit,
         pytest.raises(SystemExit, match="Configuration still invalid: still broken"),
     ):
-        cli.require_config(paths.config_file)
+        program.require_config(paths.config_file)
 
     edit.assert_called_once_with(paths=paths, config_path=paths.config_file)

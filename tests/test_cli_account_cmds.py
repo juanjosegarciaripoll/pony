@@ -1,6 +1,6 @@
 """Tests for ``pony account`` and ``pony config`` CLI subcommands.
 
-Covers the interactive / network-touching handlers in ``pony.cli`` that are
+Covers the interactive / network-touching handlers in ``pony.cli.mail`` that are
 otherwise skipped by the non-interactive command surface: ``account test``,
 the ``account add`` wizard, ``account set-password``, ``config edit`` and
 ``config show``.
@@ -23,11 +23,8 @@ from test_cli import (
     temporary_config,
 )
 
-from pony.cli import (
-    main,
-    run_account_add_interactive,
-    run_account_set_password,
-)
+from pony.cli import main
+from pony.cli.mail import run_account_add_interactive, run_account_set_password
 from pony.mail.imap_client import ImapAuthError
 
 
@@ -93,7 +90,7 @@ class AccountTestCommandTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch("pony.cli.ImapSession", _FakeSession),
+            mock.patch("pony.cli.mail.ImapSession", _FakeSession),
         ):
             out, err, rc = _run_capturing_stderr(
                 ["--config", str(config_path), "account", "test", "personal"]
@@ -123,7 +120,7 @@ class AccountTestCommandTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch("pony.cli.ImapSession", _raise),
+            mock.patch("pony.cli.mail.ImapSession", _raise),
         ):
             out, err, rc = _run_capturing_stderr(
                 ["--config", str(config_path), "account", "test", "personal"]
@@ -139,7 +136,7 @@ class AccountTestCommandTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch("pony.cli.ImapSession", _raise),
+            mock.patch("pony.cli.mail.ImapSession", _raise),
         ):
             out, err, rc = _run_capturing_stderr(
                 ["--config", str(config_path), "account", "test", "personal"]
@@ -240,7 +237,7 @@ class ConfigEditTestCase(unittest.TestCase):
             fake_run = mock.Mock(return_value=mock.Mock(returncode=0))
             with (
                 mock.patch.dict("os.environ", {"EDITOR": "true"}, clear=False),
-                mock.patch("pony.cli.subprocess.run", fake_run),
+                mock.patch("pony.cli.mail.subprocess.run", fake_run),
             ):
                 out, err, rc = _run_capturing_stderr(["config", "edit"])
         self.assertEqual(rc, 0)
@@ -256,7 +253,7 @@ class ConfigEditTestCase(unittest.TestCase):
             fake_run = mock.Mock(return_value=mock.Mock(returncode=0))
             with (
                 mock.patch.dict("os.environ", {"EDITOR": "true"}, clear=False),
-                mock.patch("pony.cli.subprocess.run", fake_run),
+                mock.patch("pony.cli.mail.subprocess.run", fake_run),
             ):
                 out, err, rc = _run_capturing_stderr(
                     ["--config", str(config_path), "config", "edit"]
@@ -281,8 +278,8 @@ class ConfigEditTestCase(unittest.TestCase):
             fake_run = mock.Mock(return_value=mock.Mock(returncode=0))
             with (
                 mock.patch.dict("os.environ", {"EDITOR": "true"}, clear=False),
-                mock.patch("pony.cli.subprocess.run", fake_run),
-                mock.patch("pony.cli.sample_config_path", return_value=None),
+                mock.patch("pony.cli.mail.subprocess.run", fake_run),
+                mock.patch("pony.cli.mail.sample_config_path", return_value=None),
             ):
                 out, err, rc = _run_capturing_stderr(["config", "edit"])
             text = paths.config_file.read_text(encoding="utf-8")
@@ -301,7 +298,7 @@ class ConfigEditTestCase(unittest.TestCase):
                     {"EDITOR": "", "VISUAL": ""},
                     clear=False,
                 ),
-                mock.patch("pony.cli.subprocess.run", fake_run),
+                mock.patch("pony.cli.mail.subprocess.run", fake_run),
             ):
                 out, err, rc = _run_capturing_stderr(
                     ["--config", str(config_path), "config", "edit"]
@@ -571,7 +568,7 @@ class AccountAddWizardEdgeCaseTestCase(unittest.TestCase):
         Off a terminal it prints a config block instead — hence the
         patched ``isatty``.
         """
-        from pony.cli import run_account_add
+        from pony.cli.mail import run_account_add
 
         inputs = _prompt_inputs(
             [

@@ -328,14 +328,14 @@ class ExpandPathTest(unittest.TestCase):
 
     def test_every_reader_of_a_configured_path_uses_the_same_function(self) -> None:
         import pony.calendar.config
-        import pony.cli
+        import pony.cli.program
         import pony.config
         import pony.paths
 
         one = pony.paths.expand_path
         self.assertIs(pony.config.expand_path, one)
         self.assertIs(pony.calendar.config.expand_path, one)
-        self.assertIs(pony.cli.expand_path, one)
+        self.assertIs(pony.cli.program.expand_path, one)
 
     def test_a_variable_and_a_home_reference_both_expand(self) -> None:
         with patch.dict(os.environ, {"PONY_TEST_DIR": "/somewhere"}):

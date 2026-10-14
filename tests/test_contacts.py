@@ -555,7 +555,7 @@ def _capture(fn: object, *args: object, **kwargs: object) -> str:
 
 class ContactsCliTests(unittest.TestCase):
     def test_contacts_search_finds_contact(self) -> None:
-        from pony.cli import run_contacts_search
+        from pony.cli.mail import run_contacts_search
 
         paths, repo = _cli_paths()
         repo.upsert_contact(
@@ -576,7 +576,7 @@ class ContactsCliTests(unittest.TestCase):
         self.assertIn("Test User", output)
 
     def test_contacts_search_no_results(self) -> None:
-        from pony.cli import run_contacts_search
+        from pony.cli.mail import run_contacts_search
 
         paths, repo = _cli_paths()
         del repo  # unused — just need initialized DB
@@ -590,7 +590,7 @@ class ContactsCliTests(unittest.TestCase):
         self.assertIn("No contacts", output)
 
     def test_contacts_show_found(self) -> None:
-        from pony.cli import run_contacts_show
+        from pony.cli.mail import run_contacts_show
 
         paths, repo = _cli_paths()
         repo.upsert_contact(
@@ -617,7 +617,7 @@ class ContactsCliTests(unittest.TestCase):
         import io
         import sys
 
-        from pony.cli import run_contacts_show
+        from pony.cli.mail import run_contacts_show
 
         paths, repo = _cli_paths()
         del repo
@@ -633,7 +633,7 @@ class ContactsCliTests(unittest.TestCase):
         self.assertIn("No contact found", captured.getvalue())
 
     def test_contacts_export_to_explicit_path(self) -> None:
-        from pony.cli import run_contacts_export
+        from pony.cli.mail import run_contacts_export
 
         paths, repo = _cli_paths()
         repo.upsert_contact(
@@ -664,7 +664,7 @@ class ContactsCliTests(unittest.TestCase):
         notes, or stable record id, so writing over the user's file would
         destroy data Pony never had.
         """
-        from pony.cli import run_contacts_export
+        from pony.cli.mail import run_contacts_export
 
         paths, repo = _cli_paths()
         repo.upsert_contact(
@@ -681,7 +681,7 @@ class ContactsCliTests(unittest.TestCase):
         self.assertEqual(read_bbdb(destination)[0].first_name, "Ana")
 
     def test_contacts_import_creates_new(self) -> None:
-        from pony.cli import run_contacts_import
+        from pony.cli.mail import run_contacts_import
 
         paths, repo = _cli_paths()
         del repo
@@ -713,7 +713,7 @@ class ContactsCliTests(unittest.TestCase):
         self.assertEqual(found.first_name, "Eve")
 
     def test_contacts_import_merges_existing(self) -> None:
-        from pony.cli import import_bbdb_contacts
+        from pony.cli.mail import import_bbdb_contacts
 
         paths, repo = _cli_paths()
         # Seed an existing contact.
@@ -760,7 +760,7 @@ class ContactsCliTests(unittest.TestCase):
         import io
         import sys
 
-        from pony.cli import run_contacts_import
+        from pony.cli.mail import run_contacts_import
 
         paths, repo = _cli_paths()
         del repo
@@ -1550,7 +1550,7 @@ class ContactLookupCostTests(unittest.TestCase):
         self.assertEqual(self.calls, 0)
 
     def test_importing_address_less_records_never_lists_the_book(self) -> None:
-        from pony.cli import import_bbdb_contacts
+        from pony.cli.mail import import_bbdb_contacts
 
         tmp = TMP_ROOT / "contacts" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1571,7 +1571,7 @@ class ContactLookupCostTests(unittest.TestCase):
         )
 
     def test_re_importing_the_same_address_less_record_still_merges(self) -> None:
-        from pony.cli import import_bbdb_contacts
+        from pony.cli.mail import import_bbdb_contacts
         from pony.mail.contact_actions import ImportTally
 
         tmp = TMP_ROOT / "contacts" / uuid4().hex

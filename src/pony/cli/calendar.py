@@ -89,7 +89,7 @@ from pony.calendar.services import (
 )
 from pony.calendar.sync import describe_account_sync, sync_account
 
-from .calendar_runtime import CalendarNotConfiguredError
+from ..calendar_runtime import CalendarNotConfiguredError
 
 ContextFactory = Callable[[], "CliContext"]
 EditorFn = Callable[[Path], None]

@@ -10,7 +10,7 @@ from unittest import mock
 
 from conftest import TMP_ROOT, resolve_fixture
 
-from pony.cli import build_parser, main, run_calendar
+from pony.cli.program import build_parser, main, run_calendar
 from pony.paths import resolve
 
 _CONFIG = """

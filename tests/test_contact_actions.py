@@ -1109,7 +1109,7 @@ class ImportContactsTest(unittest.TestCase):
 
     The matching rule, the merge policy and what to say about a record
     an import cannot arbitrate were written inside
-    `pony.cli.import_bbdb_contacts`, which also printed mid-loop -- so
+    `pony.cli.mail.import_bbdb_contacts`, which also printed mid-loop -- so
     nothing but that command could import contacts, and a skipped
     record went to stdout rather than to whoever asked.
     """

@@ -12,7 +12,8 @@ from unittest import mock
 
 from conftest import TMP_ROOT
 
-from pony.cli import main, run_eml_to_pdf
+from pony.cli.mail import run_eml_to_pdf
+from pony.cli.program import main
 from pony.mail.pdf_export import NoPdfConverterError
 
 _CONVERT = "pony.mail.pdf_export.html_to_pdf"
@@ -188,7 +189,7 @@ class ViewCommandTest(unittest.TestCase):
 
     def test_the_viewer_still_opens_one_file(self) -> None:
         source = _eml(self.root / "report.eml")
-        with mock.patch("pony.cli.run_eml_viewer", return_value=0) as viewer:
+        with mock.patch("pony.cli.mail.run_eml_viewer", return_value=0) as viewer:
             code = main(["view", str(source)])
         self.assertEqual(0, code)
         self.assertEqual(source, viewer.call_args.kwargs["path"])

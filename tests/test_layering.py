@@ -218,11 +218,11 @@ _FRONT_END_PREFIXES = ("pony.tui", "pony.web")
 #: arriving by mail -- `pony.config`, `pony.services`,
 #: `pony.calendar_runtime`).
 _MODEL_PREFIXES = ("pony.mail", "pony.calendar")
-#: The command line is Pony's, both halves of it: `pony.cli` parses and
-#: `pony.cli_calendar` holds the calendar's commands. Neither model has
-#: one of its own, which is how a front end came to import a command
-#: line.
-_COMMAND_LINE_MODULES = ("pony.cli", "pony.cli_calendar")
+#: The command line, all of it: `pony.cli.program` parses and
+#: dispatches, `pony.cli.mail` and `pony.cli.calendar` hold the
+#: commands. Neither model has one of its own, which is how a front end
+#: came to import a command line.
+_COMMAND_LINE_MODULES = ("pony.cli",)
 #: The program's entry point, which is above all five: starting the
 #: command line is what it is for.
 _ENTRY_POINTS = ("pony.__main__",)
@@ -315,7 +315,7 @@ class ComponentsStayApartTest(unittest.TestCase):
         for module, path in _source_files():
             if (
                 _belongs_to(module, _FRONT_END_PREFIXES)
-                or module in _COMMAND_LINE_MODULES
+                or _belongs_to(module, _COMMAND_LINE_MODULES)
                 or module in _ENTRY_POINTS
             ):
                 continue

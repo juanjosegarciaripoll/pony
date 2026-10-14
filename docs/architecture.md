@@ -54,8 +54,10 @@ src/pony/
   services.py          # doctor diagnostics, mirror integrity, both halves
 
   # the command line
-  cli.py               # argparse command dispatch, both halves of it
-  cli_calendar.py      # the calendar's commands (`pony calendar ...`)
+  cli/
+    program.py         # the one parser, the dispatch, the launchers
+    mail.py            # the mail commands
+    calendar.py        # the calendar's commands (`pony calendar ...`)
   mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
 
 src/pony/mail/         # the mail model

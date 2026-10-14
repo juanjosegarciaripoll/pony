@@ -80,8 +80,8 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         config: AppConfig | None = None,
         session_factory: object | None = None,
     ) -> object:
-        from pony import cli_calendar as cli
         from pony.calendar.credentials import DefaultCredentialsProvider
+        from pony.cli import calendar as cli
 
         return cli.CliContext(
             config=config or self._config(),
@@ -117,7 +117,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_import_with_both_flags(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_file = self._write_ics("event.ics", corpus.simple_event())
         ctx = self._ctx()
@@ -155,7 +155,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("imported 1", self.stdout.getvalue())
 
     def test_import_non_interactive_missing_flags_exits_2(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_file = self._write_ics("event.ics", corpus.simple_event())
         ctx = self._ctx()
@@ -173,7 +173,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("non-interactive", self.stderr.getvalue())
 
     def test_import_interactive_prompts_calendar_selection(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         # Seed two calendars so the menu has two entries.
         for cal in ("work", "home"):
@@ -221,7 +221,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("imported 1", self.stdout.getvalue())
 
     def test_import_directory_walks_ics_files(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_dir = self.tmp / "ics_dir"
         ics_dir.mkdir()
@@ -244,7 +244,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("imported 2", self.stdout.getvalue())
 
     def test_import_unknown_account_exits_2(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_file = self._write_ics("event.ics", corpus.simple_event())
         ctx = self._ctx()
@@ -262,7 +262,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("no-such-account", self.stderr.getvalue())
 
     def test_import_all_skipped_returns_nonzero(self) -> None:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_file = self._write_ics("event.ics", corpus.simple_event())
         ctx = self._ctx()
@@ -295,7 +295,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
     # ------------------------------------------------------------------
 
     def _import(self, ctx: object, **kwargs: object) -> int:
-        from pony import cli_calendar as cli
+        from pony.cli import calendar as cli
 
         ics_file = self._write_ics("event.ics", corpus.simple_event())
         args: dict[str, object] = {

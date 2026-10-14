@@ -11,7 +11,7 @@ not in either of them: see **Where an operation lives** below.
 One package, four tiers: what both halves share (`pony.outcome`,
 `pony.paths`, `pony.sqlite`, `pony.keys`, ...), the two models
 (`pony.mail`, `pony.calendar`), the three front ends over them
-(`pony.tui`, `pony.web`, `pony.cli` + `pony.cli_calendar`), and the few
+(`pony.tui`, `pony.web`, `pony.cli` + `pony.cli.calendar`), and the few
 modules where the halves meet (`pony.config`, `pony.invitation`,
 `pony.services`, `pony.calendar_runtime`).
 
@@ -138,7 +138,7 @@ Key test infrastructure:
 | Need | Use |
 |---|---|
 | CLI commands | `tests/test_cli.py` — call `main([...])` with a temp `AppPaths` |
-| CLI sync command | `tests/test_cli_sync_cmd.py` — patches `pony.cli.ImapSession` |
+| CLI sync command | `tests/test_cli_sync_cmd.py` — patches `pony.cli.mail.ImapSession` |
 | CLI account wizard | `tests/test_cli_account_cmds.py` — patched `input` / `getpass` |
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
@@ -221,8 +221,8 @@ both packages:
 
 | Missing | File | % |
 |---:|---|---:|
-| 292 | `pony/cli_calendar.py` | 77.59 |
-| 117 | `pony/cli.py` | 94.85 |
+| 292 | `pony/cli/calendar.py` | 77.59 |
+| 117 | `pony/cli/program.py` | 94.85 |
 | 94 | `pony/tui/calendar/screens/main_screen.py` | 84.84 |
 | 94 | `pony/calendar/sync.py` | 87.02 |
 | 70 | `pony/calendar/recurrence.py` | 83.41 |
@@ -238,9 +238,9 @@ its own 85 % floor, not Pony's habits — that is where the headroom is.
 Windows branch and cannot run on Linux CI.
 
 `pony/credentials.py` is platform-gated and cannot rise on Linux CI
-(below). Pony's `cli.py`, `sync.py` and `main_screen.py` are mostly the
+(below). Pony's command line, `sync.py` and `main_screen.py` are mostly the
 verified-unreachable arms below — read that section before spending effort
-on them. `pony/cli.py` rose in missing lines when `pony web` gained its
+on them. `pony/cli/program.py` rose in missing lines when `pony web` gained its
 credentials and scheduler wiring: launching a real server is not
 something the suite does, so those lines sit with `run_tui`'s.
 
@@ -264,16 +264,16 @@ not by the donor file's percentage.
 
 **Platform-gated.** `credentials.py` sits at 83.5 % and cannot rise on Linux
 CI: every uncovered line is inside `_dpapi_encrypt` / `_dpapi_decrypt`
-(`sys.platform == "win32"`) or the macOS `ioreg` branch. `cli.py`'s
+(`sys.platform == "win32"`) or the macOS `ioreg` branch. `cli/mail.py`'s
 `editor = "notepad"` is the same. `action_print_pdf` needs an external
 converter and `action_edit_external` spawns an editor.
 
 **Verified unreachable** — each of these was attempted and found to be dead or
 defensive, so re-deriving it is wasted effort:
 
-- `cli.py:621-622` — `parser.error("Unhandled command.")`. Every subcommand
+- `cli/program.py:827` — `parser.error("Unhandled command.")`. Every subcommand
   argparse accepts is handled above it.
-- `cli.py:1403-1404` — `folder list`'s `(no folders)` arm. Both mirror
+- `cli/mail.py:799` — `folder list`'s `(no folders)` arm. Both mirror
   backends always synthesize INBOX, so the list is never empty.
 - `sync.py:1267-1272` — the `suppress_delete_ids` arm. The parameter has a
   default and **no call site ever passes it**, so the set is always empty.

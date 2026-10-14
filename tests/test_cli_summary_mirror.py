@@ -1,8 +1,8 @@
 """Coverage for ``server-summary``, ``folder mirror``, and ``local-summary``.
 
-These exercise :func:`pony.cli.run_server_summary`,
-:func:`pony.cli.run_mirror_folder`, and the table-printing branches of
-:func:`pony.cli.run_local_summary` / :func:`pony.cli.run_folder_list` that
+These exercise :func:`pony.cli.mail.run_server_summary`,
+:func:`pony.cli.mail.run_mirror_folder`, and the table-printing branches of
+:func:`pony.cli.mail.run_local_summary` / :func:`pony.cli.mail.run_folder_list` that
 the existing ``tests/test_cli.py`` smoke tests do not reach.
 """
 
@@ -24,7 +24,7 @@ from test_cli import (
     temporary_config,
 )
 
-import pony.cli
+import pony.cli.mail
 
 
 class _FakeImapSession:
@@ -108,7 +108,7 @@ class ServerSummaryTest(unittest.TestCase):
             config_path = env_root / "config" / "config.toml"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(_config_with_policy(), encoding="utf-8")
-            with mock.patch.object(pony.cli, "ImapSession", fake):
+            with mock.patch.object(pony.cli.mail, "ImapSession", fake):
                 output = run_cli("--config", str(config_path), "server-summary")
         self.assertIn("Account: personal", output)
         self.assertIn("INBOX", output)
@@ -129,7 +129,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", fake),
+            mock.patch.object(pony.cli.mail, "ImapSession", fake),
         ):
             output = run_cli("--config", str(config_path), "server-summary")
         self.assertIn("error:", output)
@@ -144,7 +144,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", fake),
+            mock.patch.object(pony.cli.mail, "ImapSession", fake),
         ):
             output = run_cli("--config", str(config_path), "server-summary")
         self.assertIn("INBOX", output)
@@ -155,7 +155,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", fake),
+            mock.patch.object(pony.cli.mail, "ImapSession", fake),
         ):
             output = run_cli("--config", str(config_path), "server-summary")
         self.assertIn("Could not list folders", output)
@@ -168,7 +168,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", _boom),
+            mock.patch.object(pony.cli.mail, "ImapSession", _boom),
         ):
             output = run_cli("--config", str(config_path), "server-summary")
         self.assertIn("Could not connect", output)
@@ -178,7 +178,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", fake),
+            mock.patch.object(pony.cli.mail, "ImapSession", fake),
         ):
             output = run_cli("--config", str(config_path), "server-summary", "personal")
         self.assertIn("Account: personal", output)
@@ -188,7 +188,7 @@ class ServerSummaryTest(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            mock.patch.object(pony.cli, "ImapSession", fake),
+            mock.patch.object(pony.cli.mail, "ImapSession", fake),
             self.assertRaises(SystemExit) as ctx,
         ):
             run_cli("--config", str(config_path), "server-summary", "ghost")
@@ -298,7 +298,9 @@ class MirrorFolderTest(unittest.TestCase):
             self._seed_into(config_path, folder_name="Archive", subject="Dst")
             with (
                 mock.patch("sys.stdin.isatty", return_value=True),
-                mock.patch.object(pony.cli, "input", create=True, return_value="y"),
+                mock.patch.object(
+                    pony.cli.mail, "input", create=True, return_value="y"
+                ),
             ):
                 output, rc = run_cli_capture(*self._mirror_args(config_path))
         self.assertEqual(rc, 0)
@@ -311,7 +313,9 @@ class MirrorFolderTest(unittest.TestCase):
             self._seed_into(config_path, folder_name="Archive", subject="Dst")
             with (
                 mock.patch("sys.stdin.isatty", return_value=True),
-                mock.patch.object(pony.cli, "input", create=True, return_value="n"),
+                mock.patch.object(
+                    pony.cli.mail, "input", create=True, return_value="n"
+                ),
             ):
                 output, rc = run_cli_capture(*self._mirror_args(config_path))
         self.assertEqual(rc, 1)
@@ -344,7 +348,9 @@ class MirrorFolderTest(unittest.TestCase):
             self._seed_into(config_path, folder_name="Archive", subject="Dst")
             with (
                 mock.patch("sys.stdin.isatty", return_value=True),
-                mock.patch.object(pony.cli, "input", create=True, return_value="y"),
+                mock.patch.object(
+                    pony.cli.mail, "input", create=True, return_value="y"
+                ),
                 mock.patch.object(MaildirMirrorRepository, "delete_message", _boom),
             ):
                 output, rc = run_cli_capture(*self._mirror_args(config_path))
@@ -428,8 +434,10 @@ class LocalSummaryTableTest(unittest.TestCase):
         connection = mock.MagicMock()
         connection.execute.side_effect = [[], []]
 
-        with mock.patch.object(pony.cli.sqlite3, "connect", return_value=connection):
-            pony.cli._query_index(Path(__file__), "personal")
+        with mock.patch.object(
+            pony.cli.mail.sqlite3, "connect", return_value=connection
+        ):
+            pony.cli.mail._query_index(Path(__file__), "personal")
 
         connection.close.assert_called_once_with()
 

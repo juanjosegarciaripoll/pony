@@ -1,7 +1,7 @@
 """CLI tests for ``compose`` and the ``contacts`` subcommands.
 
 Covers ``run_compose`` (error branches plus a patched happy path) and the
-contacts import/export/show/search code paths in ``pony.cli`` without
+contacts import/export/show/search code paths in ``pony.cli.mail`` without
 opening a TUI or touching the network.
 """
 

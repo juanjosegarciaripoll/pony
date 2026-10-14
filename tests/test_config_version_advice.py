@@ -36,7 +36,7 @@ def _stated_versions(text: str) -> set[int]:
 def test_the_account_template_quotes_the_version_the_loader_wants(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from pony.cli import run_account_add
+    from pony.cli.mail import run_account_add
 
     paths = make_tmp_paths("config-version-advice")
 
