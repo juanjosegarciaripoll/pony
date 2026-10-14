@@ -49,7 +49,10 @@ _SCENARIO = textwrap.dedent(
 
     async def main() -> None:
         scenario = sys.argv[1]
-        root = Path(tempfile.mkdtemp(prefix="pony-real-tree-"))
+        # Under the working directory the parent hands us, which is a
+        # pytest temp directory it prunes. In the system temp directory
+        # these stayed for good, one per scenario per run.
+        root = Path(tempfile.mkdtemp(prefix="pony-real-tree-", dir=Path.cwd()))
         nested = root / "nested"
         nested.mkdir()
         (root / "message.txt").write_text("root", encoding="utf-8")

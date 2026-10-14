@@ -7,7 +7,6 @@ and ``[Cancel]`` / Escape to abort.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -16,22 +15,12 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label
 
+from ...paths import contain
+from ..dir_tree import DirOnlyTree
 from .floating_input_screen import SimpleInputScreen
 
 # Persists the last-used directory across invocations within a session.
 _session_dir: Path | None = None
-
-
-# ---------------------------------------------------------------------------
-# Directory-only tree
-# ---------------------------------------------------------------------------
-
-
-class _DirOnlyTree(DirectoryTree):
-    """DirectoryTree variant that shows directories only."""
-
-    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
-        return [p for p in paths if p.is_dir()]
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +85,7 @@ class SaveFolderPickerScreen(Screen[Path | None]):
         color: $text;
     }
 
-    _DirOnlyTree {
+    DirOnlyTree {
         height: 1fr;
     }
 
@@ -121,10 +110,28 @@ class SaveFolderPickerScreen(Screen[Path | None]):
     }
     """
 
-    def __init__(self, start_dir: Path | None = None, **kwargs: object) -> None:
+    def __init__(
+        self,
+        start_dir: Path | None = None,
+        *,
+        default_dir: Path | None = None,
+        **kwargs: object,
+    ) -> None:
+        """Open at *start_dir*, or where the reader last saved.
+
+        *default_dir* is where to open when nothing is remembered yet
+        -- the downloads directory, for the keys that write a file
+        there anyway.  It is a fallback rather than a start dir so that
+        a reader who picks somewhere else keeps it for the session,
+        which is the whole point of remembering one.
+        """
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        initial = (start_dir or _session_dir or Path.home()).resolve()
-        home = Path.home().resolve()
+        # `contain` rather than `Path.home()`: under `PONY_ROOT` the
+        # tree browses the sandbox, which is what keeps the suite from
+        # walking the real home directory -- where it found a symlink
+        # into a share that was down and took the screen with it.
+        home = contain(Path.home()).resolve()
+        initial = (start_dir or _session_dir or default_dir or home).resolve()
         try:
             initial.relative_to(home)
             self._root = home
@@ -137,7 +144,7 @@ class SaveFolderPickerScreen(Screen[Path | None]):
             yield Label("Folder:", id="path-label")
             yield Label(str(self._selected), id="current-path")
         with Vertical():
-            yield _DirOnlyTree(self._root, id="dir-tree")
+            yield DirOnlyTree(self._root, id="dir-tree")
         with Horizontal(id="buttons"):
             yield Button("New Folder", id="new-folder")
             yield Button("Select", id="select", variant="success")
@@ -145,7 +152,7 @@ class SaveFolderPickerScreen(Screen[Path | None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one(_DirOnlyTree).focus()
+        self.query_one(DirOnlyTree).focus()
 
     # ------------------------------------------------------------------
     # Tree events
@@ -187,7 +194,7 @@ class SaveFolderPickerScreen(Screen[Path | None]):
                 return
             self._selected = new_dir
             self.query_one("#current-path", Label).update(str(new_dir))
-            tree = self.query_one(_DirOnlyTree)
+            tree = self.query_one(DirOnlyTree)
             tree.reload()
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]

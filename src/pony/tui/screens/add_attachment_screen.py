@@ -12,6 +12,9 @@ from textual.widgets import DirectoryTree, Footer, Input, Label, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
+from ...paths import contain
+from ..dir_tree import ReadableDirectoryTree, is_directory
+
 # Persists the last-used directory across picker invocations within a session.
 # None means "not yet used"; the picker then falls back to cwd at launch time.
 _session_dir: Path | None = None
@@ -71,7 +74,7 @@ class AddAttachmentScreen(Screen[str | None]):
         height: 1fr;
     }
 
-    DirectoryTree {
+    ReadableDirectoryTree {
         height: 1fr;
     }
 
@@ -98,7 +101,9 @@ class AddAttachmentScreen(Screen[str | None]):
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         initial = (start_dir or _session_dir or Path.cwd()).resolve()
-        home = (home_dir or Path.home()).resolve()
+        # Contained, for the reason the save picker's is: under
+        # `PONY_ROOT` there is no reaching a real home directory.
+        home = (home_dir or contain(Path.home())).resolve()
         # Root at home so parent directories are navigable, unless the initial
         # directory is outside home (e.g. a separate drive on Windows).
         try:
@@ -119,7 +124,7 @@ class AddAttachmentScreen(Screen[str | None]):
             yield Label("Path:", id="path-label")
             yield Input(str(self._initial_dir), id="path-input")
         with Vertical(id="tree-area"):
-            yield DirectoryTree(self._root, id="file-tree")
+            yield ReadableDirectoryTree(self._root, id="file-tree")
         yield Label(
             "Enter=attach  ctrl+l=edit path  Esc=cancel",
             id="hint-bar",
@@ -127,7 +132,7 @@ class AddAttachmentScreen(Screen[str | None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        tree = self.query_one("#file-tree", DirectoryTree)
+        tree = self.query_one("#file-tree", ReadableDirectoryTree)
         tree.focus()
         self._expand_to_dir(self._initial_dir)
 
@@ -164,7 +169,7 @@ class AddAttachmentScreen(Screen[str | None]):
         if not parts:
             return
 
-        tree = self.query_one("#file-tree", DirectoryTree)
+        tree = self.query_one("#file-tree", ReadableDirectoryTree)
 
         def step(node: TreeNode[DirEntry], remaining: list[str], retries: int) -> None:
             if not remaining:
@@ -201,7 +206,7 @@ class AddAttachmentScreen(Screen[str | None]):
         if not isinstance(event, Key):
             return
 
-        tree = self.query_one("#file-tree", DirectoryTree)
+        tree = self.query_one("#file-tree", ReadableDirectoryTree)
         if self.focused is not tree:
             return
 
@@ -243,7 +248,7 @@ class AddAttachmentScreen(Screen[str | None]):
         """Jump to the first visible node whose name starts with the buffer."""
         if not self._typeahead:
             return
-        tree = self.query_one("#file-tree", DirectoryTree)
+        tree = self.query_one("#file-tree", ReadableDirectoryTree)
         cursor = tree.cursor_node
         if cursor is None:
             return
@@ -294,7 +299,7 @@ class AddAttachmentScreen(Screen[str | None]):
         event.stop()
         raw = event.value.strip()
         target = Path(raw).expanduser().resolve()
-        if not target.is_dir():
+        if not is_directory(target):
             self.notify(f"Not a directory: {raw}", severity="error")
             return
         self._navigate_to(target)
@@ -304,7 +309,7 @@ class AddAttachmentScreen(Screen[str | None]):
         _session_dir = target
         self._root = target
         self.query_one("#path-input", Input).value = str(target)
-        tree = self.query_one("#file-tree", DirectoryTree)
+        tree = self.query_one("#file-tree", ReadableDirectoryTree)
         tree.path = target
         tree.focus()
 

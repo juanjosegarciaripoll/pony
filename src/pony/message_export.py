@@ -30,6 +30,7 @@ from .message_renderer import (
     proposed_filename,
     unique_destination,
 )
+from .paths import contain
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -251,8 +252,17 @@ def downloads_dir(configured: Path | None) -> Path:
     use.  This was the reader screen's answer, so every key that writes
     a part asked the screen for it and a second front end would have
     had to decide again.
+
+    The fallback is contained: under ``PONY_ROOT`` it is that
+    directory's image inside the sandbox, because what ``PONY_ROOT``
+    promises is that every directory a run resolves moves underneath it
+    (see :mod:`pony.paths`).  Reaching for the home directory here went
+    around that promise, so the suite wrote into the real
+    ``~/Downloads`` -- and read it, since the save-folder picker opens
+    there.  A path a caller or a configuration names is its own answer
+    and is left alone.
     """
-    return configured or Path.home() / "Downloads"
+    return configured or contain(Path.home() / "Downloads")
 
 
 @dataclass(frozen=True, slots=True)

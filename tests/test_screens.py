@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -22,6 +23,7 @@ from tui_helpers import DeterministicDirOnlyTree
 
 import pony.tui.screens.save_folder_picker_screen as save_picker_module
 from pony.domain import FolderRef
+from pony.message_export import downloads_dir
 from pony.tui.app import ContactsApp, EmlViewerApp
 from pony.tui.screens.confirm_screen import ConfirmScreen
 from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
@@ -33,7 +35,7 @@ from pony.tui.screens.save_draft_screen import SaveDraftScreen
 from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
 
 #: The production class, captured before the fixture below replaces it.
-_REAL_DIR_ONLY_TREE = save_picker_module._DirOnlyTree
+_REAL_DIR_ONLY_TREE = save_picker_module.DirOnlyTree
 
 
 @pytest.fixture(autouse=True)
@@ -42,13 +44,13 @@ def _deterministic_dir_tree(monkeypatch: pytest.MonkeyPatch) -> None:
 
     This used to be a bare module-level assignment, which left the
     production class replaced for every file the xdist worker picked up
-    next -- and meant the real ``_DirOnlyTree.filter_paths``, the whole
+    next -- and meant the real ``DirOnlyTree.filter_paths``, the whole
     reason that class exists, never ran anywhere.  It is checked
     directly in ``test_the_directory_only_tree_hides_files``.
     """
     monkeypatch.setattr(
         save_picker_module,
-        "_DirOnlyTree",
+        "DirOnlyTree",
         DeterministicDirOnlyTree,
     )
 
@@ -1769,7 +1771,7 @@ async def test_save_folder_picker_cancel_returns_none(tmp_path) -> None:
 def test_the_directory_only_tree_hides_files(tmp_path: pathlib.Path) -> None:
     """The production class, not the test double, filters the listing.
 
-    Every screen test replaces ``_DirOnlyTree`` with a deterministic
+    Every screen test replaces ``DirOnlyTree`` with a deterministic
     double, so the one method the real class adds -- the whole reason it
     exists -- was never executed anywhere in the suite.  It needs no
     app: ``filter_paths`` is a plain function of the paths it is handed.
@@ -1783,6 +1785,70 @@ def test_the_directory_only_tree_hides_files(tmp_path: pathlib.Path) -> None:
     kept = sorted(path.name for path in tree.filter_paths(sorted(tmp_path.iterdir())))
 
     assert kept == ["also-a-dir", "keep-me"]
+
+
+def test_the_pickers_never_browse_the_real_home() -> None:
+    """No test may reach the user's own directories, these included.
+
+    Both pickers rooted their tree at ``Path.home()``, which
+    ``PONY_ROOT`` does not touch -- so the suite walked the real home
+    directory and stat-ed what is in it. That found a symlink into a
+    network share that was down, whose ``is_dir()`` raises rather than
+    answering, and the screens went down with it on open.
+    """
+    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+
+    home = pathlib.Path.home()
+
+    saving = SaveFolderPickerScreen()
+    attaching = AddAttachmentScreen()
+
+    # The save picker defaults to the home directory, so that is the
+    # default containment has to move.
+    assert not saving._root.is_relative_to(home), saving._root
+    # The attachment picker defaults to the working directory -- the
+    # checkout a test runs in, which is not the user's own data -- and
+    # climbs no further than the contained home above it.
+    assert attaching._root == pathlib.Path.cwd().resolve()
+    assert not attaching._root.is_relative_to(home / "Downloads")
+    # And the one place a saved file goes by default.
+    assert not downloads_dir(None).is_relative_to(home)
+
+
+def test_a_directory_entry_that_cannot_be_looked_at_is_left_out() -> None:
+    """An entry whose ``is_dir()`` raises is dropped, not propagated.
+
+    ``Path.is_dir()`` answers False for what is not there, and *raises*
+    for everything else -- a share that is down, a directory that
+    cannot be searched. Textual calls it while sorting a listing, so
+    one such entry crashed the picker as it opened.
+    """
+    from pony.tui.dir_tree import DirOnlyTree, is_directory, is_readable
+
+    with tempfile.TemporaryDirectory(dir=TMP_ROOT) as raw:
+        root = pathlib.Path(raw)
+        (root / "visible").mkdir()
+        locked = root / "locked"
+        locked.mkdir()
+        (locked / "inside").mkdir()
+        unreadable = locked / "inside"
+        locked.chmod(0o000)
+        try:
+            # The premise: this is the shape that raises.
+            with pytest.raises(OSError):
+                unreadable.is_dir()
+
+            assert is_directory(unreadable) is False
+            assert is_readable(unreadable) is False
+
+            tree = DirOnlyTree.__new__(DirOnlyTree)
+            kept = sorted(
+                path.name for path in tree.filter_paths([root / "visible", unreadable])
+            )
+            assert kept == ["visible"]
+        finally:
+            locked.chmod(0o700)
 
 
 async def test_save_folder_picker_select_returns_path(tmp_path) -> None:

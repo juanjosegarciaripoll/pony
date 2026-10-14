@@ -350,7 +350,8 @@ _LOCAL_BINDINGS = {
     "ContactEditScreen": "ctrl+s submits the form it is",
     # A widget's own navigation and editing, which Textual gives every
     # tree and every input and a browser gives natively.
-    "_DirOnlyTree": "a Tree's own cursor keys",
+    "ReadableDirectoryTree": "a Tree's own cursor keys",
+    "DirOnlyTree": "a Tree's own cursor keys",
     "AddressInput": "an Input's own editing chords",
     # Named in the audit as the one set the table would make
     # unreadable: ten keys differing only by their argument.

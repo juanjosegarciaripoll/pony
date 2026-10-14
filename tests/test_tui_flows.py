@@ -78,18 +78,18 @@ def _deterministic_dir_trees(monkeypatch: pytest.MonkeyPatch) -> None:
 
     These used to be bare module-level assignments, which left the
     production classes replaced for whatever file the xdist worker
-    picked up next -- and meant the real ``_DirOnlyTree.filter_paths``,
+    picked up next -- and meant the real ``DirOnlyTree.filter_paths``,
     the whole reason that class exists, never ran anywhere.  It is
     checked directly in ``test_the_directory_only_tree_hides_files``.
     """
     monkeypatch.setattr(
         add_attachment_module,
-        "DirectoryTree",
+        "ReadableDirectoryTree",
         DeterministicDirectoryTree,
     )
     monkeypatch.setattr(
         save_folder_module,
-        "_DirOnlyTree",
+        "DirOnlyTree",
         DeterministicDirOnlyTree,
     )
 

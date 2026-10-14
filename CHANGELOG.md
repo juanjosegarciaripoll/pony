@@ -188,6 +188,22 @@ without that a kept mirror came back indexed by nothing.
   so and leaves the list usable, rather than waiting for rows that are not
   coming.
 
+- **The file pickers survive what a real home directory holds**: a symlink
+  into a network share that is down makes `Path.is_dir()` *raise* rather
+  than answer, and Textual calls it while sorting a directory's listing —
+  so the save-folder picker and the attachment picker crashed as they
+  opened, for as long as the mount stayed down, with no way to save a
+  message or attach a file. An entry that cannot be looked at is left out
+  of the listing instead. The save picker also opens at the downloads
+  directory when nothing else is remembered, rather than at the top of
+  your home.
+
+- **`PONY_ROOT` relocates the downloads directory too**: the fallback
+  reached for `~/Downloads` through the home directory, which went around
+  the guarantee that a sandboxed run resolves every directory underneath
+  the root — so the test suite wrote into the real one, and the
+  save-folder picker browsed it.
+
 - **One request repaints the browser's page after an action**: the list and
   the unread counts beside the folders were two fetches, the second not
   starting until the first had landed — two round trips on every archive

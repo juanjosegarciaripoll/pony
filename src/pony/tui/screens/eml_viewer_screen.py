@@ -153,7 +153,12 @@ class EmlViewerScreen(Screen[None]):
                 thread=True,
             )
 
-        self.app.push_screen(SaveFolderPickerScreen(), _on_folder)  # pyright: ignore[reportUnknownMemberType]
+        # Falls back to where saving puts things, which is the one
+        # directory the viewer knows the reader wants; somewhere they
+        # picked earlier still wins.
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            SaveFolderPickerScreen(default_dir=self._downloads_dir), _on_folder
+        )
 
     # ------------------------------------------------------------------
     # Attachments

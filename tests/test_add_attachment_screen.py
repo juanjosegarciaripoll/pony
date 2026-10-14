@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from conftest import TMP_ROOT
 from textual.app import App, ComposeResult
 from textual.pilot import Pilot
 from textual.widgets import Input
@@ -25,7 +26,7 @@ from tui_helpers import DeterministicDirectoryTree
 import pony.tui.screens.add_attachment_screen as aas_module
 from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
 
-aas_module.DirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
+aas_module.ReadableDirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
 
 
 def _make_tree(label: str) -> Path:
@@ -33,8 +34,13 @@ def _make_tree(label: str) -> Path:
 
     Returns the directory path. Tests pass an explicit synthetic home because
     Windows normally places its temporary directory inside the user's home.
+
+    Under ``TMP_ROOT``, which the session removes on the way out. These
+    used to go straight into the system temp directory and stay there:
+    a few dozen per run, two thousand of them after a week, and the
+    pickers walk that directory on the way to their start folder.
     """
-    base = Path(tempfile.mkdtemp(prefix=f"pony-attach-{label}-"))
+    base = Path(tempfile.mkdtemp(prefix=f"pony-attach-{label}-", dir=TMP_ROOT))
     (base / "alpha.txt").write_text("a", encoding="utf-8")
     (base / "beta.txt").write_text("b", encoding="utf-8")
     sub = base / "subdir"
@@ -50,7 +56,7 @@ def _make_home_tree(label: str) -> tuple[Path, Path]:
     its configured home so parent folders stay navigable, without writing to
     the user's real home directory.
     """
-    home = Path(tempfile.mkdtemp(prefix="pony-attach-home-"))
+    home = Path(tempfile.mkdtemp(prefix="pony-attach-home-", dir=TMP_ROOT))
     base = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=home))
     (base / "file.txt").write_text("x", encoding="utf-8")
     return home, base

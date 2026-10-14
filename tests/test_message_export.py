@@ -25,6 +25,7 @@ from pony.message_export import (
     save_parts,
 )
 from pony.message_renderer import render_message
+from pony.paths import contain
 
 
 class PartKeyTest(unittest.TestCase):
@@ -247,4 +248,11 @@ class OpeningPartsTest(unittest.TestCase):
         from pony.message_export import downloads_dir
 
         self.assertEqual(downloads_dir(Path("/elsewhere")), Path("/elsewhere"))
-        self.assertEqual(downloads_dir(None), Path.home() / "Downloads")
+        # The fallback is sandboxed under `PONY_ROOT`, which the whole
+        # suite runs with: a test that wrote or read the real
+        # `~/Downloads` would be touching the user's own files, and the
+        # save-folder picker opens where this says.
+        default = downloads_dir(None)
+        self.assertEqual(default.name, "Downloads")
+        self.assertEqual(default, contain(Path.home() / "Downloads"))
+        self.assertFalse(default.is_relative_to(Path.home()))

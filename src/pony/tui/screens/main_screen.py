@@ -1863,7 +1863,9 @@ class MainScreen(Screen[None]):
                 thread=True,
             )
 
-        self.app.push_screen(SaveFolderPickerScreen(), _on_folder)  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            SaveFolderPickerScreen(default_dir=self._downloads_dir()), _on_folder
+        )
 
     def action_attachments_open(self) -> None:
         self._prompt_attachments(action_label="Open", then=self._open_indices)

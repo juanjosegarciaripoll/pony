@@ -200,7 +200,10 @@ class DeterministicDirOnlyTree(DeterministicDirectoryTree):
     __test__ = False
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
-        return [path for path in paths if path.is_dir()]
+        # `_safe_is_dir`, as every other listing here: an entry that
+        # raises rather than answering -- a symlink into a share that
+        # is down -- is not a directory to show.
+        return [path for path in paths if self._safe_is_dir(path)]
 
 
 def make_tmp_paths(label: str) -> AppPaths:
