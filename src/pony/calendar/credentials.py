@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -25,9 +24,7 @@ from pony.calendar.oauth import (
     save_tokens,
 )
 from pony.calendar.paths import CalendarPaths
-
-_COMMAND_TIMEOUT_SECONDS = 30
-
+from pony.shell import CommandSecretError, secret_from_command
 
 # Returns fresh tokens for an account by running the OAuth loopback
 # flow. Raises `OAuthError` if it can't (e.g. no browser available, or
@@ -193,29 +190,11 @@ def _build_oauth_authorization(
 
 def _resolve_command(account_name: str, spec: CommandCredential) -> str:
     try:
-        completed = subprocess.run(
-            list(spec.command),
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=_COMMAND_TIMEOUT_SECONDS,
+        return secret_from_command(
+            spec.command, what=f"{account_name}: credential command"
         )
-    except FileNotFoundError as exc:
-        raise CredentialResolutionError(
-            f"{account_name}: credential command not found: {spec.command[0]!r}"
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CredentialResolutionError(
-            f"{account_name}: credential command timed out after "
-            f"{_COMMAND_TIMEOUT_SECONDS}s"
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.strip() if exc.stderr else ""
-        raise CredentialResolutionError(
-            f"{account_name}: credential command exited {exc.returncode}"
-            + (f": {stderr}" if stderr else "")
-        ) from exc
-    return completed.stdout.rstrip("\n")
+    except CommandSecretError as exc:
+        raise CredentialResolutionError(str(exc)) from exc
 
 
 __all__ = [

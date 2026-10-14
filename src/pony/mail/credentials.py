@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import ConfigError
+from ..shell import CommandSecretError, secret_from_command
 
 if TYPE_CHECKING:
     from .domain import AppConfig
@@ -104,7 +105,11 @@ class CommandCredentialsProvider:
     """Runs a command and reads the password from its stdout.
 
     ``password_command`` must be a non-empty sequence of strings passed
-    directly to ``subprocess.run`` (no shell interpolation).
+    directly to ``subprocess.run`` (no shell interpolation).  Running it
+    is `pony.shell.secret_from_command`, which the calendar's own
+    command backend uses too: this one had no timeout, dropped whatever
+    the command said on stderr, and stripped the secret's own leading
+    and trailing spaces.
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -119,22 +124,11 @@ class CommandCredentialsProvider:
                 f"no password_command configured for account {account_name!r}"
             )
         try:
-            result = subprocess.run(
-                list(command),
-                capture_output=True,
-                text=True,
-                check=True,
+            return secret_from_command(
+                command, what=f"password_command for {account_name!r}"
             )
-        except FileNotFoundError as exc:
-            raise ConfigError(
-                f"password_command for {account_name!r} not found: {command[0]!r}"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            raise ConfigError(
-                f"password_command for {account_name!r} exited with code"
-                f" {exc.returncode}"
-            ) from exc
-        return result.stdout.strip()
+        except CommandSecretError as exc:
+            raise ConfigError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

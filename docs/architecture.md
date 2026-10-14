@@ -43,7 +43,7 @@ src/pony/
   sqlite.py            # one connection per thread, and timestamps in UTC
   scheduler.py         # the periodic sync both halves run on
   keys.py              # the vocabulary a keyboard is described with
-  shell.py             # splitting a command line the way the platform quotes it
+  shell.py             # splitting a command line, and running one for a secret
   notifications.py     # the notification space mail and calendar share
 
   # where the two halves meet
@@ -64,6 +64,7 @@ src/pony/mail/         # the mail model
   protocols.py         # repository and service interfaces
   accounts.py          # account lookup and mirror construction
   credentials.py       # plaintext / env / command / encrypted backends
+                       #   (`command` runs through pony.shell, as the calendar's does)
   storage.py           # Maildir and mbox mirror repositories
   index_store.py       # SQLite metadata index repository
   storage_indexing.py  # mirror-to-index projection: rescan, reindex, ingest
