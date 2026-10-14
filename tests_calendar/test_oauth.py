@@ -124,7 +124,7 @@ class TokenStoreTest(unittest.TestCase):
         )
         with (
             unittest.mock.patch(
-                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

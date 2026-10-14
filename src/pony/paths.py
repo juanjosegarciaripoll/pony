@@ -15,8 +15,44 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from urllib.parse import quote
 
-from pony.calendar.atomic import write_atomically
-from pony.calendar.paths import expand_path
+from pony.atomic import write_atomically
+
+
+def is_half_qualified(raw: str, *, flavour: type[PurePath] = PurePath) -> bool:
+    """Is *raw* neither relative nor fully qualified?
+
+    On Windows ``"/mail"`` has a root but no drive and ``"C:mail"`` a
+    drive but no root; neither is absolute, so joining it against a base
+    silently drops the base -- ``data_dir / "/mail"`` is ``C:\\mail``.
+    POSIX has no such shape, which is why this takes the flavour: the
+    branch it guards is only reachable on Windows, and only a
+    ``PureWindowsPath`` can exercise it elsewhere.
+
+    It lives here rather than in :mod:`pony.config` because both halves
+    resolve a configured mirror path against a base directory and both
+    have to refuse the same shape; the dependency arrow points this way.
+    """
+    path = flavour(raw)
+    return not path.is_absolute() and bool(path.drive or path.root)
+
+
+def expand_path(raw: str | Path) -> Path:
+    """Expand ``~``, ``$VAR`` and ``%VAR%`` in a configured path.
+
+    ``os.path.expanduser``, not ``Path.expanduser``: the latter raises
+    ``RuntimeError`` when there is no home directory to expand to, and
+    a configured path that happens to mention ``~`` on a machine with
+    no home is not a reason to refuse to start.
+
+    One function for both halves, because both read paths out of the
+    same configuration file.  It was written out four times, and only
+    one of them carried the comment above.
+    """
+    text = str(raw)
+    text = os.path.expandvars(text)
+    text = os.path.expanduser(text)  # noqa: PTH111
+    return Path(text)
+
 
 APP_NAME = "pony"
 ROOT_ENV = "PONY_ROOT"

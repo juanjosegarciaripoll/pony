@@ -294,7 +294,7 @@ invitation and the calendar's event operations each live over the
 stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
 `pony/message_export.py`, `pony/contact_actions.py`,
 `pony/invitation_actions.py`, `pony/calendar/event_actions.py`) and return a
-`pony.calendar.outcome.Outcome` — a count of what changed, and the notices to
+`pony.outcome.Outcome` — a count of what changed, and the notices to
 show. An operation that returns something as well returns it beside the
 outcome (`FiledMessage`, `FlaggedMessage`), never instead of it. No `app.notify`, no `query_one`, no Textual import. An operation
 that blocks (SMTP, a sync) is a plain blocking call: the terminal hands

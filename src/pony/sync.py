@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import Empty, Full, Queue
 
-from pony.calendar.outcome import ProgressGate, progress_stride
-from pony.calendar.scheduler import PeriodicSync, SyncOutcome
+from pony.outcome import ProgressGate, progress_stride
+from pony.scheduler import PeriodicSync, SyncOutcome
 
 from .accounts import find_imap_account, select_imap_accounts
 from .domain import (

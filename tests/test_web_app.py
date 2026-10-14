@@ -36,6 +36,7 @@ from tui_helpers import (
 from web_helpers import form_fields, link_to
 
 from pony.domain import FolderRef, MessageFlag, MessageStatus
+from pony.keys import KeyBinding, web_key
 from pony.views import ROW_BATCH
 from pony.web import WebServices, build_web_app
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS, TOKEN_COOKIE
@@ -1483,7 +1484,7 @@ def test_every_notice_survives_a_redirect() -> None:
     """A per-message failure must not be swallowed by a later success."""
     from starlette.requests import Request
 
-    from pony.calendar.outcome import Outcome, failure, info, warn
+    from pony.outcome import Outcome, failure, info, warn
     from pony.web.app import _back_with, _notices
 
     outcome = Outcome(
@@ -1511,7 +1512,7 @@ def test_every_notice_survives_a_redirect() -> None:
 def test_a_flood_of_notices_is_counted_rather_than_spelled_out() -> None:
     from starlette.requests import Request
 
-    from pony.calendar.outcome import Outcome, warn
+    from pony.outcome import Outcome, warn
     from pony.web.app import NOTICE_COUNT_LIMIT, _back_with, _notices
 
     outcome = Outcome(
@@ -1706,7 +1707,6 @@ def test_the_footer_and_the_keymap_drop_a_repeated_key_the_same_way() -> None:
     browser — so the footer listed "Q Quit" twice and the help offered a
     key no press could reach.
     """
-    from pony.calendar.keymap import KeyBinding, web_key
     from pony.web.layout import PageSurface, bindings_for, one_per_web_key
 
     repeated = (
@@ -1737,7 +1737,7 @@ def test_one_rule_decides_whether_a_form_stays_up() -> None:
     warning rather than an error, because throwing away what somebody
     typed over a warning loses their work.
     """
-    from pony.calendar.outcome import Notice, Outcome, failure, info, warn
+    from pony.outcome import Notice, Outcome, failure, info, warn
     from pony.web.actions import holds_form
 
     # Something is wrong: the typing stays on screen.
@@ -1927,7 +1927,6 @@ def test_the_body_keeps_the_anchor_text_an_html_message_chose() -> None:
 
 def test_a_shift_letter_key_is_served_as_the_browser_reports_it() -> None:
     """Every `shift+<letter>` alias used to be served and never match."""
-    from pony.calendar.keymap import web_key
 
     services, _index = _services("web-shift-keys")
 
@@ -2018,7 +2017,6 @@ def _params_of(source: str, name: str) -> str:
 
 def test_the_footer_lists_each_key_once() -> None:
     """A surface can inherit the application keys and declare them again."""
-    from pony.calendar.keymap import web_key
     from pony.web.layout import PageSurface, _footer, bindings_for
 
     for surface in PageSurface:

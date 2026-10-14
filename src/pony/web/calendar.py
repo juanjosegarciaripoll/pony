@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from pony.calendar.outcome import Notice, Outcome, failure, info, warn
 from pony.calendar.views import (
     AgendaWindow,
     CalendarSelection,
@@ -47,6 +46,7 @@ from pony.calendar.views import (
     step_viewed,
     timed_day_minutes,
 )
+from pony.outcome import Notice, Outcome, failure, info, warn
 
 from . import urls
 from .actions import calendar_value, held_for_confirmation, parse_calendar

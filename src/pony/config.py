@@ -20,7 +20,7 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-from pony.calendar.paths import expand_path, is_half_qualified
+from pony.paths import expand_path, is_half_qualified
 
 from .domain import (
     CONFIG_VERSION,

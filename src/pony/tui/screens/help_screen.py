@@ -34,7 +34,9 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Label, Static
 
-from ...keymap import MAIL_KEYMAP, KeyBinding, Surface, for_surface
+from pony.keys import KeyBinding, for_surface
+
+from ...keymap import MAIL_KEYMAP, Surface
 
 # Which section each action belongs under.  Keyed on the action name, so
 # renaming a key never moves it and adding one only has to be mentioned

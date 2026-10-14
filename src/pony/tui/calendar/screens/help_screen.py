@@ -10,7 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Label, Static
 
-from pony.tui.calendar.bindings import BindingType
+from pony.tui.bindings import BindingType
 
 # Per-section grouping of action names. Anything not listed lands in
 # the trailing "Other" section so a new binding doesn't disappear from

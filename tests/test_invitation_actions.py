@@ -23,9 +23,9 @@ from tui_helpers import (
 
 from pony import invitation_actions
 from pony.calendar.domain import CalendarRef
-from pony.calendar.outcome import Notice
 from pony.invitation import parse_invitation
 from pony.invitation_actions import InvitationChoice
+from pony.outcome import Notice
 
 if TYPE_CHECKING:
     from pony.calendar_runtime import CalendarRuntime

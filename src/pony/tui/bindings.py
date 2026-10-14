@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from textual.binding import Binding
 
+from pony.keys import KeyBinding
+
 from ..keymap import (
     FOLDER_KEYS,
     INVITATION_KEYS,
@@ -24,7 +26,7 @@ from ..keymap import (
 )
 
 if TYPE_CHECKING:
-    from ..keymap import KeyBinding
+    pass
 
 
 # `Screen.BINDINGS` is an invariant list typed as

@@ -797,12 +797,12 @@ class NarrowComponentQueryTest(unittest.TestCase):
         issued in runs; the runs are sorted, so concatenating them is
         still sorted.
         """
-        from pony.calendar import index_store
+        from pony import sqlite
 
         uids = [f"u{n:04d}@example.com" for n in range(25)]
         for uid in uids:
             self.repo.upsert_component(_event(_ref(uid), href=f"/dav/{uid}.ics"))
-        with unittest.mock.patch.object(index_store, "_MAX_SQL_PARAMETERS", 4):
+        with unittest.mock.patch.object(sqlite, "_MAX_SQL_PARAMETERS", 4):
             found = self.repo.list_components_for_uids(self.calendar, uids)
         self.assertEqual([c.ref.uid for c in found], uids)
 

@@ -11,6 +11,7 @@ from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
 from pony.domain import FolderConfig, LocalAccountConfig, ViewerRule
+from pony.paths import is_half_qualified
 
 
 class ConfigParsingTestCase(unittest.TestCase):
@@ -800,16 +801,12 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         """Only a PureWindowsPath can have a root without a drive."""
         from pathlib import PureWindowsPath
 
-        from pony.config import is_half_qualified
-
         for raw in ("/mail", "\\mail", "C:mail", "/"):
             with self.subTest(raw=raw):
                 self.assertTrue(is_half_qualified(raw, flavour=PureWindowsPath))
 
     def test_ordinary_shapes_are_not_half_qualified(self) -> None:
         from pathlib import PurePosixPath, PureWindowsPath
-
-        from pony.config import is_half_qualified
 
         self.assertFalse(is_half_qualified("mirrors/x", flavour=PureWindowsPath))
         self.assertFalse(is_half_qualified("C:/mail", flavour=PureWindowsPath))

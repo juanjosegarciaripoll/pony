@@ -14,13 +14,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-if TYPE_CHECKING:
-    from .calendar_runtime import CalendarRuntime
-    from .message_renderer import AttachmentInfo
-
-from pony.calendar.atomic import write_atomically
-from pony.calendar.outcome import Outcome
-from pony.calendar.paths import expand_path
+from pony.atomic import write_atomically
+from pony.outcome import Outcome
+from pony.paths import expand_path
 
 from . import cli_calendar
 from .accounts import (
@@ -85,6 +81,10 @@ from .sync import (
     format_plan_summary,
 )
 from .version import __version__
+
+if TYPE_CHECKING:
+    from .calendar_runtime import CalendarRuntime
+    from .message_renderer import AttachmentInfo
 
 
 def _configure_logging(*, debug: bool) -> None:
@@ -1655,7 +1655,7 @@ def _rescan_progress(folder_name: str, done: int, total: int) -> None:
     """Overwrite-in-place progress ticker.
 
     How often this is called is the engine's business (see
-    ``pony.calendar.outcome.ProgressGate``); it used to throttle itself here,
+    ``pony.outcome.ProgressGate``); it used to throttle itself here,
     which fixed the flooding for this front end only.
     """
     end = "\n" if done == total else ""
@@ -3060,7 +3060,7 @@ def _web_mail_scheduler(
     """
     if not config.background_sync_enabled:
         return None
-    from pony.calendar.scheduler import PeriodicSync
+    from pony.scheduler import PeriodicSync
 
     service = build_sync_service(
         config=config,

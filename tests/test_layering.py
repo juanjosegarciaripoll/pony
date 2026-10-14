@@ -20,7 +20,7 @@ import sys
 import unittest
 from pathlib import Path
 
-# Modules that make up the headless backend surface.  `pony.calendar.scheduler`
+# Modules that make up the headless backend surface.  `pony.scheduler`
 # is in here because the mail half runs the periodic sync off it: the
 # class has to stay free of Textual for `pony` to be able to import it
 # without dragging the calendar's widget tree along.
@@ -31,7 +31,7 @@ from pathlib import Path
 # cannot do, and `textual` is an optional extra, so it might not even be
 # installed.
 _BACKEND_MODULES = (
-    "pony.calendar.scheduler",
+    "pony.scheduler",
     "pony.sync",
     "pony.storage",
     "pony.index_store",
@@ -51,7 +51,11 @@ _BACKEND_MODULES = (
     "pony.keymap",
     "pony.calendar.keymap",
     "pony.folder_utils",
-    "pony.calendar.outcome",
+    "pony.outcome",
+    "pony.sqlite",
+    "pony.keys",
+    "pony.shell",
+    "pony.atomic",
     "pony.calendar.event_actions",
     "pony.calendar.views",
     "pony.search_parser",

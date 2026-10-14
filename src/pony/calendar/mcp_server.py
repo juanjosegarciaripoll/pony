@@ -37,7 +37,7 @@ from typing import Any, cast
 
 from tinymcp import McpServer
 
-from pony.calendar.atomic import write_atomically
+from pony.atomic import write_atomically
 from pony.calendar.domain import (
     CalendarRef,
     ComponentKind,

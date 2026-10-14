@@ -12,7 +12,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from pony.calendar.atomic import write_atomically
+from pony.atomic import write_atomically
 from pony.calendar.domain import CALENDAR_CONFIG_VERSION
 
 PromptFn = Callable[[str], str]

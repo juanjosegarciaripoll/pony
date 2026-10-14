@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import unittest
 
-from pony.calendar.scheduler import PeriodicSync, SyncOutcome
+from pony.scheduler import PeriodicSync, SyncOutcome
 
 # Long enough that a periodic turn never fires on its own during a test
 # that is about the manual path, short enough to wait out on purpose.
@@ -212,7 +212,7 @@ class PeriodicSyncTest(unittest.TestCase):
             raise RuntimeError("the app is gone")
 
         scheduler = self._scheduler(runner, interval=0.01, on_finished=explode)
-        with self.assertLogs("pony.calendar.scheduler", level="WARNING"):
+        with self.assertLogs("pony.scheduler", level="WARNING"):
             scheduler.start()
             runner.wait_for_call()
             runner.wait_for_call()
@@ -263,7 +263,7 @@ class PeriodicSyncTest(unittest.TestCase):
         scheduler.start()
         scheduler.request_now()
         runner.wait_for_call()
-        with self.assertLogs("pony.calendar.scheduler", level="WARNING") as logs:
+        with self.assertLogs("pony.scheduler", level="WARNING") as logs:
             scheduler.stop(timeout=0.05)
         self.assertIn("did not stop", "".join(logs.output))
         runner.release.set()

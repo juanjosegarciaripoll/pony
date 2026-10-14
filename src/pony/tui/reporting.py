@@ -1,6 +1,6 @@
 """What both front ends do with a background operation's result.
 
-An action module returns a :class:`~pony.calendar.outcome.Outcome`: a count of
+An action module returns a :class:`~pony.outcome.Outcome`: a count of
 what changed and the notices to show.  Turning those notices into toasts
 is three lines, and it was written out five times across the two front
 ends' screens -- each with its own docstring and its own choice of
@@ -18,7 +18,7 @@ import contextlib
 from collections.abc import Callable
 from typing import Protocol
 
-from pony.calendar.outcome import Outcome, Severity
+from pony.outcome import Outcome, Severity
 
 
 class Notifier(Protocol):

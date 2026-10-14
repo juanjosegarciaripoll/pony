@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pony.calendar.paths import CalendarPaths, expand_path
+from pony.calendar.paths import CalendarPaths
+from pony.paths import expand_path
 
 
 class ExpandPathTest(unittest.TestCase):

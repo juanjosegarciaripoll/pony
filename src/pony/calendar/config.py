@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from pony.calendar.atomic import write_atomically
+from pony.atomic import write_atomically
 from pony.calendar.domain import (
     CALENDAR_CONFIG_VERSION,
     DEFAULT_BACKGROUND_SYNC_INTERVAL_SECONDS,
@@ -21,7 +21,8 @@ from pony.calendar.domain import (
     OAuthCredential,
     PlaintextCredential,
 )
-from pony.calendar.paths import CalendarPaths, expand_path, is_half_qualified
+from pony.calendar.paths import CalendarPaths
+from pony.paths import expand_path, is_half_qualified
 
 _DEFAULT_TRASH_RETENTION_DAYS = 30
 _DEFAULT_INCLUDE = (".*",)

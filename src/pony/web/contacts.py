@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pony.calendar.outcome import Outcome, warn
+from pony.outcome import Outcome, warn
 
 from ..contact_actions import (
     ContactEdit,
@@ -34,7 +34,7 @@ from .layout import PageSurface, Tab, columns, page, pane
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from pony.calendar.outcome import Notice
+    from pony.outcome import Notice
 
     from ..protocols import ContactRepository
     from .actions import Action, ActionContext, Reply
@@ -318,7 +318,7 @@ def _delete_marked(context: ActionContext) -> Outcome | Reply:
 
 def _merge_marked(context: ActionContext) -> Outcome | Reply:
     """Merge the marked contacts into one, once the user has said so."""
-    from pony.calendar.outcome import Notice
+    from pony.outcome import Notice
 
     contacts = context.services.contacts
     if contacts is None:

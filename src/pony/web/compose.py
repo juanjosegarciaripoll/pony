@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode
 
-from pony.calendar.outcome import Outcome, warn
+from pony.outcome import Outcome, warn
 
 from ..compose_utils import build_email_message
 from ..composer import (
@@ -50,7 +50,7 @@ from .layout import PageSurface, Tab, page, pane
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from pony.calendar.outcome import Notice
+    from pony.outcome import Notice
 
     from ..domain import AnyAccount, AppConfig, IndexedMessage
     from .app import WebServices

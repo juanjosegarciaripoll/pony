@@ -17,8 +17,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
-from pony.calendar.outcome import Notice, Outcome
-from pony.tui.calendar.reporting import report
+from pony.keys import for_surface
+from pony.outcome import Notice, Outcome
+from pony.tui.reporting import report
 
 from ... import mailbox_actions
 from ...composer import (
@@ -45,7 +46,7 @@ from ...invitation_actions import (
     replying_account,
     respond_to_invitation,
 )
-from ...keymap import MAIL_KEYMAP, Surface, for_surface
+from ...keymap import MAIL_KEYMAP, Surface
 from ...mailbox_actions import Mailboxes
 from ...message_export import (
     WHOLE_MESSAGE,

@@ -334,7 +334,7 @@ class UntrustedNameTest(unittest.TestCase):
 
 
 class AtomicWriteTest(unittest.TestCase):
-    """One dance, in `pony.calendar.atomic`, for every file either half replaces.
+    """One dance, in `pony.atomic`, for every file either half replaces.
 
     It was written out five times inside this package and not at all in
     the mail half, which used `write_text` for its profile stamp and its
@@ -350,13 +350,13 @@ class AtomicWriteTest(unittest.TestCase):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def test_a_failure_leaves_the_old_file_and_no_leftover(self) -> None:
-        from pony.calendar.atomic import write_atomically
+        from pony.atomic import write_atomically
 
         target = self.tmp / "thing.toml"
         write_atomically(target, b"first", suffix=".toml")
         with (
             unittest.mock.patch(
-                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):
@@ -367,7 +367,7 @@ class AtomicWriteTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "file modes mean nothing on Windows")
     def test_an_owner_only_file_is_owner_only_before_the_rename(self) -> None:
-        from pony.calendar.atomic import write_atomically
+        from pony.atomic import write_atomically
 
         target = self.tmp / "tokens.json"
         seen: list[int] = []
@@ -377,7 +377,7 @@ class AtomicWriteTest(unittest.TestCase):
             seen.append(Path(str(source)).stat().st_mode & 0o777)
             real_replace(str(source), str(destination))
 
-        with unittest.mock.patch("pony.calendar.atomic.os.replace", _record):
+        with unittest.mock.patch("pony.atomic.os.replace", _record):
             write_atomically(target, b"{}", suffix=".json", owner_only=True)
 
         self.assertEqual(seen, [0o600])

@@ -6,7 +6,7 @@ import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
 
-from pony.calendar.atomic import TEMP_PREFIX, write_atomically
+from pony.atomic import TEMP_PREFIX, write_atomically
 from pony.calendar.domain import ResourceRef
 
 _MAX_ENCODED_UID_LEN = 180

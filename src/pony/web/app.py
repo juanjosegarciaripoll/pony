@@ -48,7 +48,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from pony.calendar.outcome import Notice, Outcome, Severity, warn
+from pony.outcome import Notice, Outcome, Severity, warn
 
 from .. import contact_actions, mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef

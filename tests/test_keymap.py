@@ -20,11 +20,9 @@ from pony.keymap import (
     MARK_KEYS,
     MOTION_KEYS,
     READER_KEYS,
-    KeyBinding,
     Surface,
-    for_surface,
-    web_key,
 )
+from pony.keys import KeyBinding, for_surface, web_key
 from pony.tui.bindings import MARK_BINDINGS, MOTION_BINDINGS, to_textual
 
 
@@ -136,13 +134,11 @@ def test_every_compose_key_wins_over_the_focused_field() -> None:
 
 def test_the_calendar_keeps_its_own_table_in_the_same_vocabulary() -> None:
     from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface
-    from pony.calendar.keymap import for_surface as for_calendar_surface
     from pony.tui.calendar.bindings import main_bindings
-    from pony.tui.calendar.bindings import to_textual as calendar_to_textual
 
     assert all(isinstance(binding, KeyBinding) for binding in CALENDAR_KEYMAP)
-    assert main_bindings() == calendar_to_textual(
-        for_calendar_surface(CALENDAR_KEYMAP, CalendarSurface.VIEW),
+    assert main_bindings() == to_textual(
+        for_surface(CALENDAR_KEYMAP, CalendarSurface.VIEW),
     )
 
 

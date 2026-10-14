@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from pony.calendar.outcome import Notice, Outcome, failure, info, warn
+from pony.outcome import Notice, Outcome, failure, info, warn
 
 from .. import mailbox_actions
 from ..authentication import MessageAuthentication
@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from pony.calendar.domain import CalendarRef
-    from pony.calendar.outcome import Notice
+    from pony.outcome import Notice
 
     from ..domain import FolderMessageSummary, IndexedMessage, MessageRef
     from ..invitation import Invitation

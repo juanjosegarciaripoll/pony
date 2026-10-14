@@ -11,8 +11,6 @@ from pathlib import Path
 
 from textual.app import App, SuspendNotSupported
 
-from pony.tui.calendar.terminal import osc777_notification
-
 MAIL_TITLE_PREFIX = "✉ "
 
 
@@ -75,6 +73,21 @@ def pop_terminal_title() -> None:
         return
     out.write("\x1b[23;2t")
     out.flush()
+
+
+def osc777_notification(title: str, body: str) -> str:
+    """OSC 777 `notify` sequence asking the terminal for a desktop notification.
+
+    Control characters would end the sequence early (and `;` in the
+    title would shift the body), so both are flattened: newlines become
+    " · " and the rest are dropped.
+    """
+
+    def clean(text: str) -> str:
+        text = text.replace("\n", " · ")
+        return "".join(ch for ch in text if ch >= " " and ch != "\x7f")
+
+    return f"\x1b]777;notify;{clean(title).replace(';', ',')};{clean(body)}\x07"
 
 
 def notify_terminal(title: str, body: str) -> None:

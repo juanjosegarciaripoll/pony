@@ -41,7 +41,6 @@ from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.paths import CalendarPaths
 from pony.calendar.protocols import CalendarSyncOutcome
 from pony.calendar.recurrence import populate_occurrences
-from pony.calendar.scheduler import SyncOutcome
 from pony.calendar.storage import VdirMirrorRepository
 from pony.calendar.storage_indexing import index_calendar
 from pony.calendar.views import (
@@ -76,8 +75,8 @@ from pony.calendar.views import (
 from pony.calendar.views import (
     grid_window as grid_window_for,
 )
+from pony.scheduler import SyncOutcome
 from pony.tui.calendar.app import CALENDAR_CSS, TuiServices, start_calendar_sync
-from pony.tui.calendar.reporting import on_ui_thread
 from pony.tui.calendar.screens.confirm_screen import ConfirmScreen
 from pony.tui.calendar.screens.event_detail_screen import EventDetailScreen
 from pony.tui.calendar.screens.event_edit_screen import EventEditScreen
@@ -92,6 +91,7 @@ from pony.tui.calendar.widgets.date_picker import (
 )
 from pony.tui.calendar.widgets.event_list import EventList, component_ref_for_row
 from pony.tui.calendar.widgets.event_view import EventView
+from pony.tui.reporting import on_ui_thread
 from tests_calendar import corpus
 
 ACCOUNT_NAME = "personal"
@@ -1001,7 +1001,7 @@ class CalendarHostApp(App[None]):
             self.services.sync_scheduler.stop()
 
     # The callbacks arrive on the scheduler's thread and have to hop
-    # onto the UI's, which is `pony.tui.calendar.reporting.on_ui_thread` --
+    # onto the UI's, which is `pony.tui.reporting.on_ui_thread` --
     # the same hop `PonyApp` makes for the same reason.
 
     def _sync_started(self) -> None:
@@ -2654,7 +2654,7 @@ class GotoDialogTest(TuiFlowTestCase):
 
 class Osc777Test(unittest.TestCase):
     def test_sequence(self) -> None:
-        from pony.tui.calendar.app import osc777_notification
+        from pony.tui.terminal import osc777_notification
 
         self.assertEqual(
             osc777_notification("Standup", "Starts 10:00"),
@@ -2662,7 +2662,7 @@ class Osc777Test(unittest.TestCase):
         )
 
     def test_control_chars_and_title_semicolons_are_neutralised(self) -> None:
-        from pony.tui.calendar.app import osc777_notification
+        from pony.tui.terminal import osc777_notification
 
         seq = osc777_notification("A;B\x1b", "Starts 10:00\nBring\x07 slides")
         self.assertEqual(seq, "\x1b]777;notify;A,B;Starts 10:00 · Bring slides\x07")

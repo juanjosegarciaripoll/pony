@@ -691,7 +691,7 @@ class SaveRoundTripTest(unittest.TestCase):
         original_bytes = path.read_bytes()
         with (
             unittest.mock.patch(
-                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

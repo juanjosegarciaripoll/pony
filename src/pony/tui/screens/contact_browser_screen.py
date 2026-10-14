@@ -6,8 +6,9 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input
 
-from pony.calendar.outcome import Notice, Outcome
-from pony.tui.calendar.reporting import report
+from pony.keys import for_surface
+from pony.outcome import Notice, Outcome
+from pony.tui.reporting import report
 
 from ...contact_actions import (
     MergePlan,
@@ -18,7 +19,7 @@ from ...contact_actions import (
     summarize,
 )
 from ...domain import Contact
-from ...keymap import MAIL_KEYMAP, Surface, for_surface
+from ...keymap import MAIL_KEYMAP, Surface
 from ...protocols import ContactRepository
 from ...views import contact_row
 from ..bindings import MARK_BINDINGS, to_textual

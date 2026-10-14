@@ -12,12 +12,7 @@ from email.utils import getaddresses
 from pathlib import Path
 from typing import cast
 
-from pony.calendar.index_store import (
-    ThreadLocalSqlite,
-    chunked,
-    datetime_to_sql,
-    sql_to_datetime,
-)
+from pony.sqlite import ThreadLocalSqlite, chunked, datetime_to_sql, sql_to_datetime
 
 from .contact_merge import merged_contact
 from .contact_naming import clean_display_name, split_display_name

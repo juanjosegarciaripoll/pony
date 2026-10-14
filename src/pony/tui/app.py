@@ -14,19 +14,20 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from pony.calendar.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS
-from pony.calendar.outcome import Notice
 from pony.calendar.protocols import CalendarSyncOutcome, CalendarSyncScheduler
-from pony.calendar.scheduler import PeriodicSync
+from pony.keys import KeyBinding
+from pony.outcome import Notice
+from pony.scheduler import PeriodicSync
 from pony.tui.calendar.app import CALENDAR_CSS, start_calendar_sync
 from pony.tui.calendar.app import TuiServices as CalendarServices
-from pony.tui.calendar.reporting import on_ui_thread
 from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
+from pony.tui.reporting import on_ui_thread
 
 from ..calendar_runtime import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..invitation_actions import send_event_invitations, sender_for_invitation
-from ..keymap import APPLICATION_KEYS, KeyBinding, Surface
+from ..keymap import APPLICATION_KEYS, Surface
 from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import resolve
 from ..protocols import (

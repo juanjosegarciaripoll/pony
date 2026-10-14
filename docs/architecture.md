@@ -33,6 +33,12 @@ src/pony/
   cli.py               # argparse command dispatch, both halves of it
   cli_calendar.py      # the calendar's commands (`pony calendar ...`)
   config.py            # TOML config loader and validator
+  outcome.py           # what an operation changed, and the notices to show
+  atomic.py            # replacing a file without leaving half of one
+  sqlite.py            # one connection per thread, and timestamps in UTC
+  scheduler.py         # the periodic sync both halves run on
+  keys.py              # the vocabulary a keyboard is described with
+  shell.py             # splitting a command line the way the platform quotes it
   domain.py            # typed core data models
   protocols.py         # repository and service interfaces
   paths.py             # application directory resolution
@@ -77,6 +83,7 @@ src/pony/
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
     calendar/          # the calendar's screens (below)
+    reporting.py       # an Outcome as toasts, and the hop onto the UI thread
     bindings.py        # shared mark/motion Binding tuples
     calendar_host.py   # where the mail app meets the calendar's screens
     pdf_export.py      # thread-worker wrapper around pony.pdf_export
@@ -270,7 +277,7 @@ whatever is on screen.
 The *actions* are the operations a user asks for — archive, move, copy,
 trash, a flag change, a new folder, saving an event, filing a sent
 message, merging two contacts. Each takes the stores it needs and
-returns a `pony.calendar.outcome.Outcome`: a count of what changed and the
+returns a `pony.outcome.Outcome`: a count of what changed and the
 `Notice`s to show, each carrying its own severity. None of them imports
 Textual, calls `app.notify`, or touches a widget.
 
@@ -308,13 +315,15 @@ application running: `tests/test_mailbox_actions.py`,
 `tests_calendar/test_event_actions.py` finish in seconds, where reaching
 the same code through a `Pilot` costs a second an assertion.
 
-`pony.calendar.outcome` is shared vocabulary, not the calendar's own:
-nothing in it knows about calendars, and `pony.notifications` takes its
+`pony.outcome` is shared vocabulary rather than either half's: nothing
+in it knows about mail or calendars, and `pony.notifications` takes its
 `Severity` from it rather than spelling the three levels out twice.
-`pony.calendar.atomic` (replacing a file without leaving half of one),
-`pony.calendar.alarms` (which reminders are due) and `pony.tui.calendar.reporting`
-(an `Outcome` as toasts, and the hop onto the UI thread) are there for
-the same reason: both halves ask them.
+`pony.atomic` (replacing a file without leaving half of one),
+`pony.sqlite` (a connection per thread, timestamps in UTC),
+`pony.scheduler` (the periodic sync), `pony.keys` (what a key binding
+is) and `pony.tui.reporting` (an `Outcome` as toasts, and the hop onto
+the UI thread) sit beside it for the same reason: both halves ask them,
+so they belong to neither.
 
 ### TUI (`pony.tui`)
 
@@ -597,11 +606,9 @@ hosts its screens.
 
 ```
 src/pony/calendar/
-  config.py domain.py paths.py protocols.py outcome.py
-  atomic.py            # replacing a file without leaving half of one
-  shell.py             # splitting a command line the way the platform quotes it
+  config.py domain.py paths.py protocols.py
   alarms.py            # which reminders are due, and what each one says
-  storage.py index_store.py storage_indexing.py locking.py scheduler.py
+  storage.py index_store.py storage_indexing.py locking.py
   ical_parser.py recurrence.py mutations.py ingest.py
   event_actions.py     # save / reschedule / trash / import, over the stores
   services.py          # what an operation works over, the sync runner, the doctor
@@ -613,7 +620,6 @@ src/pony/calendar/
 
 src/pony/tui/calendar/
   app.py               # TuiServices, CalendarHost, CALENDAR_CSS
-  reporting.py         # an Outcome as toasts, and the hop onto the UI thread
   screens/             # agenda, day, grid, month, event edit, …
   widgets/             # calendar panel, timeline grid, month grid, …
 ```

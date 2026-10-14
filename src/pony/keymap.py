@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pony.calendar.keymap import KeyBinding, for_surface, web_key
+from pony.keys import KeyBinding, for_surface, web_key
 
 
 class Surface(StrEnum):

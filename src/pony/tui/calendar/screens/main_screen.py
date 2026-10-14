@@ -27,7 +27,6 @@ from pony.calendar.event_actions import (
     trash_event,
 )
 from pony.calendar.mutations import all_day_bounds
-from pony.calendar.outcome import Outcome
 from pony.calendar.paths import CalendarPaths
 from pony.calendar.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from pony.calendar.sync import describe_sync_result
@@ -49,8 +48,8 @@ from pony.calendar.views import (
     month_title,
     step_viewed,
 )
+from pony.outcome import Outcome
 from pony.tui.calendar.bindings import main_bindings
-from pony.tui.calendar.reporting import report
 from pony.tui.calendar.screens.confirm_screen import ConfirmScreen
 from pony.tui.calendar.screens.event_detail_screen import EventDetailScreen
 from pony.tui.calendar.screens.event_edit_screen import EventEditScreen
@@ -66,6 +65,7 @@ from pony.tui.calendar.widgets.event_view import EventView
 from pony.tui.calendar.widgets.month_grid import MonthGrid
 from pony.tui.calendar.widgets.sync_status import SyncStatus
 from pony.tui.calendar.widgets.timeline_grid import TimelineGrid, bucket_by_day
+from pony.tui.reporting import report
 
 if TYPE_CHECKING:
     from pony.tui.calendar.app import CalendarHost, TuiServices

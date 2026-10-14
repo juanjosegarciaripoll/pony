@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pony.calendar.outcome import ProgressGate, progress_stride
+from pony.outcome import ProgressGate, progress_stride
 
 from .domain import FolderRef, FolderSyncState, IndexedMessage, MessageRef
 from .message_projection import project_rfc822_message

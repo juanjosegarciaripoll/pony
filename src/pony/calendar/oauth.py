@@ -44,8 +44,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from pony.calendar.atomic import write_atomically
-from pony.calendar.shell import split_command
+from pony.atomic import write_atomically
+from pony.shell import split_command
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"

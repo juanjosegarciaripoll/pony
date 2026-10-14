@@ -44,7 +44,6 @@ from tui_helpers import (
 import pony.tui.screens.add_attachment_screen as add_attachment_module
 import pony.tui.screens.save_folder_picker_screen as save_folder_module
 from pony.browser_preview import close_preview
-from pony.calendar.scheduler import SyncOutcome
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,
@@ -53,6 +52,7 @@ from pony.domain import (
     MessageStatus,
     MirrorConfig,
 )
+from pony.scheduler import SyncOutcome
 from pony.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from pony.sync import (
     AccountSyncResult,

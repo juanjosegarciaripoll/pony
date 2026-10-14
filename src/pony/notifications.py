@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-from pony.calendar.outcome import Severity
+from pony.outcome import Severity
 
 # Keeps the history bounded on a long-running session.  Large enough
 # that a day of reminders and syncs stays readable.

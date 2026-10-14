@@ -5,7 +5,7 @@ then rename: a reader sees either the old file or the new one, and a
 crash or a full disk leaves the old one intact rather than a truncated
 config, a half-written token or an ``.ics`` that will not parse.
 
-This is shared vocabulary, like :mod:`pony.calendar.outcome`:
+This is shared vocabulary, like :mod:`pony.outcome`:
 anything both halves share has to sit on this side of it.  The dance was
 written out five times inside this package and not at all in the mail
 half, which wrote its profile stamp and its ``config.toml`` with

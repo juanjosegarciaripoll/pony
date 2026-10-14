@@ -22,9 +22,9 @@ from tui_helpers import (
 )
 
 from pony.calendar.domain import CalendarRef
-from pony.calendar.outcome import Notice
 from pony.domain import Contact
 from pony.invitation_actions import _with_method, send_event_invitations
+from pony.outcome import Notice
 from pony.tui.calendar_host import contact_completer
 
 _START = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)

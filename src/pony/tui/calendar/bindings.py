@@ -8,8 +8,6 @@ and re-exports the key constants that screens refer to by name.
 
 from __future__ import annotations
 
-from textual.binding import Binding
-
 from pony.calendar.keymap import (
     CALENDAR_KEYMAP,
     DETAIL_KEYS,
@@ -48,29 +46,9 @@ from pony.calendar.keymap import (
     KEY_VIEW_MONTH_ALT,
     SEARCH_KEYS,
     VIEW_KEYS,
-    KeyBinding,
     span_label,
 )
-
-# Textual's `Screen.BINDINGS` is an invariant list typed as
-# `list[Binding | tuple[str, str] | tuple[str, str, str]]`. We always
-# return `Binding` instances, but the helpers' declared type has to
-# match the wider element type so subclasses can assign their result.
-BindingType = Binding | tuple[str, str] | tuple[str, str, str]
-
-
-def to_textual(bindings: tuple[KeyBinding, ...]) -> list[BindingType]:
-    """*bindings* as Textual wants them, in the table's own order."""
-    return [
-        Binding(
-            binding.key,
-            binding.action,
-            binding.description,
-            show=binding.show,
-            priority=binding.priority,
-        )
-        for binding in bindings
-    ]
+from pony.tui.bindings import BindingType, to_textual
 
 
 def main_bindings() -> list[BindingType]:
@@ -124,11 +102,9 @@ __all__ = [
     "KEY_VIEW_AGENDA",
     "KEY_VIEW_MONTH",
     "KEY_VIEW_MONTH_ALT",
-    "BindingType",
     "detail_bindings",
     "edit_bindings",
     "main_bindings",
     "search_bindings",
     "span_label",
-    "to_textual",
 ]

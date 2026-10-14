@@ -38,8 +38,8 @@ from pony.calendar.views import (
     format_friendly_start,
     gather_occurrences,
 )
+from pony.tui.bindings import BindingType
 from pony.tui.calendar.app import AttendeeCompleter, InvitationSender, TuiServices
-from pony.tui.calendar.bindings import BindingType
 
 from ..calendar_runtime import CalendarRuntime
 from ..compose_utils import format_display_address

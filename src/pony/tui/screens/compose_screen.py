@@ -25,8 +25,9 @@ from textual.widgets import (
     TextArea,
 )
 
-from pony.calendar.outcome import Outcome
-from pony.tui.calendar.reporting import report
+from pony.keys import for_surface
+from pony.outcome import Outcome
+from pony.tui.reporting import report
 
 from ...compose_utils import (
     build_email_message,
@@ -41,7 +42,7 @@ from ...domain import (
     IndexedMessage,
 )
 from ...handoff import handoff_path
-from ...keymap import MAIL_KEYMAP, Surface, for_surface
+from ...keymap import MAIL_KEYMAP, Surface
 from ...mailbox_actions import Mailboxes
 from ...protocols import (
     ContactRepository,

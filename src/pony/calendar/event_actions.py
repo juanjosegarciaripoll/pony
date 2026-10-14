@@ -9,7 +9,7 @@ which is how the organizer of an edited event came to be worked out in
 a different place from the organizer of a new one.
 
 They live here instead, over the stores rather than over widgets, and
-report through :class:`pony.calendar.outcome.Outcome` instead of calling
+report through :class:`pony.outcome.Outcome` instead of calling
 ``app.notify``.  A second front end offers the same operations without
 reimplementing them, and a test reaches the recurrence-cache rebuild
 without starting a Textual app.
@@ -45,8 +45,8 @@ from pony.calendar.mutations import (
     reschedule_event_ics,
     trashed_copy,
 )
-from pony.calendar.outcome import Notice, Outcome, failure, info
 from pony.calendar.recurrence import rebuild_caches
+from pony.outcome import Notice, Outcome, failure, info
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

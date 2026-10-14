@@ -17,17 +17,16 @@ import json
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface, web_key
-from pony.calendar.keymap import for_surface as for_calendar_surface
+from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface
+from pony.keys import KeyBinding, for_surface, web_key
 
-from ..keymap import MAIL_KEYMAP, Surface, for_surface
+from ..keymap import MAIL_KEYMAP, Surface
 from .html import Raw, document, element, join
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from pony.calendar.keymap import KeyBinding
-    from pony.calendar.outcome import Notice
+    from pony.outcome import Notice
 
 
 class Tab(StrEnum):
@@ -76,10 +75,10 @@ def bindings_for(surface: PageSurface) -> tuple[KeyBinding, ...]:
         case PageSurface.CALENDAR:
             return (
                 *application,
-                *for_calendar_surface(CALENDAR_KEYMAP, CalendarSurface.VIEW),
+                *for_surface(CALENDAR_KEYMAP, CalendarSurface.VIEW),
             )
         case PageSurface.EVENT:
-            return for_calendar_surface(CALENDAR_KEYMAP, CalendarSurface.EDIT)
+            return for_surface(CALENDAR_KEYMAP, CalendarSurface.EDIT)
 
 
 def one_per_web_key(bindings: Iterable[KeyBinding]) -> list[KeyBinding]:

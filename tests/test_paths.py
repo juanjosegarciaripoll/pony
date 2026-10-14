@@ -14,6 +14,7 @@ from pony.paths import (
     AppPaths,
     bundled_docs_path,
     contain,
+    expand_path,
     graft,
     resolve,
     sample_config_path,
@@ -296,7 +297,7 @@ class ProfileStampTest(unittest.TestCase):
 
     It was written with `write_text`, so an interrupted first run could
     leave a truncated `profile.toml` -- a directory nothing owns and no
-    config can adopt.  It goes through `pony.calendar.atomic` now, like every
+    config can adopt.  It goes through `pony.atomic` now, like every
     other file either half replaces.
     """
 
@@ -306,7 +307,7 @@ class ProfileStampTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             data_dir = Path(raw) / "data"
             with (
-                patch("pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt),
+                patch("pony.atomic.os.replace", side_effect=KeyboardInterrupt),
                 self.assertRaises(KeyboardInterrupt),
             ):
                 claim_profile(data_dir, "default")
@@ -326,19 +327,17 @@ class ExpandPathTest(unittest.TestCase):
     """
 
     def test_every_reader_of_a_configured_path_uses_the_same_function(self) -> None:
-        import pony.calendar.paths
+        import pony.calendar.config
         import pony.cli
         import pony.config
         import pony.paths
 
-        one = pony.calendar.paths.expand_path
-        self.assertIs(pony.paths.expand_path, one)
+        one = pony.paths.expand_path
         self.assertIs(pony.config.expand_path, one)
+        self.assertIs(pony.calendar.config.expand_path, one)
         self.assertIs(pony.cli.expand_path, one)
 
     def test_a_variable_and_a_home_reference_both_expand(self) -> None:
-        from pony.calendar.paths import expand_path
-
         with patch.dict(os.environ, {"PONY_TEST_DIR": "/somewhere"}):
             self.assertEqual(
                 expand_path("$PONY_TEST_DIR/mail"), Path("/somewhere/mail")

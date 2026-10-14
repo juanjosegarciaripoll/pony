@@ -18,11 +18,8 @@ from pony.calendar.protocols import (
     IndexRepository,
     MirrorRepository,
 )
-from pony.calendar.scheduler import PeriodicSync
-from pony.tui.calendar.bindings import BindingType
-from pony.tui.calendar.terminal import (
-    osc777_notification,
-)
+from pony.scheduler import PeriodicSync
+from pony.tui.bindings import BindingType
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +308,4 @@ __all__ = [
     "InvitationSender",
     "SyncRunner",
     "TuiServices",
-    # Re-exported: the alarm poller's companion, now shared with the
-    # mail side's notifications (`pony.tui.terminal.notify_terminal`).
-    "osc777_notification",
 ]

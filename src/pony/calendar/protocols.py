@@ -19,7 +19,7 @@ from pony.calendar.domain import (
     SyncResult,
     SyncState,
 )
-from pony.calendar.scheduler import PeriodicSync, SyncOutcome
+from pony.scheduler import PeriodicSync, SyncOutcome
 
 
 class CalDAVSession(Protocol):

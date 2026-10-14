@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from pony.calendar.outcome import Notice, NoticeLog, Outcome, failure, info, warn
+from pony.outcome import Notice, NoticeLog, Outcome, failure, info, warn
 
 from .delivery import resolve_send_password
 from .invitation import (
