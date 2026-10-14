@@ -23,7 +23,10 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
+    from chronos.paths import CalendarPaths
     from pony.paths import AppPaths
 
 
@@ -105,3 +108,22 @@ def isolated_paths() -> "AppPaths":
     from pony.paths import resolve
 
     return resolve(data_dir=isolated_data_dir())
+
+
+@pytest.fixture(autouse=True)
+def calendar_paths(request: "pytest.FixtureRequest") -> "CalendarPaths":
+    """A calendar root of this test's own, inside the sandbox.
+
+    The calendar is handed where its files are rather than resolving a
+    directory itself, so a test that drives a calendar command says
+    where too.  Set on the class as well, because a
+    ``unittest.TestCase`` method cannot be given a fixture.
+    """
+    from chronos.paths import CalendarPaths
+
+    paths = CalendarPaths(
+        root=TMP_ROOT / "calendar-roots" / request.node.nodeid.replace("/", "_")[-120:]
+    )
+    if request.cls is not None:
+        request.cls.calendar_paths = paths
+    return paths

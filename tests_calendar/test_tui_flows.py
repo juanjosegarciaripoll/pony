@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from rich.style import Style
 from rich.text import Text
+from textual.app import App
 from textual.events import MouseEvent
 from textual.pilot import Pilot
 from textual.widget import Widget
@@ -43,7 +44,8 @@ from chronos.recurrence import populate_occurrences
 from chronos.scheduler import SyncOutcome
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
-from chronos.tui.app import ChronosApp, TuiServices
+from chronos.tui.app import CALENDAR_CSS, TuiServices, start_calendar_sync
+from chronos.tui.reporting import on_ui_thread
 from chronos.tui.screens.confirm_screen import ConfirmScreen
 from chronos.tui.screens.event_detail_screen import EventDetailScreen
 from chronos.tui.screens.event_edit_screen import EventEditScreen
@@ -959,6 +961,62 @@ def _agenda_cells(screen: MainScreen) -> list[str]:
     ]
 
 
+class CalendarHostApp(App[None]):
+    """The least an application has to be to host the calendar's screens.
+
+    The program has one application -- `PonyApp`, which hosts both
+    halves -- and what it offers these screens is the `CalendarHost`
+    protocol: a `TuiServices` and a stack to push onto.  That is what
+    this is.  The calendar used to ship an application of its own
+    (`ChronosApp`) for these tests to drive; what *it* did beyond
+    hosting -- starting the sync cadence, polling for reminders -- is
+    the application's, and is tested where the application is
+    (`tests/test_calendar_in_app.py`).
+    """
+
+    CSS = CALENDAR_CSS
+
+    def __init__(self, services: TuiServices) -> None:
+        super().__init__()
+        self.services = services
+
+    @property
+    def calendar_services(self) -> TuiServices:
+        """Satisfies `CalendarHost` -- see that protocol."""
+        return self.services
+
+    def on_mount(self) -> None:
+        self.push_screen(MainScreen())  # pyright: ignore[reportUnknownMemberType]
+        # `start_calendar_sync` is the shipped one `PonyApp` calls: the
+        # sync keys ask the scheduler it puts on the services, so a host
+        # without it would make those tests about nothing.
+        start_calendar_sync(
+            self.services,
+            on_started=self._sync_started,
+            on_finished=self._sync_finished,
+        )
+
+    def on_unmount(self) -> None:
+        if self.services.sync_scheduler is not None:
+            self.services.sync_scheduler.stop()
+
+    # The callbacks arrive on the scheduler's thread and have to hop
+    # onto the UI's, which is `chronos.tui.reporting.on_ui_thread` --
+    # the same hop `PonyApp` makes for the same reason.
+
+    def _sync_started(self) -> None:
+        on_ui_thread(self, lambda: self._agenda(lambda s: s.on_sync_started()))
+
+    def _sync_finished(self, outcome: CalendarSyncOutcome) -> None:
+        on_ui_thread(self, lambda: self._agenda(lambda s: s.on_sync_finished(outcome)))
+
+    def _agenda(self, action: Callable[[MainScreen], None]) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                action(screen)
+                return
+
+
 class TuiFlowTestCase(unittest.IsolatedAsyncioTestCase):
     """Base for Pilot-driven flows.
 
@@ -1007,7 +1065,7 @@ class StartupIcsModalTest(TuiFlowTestCase):
         ics_path = self.tmp / "invite.ics"
         ics_path.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR\n", encoding="utf-8")
         services = self.services(startup_ics_path=ics_path)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, ImportIcsScreen)
@@ -1021,7 +1079,7 @@ class ViewSwitchTest(TuiFlowTestCase):
 
     async def test_number_keys_switch_between_top_level_views(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             assert isinstance(pilot.app.screen, MainScreen)
@@ -1040,7 +1098,7 @@ class ViewSwitchTest(TuiFlowTestCase):
 
     async def test_d_w_m_tune_agenda_window_when_in_agenda(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1064,7 +1122,7 @@ class ViewSwitchTest(TuiFlowTestCase):
 
     async def test_d_w_m_are_noops_outside_agenda(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1086,7 +1144,7 @@ class QuitBindingTest(TuiFlowTestCase):
         # missing actions to the App, so binding "Q" to "quit" without
         # MainScreen.action_quit silently dropped the press.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("Q")
@@ -1097,7 +1155,7 @@ class QuitBindingTest(TuiFlowTestCase):
 class TodayResetsViewedDateTest(TuiFlowTestCase):
     async def test_today_jumps_back_to_now(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1113,7 +1171,7 @@ class TodayKeyTest(TuiFlowTestCase):
 
     async def test_t_snaps_viewed_date_in_day_view(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1135,7 +1193,7 @@ class DateNavigationTest(TuiFlowTestCase):
 
     async def test_n_advances_one_day_in_day_view(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1149,7 +1207,7 @@ class DateNavigationTest(TuiFlowTestCase):
 
     async def test_p_retreats_one_day_in_day_view(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1162,7 +1220,7 @@ class DateNavigationTest(TuiFlowTestCase):
             self.assertEqual(screen._viewed_date, start - timedelta(days=1))
 
     async def _week_step(self, span_key: str, key: str) -> timedelta:
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1184,7 +1242,7 @@ class DateNavigationTest(TuiFlowTestCase):
 
     async def test_n_in_agenda_day_window_advances_one_day(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1200,7 +1258,7 @@ class DateNavigationTest(TuiFlowTestCase):
 
     async def test_n_in_agenda_week_window_advances_seven_days(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1216,7 +1274,7 @@ class DateNavigationTest(TuiFlowTestCase):
 
     async def test_n_in_agenda_month_window_advances_one_month(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1246,7 +1304,7 @@ class StartupFocusTest(TuiFlowTestCase):
         # -- the calendar's root is per-test now, so a fresh session
         # opens on AGENDA and the answer is exactly one widget.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.pause()  # call_after_refresh needs a second tick
@@ -1270,7 +1328,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
         # Day / Grid hide the inline detail pane and show the detail
         # in a modal `EventDetailScreen` on Enter instead.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1340,7 +1398,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
 
         services = self.services()
         component = self._seed_long_event(services)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             app.push_screen(
@@ -1377,7 +1435,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
 
         services = self.services()
         self._seed_long_event(services)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1419,7 +1477,7 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
 class NewEventFlowTest(TuiFlowTestCase):
     async def test_new_event_creates_in_mirror_and_index(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             # `c` opens the new-event editor — mirrors Pony's compose
@@ -1461,7 +1519,7 @@ class NewEventFlowTest(TuiFlowTestCase):
         from textual.widgets import Checkbox
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -1509,7 +1567,7 @@ class NewEventFlowTest(TuiFlowTestCase):
     async def test_all_day_end_before_start_is_rejected(self) -> None:
         from textual.widgets import Checkbox
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -1537,7 +1595,7 @@ class NewEventFlowTest(TuiFlowTestCase):
         from chronos.ical_parser import extract_attendees, extract_organizer
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -1581,7 +1639,7 @@ class EditExistingEventTest(TuiFlowTestCase):
         assert isinstance(component, VEvent)
         assert component.dtstart is not None
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1640,7 +1698,7 @@ class EditExistingEventTest(TuiFlowTestCase):
         services.mirror.write(ref.resource, raw)
         services.index.upsert_component(component)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1677,7 +1735,7 @@ class EditExistingEventTest(TuiFlowTestCase):
         component = services.index.get_component(ref)
         assert isinstance(component, VEvent)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1746,7 +1804,7 @@ class DeleteFlowTest(TuiFlowTestCase):
         component = services.index.get_component(ref)
         assert isinstance(component, VEvent)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1778,7 +1836,7 @@ class DeleteFlowTest(TuiFlowTestCase):
         component = services.index.get_component(ref)
         assert isinstance(component, VEvent)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1802,7 +1860,7 @@ class DeleteFlowTest(TuiFlowTestCase):
         # In "new event" mode there is nothing to delete: the binding is
         # hidden (check_action) and the action is inert.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1823,7 +1881,7 @@ class DeleteFlowTest(TuiFlowTestCase):
         component = services.index.get_component(ref)
         assert isinstance(component, VEvent)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1842,7 +1900,7 @@ class DeleteFlowTest(TuiFlowTestCase):
         # `D` (and `shift+d`) must reach the confirm screen with the
         # currently-highlighted row.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -1869,7 +1927,7 @@ class HelpScreenTest(TuiFlowTestCase):
         from chronos.tui.screens.help_screen import HelpScreen
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("f1")
@@ -1913,7 +1971,7 @@ class HelpScreenTest(TuiFlowTestCase):
 
     async def test_escape_dismisses_help_screen(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("f1")
@@ -1926,7 +1984,7 @@ class HelpScreenTest(TuiFlowTestCase):
         from chronos.tui.screens.help_screen import HelpScreen
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("f1")
@@ -1946,7 +2004,7 @@ class CommandPaletteEnabledTest(TuiFlowTestCase):
         from textual.command import CommandPalette
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+p")
@@ -1973,7 +2031,7 @@ class SyncFlowTest(TuiFlowTestCase):
             )
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2002,7 +2060,7 @@ class SyncFlowTest(TuiFlowTestCase):
             )
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2015,7 +2073,7 @@ class SyncFlowTest(TuiFlowTestCase):
 
     async def test_sync_without_runner_notifies(self) -> None:
         services = self.services(sync_runner=None)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2045,7 +2103,7 @@ class SyncFlowTest(TuiFlowTestCase):
             )
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2105,7 +2163,7 @@ class SyncFlowTest(TuiFlowTestCase):
             )
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2141,7 +2199,7 @@ class ContactsKeyTest(TuiFlowTestCase):
         opened: list[int] = []
         services = self.services()
         services.contacts_browser = lambda: opened.append(1)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("B")
@@ -2152,7 +2210,7 @@ class ContactsKeyTest(TuiFlowTestCase):
         opened: list[int] = []
         services = self.services()
         services.contacts_browser = lambda: opened.append(1)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("shift+b")
@@ -2163,7 +2221,7 @@ class ContactsKeyTest(TuiFlowTestCase):
         """Standalone there are no contacts, and silence would puzzle."""
         services = self.services()
         self.assertIsNone(services.contacts_browser)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("B")
@@ -2186,7 +2244,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
             errors=errors,
         )
 
-    def _main(self, app: ChronosApp) -> MainScreen:
+    def _main(self, app: CalendarHostApp) -> MainScreen:
         screen = app.screen
         assert isinstance(screen, MainScreen)
         return screen
@@ -2215,7 +2273,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         from chronos.tui.widgets.sync_status import SCHEDULED_SYNC_MARK, SyncStatus
 
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             scheduler = services.sync_scheduler
@@ -2234,7 +2292,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         services.config = dataclasses.replace(
             services.config, background_sync_enabled=False
         )
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             scheduler = services.sync_scheduler
@@ -2254,7 +2312,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         services.config = dataclasses.replace(
             services.config, background_sync_enabled=False
         )
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+g")
@@ -2271,7 +2329,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
             return (self._result(added=2),)
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+g")
@@ -2294,7 +2352,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         on both sides, and ++ctrl+g++ is the silent sync on both.
         """
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("g")
@@ -2311,7 +2369,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
 
         for key in ("G", "shift+g", "colon"):
             services = self.services(sync_runner=lambda **_: ())
-            app = ChronosApp(services)
+            app = CalendarHostApp(services)
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await pilot.press(key)
@@ -2324,7 +2382,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
     async def test_a_periodic_run_says_nothing_when_nothing_changed(self) -> None:
         """A sync nobody asked for is silent unless it has news."""
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             self._main(app).on_sync_finished(self._sync_outcome(manual=False))
@@ -2333,7 +2391,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
 
     async def test_a_periodic_run_reports_what_it_changed(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             self._main(app).on_sync_finished(self._sync_outcome(manual=False, added=2))
@@ -2345,7 +2403,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
 
     async def test_sync_errors_are_notified(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             outcome = self._sync_outcome(manual=False, errors=("auth refused",))
@@ -2358,7 +2416,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
 
     async def test_a_failed_run_is_reported(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             failure: CalendarSyncOutcome = SyncOutcome(
@@ -2393,7 +2451,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
             return ()
 
         services = self.services(sync_runner=runner)
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+g")
@@ -2488,7 +2546,7 @@ class MonthViewFlowTest(TuiFlowTestCase):
     async def test_month_view_navigation_and_drill_down(self) -> None:
         from chronos.tui.widgets.month_grid import MonthGrid
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test(size=(110, 32)) as pilot:
             await pilot.pause()
             main = app.screen
@@ -2528,7 +2586,7 @@ class MonthViewFlowTest(TuiFlowTestCase):
 
         from chronos.tui.widgets.month_grid import MonthGrid
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test(size=(110, 32)) as pilot:
             await pilot.pause()
             main = app.screen
@@ -2554,7 +2612,7 @@ class GotoDialogTest(TuiFlowTestCase):
 
         from chronos.tui.screens.goto_screen import GotoScreen
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             main = app.screen
@@ -2577,7 +2635,7 @@ class GotoDialogTest(TuiFlowTestCase):
             self.assertEqual(main._viewed_date, date(2026, 12, 1))
 
     async def test_escape_cancels(self) -> None:
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             main = app.screen
@@ -2605,47 +2663,6 @@ class Osc777Test(unittest.TestCase):
 
         seq = osc777_notification("A;B\x1b", "Starts 10:00\nBring\x07 slides")
         self.assertEqual(seq, "\x1b]777;notify;A,B;Starts 10:00 · Bring slides\x07")
-
-
-class AlarmFiringTest(TuiFlowTestCase):
-    async def test_due_alarm_is_toasted_and_marked_fired(self) -> None:
-        services = self.services()
-        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "alarm@example.com")
-        services.index.upsert_component(
-            dataclasses.replace(_empty_event(ref), summary="Standup")
-        )
-        start = NOW + timedelta(minutes=10)
-        services.index.set_alarms(
-            ref,
-            start,
-            [
-                AlarmRecord(
-                    db_id=None,
-                    ref=ref,
-                    summary="Standup",
-                    occurrence_start=start,
-                    trigger_at=NOW - timedelta(minutes=1),
-                    action=AlarmAction.DISPLAY,
-                    description=None,
-                    fired_at=None,
-                )
-            ],
-        )
-        app = ChronosApp(services)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._fire_pending_alarms()
-            await pilot.pause()
-            notes = [n for n in app._notifications if n.title]
-            self.assertEqual(len(notes), 1)
-            self.assertEqual(notes[0].title, "Standup")
-            self.assertTrue(notes[0].message.startswith("Starts "))
-            window = (NOW - timedelta(hours=1), NOW + timedelta(hours=1))
-            self.assertEqual(services.index.query_pending_alarms(*window), ())
-            # Already fired: the next poll stays quiet.
-            app._fire_pending_alarms()
-            await pilot.pause()
-            self.assertEqual(len([n for n in app._notifications if n.title]), 1)
 
 
 class InProgressTest(unittest.TestCase):
@@ -2683,7 +2700,7 @@ class ClockTickTest(TuiFlowTestCase):
         clock = [NOW]
         services = self.services()
         services.now = lambda: clock[0]
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = app.screen
@@ -2718,7 +2735,7 @@ class FormatCountdownTest(unittest.TestCase):
 class SearchFlowTest(TuiFlowTestCase):
     async def test_search_dialog_opens_event_detail_on_select(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("/")
@@ -2737,7 +2754,7 @@ class SearchFlowTest(TuiFlowTestCase):
 class EditScreenValidationTest(TuiFlowTestCase):
     async def test_save_with_empty_summary_shows_error_and_keeps_screen(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -2757,7 +2774,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
 
     async def test_save_with_invalid_date_shows_error(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -2773,7 +2790,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
 
     async def test_save_rejects_end_before_start(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -2795,7 +2812,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
 
     async def test_cancel_pops_screen(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -3170,7 +3187,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
 
     async def test_panel_hidden_by_default(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             from chronos.tui.widgets.calendar_panel import CalendarPanel
@@ -3181,7 +3198,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
 
     async def test_capital_c_key_toggles_panel_visibility(self) -> None:
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             from chronos.tui.widgets.calendar_panel import CalendarPanel
@@ -3205,7 +3222,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
         # `MainScreen._selection` and re-render the event list against
         # the new filter.
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             from chronos.tui.widgets.calendar_panel import CalendarPanel
@@ -3857,7 +3874,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -3893,7 +3910,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 datetime(2026, 5, 2, tzinfo=UTC),
             ),
         ]
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -3928,7 +3945,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         later = TimelineGridHelpersTest._all_day_row(
             "later", "Later", local(12), local(13)
         )
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -3995,7 +4012,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 datetime(2026, 5, 1, 9, 30).astimezone(),
             )
         ]
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4029,7 +4046,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4048,7 +4065,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4090,7 +4107,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4134,7 +4151,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4173,7 +4190,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4268,7 +4285,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             [["Trip"], ["Trip", "One day"], ["Trip"], []],
         )
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4306,7 +4323,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4369,7 +4386,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         start = datetime(2026, 6, 15, 9).astimezone()
         end = start + timedelta(hours=1)
         async with app.run_test() as pilot:
@@ -4428,7 +4445,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         event_start = datetime(2026, 6, 15, 14, 30).astimezone()
         event_end = datetime(2026, 6, 15, 15, 30).astimezone()
         async with app.run_test() as pilot:
@@ -4532,7 +4549,7 @@ class OAuthCopyUrlTest(TuiFlowTestCase):
             raise OAuthError("cancelled")
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         with mock.patch(
             "chronos.tui.screens.oauth_progress_screen.run_paste_redirect_flow",
             fake_flow,
@@ -4604,7 +4621,7 @@ class AgendaKeysTest(TuiFlowTestCase):
     async def test_enter_on_an_agenda_row_opens_the_event(self) -> None:
         from chronos.tui.screens.event_detail_screen import EventDetailScreen
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = await self._agenda_over_the_seeded_events(pilot)
@@ -4616,7 +4633,7 @@ class AgendaKeysTest(TuiFlowTestCase):
             self.assertIsInstance(pilot.app.screen, EventDetailScreen)
 
     async def test_e_on_an_agenda_row_edits_the_event(self) -> None:
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             await self._agenda_over_the_seeded_events(pilot)
@@ -4655,7 +4672,7 @@ class ViewRepaintTest(TuiFlowTestCase):
         component = services.index.get_component(ref)
         assert isinstance(component, VEvent)
 
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = await self._month_agenda(pilot)
@@ -4676,7 +4693,7 @@ class ViewRepaintTest(TuiFlowTestCase):
         from chronos.tui.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -4726,7 +4743,7 @@ class ViewRepaintTest(TuiFlowTestCase):
         """
         from textual.coordinate import Coordinate
 
-        app = ChronosApp(self.services())
+        app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = await self._month_agenda(pilot)
@@ -4759,7 +4776,7 @@ class SyncSlotRefusalTest(TuiFlowTestCase):
 
     async def test_both_sync_keys_refuse_while_one_is_already_running(self) -> None:
         services = self.services(sync_runner=lambda **_: ())
-        app = ChronosApp(services)
+        app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = pilot.app.screen

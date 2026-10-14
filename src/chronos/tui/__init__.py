@@ -1,3 +1,3 @@
-from chronos.tui.app import ChronosApp, TuiServices
+from chronos.tui.app import TuiServices
 
-__all__ = ["ChronosApp", "TuiServices"]
+__all__ = ["TuiServices"]

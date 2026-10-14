@@ -7,10 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from textual import work
 from textual.app import App
 
-from chronos.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS, due_alarms
 from chronos.domain import AppConfig, SyncResult
 from chronos.paths import CalendarPaths
 from chronos.protocols import (
@@ -22,13 +20,8 @@ from chronos.protocols import (
 )
 from chronos.scheduler import PeriodicSync
 from chronos.tui.bindings import BindingType
-from chronos.tui.reporting import on_ui_thread
-from chronos.tui.screens.main_screen import MainScreen
 from chronos.tui.terminal import (
     osc777_notification,
-    pop_terminal_title,
-    push_terminal_title,
-    set_terminal_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,7 +96,6 @@ def available_theme_names() -> list[str]:
     before the app starts. It lived in the calendar's CLI, which made
     listing themes a reason to import a command-line module.
     """
-    from textual.app import App
 
     return sorted(App().available_themes)
 
@@ -112,7 +104,8 @@ def available_theme_names() -> list[str]:
 class TuiServices:
     """Dependencies the TUI needs.
 
-    Constructed by the CLI entry-point and handed to `ChronosApp`. Tests
+    Built by `pony.tui.calendar_host` and handed to the application
+    that hosts the calendar's screens. Tests
     inject fakes for everything except `now`. `sync_runner` is `None`
     when the TUI was launched from a context that has not wired sync
     in (most TUI tests); pressing the sync key in that mode shows a
@@ -147,7 +140,7 @@ class TuiServices:
     # doing nothing.
     contacts_browser: ContactsBrowser | None = None
     # The periodic sync, owned by whichever application is hosting —
-    # `ChronosApp` standalone, `PonyApp` inside the mail client. It runs
+    # `PonyApp` hosts it. It runs
     # on its own thread, so it outlives the agenda screen being popped;
     # `MainScreen` only observes its countdown and asks it for a run.
     # None when sync is not wired in (most TUI tests), exactly like
@@ -172,7 +165,7 @@ def start_calendar_sync(
     unstarted, and the sync key starts a single run without a cadence.
     Does nothing when no runner is wired in, which is most TUI tests.
 
-    One function because there are two hosts: `ChronosApp` standalone
+    One function because the host is a protocol: `PonyApp` today
     and `PonyApp` with mail and calendar in one program.  Each built
     the `PeriodicSync` itself, and the calendar's own copy was dead
     whenever Pony hosted -- so a change to the cadence, the callbacks or
@@ -198,7 +191,7 @@ class CalendarHost(Protocol):
     """A Textual app the calendar screens can live on.
 
     `MainScreen` reads its dependencies off `self.app`, so whatever app
-    hosts it has to offer them. `ChronosApp` does when the calendar runs
+    hosts it has to offer them. `PonyApp` does when the calendar runs
     on its own, and Pony Express's `PonyApp` does when mail and calendar
     run as one program.
     """
@@ -311,141 +304,9 @@ CALENDAR_CSS = """
 """
 
 
-class ChronosApp(App[None]):
-    """Top-level Textual app for the calendar on its own.
-
-    All real logic lives in `MainScreen`; the app is just a host. We
-    push the main screen on mount instead of in `compose` so the
-    constructor runs synchronously without touching any I/O.
-
-    Reached with `pony calendar` and with `pony calendar tui`. Inside
-    the mail client the same screens run on `PonyApp` instead, so what
-    the user sees is one product either way — hence the shared name in
-    the header and the terminal title.
-    """
-
-    TITLE = "Pony Express"
-    SUB_TITLE = "Calendar"
-
-    # Ctrl-P opens Textual's built-in command palette, which includes the
-    # "Change theme" picker — the live in-app theme switcher. Kept enabled
-    # so users can raise contrast on the fly; the F1 help screen documents
-    # it alongside chronos's own keybindings.
-    ENABLE_COMMAND_PALETTE = True
-
-    CSS = CALENDAR_CSS
-
-    def __init__(self, services: TuiServices, theme_name: str | None = None) -> None:
-        super().__init__()
-        self.services = services
-        # The CLI resolves a concrete built-in theme (config / --theme /
-        # DEFAULT_THEME), so a running app always has an explicit theme.
-        # Tests that construct ChronosApp(services) keep Textual's default.
-        if theme_name is not None:
-            self.theme = theme_name
-
-    @property
-    def calendar_services(self) -> TuiServices:
-        """Satisfies `CalendarHost` — see that protocol."""
-        return self.services
-
-    def on_mount(self) -> None:
-        push_terminal_title()
-        set_terminal_title(
-            f"Pony Express — Calendar {datetime.now().strftime('%d/%m/%Y')}"
-        )
-        self.push_screen(MainScreen())  # pyright: ignore[reportUnknownMemberType]
-        if not self.is_headless:
-            self._start_mcp_server()
-        self.set_interval(ALARM_POLL_SECONDS, self._fire_pending_alarms, name="alarms")
-        self._start_sync_scheduler()
-
-    def on_unmount(self) -> None:
-        if self.services.sync_scheduler is not None:
-            self.services.sync_scheduler.stop()
-        pop_terminal_title()
-
-    # Background sync ----------------------------------------------------------
-
-    def _start_sync_scheduler(self) -> None:
-        start_calendar_sync(
-            self.services,
-            on_started=self._on_sync_started,
-            on_finished=self._on_sync_finished,
-        )
-
-    def _on_sync_started(self) -> None:
-        """Scheduler thread: tell the agenda, if anyone is looking at it."""
-        self._on_ui_thread(lambda screen: screen.on_sync_started())
-
-    def _on_sync_finished(self, outcome: CalendarSyncOutcome) -> None:
-        """Scheduler thread: hand the outcome to the agenda."""
-        self._on_ui_thread(lambda screen: screen.on_sync_finished(outcome))
-
-    def _on_ui_thread(self, action: Callable[[MainScreen], None]) -> None:
-        """Run `action` against the agenda screen on the UI thread."""
-        on_ui_thread(self, lambda: self._apply_to_main_screen(action))
-
-    def _apply_to_main_screen(self, action: Callable[[MainScreen], None]) -> None:
-        for screen in self.screen_stack:
-            if isinstance(screen, MainScreen):
-                action(screen)
-                return
-
-    @work(exclusive=False, name="mcp-server", exit_on_error=False)
-    async def _start_mcp_server(self) -> None:
-        """Start the MCP TCP server on an ephemeral port.
-
-        Runs for the lifetime of the TUI on the app's own event loop
-        (no separate thread, per ai/MCP.md).  Failure is non-fatal:
-        the TUI continues normally without MCP.
-        """
-        from chronos.mcp_server import start_tcp_server
-
-        try:
-            await start_tcp_server(
-                index=self.services.index,
-                mirror=self.services.mirror,
-                state_file=self.services.paths.mcp_state_file,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.log.warning(f"MCP TCP server stopped: {exc}")
-
-    def _fire_pending_alarms(self) -> None:
-        """Announce every alarm that fell due since the last poll.
-
-        Runs every `ALARM_POLL_SECONDS`.  Which alarms are due is
-        `chronos.alarms`' answer, shared with the mail half; how to say
-        them is this application's, and it says them through the
-        terminal so they reach the user wherever the TUI is displayed --
-        including over SSH, where a desktop notification would land on
-        the remote machine: an in-app toast, the terminal bell, and an
-        OSC 777 notification for terminals that turn it into a desktop
-        one (terminals without support ignore it).
-        """
-        now = self.services.now()
-        try:
-            due = due_alarms(self.services.index, now)
-        except Exception:  # noqa: BLE001
-            logger.exception("query_pending_alarms failed")
-            return
-        for alarm in due:
-            self.notify(alarm.body, title=alarm.title, timeout=ALARM_TOAST_SECONDS)
-            self._write_to_terminal(osc777_notification(alarm.title, alarm.body))
-            logger.info("alarm fired: %s (%s)", alarm.title, alarm.body)
-        if due:
-            self.bell()
-
-    def _write_to_terminal(self, data: str) -> None:
-        """Send raw control sequences to the terminal, as `App.bell` does."""
-        if not self.is_headless and self._driver is not None:
-            self._driver.write(data)
-
-
 __all__ = [
     "CALENDAR_CSS",
     "CalendarHost",
-    "ChronosApp",
     "AttendeeCompleter",
     "InvitationSender",
     "SyncRunner",

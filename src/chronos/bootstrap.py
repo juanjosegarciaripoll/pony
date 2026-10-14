@@ -8,15 +8,11 @@ experience.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TextIO
 
 from chronos.atomic import write_atomically
-from chronos.config import ConfigError
-from chronos.config import load as load_config
 from chronos.domain import CALENDAR_CONFIG_VERSION
 
 PromptFn = Callable[[str], str]
@@ -98,66 +94,6 @@ def write_template(config_path: Path) -> None:
     write_atomically(config_path, TEMPLATE_TOML, suffix=".toml")
 
 
-def offer_bootstrap(
-    stdout: TextIO,
-    stderr: TextIO,
-    *,
-    config_path: Path,
-    prompt: PromptFn,
-    open_editor: EditorFn,
-) -> int:
-    """Prompt the user to create a template and edit it.
-
-    Used by `cli.main()` when a data command runs without a config. The
-    user is asked twice: first to create the template, then to open it
-    in their editor. Each prompt defaults to "yes" on bare Enter.
-
-    Returns 0 if the bootstrap completed (config written, optionally
-    edited and validated), 1 if the user declined or validation failed.
-    Caller-injected `prompt` and `open_editor` keep this testable.
-    """
-    if config_path.exists():
-        stderr.write(f"config already exists at {config_path}\n")
-        return 1
-
-    stdout.write(f"No calendar config at {config_path}.\n")
-    if not _yes_default(prompt("Create a template now? [Y/n] ")):
-        stdout.write("Skipped. Run `pony calendar init` later to create one.\n")
-        return 1
-
-    write_template(config_path)
-    stdout.write(f"Wrote template to {config_path}\n")
-
-    if _yes_default(prompt("Open it in your editor now? [Y/n] ")):
-        try:
-            open_editor(config_path)
-        except subprocess.CalledProcessError as exc:
-            stderr.write(f"editor exited non-zero: {exc}\n")
-            stdout.write(
-                "You can edit the config later with `pony calendar config edit`.\n"
-            )
-            return 0
-        except FileNotFoundError as exc:
-            stderr.write(f"editor not found: {exc}\n")
-            stdout.write(
-                "Set $EDITOR or $VISUAL and run `pony calendar config edit`.\n"
-            )
-            return 0
-        try:
-            load_config(config_path)
-        except ConfigError as exc:
-            stderr.write(f"config has errors: {exc}\n")
-            stderr.write("Re-run `pony calendar config edit` to fix and re-validate.\n")
-            return 1
-
-    stdout.write(
-        "\nNext steps:\n"
-        "  pony calendar sync   # fetch calendars from configured accounts\n"
-        "  pony tui             # then press F2\n"
-    )
-    return 0
-
-
 def default_is_interactive() -> bool:
     """Both stdin and stdout must be a TTY for the prompt to be useful."""
     return sys.stdin.isatty() and sys.stdout.isatty()
@@ -167,11 +103,6 @@ def default_prompt(message: str) -> str:
     return input(message)
 
 
-def _yes_default(response: str) -> bool:
-    """Treat empty input as Yes; "y" / "yes" (any case) as Yes; else No."""
-    return response.strip().lower() in ("", "y", "yes")
-
-
 __all__ = [
     "TEMPLATE_TOML",
     "EditorFn",
@@ -179,6 +110,5 @@ __all__ = [
     "PromptFn",
     "default_is_interactive",
     "default_prompt",
-    "offer_bootstrap",
     "write_template",
 ]

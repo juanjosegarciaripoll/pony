@@ -205,7 +205,11 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
 #: imported a command-line module to run a sync, and the host's own
 #: calendar glue imported one to find out where a configuration lives.
 _FRONT_END_PREFIXES = ("pony.tui", "pony.web", "chronos.tui")
-_COMMAND_LINE_MODULES = ("pony.cli", "chronos.cli")
+#: The command line is Pony's, both halves of it: `pony.cli` parses and
+#: `pony.cli_calendar` holds the calendar's commands. The calendar's
+#: package has none of its own -- `chronos/cli.py` was one, which is
+#: how the terminal UI and the browser came to import a command line.
+_COMMAND_LINE_MODULES = ("pony.cli", "pony.cli_calendar")
 #: The program's entry point, which is above all five: starting the
 #: command line is what it is for.
 _ENTRY_POINTS = ("pony.__main__",)

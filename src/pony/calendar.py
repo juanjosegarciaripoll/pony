@@ -275,6 +275,15 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
     )
 
 
+class CalendarNotConfiguredError(ConfigError):
+    """There is no ``[calendar]`` table to run a calendar command against.
+
+    A distinct type because it is not a mistake to report: it is what
+    ``pony calendar init`` exists for, and the command line offers to
+    write one when a person is there to answer.
+    """
+
+
 def calendar_paths(paths: AppPaths) -> CalendarPaths:
     """The calendar's layout inside the host's data directory.
 
@@ -320,6 +329,7 @@ def open_calendar_runtime(
 
 __all__ = [
     "CALENDAR_SECTION",
+    "CalendarNotConfiguredError",
     "CalendarConfig",
     "CalendarRuntime",
     "calendar_paths",

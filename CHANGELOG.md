@@ -176,6 +176,21 @@ without that a kept mirror came back indexed by nothing.
 
 ### Fixed
 
+- **One command line, and the calendar has no application of its own**: the
+  calendar's commands are declared in Pony's parser, so `pony --help` lists
+  both halves and `pony calendar --help` lists the calendar's — where
+  before, everything after `calendar` was handed to a second parser that
+  printed another program's help and could disagree about what a flag
+  meant. `pony calendar tui` and `python -m chronos` are gone with the
+  second application they launched: the agenda is a screen of the one app,
+  on ++f2++. `pony calendar invite.ics` still works and now means
+  `pony calendar import invite.ics`.
+
+  Running a calendar command with no `[calendar]` table also answers
+  better: it says what to add and where, and offers to add it to the
+  configuration you are on, where it used to try to write a
+  calendar-shaped file over it and refuse because that file exists.
+
 - **The calendar is told where its files are instead of looking it up**: a
   `CalendarPaths` now travels as an argument — on the runtime, the CLI
   context, the TUI's services and the credentials provider — where a

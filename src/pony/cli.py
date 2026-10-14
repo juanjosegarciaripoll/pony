@@ -22,6 +22,7 @@ from chronos.atomic import write_atomically
 from chronos.outcome import Outcome
 from chronos.paths import expand_path
 
+from . import cli_calendar
 from .accounts import (
     build_mirror,
     build_mirrors,
@@ -484,14 +485,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Everything after `calendar` belongs to the calendar's own parser,
     # so it is taken verbatim rather than described twice.  `main` splits
-    # the argument list before argparse sees it (`_split_calendar_argv`),
-    # which is why this parser declares no arguments and no `--help`:
-    # `pony calendar --help` is the calendar's help, not a wrapper's.
-    subparsers.add_parser(
-        "calendar",
-        help="Run a calendar command (`pony calendar --help` for the list).",
-        add_help=False,
-    ).set_defaults(calendar_args=[])
+    # The calendar's own commands, in this parser rather than in one of
+    # their own: `pony --help` lists both halves, `pony calendar --help`
+    # lists the calendar's, and a flag cannot mean two things.
+    cli_calendar.add_calendar_parser(subparsers)
 
     # Recorded so the bare-filename shortcut can tell a subcommand from a
     # path without keeping a second list of command names beside this one.
@@ -537,49 +534,15 @@ def _expand_bare_filename(
 _VALUE_OPTIONS = frozenset({"--config", "--theme"})
 
 
-def _split_calendar_argv(
-    argv: Sequence[str] | None,
-) -> tuple[list[str], list[str] | None]:
-    """Cut the argument list at the `calendar` command.
-
-    Returns ``(pony_tokens, calendar_tokens)``, the second being None
-    when this is not a calendar invocation.
-
-    Splitting by hand is what makes the pass-through faithful:
-    `argparse.REMAINDER` still tries to parse a leading `--flag` itself,
-    so `pony calendar --help` would print a wrapper's help and
-    `pony calendar --config f list` would be rejected outright, when
-    both belong to the calendar's own parser.
-
-    Only the subcommand position is considered — the first token that is
-    neither an option nor an option's value. Anything later that happens
-    to read "calendar" belongs to the subcommand, and cutting there
-    would quietly swallow the rest of its arguments
-    (``pony compose --subject calendar --to her@example.com``).
-    """
-    tokens = list(sys.argv[1:] if argv is None else argv)
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token in _VALUE_OPTIONS:
-            index += 2  # the option and the value that follows it
-            continue
-        if token.startswith("-"):
-            index += 1  # a flag, or `--config=path` carrying its own value
-            continue
-        break
-    if index < len(tokens) and tokens[index] == "calendar":
-        return tokens[: index + 1], tokens[index + 1 :]
-    return tokens, None
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
-    tokens, calendar_argv = _split_calendar_argv(_expand_bare_filename(argv, parser))
+    # `None` means "whatever the shell handed us", which is what the
+    # split this replaced resolved it to before parsing.
+    expanded = _expand_bare_filename(argv, parser)
+    tokens = list(sys.argv[1:] if expanded is None else expanded)
+    tokens = cli_calendar.expand_ics_shortcut(tokens)
     args = parser.parse_args(tokens)
-    if calendar_argv is not None:
-        args.calendar_args = calendar_argv
     _configure_logging(debug=args.debug)
     paths = resolve(args.config)
     declared_data_dir, profile = _peek_profile(paths.config_file)
@@ -715,9 +678,7 @@ def _dispatch(
             return run_config_show(paths=paths, config_path=args.config)
         return run_config_edit(paths=paths, config_path=args.config)
     if args.command == "calendar":
-        return run_calendar(
-            paths=paths, config_path=args.config, argv=args.calendar_args
-        )
+        return run_calendar(paths=paths, args=args, config_path=args.config)
     if args.command == "tui":
         return run_tui(
             paths=paths,
@@ -3141,21 +3102,20 @@ def _open_calendar_or_warn(
 
 
 def run_calendar(
-    *, paths: AppPaths, config_path: Path | None, argv: Sequence[str]
+    *, paths: AppPaths, args: argparse.Namespace, config_path: Path | None
 ) -> int:
-    """Run a calendar command against the unified configuration.
+    """Run the calendar command this invocation named.
 
-    The calendar's own argument parser handles everything after
-    `calendar`, so `pony calendar sync`, `pony calendar list` and
-    `pony calendar --help` behave exactly as that parser defines them.
-    Only the configuration is redirected: it comes from Pony's file,
-    where the calendar's settings live under `[calendar]`.
+    The parsing is the program's, one parser for both halves; what is
+    left here is the wiring: the configuration comes from Pony's file,
+    where the calendar's settings live under `[calendar]`, and the
+    stores come from the one function that opens them.
     """
     from datetime import UTC, datetime
 
-    from chronos import cli as calendar_cli
-
+    from . import cli_calendar
     from .calendar import (
+        CalendarNotConfiguredError,
         calendar_paths,
         hosted_calendar_document,
         open_calendar_runtime,
@@ -3163,16 +3123,18 @@ def run_calendar(
 
     layout = calendar_paths(paths)
 
-    def _context(path: Path | None) -> calendar_cli.CliContext:
+    def _context() -> cli_calendar.CliContext:
         runtime = open_calendar_runtime(
-            layout, path, interactive_authorizer=calendar_cli.default_cli_authorizer
+            layout,
+            config_path,
+            interactive_authorizer=cli_calendar.default_cli_authorizer,
         )
         if runtime is None:
-            raise ConfigError(
+            raise CalendarNotConfiguredError(
                 "no calendar configured: add a [calendar] table to "
                 "config.toml (see config-sample.toml)."
             )
-        return calendar_cli.CliContext(
+        return cli_calendar.CliContext(
             config=runtime.config,
             mirror=runtime.mirror,
             index=runtime.index,
@@ -3183,18 +3145,14 @@ def run_calendar(
             now=datetime.now(UTC),
         )
 
-    forwarded = list(argv)
-    if config_path is not None:
-        forwarded = ["--config", str(config_path), *forwarded]
     try:
-        return calendar_cli.main(
-            forwarded,
+        return cli_calendar.run(
+            args,
             paths=layout,
-            context_factory=_context,
-            prog="pony calendar",
-            config_document=hosted_calendar_document(
+            document=hosted_calendar_document(
                 config_path or resolve(config_path).config_file
             ),
+            context_factory=_context,
         )
     except ConfigError as error:
         print(f"error: {error}", file=sys.stderr)

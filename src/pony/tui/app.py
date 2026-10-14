@@ -387,7 +387,7 @@ class PonyApp(QuitAsksTheScreen):
         if self._calendar is None or services is None:
             return
         # The calendar's own function, so the cadence, the callbacks and
-        # the config gate are the same whether `ChronosApp` or this app
+        # the config gate are the same whichever application
         # is hosting.
         start_calendar_sync(
             services,

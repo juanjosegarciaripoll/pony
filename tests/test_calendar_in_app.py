@@ -499,15 +499,17 @@ async def test_both_syncs_run_on_threads_the_app_owns() -> None:
 
 
 async def test_the_calendar_sync_is_gated_the_same_way_under_either_host() -> None:
-    """One function builds it, because there are two applications.
+    """One function builds it, wherever the calendar is hosted.
 
-    `ChronosApp` standalone and `PonyApp` with both halves each built
-    the `PeriodicSync` themselves, and the calendar's own copy was dead
-    whenever Pony hosted -- so the cadence, the callbacks and this gate
-    could drift into being right in one host and wrong in the other.
-    With `background_sync_enabled = false` the thread must not start,
-    and the scheduler must still be wired up, because `ctrl+g` asks it
-    for a single run.
+    Two applications each built the `PeriodicSync` themselves -- the
+    calendar's own, and this one -- and the calendar's copy was dead
+    whenever Pony hosted, so the cadence, the callbacks and this gate
+    could drift into being right in one and wrong in the other. There
+    is one application now, and `start_calendar_sync` is still the one
+    function: the calendar's screen tests drive a host that calls it
+    too. With `background_sync_enabled = false` the thread must not
+    start, and the scheduler must still be wired up, because `ctrl+g`
+    asks it for a single run.
     """
     import dataclasses
 

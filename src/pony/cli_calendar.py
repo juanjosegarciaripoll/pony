@@ -1,8 +1,24 @@
+"""``pony calendar ...`` -- the calendar half of the command line.
+
+One command line serves both halves of the program, so these commands
+live here, beside the mail ones, and `pony.cli` hangs them under
+`calendar` in the same parser: `pony --help` lists both, and
+`pony calendar --help` lists these.  They lived in `chronos/cli.py`, a
+command line inside the calendar's model, which is what let the
+terminal UI and the browser import one.
+
+Every command works through the model and reports what it did: the
+stores and the layout arrive as a `chronos.services.CalendarServices`,
+the configuration as a `chronos.config.ConfigDocument` -- whose
+`[calendar]` table lives in Pony's own file -- and nothing here
+reaches into a screen.  There is no calendar application to launch:
+the agenda is a screen of the one app, on ++f2++.
+"""
+
 from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import logging
 import os
 import shlex
@@ -10,7 +26,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -23,13 +38,11 @@ from chronos.bootstrap import (
     PromptFn,
     default_is_interactive,
     default_prompt,
-    offer_bootstrap,
     write_template,
 )
 from chronos.caldav import CalDAVError
-from chronos.config import ConfigDocument, ConfigError, file_document, mirror_roots
-from chronos.config import load as load_config
-from chronos.credentials import CredentialResolutionError, DefaultCredentialsProvider
+from chronos.config import ConfigDocument, ConfigError
+from chronos.credentials import CredentialResolutionError
 from chronos.domain import (
     CALENDAR_CONFIG_VERSION,
     GOOGLE_CALDAV_URL,
@@ -50,7 +63,6 @@ from chronos.domain import (
 )
 from chronos.event_actions import Calendars, EditDraft, save_event, trash_event
 from chronos.ical_parser import extract_alarm_triggers, extract_attendees
-from chronos.index_store import SqliteIndexRepository
 from chronos.locking import SyncLockError, acquire_sync_lock
 from chronos.mutations import is_all_day_span
 from chronos.oauth import (
@@ -71,15 +83,15 @@ from chronos.services import (
     CalendarServices,
     ProgressFn,
     SessionFactory,
-    build_sync_runner,
     default_session_factory,
     format_report,
     run_doctor,
 )
-from chronos.storage import VdirMirrorRepository
 from chronos.sync import describe_account_sync, sync_account
 
-ContextFactory = Callable[[Path | None], "CliContext"]
+from .calendar import CalendarNotConfiguredError
+
+ContextFactory = Callable[[], "CliContext"]
 EditorFn = Callable[[Path], None]
 InputFn = Callable[[str], str]
 
@@ -120,162 +132,153 @@ class CliContext:
         )
 
 
-def main(
-    argv: Sequence[str] | None = None,
+def run(
+    args: argparse.Namespace,
     *,
     paths: CalendarPaths,
-    context_factory: ContextFactory | None = None,
+    document: ConfigDocument,
+    context_factory: ContextFactory,
     open_editor: EditorFn | None = None,
     prompt: PromptFn | None = None,
     is_interactive: IsInteractiveFn | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
-    prog: str = "chronos",
-    config_document: ConfigDocument | None = None,
 ) -> int:
-    """Run one calendar command.
+    """Run the calendar command *args* names.
 
-    `prog` names the program in usage and error messages. Pony Express
-    passes "pony calendar", which is how the user reached this parser
-    when the calendar runs as part of it.
+    The parsing happened in :mod:`pony.cli`: one parser for the
+    program, so there is no argument tail to hand over and no second
+    ``--help``.
 
-    `paths` is where the calendar's files are. The calendar is hosted
-    and resolves no platform directory of its own, so the host says --
-    Pony passes `AppPaths.calendar_dir`. It was a module global set by
-    `chronos.paths.activate`, which meant every command read whichever
-    root had been activated last in the process.
+    *paths* is where the calendar's files are -- it resolves no
+    directory of its own -- and *document* is where its configuration
+    lives, which inside Pony is the ``[calendar]`` table of Pony's own
+    file.  The commands that edit a configuration go through the
+    document, so they edit the one the program is running on.
 
-    `config_document` says where the configuration lives and how to
-    read and write it.  Standalone that is a file of this program's
-    own; inside Pony it is the `[calendar]` table of Pony's file, and
-    the host supplies the pair of functions that put it there.  The
-    commands that edit a configuration go through it, so they edit the
-    configuration the program is actually running on.
+    *context_factory* opens the stores for the commands that need
+    them -- with no argument, because which configuration this run is
+    on is the host's answer and not something to read back out of the
+    command's own flags.  The host owns that, because the host is what knows where
+    they are: this module used to open a second mirror and index of its
+    own, beside the ones `pony.calendar.open_calendar_runtime` opens.
     """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
-    raw_argv = list(argv) if argv is not None else sys.argv[1:]
-    argv_for_parse = _rewrite_ics_shortcut(raw_argv)
-    parser = _build_parser(prog)
-    args = parser.parse_args(argv_for_parse)
+    command = getattr(args, "calendar_command", None)
     # `sync` defaults to INFO so the per-calendar / per-chunk progress
     # logger.info(...) calls are visible without forcing the user to
     # type `-v`. Other commands stay at WARNING (quiet by default).
     _configure_logging(
-        args.verbose,
+        int(getattr(args, "verbose", 0)),
         err,
-        default_level=logging.INFO if args.command == "sync" else logging.WARNING,
+        default_level=logging.INFO if command == "sync" else logging.WARNING,
     )
-    config_path: Path = args.config or paths.config_file
-    document = config_document or file_document(config_path)
 
     # Config-editing commands work on the document without needing the
     # mirror / index / credential plumbing.
-    if args.command == "init":
+    if command == "init":
         return cmd_init(out, err, document=document)
-    if args.command == "account":
+    if command == "account":
         return _dispatch_account(args, out, err, document=document)
-    if args.command == "config":
+    if command == "config":
         return _dispatch_config(
             args, out, err, document=document, open_editor=open_editor
         )
-    if args.command == "oauth":
+    if command == "oauth":
         return _dispatch_oauth(args, out, err, document=document, paths=paths)
 
-    # `tui --list-themes` just enumerates Textual's bundled themes; it
-    # needs no config, mirror, or index, so handle it before the data-path
-    # plumbing below.
-    if args.command == "tui" and getattr(args, "list_themes", False):
-        from chronos.tui.app import available_theme_names
-
-        for name in available_theme_names():
-            out.write(f"{name}\n")
-        return 0
-
-    # Data commands need a config. If none exists, offer to bootstrap one
-    # interactively; otherwise print a helpful message and exit. Tests
-    # that inject a `context_factory` bring their own config and bypass
-    # this check.
-    if context_factory is None and not config_path.exists():
+    # Data commands need a configured calendar. With none, offer to
+    # write one when someone is there to answer; otherwise say how.
+    try:
+        ctx = context_factory()
+    except CalendarNotConfiguredError:
         return _handle_missing_config(
             out,
             err,
-            config_path=config_path,
+            document=document,
             prompt=prompt,
             open_editor=open_editor,
             is_interactive=is_interactive,
         )
-
-    # Data commands need a full context.
-    owns_context = context_factory is None
-    factory = context_factory or (
-        lambda chosen: _default_context_factory(chosen, paths)
-    )
-    try:
-        ctx = factory(args.config)
     except ConfigError as exc:
         err.write(f"config error: {exc}\n")
         return 2
-    try:
-        return _dispatch(
-            args,
-            ctx,
-            prompt=prompt or default_prompt,
-            is_interactive=is_interactive or default_is_interactive,
-        )
-    finally:
-        if owns_context:
-            ctx.index.close()
+    return _dispatch(
+        args,
+        ctx,
+        prompt=prompt or default_prompt,
+        is_interactive=is_interactive or default_is_interactive,
+    )
 
 
 def _handle_missing_config(
     stdout: TextIO,
     stderr: TextIO,
     *,
-    config_path: Path,
+    document: ConfigDocument,
     prompt: PromptFn | None,
     open_editor: EditorFn | None,
     is_interactive: IsInteractiveFn | None,
 ) -> int:
-    interactive = (is_interactive or default_is_interactive)()
-    if not interactive:
+    """No calendar configured: offer to add one, or say how.
+
+    The offer goes through the document, so it adds a `[calendar]`
+    table to the configuration this run is on.  It used to write a
+    calendar-shaped config *file* at that path, which with one shared
+    file meant it refused every time -- the file is always there, it is
+    the table that is not.
+    """
+    if not (is_interactive or default_is_interactive)():
         stderr.write(
-            f"config not found: {config_path}\n"
-            f"Run `pony calendar init` to create one, then "
-            f"`pony calendar account add ...` to configure an account.\n"
+            f"no calendar configured in {document.label}\n"
+            "Run `pony calendar init` to add one, then "
+            "`pony calendar account add ...` to configure an account.\n"
         )
         return 2
-    return offer_bootstrap(
-        stdout,
-        stderr,
-        config_path=config_path,
-        prompt=prompt or default_prompt,
-        open_editor=open_editor or _default_open_editor,
+
+    ask = prompt or default_prompt
+    stdout.write(f"No calendar configured in {document.label}.\n")
+    if not _yes_default(ask("Add one now? [Y/n] ")):
+        stdout.write("Skipped. Run `pony calendar init` later to add one.\n")
+        return 1
+    code = cmd_init(stdout, stderr, document=document)
+    if code != 0:
+        return code
+    if _yes_default(ask("Open the configuration in your editor now? [Y/n] ")):
+        editor = open_editor or _default_open_editor
+        try:
+            editor(document.path)
+        except subprocess.CalledProcessError as exc:
+            stderr.write(f"editor exited non-zero: {exc}\n")
+            stdout.write(
+                "You can edit the config later with `pony calendar config edit`.\n"
+            )
+            return 0
+        except FileNotFoundError as exc:
+            stderr.write(f"editor not found: {exc}\n")
+            stdout.write(
+                "Set $EDITOR or $VISUAL and run `pony calendar config edit`.\n"
+            )
+            return 0
+        try:
+            document.validate(document.path)
+        except ConfigError as exc:
+            stderr.write(f"config has errors: {exc}\n")
+            stderr.write("Re-run `pony calendar config edit` to fix and re-validate.\n")
+            return 1
+    stdout.write(
+        "\nNext steps:\n"
+        "  pony calendar sync   # fetch calendars from configured accounts\n"
+        "  pony tui             # then press F2\n"
     )
+    return 0
 
 
-def _default_context_factory(
-    config_path: Path | None, paths: CalendarPaths
-) -> CliContext:
-    path = config_path or paths.config_file
-    config = load_config(path)
-    mirror = VdirMirrorRepository(
-        paths.mirror_dir,
-        account_roots=mirror_roots(config, paths),
-    )
-    index = SqliteIndexRepository(paths.index_file)
-    return CliContext(
-        config=config,
-        mirror=mirror,
-        index=index,
-        creds=DefaultCredentialsProvider(
-            interactive_authorizer=default_cli_authorizer, paths=paths
-        ),
-        paths=paths,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        now=datetime.now(UTC),
-    )
+def _yes_default(response: str) -> bool:
+    """Bare Enter means yes; anything but a no is a yes."""
+    answer = response.strip().lower()
+    return answer in {"", "y", "yes"}
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -301,32 +304,32 @@ _SUBCOMMANDS = frozenset(
 )
 
 
-def _rewrite_ics_shortcut(argv: Sequence[str]) -> list[str]:
-    """Translate `chronos file.ics` into `chronos tui --import-ics file.ics`."""
-    if not argv:
-        return list(argv)
-    first_positional: str | None = None
+def expand_ics_shortcut(argv: Sequence[str]) -> list[str]:
+    """``pony calendar invite.ics`` means ``pony calendar import invite.ics``.
+
+    The shape a desktop file association hands over.  It used to
+    expand to ``tui --import-ics``, which opened the calendar's own
+    application on an import modal; there is one application now, and
+    importing a file is a command.
+    """
+    tokens = list(argv)
+    try:
+        at = tokens.index("calendar")
+    except ValueError:
+        return tokens
+    rest = tokens[at + 1 :]
     i = 0
-    while i < len(argv):
-        token = argv[i]
-        if token in ("--config",):
-            i += 2
-            continue
-        if token.startswith("-"):
+    while i < len(rest):
+        if rest[i].startswith("-"):
             i += 1
             continue
-        first_positional = token
         break
-    if first_positional is None:
-        return list(argv)
-    if first_positional in _SUBCOMMANDS:
-        return list(argv)
-    candidate = Path(first_positional)
-    if candidate.suffix.lower() != ".ics":
-        return list(argv)
-    before = list(argv[:i])
-    after = list(argv[i + 1 :])
-    return [*before, "tui", "--import-ics", first_positional, *after]
+    if i >= len(rest):
+        return tokens
+    candidate = rest[i]
+    if candidate in _SUBCOMMANDS or Path(candidate).suffix.lower() != ".ics":
+        return tokens
+    return [*tokens[: at + 1], *rest[:i], "import", *rest[i:]]
 
 
 class _DropH3DowngradeFilter(logging.Filter):
@@ -453,15 +456,24 @@ def _tui_unsupported_authorizer(
     )
 
 
-def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog=prog, description="Terminal-first calendar client."
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to config.toml (defaults to platform user-config dir).",
+def add_calendar_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],  # noqa: SLF001
+) -> argparse.ArgumentParser:
+    """Hang the calendar's commands under ``pony calendar``.
+
+    One parser for the whole program: ``--config`` is Pony's, up at the
+    top, and what is added here is the calendar's own vocabulary.  It
+    used to be a parser of its own that Pony handed an argument tail
+    to, so ``pony calendar --help`` was another program's help and the
+    two halves could disagree about a flag.
+
+    Returns the ``calendar`` parser, so a bare ``pony calendar`` can
+    print its help.
+    """
+    parser = subparsers.add_parser(
+        "calendar",
+        help="Calendars, events and reminders (`pony calendar --help`).",
+        description="Calendars, events and reminders.",
     )
     parser.add_argument(
         "-v",
@@ -474,8 +486,7 @@ def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
             "(DEBUG/INFO/WARNING/ERROR)."
         ),
     )
-    parser.set_defaults(command="tui")
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="calendar_command")
 
     sync_p = sub.add_parser(
         "sync", help="Synchronise configured accounts with their servers."
@@ -581,27 +592,6 @@ def _build_parser(prog: str = "chronos") -> argparse.ArgumentParser:
             "level to DEBUG. Use with --remote to see which step a stalled "
             "probe is blocked on."
         ),
-    )
-
-    tui_p = sub.add_parser("tui", help="Launch the Textual UI.")
-    tui_p.add_argument(
-        "--import-ics",
-        type=Path,
-        default=None,
-        dest="import_ics",
-        help=argparse.SUPPRESS,
-    )
-    tui_p.add_argument(
-        "--theme",
-        metavar="THEME",
-        default=None,
-        help="Textual theme name (overrides config). See --list-themes.",
-    )
-    tui_p.add_argument(
-        "--list-themes",
-        action="store_true",
-        dest="list_themes",
-        help="Print available Textual theme names and exit.",
     )
 
     sub.add_parser(
@@ -776,7 +766,7 @@ def _dispatch(
     prompt: PromptFn,
     is_interactive: IsInteractiveFn,
 ) -> int:
-    command = str(args.command) if args.command is not None else "tui"
+    command = str(args.calendar_command)
     if command == "sync":
         return cmd_sync(
             ctx,
@@ -827,19 +817,6 @@ def _dispatch(
             ctx,
             remote=bool(getattr(args, "remote", False)),
             debug=bool(getattr(args, "debug", False)),
-        )
-    if command == "tui":
-        # `--list-themes` is handled early in main(); here we resolve the
-        # theme to apply (cli > config > default) and validate it.
-        theme, theme_err = _resolve_theme(
-            getattr(args, "theme", None), ctx.config.theme
-        )
-        if theme_err is not None:
-            return theme_err
-        return cmd_tui(
-            ctx,
-            startup_ics_path=getattr(args, "import_ics", None),
-            theme=theme,
         )
     if command == "mcp":
         return cmd_mcp(ctx)
@@ -1509,136 +1486,6 @@ def _resolve_import_calendar(
     return calendars[choice - 1]
 
 
-def _resolve_theme(
-    cli_theme: str | None, config_theme: str | None
-) -> tuple[str | None, int | None]:
-    """Pick the effective theme and validate it against Textual's themes.
-
-    Precedence: `--theme` flag > config `theme` > `DEFAULT_THEME`. Returns
-    `(name, None)` on success, or `(None, error_code)` when the requested
-    name is not a known theme (so the caller can exit non-zero).
-    """
-    from chronos.tui.app import DEFAULT_THEME, available_theme_names
-
-    effective = cli_theme or config_theme or DEFAULT_THEME
-    available = available_theme_names()
-    if effective not in available:
-        names = ", ".join(available)
-        print(
-            f"error: unknown theme {effective!r}. Available: {names}",
-            file=sys.stderr,
-        )
-        return None, 1
-    return effective, None
-
-
-def cmd_tui(
-    ctx: CliContext,
-    *,
-    startup_ics_path: Path | None = None,
-    theme: str | None = None,
-) -> int:
-    # Imported lazily so `chronos --help` and other commands don't pull
-    # Textual into the import graph.
-    from chronos.tui import ChronosApp, TuiServices
-    from chronos.tui.screens.oauth_progress_screen import OAuthProgressScreen
-
-    # The TUI authorizer runs the OAuth loopback flow inside the app
-    # itself. We use a late-binding box because `app` doesn't exist yet
-    # when `build_sync_runner` captures the authorizer closure.
-    app_box: list[ChronosApp] = []
-
-    def tui_authorizer(
-        account_name: str, spec: OAuthCredential, _token_path: Path
-    ) -> StoredTokens:
-
-        result_box: list[StoredTokens | BaseException] = []
-        done = threading.Event()
-
-        def on_complete(result: StoredTokens | BaseException) -> None:
-            result_box.append(result)
-            done.set()
-
-        screen = OAuthProgressScreen(
-            account_name,
-            spec,
-            on_complete=on_complete,
-            remote_browser=use_remote_browser_flow(),
-        )
-        app_box[0].call_from_thread(app_box[0].push_screen, screen)  # pyright: ignore[reportUnknownMemberType]
-        done.wait()
-
-        outcome = result_box[0]
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return outcome
-
-    tui_ctx = dataclasses.replace(
-        ctx,
-        creds=DefaultCredentialsProvider(
-            interactive_authorizer=tui_authorizer, paths=ctx.paths
-        ),
-    )
-    services = TuiServices(
-        config=tui_ctx.config,
-        mirror=tui_ctx.mirror,
-        index=tui_ctx.index,
-        creds=tui_ctx.creds,
-        paths=tui_ctx.paths,
-        now=lambda: datetime.now(UTC),
-        sync_runner=build_sync_runner(tui_ctx.services()),
-        startup_ics_path=startup_ics_path,
-    )
-    app = ChronosApp(services, theme_name=theme)
-    app_box.append(app)
-    with _redirect_logs_to_file(tui_ctx.paths.log_file):
-        app.run()
-    return 0
-
-
-def _redirect_logs_to_file(log_path: Path) -> _LogRedirector:
-    """Route the root logger to `tui.log` for the duration of the TUI.
-
-    Sync emits per-calendar / per-batch progress at INFO; with the
-    default stderr handler still in place those lines paint over
-    Textual's screen and corrupt the rendering. The file handler
-    keeps the user's logs available (`tail -f $XDG_DATA_HOME/chronos/
-    tui.log`) without touching stderr while the app owns the terminal.
-    """
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return _LogRedirector(log_path)
-
-
-class _LogRedirector:
-    def __init__(self, log_path: Path) -> None:
-        self._log_path = log_path
-        self._previous_handlers: list[logging.Handler] = []
-        self._previous_level = logging.WARNING
-        self._file_handler: logging.FileHandler | None = None
-
-    def __enter__(self) -> _LogRedirector:
-        root = logging.getLogger()
-        self._previous_handlers = list(root.handlers)
-        self._previous_level = root.level
-        handler = logging.FileHandler(self._log_path, mode="a", encoding="utf-8")
-        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
-        handler.addFilter(_DropH3DowngradeFilter())
-        self._file_handler = handler
-        root.handlers = [handler]
-        # Sync's progress logs are at INFO; lift the root level so
-        # they actually land in the file even if the parent CLI
-        # invocation defaulted to WARNING.
-        root.setLevel(min(self._previous_level, logging.INFO))
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        root = logging.getLogger()
-        if self._file_handler is not None:
-            self._file_handler.close()
-        root.handlers = self._previous_handlers
-        root.setLevel(self._previous_level)
-
-
 def cmd_init(stdout: TextIO, stderr: TextIO, *, document: ConfigDocument) -> int:
     """Put an empty configuration where this run reads one."""
     if document.editable_in_place:
@@ -2137,7 +1984,8 @@ def _render_detail(component: StoredComponent, stdout: TextIO) -> None:
 
 __all__ = [
     "CliContext",
-    "SessionFactory",
+    "add_calendar_parser",
+    "expand_ics_shortcut",
     "cmd_add",
     "cmd_doctor",
     "cmd_edit",
@@ -2145,5 +1993,6 @@ __all__ = [
     "cmd_rm",
     "cmd_show",
     "cmd_sync",
-    "main",
+    "pick_editor",
+    "run",
 ]

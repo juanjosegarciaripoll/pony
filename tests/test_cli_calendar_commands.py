@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import re
@@ -11,8 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from chronos import cli
-from chronos.config import file_document, mirror_roots
+from chronos.config import ConfigDocument, file_document, mirror_roots
 from chronos.credentials import DefaultCredentialsProvider
 from chronos.domain import (
     AccountConfig,
@@ -31,7 +31,7 @@ from chronos.oauth import (
 from chronos.paths import CalendarPaths
 from chronos.services import build_sync_runner, default_session_factory
 from chronos.storage import VdirMirrorRepository
-from chronos.tui.app import available_theme_names
+from pony import cli_calendar as cli
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -65,7 +65,54 @@ def _config(*accounts: AccountConfig) -> AppConfig:
     )
 
 
-class CliTestCase(unittest.TestCase):
+def _parse(argv: list[str]) -> argparse.Namespace:
+    """Parse *argv* with the program's own parser.
+
+    One command line serves both halves, so a calendar command is
+    parsed by the parser `pony --help` describes -- not by one these
+    tests build. The calendar used to have a parser of its own and this
+    is what called it.
+    """
+    from pony.cli import build_parser
+
+    return build_parser().parse_args(["calendar", *argv])
+
+
+def _nowhere_document(path: Path) -> ConfigDocument:
+    """A document for the commands that are given their stores instead."""
+    return ConfigDocument(
+        path=path,
+        label=str(path),
+        load=lambda: _config(),
+        save=lambda _config: None,
+        validate=lambda _path: None,
+    )
+
+
+def _no_context() -> cli.CliContext:
+    """For the commands that edit a configuration and open no store."""
+    raise AssertionError("this command should not have opened the stores")
+
+
+def _unconfigured() -> cli.CliContext:
+    """No `[calendar]` table yet, which is what the bootstrap offers to fix."""
+    from pony.calendar import CalendarNotConfiguredError
+
+    raise CalendarNotConfiguredError("no calendar configured")
+
+
+class CalendarRootMixin:
+    """Supplies ``self.calendar_paths`` from the autouse fixture.
+
+    A `unittest.TestCase` method cannot be handed a fixture, so
+    `tests/conftest.py` puts the per-test calendar root on the class.
+    The annotation is what says so to a reader and to the type checker.
+    """
+
+    calendar_paths: CalendarPaths
+
+
+class CliTestCase(CalendarRootMixin, unittest.TestCase):
     def setUp(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.mirror = VdirMirrorRepository(tmp / "mirror")
@@ -104,85 +151,55 @@ class CliTestCase(unittest.TestCase):
         context: cli.CliContext | None = None,
     ) -> int:
         ctx = context or self._ctx()
-        return cli.main(argv, paths=self.calendar_paths, context_factory=lambda _: ctx)
+        return cli.run(
+            _parse(argv),
+            paths=self.calendar_paths,
+            document=_nowhere_document(self.calendar_paths.config_file),
+            context_factory=lambda: ctx,
+            stdout=self.stdout,
+            stderr=self.stderr,
+        )
 
 
 class ParserTest(CliTestCase):
-    def test_no_subcommand_defaults_to_tui(self) -> None:
-        # chronos with no args defaults to the tui command; without a
-        # config it returns 2 (missing-config path), not a parser error.
-        result = cli.main(
-            ["--config", "/nowhere/does/not/exist.toml"],
-            paths=self.calendar_paths,
-            is_interactive=lambda: False,
-        )
-        self.assertEqual(result, 2)
+    """The calendar's commands are in the program's one parser."""
+
+    def test_a_bare_calendar_names_no_command(self) -> None:
+        """`pony calendar` by itself: nothing to run, so the help.
+
+        It used to default to `tui` and open the calendar's own
+        application, which no longer exists -- the agenda is a screen
+        of the one app.
+        """
+        self.assertIsNone(_parse([]).calendar_command)
+
+    def test_one_help_covers_both_halves(self) -> None:
+        """What the user asked the command line for: one help.
+
+        The mail commands and `calendar` in the same listing, and the
+        calendar's own commands under it. They used to be two parsers,
+        so `pony calendar --help` was another program's help and
+        nothing listed both.
+        """
+        from pony.cli import build_parser
+
+        top = build_parser().format_help()
+        self.assertIn("calendar", top)
+        self.assertIn("compose", top)
+
+        calendar = io.StringIO()
+        with contextlib.redirect_stdout(calendar), self.assertRaises(SystemExit):
+            _parse(["--help"])
+        listed = calendar.getvalue()
+        for command in ("sync", "list", "show", "add", "edit", "rm", "doctor"):
+            with self.subTest(command=command):
+                self.assertIn(command, listed)
+        # And no application of its own to launch.
+        self.assertNotIn("tui", listed)
 
     def test_unknown_subcommand_exits_nonzero(self) -> None:
         with self.assertRaises(SystemExit):
-            cli.main(["nope"], paths=self.calendar_paths)
-
-
-class ResolveThemeTest(unittest.TestCase):
-    def test_cli_overrides_config(self) -> None:
-        theme, err = cli._resolve_theme("nord", "gruvbox")
-        self.assertIsNone(err)
-        self.assertEqual(theme, "nord")
-
-    def test_config_used_when_no_cli(self) -> None:
-        theme, err = cli._resolve_theme(None, "gruvbox")
-        self.assertIsNone(err)
-        self.assertEqual(theme, "gruvbox")
-
-    def test_falls_back_to_default_theme(self) -> None:
-        from chronos.tui.app import DEFAULT_THEME
-
-        theme, err = cli._resolve_theme(None, None)
-        self.assertIsNone(err)
-        self.assertEqual(theme, DEFAULT_THEME)
-        # The default must itself be a real, known theme.
-        self.assertIn(DEFAULT_THEME, available_theme_names())
-
-    def test_unknown_theme_returns_error(self) -> None:
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            theme, err = cli._resolve_theme("not-a-real-theme", None)
-        self.assertIsNone(theme)
-        self.assertEqual(err, 1)
-        self.assertIn("unknown theme", stderr.getvalue())
-
-    def test_list_themes_prints_and_exits_zero(self) -> None:
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            code = cli.main(
-                ["tui", "--list-themes"],
-                paths=self.calendar_paths,
-                is_interactive=lambda: False,
-            )
-        self.assertEqual(code, 0)
-        printed = stdout.getvalue().split()
-        # Every printed name is a real theme; flexoki (the default) is present.
-        self.assertIn("flexoki", printed)
-        self.assertEqual(printed, available_theme_names())
-
-
-class IcsShortcutParseTest(unittest.TestCase):
-    def test_rewrites_bare_ics_to_tui_import(self) -> None:
-        argv = cli._rewrite_ics_shortcut(["meeting.ics"])  # pyright: ignore[reportPrivateUsage]
-        self.assertEqual(argv, ["tui", "--import-ics", "meeting.ics"])
-
-    def test_rewrites_after_global_flags(self) -> None:
-        argv = cli._rewrite_ics_shortcut(  # pyright: ignore[reportPrivateUsage]
-            ["--config", "cfg.toml", "-v", "meeting.ics"]
-        )
-        self.assertEqual(
-            argv,
-            ["--config", "cfg.toml", "-v", "tui", "--import-ics", "meeting.ics"],
-        )
-
-    def test_keeps_regular_subcommands(self) -> None:
-        argv = cli._rewrite_ics_shortcut(["sync"])  # pyright: ignore[reportPrivateUsage]
-        self.assertEqual(argv, ["sync"])
+            _parse(["nope"])
 
 
 class SyncCommandTest(CliTestCase):
@@ -317,7 +334,7 @@ class SyncCommandTest(CliTestCase):
             raise SyncLockError("another calendar sync is already running (pid=1234)")
             yield  # the bare yield is what makes this a generator
 
-        with mock.patch("chronos.cli.acquire_sync_lock", new=_contended):
+        with mock.patch("pony.cli_calendar.acquire_sync_lock", new=_contended):
             code = cli.cmd_reset(
                 ctx,
                 yes=True,
@@ -638,7 +655,7 @@ class SyncLockReleaseTest(CliTestCase):
         under_tmp = CalendarPaths(root=tmp)
         ctx = self._ctx(session_factory=factory, paths=under_tmp)
 
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         with self.assertRaises(KeyboardInterrupt):
             runner()
 
@@ -646,7 +663,7 @@ class SyncLockReleaseTest(CliTestCase):
         # acquire it without blocking or raising SyncLockError.
         ctx2 = self._ctx(session_factory=lambda *_: self.session, paths=under_tmp)
         self._seed()  # idempotent
-        runner2 = build_sync_runner(ctx2)
+        runner2 = build_sync_runner(ctx2.services())
         results = runner2()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].errors, ())
@@ -697,7 +714,7 @@ class BuildSyncRunnerTest(CliTestCase):
             return self.session
 
         ctx = self._ctx(session_factory=factory)
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].account_name, "personal")
@@ -709,7 +726,7 @@ class BuildSyncRunnerTest(CliTestCase):
             _account(credential=EnvCredential(variable="UNSET_FOR_TEST"))
         )
         ctx = self._ctx(config=bad_config, creds_env={})
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].errors[0].count("UNSET_FOR_TEST"), 1)
@@ -731,7 +748,7 @@ class BuildSyncRunnerTest(CliTestCase):
             return session
 
         ctx = self._ctx(session_factory=broken_factory)
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("simulated network failure", results[0].errors[0])
@@ -745,7 +762,7 @@ class BuildSyncRunnerTest(CliTestCase):
             raise NotImplementedError("session factory not configured")
 
         ctx = self._ctx(session_factory=unimplemented_factory)
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("session factory not configured", results[0].errors[0])
@@ -763,7 +780,7 @@ class BuildSyncRunnerTest(CliTestCase):
             raise CalDAVError("session construction blew up")
 
         ctx = self._ctx(session_factory=broken_factory)
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         results = runner()
         self.assertEqual(len(results), 1)
         self.assertIn("session construction blew up", results[0].errors[0])
@@ -798,7 +815,7 @@ class BuildSyncRunnerTest(CliTestCase):
             now=NOW,
             session_factory=factory,
         )
-        runner = build_sync_runner(ctx)
+        runner = build_sync_runner(ctx.services())
         runner()
         self.assertEqual(committed, [1])
         # Silence unused-import lint for the type-only import above.
@@ -1407,22 +1424,30 @@ class DoctorCommandTest(CliTestCase):
         self.assertNotIn("[doctor", self.stderr.getvalue())
 
 
-class ConfigLoadErrorTest(unittest.TestCase):
-    def test_missing_config_in_non_interactive_exits_two(self) -> None:
-        stderr = io.StringIO()
-        stdout = io.StringIO()
-        code = cli.main(
-            ["--config", "/nowhere/does/not/exist.toml", "doctor"],
+class ConfigLoadErrorTest(CliTestCase):
+    def test_an_unconfigured_calendar_in_non_interactive_exits_two(self) -> None:
+        """What `pony calendar doctor` says with no `[calendar]` table."""
+        from pony.calendar import CalendarNotConfiguredError
+
+        def unconfigured() -> cli.CliContext:
+            raise CalendarNotConfiguredError("no calendar configured")
+
+        code = cli.run(
+            _parse(["doctor"]),
             paths=self.calendar_paths,
+            document=_nowhere_document(self.calendar_paths.config_file),
+            context_factory=unconfigured,
             is_interactive=lambda: False,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=self.stdout,
+            stderr=self.stderr,
         )
+
         self.assertEqual(code, 2)
-        self.assertIn("config not found", stderr.getvalue())
+        self.assertIn("no calendar configured", self.stderr.getvalue())
+        self.assertIn("pony calendar init", self.stderr.getvalue())
 
 
-class ConfigEditingCliTestCase(unittest.TestCase):
+class ConfigEditingCliTestCase(CalendarRootMixin, unittest.TestCase):
     """Harness for the config-editing subcommands.
 
     These commands don't need a mirror/index/session — just a config path
@@ -1441,9 +1466,11 @@ class ConfigEditingCliTestCase(unittest.TestCase):
         *,
         open_editor: cli.EditorFn | None = None,
     ) -> int:
-        return cli.main(
-            ["--config", str(self.config_path), *argv],
+        return cli.run(
+            _parse(argv),
             paths=self.calendar_paths,
+            document=file_document(self.config_path),
+            context_factory=_no_context,
             open_editor=open_editor,
             stdout=self.stdout,
             stderr=self.stderr,
@@ -1475,7 +1502,7 @@ class InitCommandTest(ConfigEditingCliTestCase):
         self.assertIn("already exists", self.stderr.getvalue())
 
 
-class FirstLaunchBootstrapTest(unittest.TestCase):
+class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
     """Running a data command without a config offers to bootstrap one.
 
     In a non-TTY environment we exit with a helpful message instead.
@@ -1496,24 +1523,29 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
         return prompt
 
     def test_non_interactive_prints_help_and_exits_2(self) -> None:
-        code = cli.main(
-            ["--config", str(self.config_path), "sync"],
+        code = cli.run(
+            _parse(["sync"]),
             paths=self.calendar_paths,
+            document=file_document(self.config_path),
+            context_factory=_unconfigured,
             is_interactive=lambda: False,
             stdout=self.stdout,
             stderr=self.stderr,
         )
         self.assertEqual(code, 2)
-        self.assertIn("config not found", self.stderr.getvalue())
+        self.assertIn("no calendar configured", self.stderr.getvalue())
+        self.assertIn("pony calendar init", self.stderr.getvalue())
         self.assertIn("pony calendar init", self.stderr.getvalue())
         self.assertFalse(self.config_path.exists())
 
     def test_interactive_user_creates_template_and_skips_editor(self) -> None:
         edits: list[Path] = []
 
-        code = cli.main(
-            ["--config", str(self.config_path), "tui"],
+        code = cli.run(
+            _parse(["sync"]),
             paths=self.calendar_paths,
+            document=file_document(self.config_path),
+            context_factory=_unconfigured,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["y", "n"]),  # create yes, edit no
             open_editor=lambda p: edits.append(p),
@@ -1526,9 +1558,11 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
         self.assertIn("Wrote template", self.stdout.getvalue())
 
     def test_interactive_user_declines(self) -> None:
-        code = cli.main(
-            ["--config", str(self.config_path), "list"],
+        code = cli.run(
+            _parse(["list"]),
             paths=self.calendar_paths,
+            document=file_document(self.config_path),
+            context_factory=_unconfigured,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["n"]),
             stdout=self.stdout,
@@ -1543,9 +1577,11 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
         # missing-config bootstrap flow MUST NOT trigger for it — that
         # would prompt to create a template before letting init create
         # one, which is silly. Verify by passing no prompt at all.
-        code = cli.main(
-            ["--config", str(self.config_path), "init"],
+        code = cli.run(
+            _parse(["init"]),
             paths=self.calendar_paths,
+            document=file_document(self.config_path),
+            context_factory=_unconfigured,
             stdout=self.stdout,
             stderr=self.stderr,
         )
@@ -2023,7 +2059,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
         # cmd_oauth_authorize supports an injected auth_flow; call
         # it directly for the cleanest test.
-        from chronos import cli
+        from pony import cli_calendar as cli
 
         code = cli.cmd_oauth_authorize(
             self.stdout,
@@ -2107,7 +2143,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
                 scope=credential.scope,
             )
 
-        from chronos import cli
+        from pony import cli_calendar as cli
 
         code = cli.cmd_oauth_authorize(
             self.stdout,
@@ -2139,7 +2175,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         )
         with (
             mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
-            mock.patch("chronos.cli._default_remote_browser_flow", flow),
+            mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
@@ -2166,7 +2202,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         )
         with (
             mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
-            mock.patch("chronos.cli._default_loopback_flow", flow),
+            mock.patch("pony.cli_calendar._default_loopback_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
@@ -2180,7 +2216,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
 
-class CliAuthorizerTest(unittest.TestCase):
+class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
     """`default_cli_authorizer` picks a usable OAuth flow for the terminal."""
 
     def test_raises_when_no_tty(self) -> None:
@@ -2189,8 +2225,8 @@ class CliAuthorizerTest(unittest.TestCase):
 
         spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
         with (
-            mock.patch("chronos.cli.sys.stdin") as stdin,
-            mock.patch("chronos.cli.sys.stdout") as stdout,
+            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
         ):
             stdin.isatty.return_value = False
             stdout.isatty.return_value = False
@@ -2208,10 +2244,10 @@ class CliAuthorizerTest(unittest.TestCase):
         )
         flow = mock.MagicMock(return_value=tokens)
         with (
-            mock.patch("chronos.cli.sys.stdin") as stdin,
-            mock.patch("chronos.cli.sys.stdout") as stdout,
+            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
             mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
-            mock.patch("chronos.cli._default_loopback_flow", flow),
+            mock.patch("pony.cli_calendar._default_loopback_flow", flow),
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
@@ -2232,10 +2268,10 @@ class CliAuthorizerTest(unittest.TestCase):
         )
         flow = mock.MagicMock(return_value=tokens)
         with (
-            mock.patch("chronos.cli.sys.stdin") as stdin,
-            mock.patch("chronos.cli.sys.stdout") as stdout,
+            mock.patch("pony.cli_calendar.sys.stdin") as stdin,
+            mock.patch("pony.cli_calendar.sys.stdout") as stdout,
             mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
-            mock.patch("chronos.cli._default_remote_browser_flow", flow),
+            mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
@@ -2246,7 +2282,7 @@ class CliAuthorizerTest(unittest.TestCase):
         self.assertTrue(any("paste the final redirect URL" in w for w in write_calls))
 
 
-class OAuthFlowModeTest(unittest.TestCase):
+class OAuthFlowModeTest(CalendarRootMixin, unittest.TestCase):
     def test_w3m_browser_env_is_not_graphical(self) -> None:
         self.assertFalse(
             has_local_graphical_browser(  # pyright: ignore[reportPrivateUsage]
@@ -2270,24 +2306,6 @@ class OAuthFlowModeTest(unittest.TestCase):
                 platform="linux",
             )
         )
-
-
-class TuiUnsupportedAuthorizerTest(unittest.TestCase):
-    """The TUI swap-in authorizer always raises, with a message that tells
-    the user to quit and run sync from CLI."""
-
-    def test_raises_with_run_chronos_sync_message(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import OAuthError
-
-        spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
-        with self.assertRaises(OAuthError) as ctx:
-            cli._tui_unsupported_authorizer(  # pyright: ignore[reportPrivateUsage]
-                "google", spec, Path("/unused")
-            )
-        message = str(ctx.exception)
-        self.assertIn("TUI", message)
-        self.assertIn("pony calendar sync", message)
 
 
 class ConfigEditCommandTest(ConfigEditingCliTestCase):
@@ -2336,7 +2354,7 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
         self.assertEqual(leftovers, [])
 
 
-class PickEditorTest(unittest.TestCase):
+class PickEditorTest(CalendarRootMixin, unittest.TestCase):
     """`pick_editor` resolves an editor command without ever raising.
 
     Order of precedence (POSIX): VISUAL, then EDITOR, then a

@@ -109,28 +109,6 @@ class HandedOverRootTest(unittest.TestCase):
         self.assertFalse(hasattr(module, "_active"))
 
 
-class UnhostedRunTest(unittest.TestCase):
-    """``python -m chronos`` has nowhere to put anything, and says so."""
-
-    def test_it_names_the_host_instead_of_raising(self) -> None:
-        import subprocess
-
-        finished = subprocess.run(  # noqa: S603 - the interpreter running this
-            [sys.executable, "-m", "chronos"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-
-        self.assertEqual(finished.returncode, 2)
-        self.assertIn("pony calendar", finished.stderr)
-        # Not the traceback it used to end in: the first command that
-        # touched a file raised `RuntimeError: calendar paths are not
-        # set` out of the global that was never activated.
-        self.assertNotIn("Traceback", finished.stderr)
-
-
 class PerTestRootTest(unittest.TestCase):
     """Each test gets a calendar root nothing else has written to.
 

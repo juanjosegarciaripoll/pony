@@ -36,7 +36,8 @@ src/pony/
   __init__.py
   __main__.py          # python -m pony entrypoint
   version.py           # __version__ (stamped by the release workflow)
-  cli.py               # argparse command dispatch
+  cli.py               # argparse command dispatch, both halves of it
+  cli_calendar.py      # the calendar's commands (`pony calendar ...`)
   config.py            # TOML config loader and validator
   domain.py            # typed core data models
   protocols.py         # repository and service interfaces
@@ -615,7 +616,7 @@ src/chronos/
   views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   bootstrap.py         # the [calendar] template a first run writes
-  cli.py mcp_server.py
+  mcp_server.py
   tui/
     app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS
     reporting.py       # an Outcome as toasts, and the hop onto the UI thread

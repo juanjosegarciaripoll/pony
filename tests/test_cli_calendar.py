@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import unittest
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest import mock
 
 from conftest import TMP_ROOT, resolve_fixture
 
-from pony.cli import _split_calendar_argv, main, run_calendar
+from pony.cli import build_parser, main, run_calendar
 from pony.paths import resolve
 
 _CONFIG = """
@@ -35,61 +36,9 @@ accounts = []
 """
 
 
-class SplitCalendarArgvTest(unittest.TestCase):
-    """The pass-through split that keeps argparse out of the way."""
-
-    def test_no_calendar_command_leaves_the_list_alone(self) -> None:
-        self.assertEqual(
-            (["sync", "--yes"], None), _split_calendar_argv(["sync", "--yes"])
-        )
-
-    def test_everything_after_calendar_is_forwarded(self) -> None:
-        head, tail = _split_calendar_argv(["calendar", "list", "--days", "7"])
-        self.assertEqual(["calendar"], head)
-        self.assertEqual(["list", "--days", "7"], tail)
-
-    def test_a_flag_after_calendar_is_forwarded_too(self) -> None:
-        # argparse.REMAINDER would reject this; the split is what lets
-        # `pony calendar --help` reach the calendar's own parser.
-        _head, tail = _split_calendar_argv(["calendar", "--help"])
-        self.assertEqual(["--help"], tail)
-
-    def test_pony_options_before_the_command_stay_with_pony(self) -> None:
-        head, tail = _split_calendar_argv(["--config", "c.toml", "calendar", "sync"])
-        self.assertEqual(["--config", "c.toml", "calendar"], head)
-        self.assertEqual(["sync"], tail)
-
-    def test_a_theme_named_calendar_is_not_the_command(self) -> None:
-        head, tail = _split_calendar_argv(["--theme", "calendar", "tui"])
-        self.assertEqual(["--theme", "calendar", "tui"], head)
-        self.assertIsNone(tail)
-
-    def test_an_option_value_spelled_with_equals_is_stepped_over(self) -> None:
-        head, tail = _split_calendar_argv(["--config=c.toml", "calendar", "sync"])
-        self.assertEqual(["--config=c.toml", "calendar"], head)
-        self.assertEqual(["sync"], tail)
-
-    def test_the_word_calendar_inside_a_subcommand_is_left_alone(self) -> None:
-        # Only the subcommand position counts. Cutting at any later
-        # "calendar" would swallow the rest of that command's arguments
-        # — this one used to lose the recipient entirely.
-        argv = ["compose", "--subject", "calendar", "--to", "her@example.com"]
-        head, tail = _split_calendar_argv(argv)
-        self.assertEqual(argv, head)
-        self.assertIsNone(tail)
-
-    def test_a_search_for_the_word_calendar_is_left_alone(self) -> None:
-        head, tail = _split_calendar_argv(["search", "calendar"])
-        self.assertEqual(["search", "calendar"], head)
-        self.assertIsNone(tail)
-
-    def test_an_empty_argument_list_is_not_a_calendar_invocation(self) -> None:
-        self.assertEqual(([], None), _split_calendar_argv([]))
-
-    def test_an_empty_tail_is_still_a_calendar_invocation(self) -> None:
-        head, tail = _split_calendar_argv(["calendar"])
-        self.assertEqual(["calendar"], head)
-        self.assertEqual([], tail)
+def _parse(argv: list[str]) -> argparse.Namespace:
+    """What the program's parser makes of a calendar invocation."""
+    return build_parser().parse_args(["calendar", *argv])
 
 
 class RunCalendarTest(unittest.TestCase):
@@ -112,23 +61,43 @@ class RunCalendarTest(unittest.TestCase):
         path = self._config()
         captured = io.StringIO()
         with mock.patch("sys.stdout", captured):
-            code = run_calendar(paths=self.paths, config_path=path, argv=["list"])
+            code = run_calendar(
+                paths=self.paths, args=_parse(["list"]), config_path=path
+            )
         self.assertEqual(0, code)
 
-    def test_an_unconfigured_calendar_is_reported(self) -> None:
+    def test_an_unconfigured_calendar_says_how_to_configure_one(self) -> None:
+        """A mail-only config is not an error; it is a calendar to add.
+
+        Non-interactively it says so and names the file it would add
+        the table to -- `[calendar]` in Pony's own configuration, which
+        is the only place it can go now.
+        """
         path = self._config(_MAIL_ONLY)
         err = io.StringIO()
-        with mock.patch("sys.stderr", err):
-            code = run_calendar(paths=self.paths, config_path=path, argv=["list"])
-        self.assertEqual(1, code)
+        with (
+            mock.patch("sys.stderr", err),
+            mock.patch("sys.stdin.isatty", return_value=False),
+        ):
+            code = run_calendar(
+                paths=self.paths, args=_parse(["list"]), config_path=path
+            )
+        self.assertEqual(2, code)
         self.assertIn("no calendar configured", err.getvalue())
+        self.assertIn(str(path), err.getvalue())
 
-    def test_the_calendars_own_config_flag_is_honoured(self) -> None:
+    def test_the_programs_config_flag_is_honoured(self) -> None:
+        """One parser, so `--config` is the program's, before the command.
+
+        It used to be the calendar's own flag inside the tail Pony
+        handed over, which is how the two halves could disagree about
+        what `--config` meant.
+        """
         path = self._config()
         captured = io.StringIO()
         with mock.patch("sys.stdout", captured):
             code = run_calendar(
-                paths=self.paths, config_path=None, argv=["--config", str(path), "list"]
+                paths=self.paths, args=_parse(["list"]), config_path=path
             )
         self.assertEqual(0, code)
 
@@ -144,21 +113,23 @@ class RunCalendarTest(unittest.TestCase):
         with mock.patch("sys.stdout", out):
             code = run_calendar(
                 paths=self.paths,
+                args=_parse(
+                    [
+                        "account",
+                        "add",
+                        "--name",
+                        "home",
+                        "--url",
+                        "https://dav.example.com/home/",
+                        "--username",
+                        "me@example.com",
+                        "--credential-backend",
+                        "plaintext",
+                        "--credential-value",
+                        "secret",
+                    ]
+                ),
                 config_path=path,
-                argv=[
-                    "account",
-                    "add",
-                    "--name",
-                    "home",
-                    "--url",
-                    "https://dav.example.com/home/",
-                    "--username",
-                    "me@example.com",
-                    "--credential-backend",
-                    "plaintext",
-                    "--credential-value",
-                    "secret",
-                ],
             )
 
         self.assertEqual(0, code)
@@ -183,7 +154,7 @@ class RunCalendarTest(unittest.TestCase):
             self.assertEqual(
                 0,
                 run_calendar(
-                    paths=self.paths, config_path=path, argv=["account", "list"]
+                    paths=self.paths, args=_parse(["account", "list"]), config_path=path
                 ),
             )
         listed = out.getvalue()
@@ -191,7 +162,9 @@ class RunCalendarTest(unittest.TestCase):
         err = io.StringIO()
         with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", err):
             code = run_calendar(
-                paths=self.paths, config_path=path, argv=["account", "rm", "work"]
+                paths=self.paths,
+                args=_parse(["account", "rm", "work"]),
+                config_path=path,
             )
 
         self.assertIn("work", listed)
@@ -209,7 +182,9 @@ class RunCalendarTest(unittest.TestCase):
         )
         with mock.patch("sys.stdout", io.StringIO()):
             run_calendar(
-                paths=self.paths, config_path=path, argv=["account", "rm", "work"]
+                paths=self.paths,
+                args=_parse(["account", "rm", "work"]),
+                config_path=path,
             )
 
         self.assertIn("# keep me", path.read_text(encoding="utf-8"))

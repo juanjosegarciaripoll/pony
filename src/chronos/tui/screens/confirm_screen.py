@@ -17,7 +17,7 @@ class ConfirmScreen(ModalScreen[None]):
     on the focused button, or `y`). Cancellation (`n`, Escape, or
     clicking No) just pops the screen with no callback. Holding the
     callback locally — instead of giving the screen a reference to
-    the `ChronosApp` — keeps screens decoupled from the app per
+    the hosting application — keeps screens decoupled from the app per
     `CONVENTIONS.md §11`.
     """
 

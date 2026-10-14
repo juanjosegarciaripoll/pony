@@ -643,7 +643,7 @@ class MainScreen(Screen[None]):
 
     def _services(self) -> TuiServices:
         # Whichever app hosts this screen supplies the dependencies:
-        # `ChronosApp` with the calendar on its own, `PonyApp` with mail
+        # `PonyApp`, which hosts both halves of the program
         # and calendar in one program. `self.app` is typed as App[Any],
         # so cast it to the host protocol to have the lookup statically
         # checked. The type is imported only under TYPE_CHECKING —
