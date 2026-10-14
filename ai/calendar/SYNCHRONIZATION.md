@@ -1,6 +1,6 @@
 # SYNCHRONIZATION.md
 
-The CalDAV sync algorithm for chronos. This is the load-bearing specification: any code change that affects sync must update this document first, or in the same change.
+The CalDAV sync algorithm for the calendar. This is the load-bearing specification: any code change that affects sync must update this document first, or in the same change.
 
 ## 1. Guiding principles
 

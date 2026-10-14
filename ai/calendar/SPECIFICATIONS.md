@@ -1,6 +1,6 @@
 # SPECIFICATIONS.md
 
-Compact scope definition for `chronos`.
+Compact scope definition for the calendar half of Pony Express.
 
 ## Mission
 

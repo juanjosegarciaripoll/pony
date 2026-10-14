@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from chronos.domain import (
+from pony.calendar.domain import (
     LOCAL_FLAG_DIRTY,
     AccountConfig,
     CalendarRef,
@@ -22,9 +22,9 @@ from chronos.domain import (
     SyncState,
     VEvent,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.storage import VdirMirrorRepository
-from chronos.sync import SyncCancelled, SyncHaltError, sync_account
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.storage import VdirMirrorRepository
+from pony.calendar.sync import SyncCancelled, SyncHaltError, sync_account
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -643,7 +643,7 @@ class PushUpdatesTest(SyncTestCase):
 
         with (
             mock.patch.object(self.session, "put", _refuse),
-            self.assertLogs("chronos.sync", level="WARNING"),
+            self.assertLogs("pony.calendar.sync", level="WARNING"),
         ):
             result = self._run()
 
@@ -655,7 +655,7 @@ class PushUpdatesTest(SyncTestCase):
 
     def test_a_failed_create_push_is_reported(self) -> None:
         """Same for a component that exists only locally."""
-        from chronos.domain import VEvent
+        from pony.calendar.domain import VEvent
 
         ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "local-only@example.com")
         self.index.upsert_component(
@@ -683,7 +683,7 @@ class PushUpdatesTest(SyncTestCase):
 
         with (
             mock.patch.object(self.session, "put", _refuse),
-            self.assertLogs("chronos.sync", level="WARNING"),
+            self.assertLogs("pony.calendar.sync", level="WARNING"),
         ):
             result = self._run()
 
@@ -698,7 +698,7 @@ class PushUpdatesTest(SyncTestCase):
         Raises the real `CalDAVConflictError` rather than leaning on the
         fake's own error type, so the 412 arm is the one under test.
         """
-        from chronos.caldav.errors import CalDAVConflictError
+        from pony.calendar.caldav.errors import CalDAVConflictError
 
         href = f"{CALENDAR_URL}up4.ics"
         self.session.put_resource(
@@ -726,7 +726,7 @@ class PushUpdatesTest(SyncTestCase):
 
         with (
             mock.patch.object(self.session, "put", _conflict),
-            self.assertLogs("chronos.sync", level="WARNING"),
+            self.assertLogs("pony.calendar.sync", level="WARNING"),
         ):
             result = self._run()
         self.assertTrue(
@@ -1216,7 +1216,7 @@ class IdempotencyTest(SyncTestCase):
             etag="etag-a",
         )
 
-        from chronos import sync as sync_mod
+        from pony.calendar import sync as sync_mod
 
         original = sync_mod._slow_path_reconcile
 
@@ -1227,7 +1227,7 @@ class IdempotencyTest(SyncTestCase):
             return stats, frozenset()
 
         with mock.patch(
-            "chronos.sync._slow_path_reconcile", side_effect=wrapped_slow_path
+            "pony.calendar.sync._slow_path_reconcile", side_effect=wrapped_slow_path
         ):
             self._run()
 
@@ -1518,7 +1518,7 @@ class CrashSafetyResumeTest(SyncTestCase):
                 synced_at=None,
             )
         )
-        # Pre-seed the server at the exact href chronos would PUT to,
+        # Pre-seed the server at the exact href the sync would PUT to,
         # with the same body. Mimics the lost-response state.
         target_href = f"{CALENDAR_URL}lost-response%40example.com.ics"
         self.session.put_resource(
@@ -1599,7 +1599,7 @@ class CrashSafetyResumeTest(SyncTestCase):
         original_upsert = self.index.upsert_component
         calls = {"n": 0}
 
-        from chronos.domain import StoredComponent
+        from pony.calendar.domain import StoredComponent
 
         def flaky_upsert(component: StoredComponent) -> None:
             calls["n"] += 1
@@ -1665,7 +1665,7 @@ class FetchIngestPipelineTest(SyncTestCase):
 
         self.session.calendar_multiget = instrumented_multiget  # type: ignore[method-assign]
 
-        from chronos import sync as sync_module
+        from pony.calendar import sync as sync_module
 
         original_ingest = sync_module._ingest_resource
         first_ingest_called = threading.Event()
@@ -1700,7 +1700,7 @@ class FetchIngestPipelineTest(SyncTestCase):
         # as the same exception type, not get swallowed in the worker.
         self._seed(3)
 
-        from chronos.caldav import CalDAVError
+        from pony.calendar.caldav import CalDAVError
 
         def boom(
             calendar_url: str, hrefs: Sequence[str]
@@ -1970,8 +1970,8 @@ class MediumPathTest(SyncTestCase):
         self.assertEqual(len(rows), 10)
 
     def test_acquire_sync_token_returns_none_on_caldav_error(self) -> None:
-        from chronos.caldav import CalDAVError
-        from chronos.sync import _acquire_sync_token
+        from pony.calendar.caldav import CalDAVError
+        from pony.calendar.sync import _acquire_sync_token
 
         original = self.session.get_sync_token
 
@@ -1994,7 +1994,7 @@ class TargetedExpansionTest(SyncTestCase):
     def test_slow_path_only_expands_changed_and_new_uids(self) -> None:
         from collections.abc import Sequence as Seq
 
-        from chronos.domain import Occurrence
+        from pony.calendar.domain import Occurrence
 
         for uid in ("a", "b", "c"):
             self.session.put_resource(
@@ -2038,7 +2038,7 @@ class TargetedExpansionTest(SyncTestCase):
     def test_medium_path_only_expands_changed_uids(self) -> None:
         from collections.abc import Sequence as Seq
 
-        from chronos.domain import Occurrence
+        from pony.calendar.domain import Occurrence
 
         for uid in ("x", "y", "z"):
             self.session.put_resource(
@@ -2120,7 +2120,7 @@ class CancellationTest(SyncTestCase):
     def test_cancel_during_expansion_raises_after_current_master(self) -> None:
         from collections.abc import Sequence as Seq
 
-        from chronos.domain import Occurrence
+        from pony.calendar.domain import Occurrence
 
         for uid in ("e0", "e1", "e2", "e3", "e4"):
             self.session.put_resource(

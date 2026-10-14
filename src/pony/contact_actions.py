@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from email.utils import getaddresses
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, NoticeLog, Outcome, info, warn
+from pony.calendar.outcome import Notice, NoticeLog, Outcome, info, warn
 
 from .contact_naming import harvested_name
 from .domain import Contact, IndexedMessage

@@ -1,9 +1,9 @@
 """The calendar's four views, and its event form, in a browser.
 
-The projections are :mod:`chronos.views`', tested in the calendar's own
+The projections are :mod:`pony.calendar.views`', tested in the calendar's own
 suite; what is checked here is that each view renders the rows it should
 in the shape a grid needs, that the view and the date live in the URL,
-and that the form saves through :func:`chronos.event_actions.save_event`.
+and that the form saves through :func:`pony.calendar.event_actions.save_event`.
 """
 
 from __future__ import annotations
@@ -25,12 +25,12 @@ from tui_helpers import (
 )
 from web_helpers import form_fields, page_data
 
-from chronos.domain import CalendarRef, VEvent
-from chronos.mutations import is_all_day_span
+from pony.calendar.domain import CalendarRef, VEvent
+from pony.calendar.mutations import is_all_day_span
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
-    from pony.calendar import CalendarRuntime
+    from pony.calendar_runtime import CalendarRuntime
 
 ACCOUNT = "personal"
 CALENDAR = "work"
@@ -369,7 +369,7 @@ def test_saving_the_form_creates_the_event() -> None:
 
     assert response.status_code == 303
     assert "Created" in response.headers["location"]
-    from chronos.views import (
+    from pony.calendar.views import (
         CalendarSelection,
         all_calendar_refs,
         day_window,
@@ -533,7 +533,7 @@ def test_importing_nothing_says_what_to_paste() -> None:
 def test_the_calendar_can_be_synced_from_the_browser() -> None:
     from unittest.mock import patch
 
-    from chronos.domain import SyncResult
+    from pony.calendar.domain import SyncResult
 
     services, _runtime = _services("cal-sync")
     result = SyncResult(
@@ -546,7 +546,9 @@ def test_the_calendar_can_be_synced_from_the_browser() -> None:
     )
 
     with (
-        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
+        patch(
+            "pony.calendar.services.build_sync_runner", return_value=lambda: (result,)
+        ),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})
@@ -563,17 +565,17 @@ def test_the_calendar_can_be_synced_from_the_browser() -> None:
 
 
 def test_every_surface_says_the_same_thing_about_a_calendar_sync() -> None:
-    """One sentence, written in `chronos.sync`.
+    """One sentence, written in `pony.calendar.sync`.
 
     The agenda's toast, the progress dialog's summary, this route's
-    notice and `chronos sync`'s output each spelled it out, in three
+    notice and `pony calendar sync`'s output each spelled it out, in three
     wordings between them: "Sync complete: +2 ~0 -0",
     "+2 added  ~0 updated  -0 removed" and "Calendar sync complete.".
     The mail half has had exactly one `describe_sync_result` since it
     grew a second front end.
     """
-    from chronos.domain import SyncResult
-    from chronos.sync import describe_sync_result
+    from pony.calendar.domain import SyncResult
+    from pony.calendar.sync import describe_sync_result
     from pony.web.syncing import _calendar_outcome
 
     results = (
@@ -593,7 +595,7 @@ def test_every_surface_says_the_same_thing_about_a_calendar_sync() -> None:
 def test_a_calendar_sync_error_is_reported() -> None:
     from unittest.mock import patch
 
-    from chronos.domain import SyncResult
+    from pony.calendar.domain import SyncResult
 
     services, _runtime = _services("cal-sync-error")
     result = SyncResult(
@@ -606,7 +608,9 @@ def test_a_calendar_sync_error_is_reported() -> None:
     )
 
     with (
-        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
+        patch(
+            "pony.calendar.services.build_sync_runner", return_value=lambda: (result,)
+        ),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})
@@ -625,7 +629,7 @@ def test_a_resolved_conflict_is_reported_rather_than_swallowed() -> None:
     """
     from unittest.mock import patch
 
-    from chronos.domain import SyncResult
+    from pony.calendar.domain import SyncResult
 
     services, _runtime = _services("cal-sync-notes")
     result = SyncResult(
@@ -639,7 +643,9 @@ def test_a_resolved_conflict_is_reported_rather_than_swallowed() -> None:
     )
 
     with (
-        patch("chronos.services.build_sync_runner", return_value=lambda: (result,)),
+        patch(
+            "pony.calendar.services.build_sync_runner", return_value=lambda: (result,)
+        ),
         _client(services) as client,
     ):
         response = client.post("/action/sync_calendar", data={})
@@ -808,7 +814,7 @@ def test_an_all_day_span_that_ends_before_it_starts_is_refused() -> None:
     `event_actions` now, in one wording, and the browser reports it as
     the refusal it is.
     """
-    from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+    from pony.calendar.event_actions import ENDS_BEFORE_IT_STARTS
 
     services, runtime = _services("cal-all-day-backwards")
 
@@ -995,11 +1001,11 @@ def test_the_heading_is_the_calendars_own_words_for_the_view() -> None:
     `Month · April 2026` against `April 2026`, `Agenda · Week ·
     2026-04-20 – 2026-04-26` against `Agenda · week from 20 Apr 2026`:
     the same views, named twice, so changing one left the other. The
-    wording lives in `chronos.views` now and this asserts the page
+    wording lives in `pony.calendar.views` now and this asserts the page
     carries it -- not that the helper calls it, which proves nothing
     about what a reader sees.
     """
-    from chronos.views import (
+    from pony.calendar.views import (
         AgendaWindow,
         agenda_title,
         day_title,
@@ -1144,7 +1150,7 @@ def test_a_refused_invitation_still_reports_the_event_as_saved() -> None:
     assert "Event saved" in landed
     assert "invitation was not sent" in landed
     # The event is there regardless.
-    from chronos.views import all_calendar_refs
+    from pony.calendar.views import all_calendar_refs
 
     runtime = services.calendar
     assert runtime is not None

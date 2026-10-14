@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Label, Select
 
-from chronos.domain import CalendarRef
+from pony.calendar.domain import CalendarRef
 
 from ...invitation import (
     PARTSTAT_ACCEPTED,

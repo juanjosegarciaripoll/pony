@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chronos.domain import CalendarRef, ResourceRef
-from chronos.index_store import SqliteIndexRepository
-from chronos.storage import VdirMirrorRepository
-from chronos.storage_indexing import index_calendar
+from pony.calendar.domain import CalendarRef, ResourceRef
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.storage import VdirMirrorRepository
+from pony.calendar.storage_indexing import index_calendar
 from tests_calendar import corpus
 
 ACCOUNT = "personal"
@@ -108,7 +108,7 @@ class ProjectionPipelineTest(unittest.TestCase):
         """
         import dataclasses
 
-        from chronos.domain import LocalStatus
+        from pony.calendar.domain import LocalStatus
 
         self._seed("synced@example.com", corpus.simple_event())
         index_calendar(mirror=self.mirror, index=self.index, calendar=self.calendar)

@@ -12,7 +12,7 @@ from email.utils import getaddresses
 from pathlib import Path
 from typing import cast
 
-from chronos.index_store import (
+from pony.calendar.index_store import (
     ThreadLocalSqlite,
     chunked,
     datetime_to_sql,

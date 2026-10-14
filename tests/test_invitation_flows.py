@@ -14,8 +14,8 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
-from chronos.domain import CalendarRef
-from chronos.storage_indexing import index_calendar
+from pony.calendar.domain import CalendarRef
+from pony.calendar.storage_indexing import index_calendar
 from pony.domain import FolderRef
 from pony.tui.screens.invitation_screen import InvitationChoice, InvitationScreen
 from pony.tui.screens.main_screen import MainScreen

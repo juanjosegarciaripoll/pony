@@ -64,7 +64,7 @@ from web_helpers import (
     script,
 )
 
-from chronos.keymap import web_key
+from pony.calendar.keymap import web_key
 from pony.domain import Contact, FolderRef, MessageRef
 from pony.web import WebServices, build_web_app
 from pony.web.actions import MARKED_ONLY_ACTIONS
@@ -72,7 +72,7 @@ from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS
 from pony.web.layout import PageSurface, bindings_for
 
 if TYPE_CHECKING:
-    from pony.calendar import CalendarRuntime
+    from pony.calendar_runtime import CalendarRuntime
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 ACCOUNT = "personal"

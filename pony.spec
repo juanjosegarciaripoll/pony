@@ -14,10 +14,11 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# The calendar is reached through imports inside functions — `pony tui`
-# builds it lazily, `pony calendar` hands off to its CLI — so collect it
-# wholesale rather than trust the analyser to walk every one of them.
-hidden = collect_submodules("chronos")
+# The calendar's model and screens are reached through imports inside
+# functions — `pony tui` builds them lazily, `pony calendar` dispatches
+# per command — so collect them wholesale rather than trust the analyser
+# to walk every one of them.
+hidden = collect_submodules("pony.calendar") + collect_submodules("pony.tui.calendar")
 
 site_dir = Path("site")
 datas: list[tuple[str, str]] = [("config-sample.toml", ".")]

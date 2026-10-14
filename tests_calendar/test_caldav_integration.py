@@ -23,7 +23,7 @@ import os
 import unittest
 import uuid
 
-from chronos.caldav import CalDAVHttpSession
+from pony.calendar.caldav import CalDAVHttpSession
 
 
 def _integration_enabled() -> bool:

@@ -117,12 +117,12 @@ write to.
 | Index, recurrence and alarm caches | `<calendar data dir>/index.sqlite3` |
 | OAuth tokens | `<calendar data dir>/tokens/<account>.json` |
 
-The calendar data directory is `~/.local/share/chronos/` on Linux,
-`~/Library/Application Support/chronos/` on macOS and
-`%APPDATA%\chronos\` on Windows. It is deliberately separate from the
-mail data directory, so a calendar that was already in use keeps
-everything it had synced when Pony Express became its front end. Only
-the configuration file is shared.
+The calendar data directory is `calendar/` inside Pony's own data
+directory — `~/.local/share/pony/calendar/` on Linux,
+`~/Library/Application Support/pony/calendar/` on macOS and
+`%APPDATA%\pony\calendar\` on Windows — or `<data_dir>/calendar/` when
+the configuration names a `data_dir`. One directory, one configuration
+file, one profile stamp for both halves.
 
 The mirror is a plain directory of `.ics` files. Reading them with
 another tool, backing them up or grepping them is expected; the index is

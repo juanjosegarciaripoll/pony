@@ -1,4 +1,4 @@
-"""Unit tests for chronos.http.Client against a real ThreadingHTTPServer."""
+"""Unit tests for pony.calendar.http.Client against a real ThreadingHTTPServer."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import threading
 import unittest
 from typing import Any
 
-from chronos.authorization import Authorization
-from chronos.http import Client, HttpResponse, HttpStatusError
+from pony.calendar.authorization import Authorization
+from pony.calendar.http import Client, HttpResponse, HttpStatusError
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):

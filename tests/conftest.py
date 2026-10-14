@@ -8,7 +8,7 @@ flushed what they hold open).
 Sets ``PONY_ROOT`` for the whole session, so no test can reach a real
 user directory.  That covers the calendar as well: it is handed a root
 inside the sandboxed data directory wherever one is opened
-(``pony.calendar.calendar_paths``), rather than having one installed
+(``pony.calendar_runtime.calendar_paths``), rather than having one installed
 into a global here.
 
 Also loads a repo-root ``.env`` if present, so opt-in switches such as
@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from chronos.paths import CalendarPaths
+    from pony.calendar.paths import CalendarPaths
     from pony.paths import AppPaths
 
 
@@ -119,7 +119,7 @@ def calendar_paths(request: "pytest.FixtureRequest") -> "CalendarPaths":
     where too.  Set on the class as well, because a
     ``unittest.TestCase`` method cannot be given a fixture.
     """
-    from chronos.paths import CalendarPaths
+    from pony.calendar.paths import CalendarPaths
 
     paths = CalendarPaths(
         root=TMP_ROOT / "calendar-roots" / request.node.nodeid.replace("/", "_")[-120:]

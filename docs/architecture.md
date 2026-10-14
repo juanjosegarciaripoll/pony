@@ -16,7 +16,7 @@ and [The browser front end](#the-browser-front-end). Within the terminal, the
 TUI, standalone composer and contacts browser are separate Textual `App`
 subclasses that push their own screens.
 
-Mail is one of two subsystems. The other is the calendar (`src/chronos`), a
+Mail is one of two subsystems. The other is the calendar (`src/pony/calendar`), a
 CalDAV client with its own mirror, index, sync engine and screens, which
 Pony Express hosts rather than launches: ++f2++ puts the agenda in front of
 the mail reader and ++f2++ again brings the mail back. One process, one
@@ -24,12 +24,6 @@ configuration file, one notification space. See
 [Mail and calendar as one program](#mail-and-calendar-as-one-program).
 
 ## Package layout
-
-```
-src/
-  pony/     # mail
-  chronos/  # calendar
-```
 
 ```
 src/pony/
@@ -73,7 +67,7 @@ src/pony/
   imap_client.py       # ImapSession wrapper around imaplib
   smtp_sender.py       # SMTP submission
   bbdb.py              # BBDB v3 reader/writer
-  calendar.py          # the [calendar] config section + opening its stores
+  calendar_runtime.py  # the [calendar] config section + opening its stores
   invitation.py        # iTIP: reading invitations, writing replies/requests
   notifications.py     # the notification space mail and calendar share
   pdf_export.py        # message HTML -> PDF via an external converter
@@ -82,6 +76,7 @@ src/pony/
   mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
   tui/
     app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
+    calendar/          # the calendar's screens (below)
     bindings.py        # shared mark/motion Binding tuples
     calendar_host.py   # where the mail app meets the calendar's screens
     pdf_export.py      # thread-worker wrapper around pony.pdf_export
@@ -275,7 +270,7 @@ whatever is on screen.
 The *actions* are the operations a user asks for — archive, move, copy,
 trash, a flag change, a new folder, saving an event, filing a sent
 message, merging two contacts. Each takes the stores it needs and
-returns a `chronos.outcome.Outcome`: a count of what changed and the
+returns a `pony.calendar.outcome.Outcome`: a count of what changed and the
 `Notice`s to show, each carrying its own severity. None of them imports
 Textual, calls `app.notify`, or touches a widget.
 
@@ -286,11 +281,11 @@ Textual, calls `app.notify`, or touches a widget.
 | `pony.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge, importing an address book |
 | `pony.invitation_actions` | filing an invitation, answering its organizer, inviting an event's attendees |
 | `pony.message_export` | the parts of a message, saved to disk or handed to a viewer |
-| `chronos.event_actions` | saving, rescheduling, trashing and importing an event, and what a blank form starts with |
+| `pony.calendar.event_actions` | saving, rescheduling, trashing and importing an event, and what a blank form starts with |
 
 The *projections* are what a view is of: `pony.views` turns an indexed
 message into the four fields and the one state a list row shows, or a
-contact into its five columns, and `chronos.views` holds the calendar's
+contact into its five columns, and `pony.calendar.views` holds the calendar's
 window arithmetic, the index query each view needs, the strings its rows
 are made of, and the grid geometry — which month cell a span covers,
 which day columns a trip occupies, how wide the hour axis has to be.
@@ -313,13 +308,11 @@ application running: `tests/test_mailbox_actions.py`,
 `tests_calendar/test_event_actions.py` finish in seconds, where reaching
 the same code through a `Pilot` costs a second an assertion.
 
-`chronos.outcome` lives on the calendar's side of the dependency arrow
-for the same reason `chronos.scheduler` does: `pony` imports `chronos`,
-never the reverse, so anything both halves share has to sit there.
-Nothing in it knows about calendars, and `pony.notifications` takes its
+`pony.calendar.outcome` is shared vocabulary, not the calendar's own:
+nothing in it knows about calendars, and `pony.notifications` takes its
 `Severity` from it rather than spelling the three levels out twice.
-`chronos.atomic` (replacing a file without leaving half of one),
-`chronos.alarms` (which reminders are due) and `chronos.tui.reporting`
+`pony.calendar.atomic` (replacing a file without leaving half of one),
+`pony.calendar.alarms` (which reminders are due) and `pony.tui.calendar.reporting`
 (an `Outcome` as toasts, and the hop onto the UI thread) are there for
 the same reason: both halves ask them.
 
@@ -409,8 +402,8 @@ message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 `pony web` serves the same stores over HTTP (`pony.web`, Starlette and
 Uvicorn, installed by the `web` extra). It is a second front end, not a
 second program: every operation is a call into the action modules, every
-row comes from `pony.views` or `chronos.views`, and every key comes from
-`pony.keymap` or `chronos.keymap`. What is new in the package is HTTP,
+row comes from `pony.views` or `pony.calendar.views`, and every key comes from
+`pony.keymap` or `pony.calendar.keymap`. What is new in the package is HTTP,
 HTML and the keyboard dispatch.
 
 What it offers is what the terminal offers: the folder tree, the message
@@ -434,11 +427,11 @@ is the application, not a document to scroll.
 | `pony.web.html` | the escaping element builder |
 | `pony.web.urls` | every link in the front end, built in one place |
 
-**One keymap, two front ends.** `chronos.keymap` holds the vocabulary —
+**One keymap, two front ends.** `pony.calendar.keymap` holds the vocabulary —
 `KeyBinding(key, action, description, surface)`, `for_surface`,
 `web_key` — and the calendar's table; `pony.keymap` holds the mail
 reader's. `pony.tui.bindings.to_textual` and
-`chronos.tui.bindings.to_textual` turn a slice into Textual `Binding`s —
+`pony.tui.calendar.bindings.to_textual` turn a slice into Textual `Binding`s —
 which is where `MainScreen.BINDINGS`, `PonyApp.BINDINGS`,
 `ComposeScreen.BINDINGS`, `ContactBrowserScreen.BINDINGS` and the
 calendar's screens come from — and every page carries its own
@@ -508,7 +501,7 @@ reports the sentence `describe_sync_result` builds. The server holds one
 sync slot of its own (`pony.web.syncing.SyncGate`), so two tabs — or a
 tab and the periodic thread, whose slot the gate claims — cannot overlap
 on one account. Across processes it is the user's call: the calendar
-takes its own lock (`chronos.locking`), the mail half has never had one,
+takes its own lock (`pony.calendar.locking`), the mail half has never had one,
 and a terminal left open elsewhere is not a reason for the phone to
 refuse. With `background_sync_enabled` set, `pony web` runs the periodic
 thread too, so a phone sees new mail without anyone pressing a key.
@@ -603,7 +596,7 @@ Textual screens. Pony Express does not start it as a separate program; it
 hosts its screens.
 
 ```
-src/chronos/
+src/pony/calendar/
   config.py domain.py paths.py protocols.py outcome.py
   atomic.py            # replacing a file without leaving half of one
   shell.py             # splitting a command line the way the platform quotes it
@@ -617,11 +610,12 @@ src/chronos/
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
   bootstrap.py         # the [calendar] template a first run writes
   mcp_server.py
-  tui/
-    app.py             # ChronosApp, TuiServices, CalendarHost, CALENDAR_CSS
-    reporting.py       # an Outcome as toasts, and the hop onto the UI thread
-    screens/           # agenda, day, grid, month, event edit, …
-    widgets/           # calendar panel, timeline grid, month grid, …
+
+src/pony/tui/calendar/
+  app.py               # TuiServices, CalendarHost, CALENDAR_CSS
+  reporting.py         # an Outcome as toasts, and the hop onto the UI thread
+  screens/             # agenda, day, grid, month, event edit, …
+  widgets/             # calendar panel, timeline grid, month grid, …
 ```
 
 ### One application
@@ -630,10 +624,9 @@ src/chronos/
 screen rather than replacing it, so returning finds the same folder, cursor
 row and reader scroll position. Three things make this work:
 
-- **`CalendarHost`** (`chronos.tui.app`) is the protocol the calendar's
-  screens read their dependencies from. `ChronosApp` satisfies it when the
-  calendar runs on its own; `PonyApp` satisfies it here. The calendar's
-  screens were already decoupled from their app, so this is the only
+- **`CalendarHost`** (`pony.tui.calendar.app`) is the protocol the calendar's
+  screens read their dependencies from, and `PonyApp` satisfies it. The
+  screens never name the application they are on, so this is the only
   coupling point.
 - **`CALENDAR_CSS`** is the calendar's stylesheet, lifted out of its app
   class so a host can adopt it. `App.CSS` is global, but its rules select
@@ -649,24 +642,24 @@ ignored while one of the calendar's own dialogs is up: stacking a second
 agenda on top would be nonsense, and popping back to the mail side would
 throw the dialog away with whatever is half-typed in it.
 
-The dependency arrow points one way — `pony` imports `chronos`, never the
-reverse. What the calendar needs *from* a host arrives as injected
-collaborators on `TuiServices`: `invitation_sender` and
-`attendee_completer`. Both are optional, and without them the calendar
-behaves exactly as it does standalone.
+The two models never import each other: neither mail nor calendar reaches
+into the other's stores, and `tests/test_layering.py` fails if one does.
+What the calendar needs *from* a host arrives as injected collaborators on
+`TuiServices`: `invitation_sender` and `attendee_completer`. Both are
+optional, and without them the calendar behaves as it does with no mail
+beside it.
 
 **Where the calendar's files are is one of those injected things.** The
 calendar resolves no platform directory of its own: a `CalendarPaths`
-(`chronos.paths`) is built from `AppPaths.calendar_dir` by
-`pony.calendar.calendar_paths` and travels as an argument — on
+(`pony.calendar.paths`) is built from `AppPaths.calendar_dir` by
+`pony.calendar_runtime.calendar_paths` and travels as an argument — on
 `CalendarRuntime`, on `CliContext`, on `TuiServices`, into the credentials
 provider. Nothing asks a global where the calendar is, which is why two
 roots can exist in one process (the two test suites do exactly that) and
 why a configuration file means the same thing under either: an account's
 `mirror_path` is kept as the file declared it, and
-`chronos.config.mirror_roots` resolves it against whichever root it is
-given. `python -m chronos` therefore has no root to run under, and says
-so rather than failing later.
+`pony.calendar.config.mirror_roots` resolves it against whichever root it is
+given.
 
 ### One notification space
 
@@ -691,12 +684,11 @@ would be a second truth.
 ### Periodic sync
 
 Both halves sync themselves on a timetable, and neither timetable belongs to
-a screen. `chronos/scheduler.py` holds one small, subsystem-agnostic class,
+a screen. `pony/calendar/scheduler.py` holds one small, subsystem-agnostic class,
 `PeriodicSync`: a daemon thread that runs a sync runner every *interval*
 seconds, hands it a cancel event, and reports each run through callbacks. It
-lives in `chronos` because the dependency arrow points that way — the mail
-half imports it for its own sync, over its own result type (`MailSyncScheduler`
-in `pony/sync.py`, `CalendarSyncScheduler` in `chronos/protocols.py`).
+is shared rather than either half's — the mail half runs its own sync on it, over its own result type (`MailSyncScheduler`
+in `pony/sync.py`, `CalendarSyncScheduler` in `pony/calendar/protocols.py`).
 
 The applications own the instances: `PonyApp` starts one per half on mount
 and stops both on unmount, and `ChronosApp` starts the calendar's when the
@@ -731,7 +723,7 @@ Neither line appears when there is nothing to say.
 ### Invitations
 
 `pony.invitation` is the shared vocabulary for iTIP (RFC 5546) in both
-directions. It does no I/O — importing is `chronos.ingest`'s job and sending
+directions. It does no I/O — importing is `pony.calendar.ingest`'s job and sending
 is `pony.smtp_sender`'s — and it parses with the calendar's own iCalendar
 reader rather than a second one, so what the reader pane shows and what the
 calendar stores cannot disagree.
@@ -740,7 +732,7 @@ calendar stores cannot disagree.
 `application/ics`) part shows an invitation block above its body naming what
 is proposed. ++i++ opens a dialog that settles which calendar it goes in and
 what the organizer is told, because those are one decision for the user even
-though they are two operations underneath: `chronos.ingest.ingest_ics_bytes`
+though they are two operations underneath: `pony.calendar.ingest.ingest_ics_bytes`
 files it — handling `METHOD:CANCEL` and a newer `SEQUENCE` as the calendar
 already does — and then a `METHOD:REPLY` goes back to the organizer over
 SMTP. Both halves are `pony.invitation_actions`, so the browser offers the
@@ -768,19 +760,18 @@ One file. Mail keys stay at the top level and the calendar's live under
 `[calendar]`, with `[[calendar.accounts]]` holding its CalDAV accounts.
 `use_utf8`, `editor` and `theme` are read from the top level unless
 `[calendar]` overrides them; there is exactly one `config_version`, at the
-top. `pony.calendar` is the bridge, and it stays clear of `chronos.tui` so
-that importing it does not drag Textual into the CLI and MCP import graphs.
+top. `pony.calendar_runtime` is the bridge, and it stays clear of the calendar's
+screens so that importing it does not drag Textual into the CLI and MCP
+import graphs.
 
 The calendar's mirror, index and OAuth tokens stay at the paths the calendar
 already used, so an existing install keeps its synced data with nothing to
 migrate. Only the configuration moved.
 
 `pony calendar ...` runs any calendar command against that configuration.
-The argument list is split before argparse sees it, because
-`argparse.REMAINDER` still parses a leading flag itself — which would make
-`pony calendar --help` print a wrapper's help and reject
-`pony calendar --config f list` outright, when both belong to the calendar's
-own parser.
+The calendar's commands are declared in Pony's own parser, so `pony --help`
+lists both halves, `pony calendar --help` lists the calendar's, and there is
+one `--config`, Pony's, in front of the subcommand.
 
 ### Known limitation
 
@@ -820,7 +811,7 @@ config.toml
 4. A front end — the TUI or the browser UI — queries the index for
    lists/search results and uses storage for raw message content and
    attachments. Neither queries differently: both go through the
-   projections in `pony.views` / `chronos.views`.
+   projections in `pony.views` / `pony.calendar.views`.
 5. Compose/send workflows write drafts and pending actions through shared
    service interfaces.
 

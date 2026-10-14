@@ -13,16 +13,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
-from chronos.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS
-from chronos.outcome import Notice
-from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
-from chronos.scheduler import PeriodicSync
-from chronos.tui.app import CALENDAR_CSS, start_calendar_sync
-from chronos.tui.app import TuiServices as CalendarServices
-from chronos.tui.reporting import on_ui_thread
-from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
+from pony.calendar.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS
+from pony.calendar.outcome import Notice
+from pony.calendar.protocols import CalendarSyncOutcome, CalendarSyncScheduler
+from pony.calendar.scheduler import PeriodicSync
+from pony.tui.calendar.app import CALENDAR_CSS, start_calendar_sync
+from pony.tui.calendar.app import TuiServices as CalendarServices
+from pony.tui.calendar.reporting import on_ui_thread
+from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
 
-from ..calendar import CalendarRuntime
+from ..calendar_runtime import CalendarRuntime
 from ..composer import DraftSpec
 from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..invitation_actions import send_event_invitations, sender_for_invitation
@@ -234,7 +234,7 @@ class PonyApp(QuitAsksTheScreen):
 
     @property
     def calendar_services(self) -> CalendarServices:
-        """The calendar screens' dependencies — see `chronos.tui.app.CalendarHost`."""
+        """The calendar screens' dependencies — see their `CalendarHost`."""
         if self._calendar_services is None:
             raise RuntimeError("the calendar is not configured")
         return self._calendar_services
@@ -285,7 +285,7 @@ class PonyApp(QuitAsksTheScreen):
     ) -> None:
         """Mail an event the calendar just saved to its attendees.
 
-        Satisfies `chronos.tui.app.InvitationSender`.  The event is
+        Satisfies `pony.tui.calendar.app.InvitationSender`.  The event is
         already stored by the time this runs, so every failure here is
         reported as a failure to *post* the invitation, never as a lost
         event.

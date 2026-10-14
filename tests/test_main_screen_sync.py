@@ -553,7 +553,7 @@ async def test_a_dialog_that_is_already_syncing_refuses_to_be_abandoned() -> Non
 
 async def test_a_failed_background_sync_still_repaints_the_list() -> None:
     """A rolled-back run leaves the list claiming state the server lost."""
-    from chronos.scheduler import SyncOutcome
+    from pony.calendar.scheduler import SyncOutcome
 
     app, *_ = build_pony_app(label="main-sync-failed-repaint")
 

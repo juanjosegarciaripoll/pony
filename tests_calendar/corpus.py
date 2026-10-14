@@ -211,7 +211,7 @@ def recurring_until_naive_with_tzid() -> bytes:
 
     RFC 5545 says UNTIL must be UTC when DTSTART is tz-aware, but
     Google exports and legacy Outlook calendars routinely break this
-    rule. dateutil's rrulestr rejects it; chronos normalizes the
+    rule. dateutil's rrulestr rejects it; the calendar normalizes the
     UNTIL to UTC before parsing.
     """
     return _vcalendar(

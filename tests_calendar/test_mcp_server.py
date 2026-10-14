@@ -21,7 +21,7 @@ from typing import Any
 
 from tinymcp import McpServer  # noqa: I001
 
-from chronos.domain import (
+from pony.calendar.domain import (
     CalendarRef,
     ComponentRef,
     LocalStatus,
@@ -29,9 +29,9 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.mcp_server import SERVER_NAME, build_mcp_server
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.mcp_server import SERVER_NAME, build_mcp_server
+from pony.calendar.storage import VdirMirrorRepository
 
 # ---------------------------------------------------------------------------
 # Lightweight in-process MCP client (no external SDK)

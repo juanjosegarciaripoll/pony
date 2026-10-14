@@ -4340,7 +4340,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
     """
 
     def test_a_gate_reports_at_most_once_per_interval(self) -> None:
-        from chronos.outcome import ProgressGate
+        from pony.calendar.outcome import ProgressGate
 
         gate = ProgressGate(interval=60.0)
 
@@ -4350,7 +4350,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
 
     def test_a_slow_loop_still_reports_only_once_per_stride(self) -> None:
         """The time cap alone lets a slow loop report on every item."""
-        from chronos.outcome import ProgressGate
+        from pony.calendar.outcome import ProgressGate
 
         gate = ProgressGate(interval=0.0, stride=100)
 
@@ -4359,7 +4359,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
         self.assertEqual(allowed.count(True), 10)
 
     def test_the_last_item_always_reports(self) -> None:
-        from chronos.outcome import ProgressGate
+        from pony.calendar.outcome import ProgressGate
 
         gate = ProgressGate(interval=60.0)
         gate.due(1)
@@ -4376,7 +4376,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
         call sites pass `done`, so this was the trap waiting for the
         fifth.
         """
-        from chronos.outcome import ProgressGate
+        from pony.calendar.outcome import ProgressGate
 
         gate = ProgressGate(interval=0.0)
 
@@ -4384,7 +4384,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
         self.assertTrue(gate.due())
 
     def test_a_countless_gate_still_waits_out_its_interval(self) -> None:
-        from chronos.outcome import ProgressGate
+        from pony.calendar.outcome import ProgressGate
 
         gate = ProgressGate(interval=60.0)
         self.assertTrue(gate.due())
@@ -4393,7 +4393,7 @@ class ProgressCadenceTestCase(unittest.TestCase):
         self.assertTrue(gate.due(final=True))
 
     def test_the_stride_is_derived_from_the_work(self) -> None:
-        from chronos.outcome import PROGRESS_REPORTS_PER_UNIT, progress_stride
+        from pony.calendar.outcome import PROGRESS_REPORTS_PER_UNIT, progress_stride
 
         self.assertEqual(progress_stride(0), 1)
         self.assertEqual(progress_stride(10), 1)
@@ -4587,7 +4587,7 @@ class NonUtcDateIsAdoptedTestCase(unittest.TestCase):
     ``parsed.astimezone(UTC)``, so every ``received_at`` the engine ever
     compares is already UTC whatever the header said.  Verified by
     removing both normalisations -- that one and
-    ``chronos.index_store.datetime_to_sql`` -- with this test still
+    ``pony.calendar.index_store.datetime_to_sql`` -- with this test still
     green.  So this guards the adoption itself, which it does catch:
     with ``_adopt_uid`` returning False the folder ends up with four
     rows.  The text-comparison hazard is pinned where it is reachable,

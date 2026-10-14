@@ -25,8 +25,8 @@ from textual.widgets import (
     TextArea,
 )
 
-from chronos.outcome import Outcome
-from chronos.tui.reporting import report
+from pony.calendar.outcome import Outcome
+from pony.tui.calendar.reporting import report
 
 from ...compose_utils import (
     build_email_message,

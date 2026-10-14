@@ -1,4 +1,4 @@
-"""Tests for src/chronos/ingest.py.
+"""Tests for src/pony/calendar/ingest.py.
 
 All tests use a real SqliteIndexRepository and VdirMirrorRepository
 in a temp directory — no mocking of storage layers per AGENTS.md §7.1.
@@ -11,7 +11,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from chronos.domain import (
+from pony.calendar.domain import (
     LOCAL_FLAG_DIRTY,
     CalendarRef,
     ComponentRef,
@@ -19,9 +19,9 @@ from chronos.domain import (
     ResourceRef,
     VEvent,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.ingest import IngestError, IngestReport, ingest_ics_bytes
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.ingest import IngestError, IngestReport, ingest_ics_bytes
+from pony.calendar.storage import VdirMirrorRepository
 from tests_calendar import corpus
 
 _TARGET = CalendarRef(account_name="personal", calendar_name="work")
@@ -164,8 +164,8 @@ class IngestBytesTest(unittest.TestCase):
         half-hour slot. So the event the user was invited to simply was
         not on the timeline.
         """
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
-        from chronos.views import OccurrenceRow
+        from pony.calendar.views import OccurrenceRow
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         self._ingest(corpus.event_with_duration())
         occ = self.index.query_occurrences(

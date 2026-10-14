@@ -26,22 +26,22 @@ from pathlib import Path
 
 from textual.app import App
 
-from chronos.alarms import ALARM_LOOKBACK, due_alarms
-from chronos.credentials import DefaultCredentialsProvider
-from chronos.domain import OAuthCredential
-from chronos.oauth import StoredTokens, use_remote_browser_flow
-from chronos.protocols import IndexRepository as CalendarIndexRepository
-from chronos.services import CalendarServices, build_sync_runner
-from chronos.tui.app import AttendeeCompleter, InvitationSender, TuiServices
-from chronos.tui.bindings import BindingType
-from chronos.views import (
+from pony.calendar.alarms import ALARM_LOOKBACK, due_alarms
+from pony.calendar.credentials import DefaultCredentialsProvider
+from pony.calendar.domain import OAuthCredential
+from pony.calendar.oauth import StoredTokens, use_remote_browser_flow
+from pony.calendar.protocols import IndexRepository as CalendarIndexRepository
+from pony.calendar.services import CalendarServices, build_sync_runner
+from pony.calendar.views import (
     CalendarSelection,
     all_calendar_refs,
     format_friendly_start,
     gather_occurrences,
 )
+from pony.tui.calendar.app import AttendeeCompleter, InvitationSender, TuiServices
+from pony.tui.calendar.bindings import BindingType
 
-from ..calendar import CalendarRuntime
+from ..calendar_runtime import CalendarRuntime
 from ..compose_utils import format_display_address
 from ..domain import AppConfig
 from ..notifications import Notification, NotificationSource
@@ -134,7 +134,7 @@ def _in_app_authorizer(
     def authorize(
         account_name: str, spec: OAuthCredential, _token_path: Path
     ) -> StoredTokens:
-        from chronos.tui.screens.oauth_progress_screen import OAuthProgressScreen
+        from pony.tui.calendar.screens.oauth_progress_screen import OAuthProgressScreen
 
         outcome: list[StoredTokens | BaseException] = []
         done = threading.Event()
@@ -225,7 +225,7 @@ class AlarmPoller:
     """Puts the calendar's due reminders into Pony's notification space.
 
     Which alarms are due, how far back a poll looks and that each is
-    announced exactly once are `chronos.alarms`' answers, shared with
+    announced exactly once are `pony.calendar.alarms`' answers, shared with
     the calendar's own application -- which says the same reminders a
     different way, through the terminal.  What is left here is the
     vocabulary: a `Notification` from this source, marked urgent.

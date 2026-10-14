@@ -1,6 +1,6 @@
 """Unit tests for CalDAVHttpSession.
 
-Mocks `chronos.http.Client` instead of the caldav library.
+Mocks `pony.calendar.http.Client` instead of the caldav library.
 """
 
 from __future__ import annotations
@@ -8,21 +8,21 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from chronos.authorization import Authorization
-from chronos.caldav.errors import (
+from pony.calendar.authorization import Authorization
+from pony.calendar.caldav.errors import (
     CalDAVAuthError,
     CalDAVConflictError,
     CalDAVError,
     CalDAVNotFoundError,
     SyncTokenExpiredError,
 )
-from chronos.caldav.session import CalDAVHttpSession
-from chronos.domain import ComponentKind
-from chronos.http import HttpResponse, HttpStatusError
+from pony.calendar.caldav.session import CalDAVHttpSession
+from pony.calendar.domain import ComponentKind
+from pony.calendar.http import HttpResponse, HttpStatusError
 
 
 def _session_with_mock_client(mock_client: MagicMock) -> CalDAVHttpSession:
-    with patch("chronos.caldav.session.Client", return_value=mock_client):
+    with patch("pony.calendar.caldav.session.Client", return_value=mock_client):
         return CalDAVHttpSession(
             url="https://caldav.example.com/",
             authorization=Authorization(basic=("user", "pw")),
@@ -237,7 +237,7 @@ class ListCalendarsTest(unittest.TestCase):
         client = MagicMock()
         client._default_scheme = "https"
         client._default_netloc = "calendario.csic.es"
-        with patch("chronos.caldav.session.Client", return_value=client):
+        with patch("pony.calendar.caldav.session.Client", return_value=client):
             session = CalDAVHttpSession(
                 url="https://calendario.csic.es/SOGo/dav/08930807E/Calendar/personal/",
                 authorization=Authorization(basic=("user", "pw")),
@@ -269,7 +269,7 @@ class ListCalendarsTest(unittest.TestCase):
         client = MagicMock()
         client._default_scheme = "https"
         client._default_netloc = "cal.example.com"
-        with patch("chronos.caldav.session.Client", return_value=client):
+        with patch("pony.calendar.caldav.session.Client", return_value=client):
             session = CalDAVHttpSession(
                 url="https://cal.example.com/calendars/work/",
                 authorization=Authorization(basic=("user", "pw")),

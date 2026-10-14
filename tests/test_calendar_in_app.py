@@ -20,11 +20,11 @@ from textual.pilot import Pilot
 from textual.widgets import Label, Static
 from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
 
-from chronos.tui.app import TuiServices
-from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
-from pony.calendar import CalendarRuntime
+from pony.calendar_runtime import CalendarRuntime
 from pony.domain import FolderRef
 from pony.notifications import NotificationSource
+from pony.tui.calendar.app import TuiServices
+from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
 from pony.tui.calendar_host import (
     AlarmPoller,
     build_calendar_services,
@@ -240,7 +240,7 @@ def test_the_calendar_help_takes_its_key_from_the_real_binding() -> None:
 
 async def test_a_calendarless_app_offers_no_switch_in_the_calendar_help() -> None:
     """Standalone, there is nothing to switch to, so nothing is listed."""
-    from chronos.tui.app import TuiServices
+    from pony.tui.calendar.app import TuiServices
 
     runtime = make_calendar_runtime(make_tmp_paths("help-standalone"))
     services = TuiServices(

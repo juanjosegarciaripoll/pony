@@ -12,7 +12,7 @@ under which, where a level exists only because a name was hierarchical,
 and how much unread sits beneath it are all answered here; drawing that
 as a collapsible `Tree` or as a `<ul>` is the front end's business.
 
-This is the mail half of what :mod:`chronos.views` is for the calendar,
+This is the mail half of what :mod:`pony.calendar.views` is for the calendar,
 and it sits beside the stores for the same reason: a projection that
 lives under ``tui/`` can only ever serve one front end.
 """
@@ -227,7 +227,7 @@ def format_received(received_at: datetime, *, now: datetime | None = None) -> st
     thing that distinguishes it.
 
     In the reader's own zone, as every calendar view renders a moment
-    (`chronos.views` starts each of its three with
+    (`pony.calendar.views` starts each of its three with
     ``start.astimezone()``).  Stored times are UTC, so at UTC+2 mail
     that arrived at 00:30 this morning was rendered ``Jan 05`` -- a
     date, for mail that came in a few hours ago -- because its UTC day

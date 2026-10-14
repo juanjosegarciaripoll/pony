@@ -14,7 +14,7 @@ The root arrives as a value rather than as a process-wide setting: ask
 for the ``calendar_paths`` fixture, or read ``self.calendar_paths``
 inside a ``unittest.TestCase`` (which cannot take fixture arguments, so the
 autouse fixture puts it on the class).  It used to be installed into a
-module global by ``chronos.paths.activate``, which both this conftest
+module global by ``pony.calendar.paths.activate``, which both this conftest
 and ``tests/conftest.py`` did at import time with different roots --
 whichever imported second won for that worker.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from chronos.paths import CalendarPaths
+from pony.calendar.paths import CalendarPaths
 
 _tmp_dir = tempfile.TemporaryDirectory(
     prefix="chronos-tests-", ignore_cleanup_errors=True

@@ -7,7 +7,7 @@ The public surface is intentionally small:
 - ``load_config``     – read a TOML/JSON file and return a validated AppConfig
 - ``parse_config``    – validate an already-loaded raw dict and return AppConfig
 - ``read_raw_config`` – read the file without validating it, for the
-  calendar section that ``pony.calendar`` owns
+  calendar section that ``pony.calendar_runtime`` owns
 
 Everything else is a private implementation detail.
 """
@@ -20,7 +20,7 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-from chronos.paths import expand_path, is_half_qualified
+from pony.calendar.paths import expand_path, is_half_qualified
 
 from .domain import (
     CONFIG_VERSION,
@@ -60,7 +60,7 @@ def read_raw_config(path: Path) -> object:
     """Read the config file and return its raw mapping, unvalidated.
 
     Mail validation happens in :func:`parse_config`; the ``[calendar]``
-    table is validated by :mod:`pony.calendar`, which reads the same
+    table is validated by :mod:`pony.calendar_runtime`, which reads the same
     file through here rather than parsing it a second time.
     """
     if not path.exists():
@@ -486,7 +486,7 @@ def _require_int(data: dict[str, object], key: str, *, default: int) -> int:
     `isinstance(True, int)` is true in Python, so ``imap_port = true``
     was accepted and became port 1 -- a connection refused, with
     nothing to say why.  The calendar's half of the loader has always
-    refused it (`chronos.config._require_int`); this is the same rule.
+    refused it (`pony.calendar.config._require_int`); this is the same rule.
     """
     value = data.get(key, default)
     if not isinstance(value, int) or isinstance(value, bool):

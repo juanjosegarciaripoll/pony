@@ -1,10 +1,10 @@
 """The calendar in a browser: agenda, timeline and month grid.
 
 The same four views the terminal has, built from the same projections —
-:func:`chronos.views.gather_occurrences` for the rows,
-:func:`~chronos.views.day_columns` and
-:func:`~chronos.views.month_buckets` for where they go, and
-:func:`~chronos.views.compute_hour_range` for how tall the time axis has
+:func:`pony.calendar.views.gather_occurrences` for the rows,
+:func:`~pony.calendar.views.day_columns` and
+:func:`~pony.calendar.views.month_buckets` for where they go, and
+:func:`~pony.calendar.views.compute_hour_range` for how tall the time axis has
 to be.  What differs is that a CSS grid places a block by percentage
 where a ``DataTable`` places it by cell.
 
@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, Outcome, failure, info, warn
-from chronos.views import (
+from pony.calendar.outcome import Notice, Outcome, failure, info, warn
+from pony.calendar.views import (
     AgendaWindow,
     CalendarSelection,
     ViewKind,
@@ -56,11 +56,11 @@ from .layout import PageSurface, Tab, columns, page, pane
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from chronos.domain import CalendarRef, StoredComponent
-    from chronos.event_actions import Calendars, SavedEvent
-    from chronos.views import OccurrenceRow
+    from pony.calendar.domain import CalendarRef, StoredComponent
+    from pony.calendar.event_actions import Calendars, SavedEvent
+    from pony.calendar.views import OccurrenceRow
 
-    from ..calendar import CalendarRuntime
+    from ..calendar_runtime import CalendarRuntime
     from .actions import Action, ActionContext, Reply
     from .app import WebServices
 
@@ -223,7 +223,7 @@ def _matching(
     window already produced: a search here narrows what is on screen
     rather than opening a view of its own.
     """
-    from chronos.views import search_components
+    from pony.calendar.views import search_components
 
     matched = {
         component.ref
@@ -238,7 +238,7 @@ def _matching(
 def calendar_targets(services: WebServices) -> tuple[CalendarRef, ...]:
     """Every calendar there is, or nothing when there is no calendar.
 
-    `chronos.views.all_calendar_refs` needs a configured runtime, so
+    `pony.calendar.views.all_calendar_refs` needs a configured runtime, so
     four places wrapped it in the same "is the calendar there?" check --
     each spelling the empty answer slightly differently: ``()``, ``[]``,
     and a branch around the call.
@@ -257,7 +257,10 @@ def _search_window(now: datetime) -> tuple[datetime, datetime]:
     reads every component of every calendar.  The bounds here are the
     cache's own, so this asks for exactly what has been expanded.
     """
-    from chronos.recurrence import OCCURRENCE_WINDOW_FUTURE, OCCURRENCE_WINDOW_PAST
+    from pony.calendar.recurrence import (
+        OCCURRENCE_WINDOW_FUTURE,
+        OCCURRENCE_WINDOW_PAST,
+    )
 
     return now - OCCURRENCE_WINDOW_PAST, now + OCCURRENCE_WINDOW_FUTURE
 
@@ -265,7 +268,7 @@ def _search_window(now: datetime) -> tuple[datetime, datetime]:
 # Which range a view covers, and what it is called, are the calendar's
 # questions and not the browser's.  Both were written out a second time
 # here -- the windows line for line, the titles in different words --
-# until `chronos.views` took them; this half asks now.
+# until `pony.calendar.views` took them; this half asks now.
 def _window(view: View) -> tuple[datetime, datetime]:
     match view.kind:
         case ViewKind.DAY:
@@ -621,7 +624,7 @@ def _day_column(
     now: datetime,
 ) -> Raw:
     """One day's timed events, placed by where they are in the window."""
-    from chronos.views import is_in_progress
+    from pony.calendar.views import is_in_progress
 
     blocks: list[Raw] = []
     for row in events:
@@ -822,13 +825,13 @@ class EventForm:
 
     @staticmethod
     def of(component: StoredComponent) -> EventForm:
-        from chronos.event_actions import (
+        from pony.calendar.event_actions import (
             all_day_form_dates,
             existing_alarms,
             reminders_text,
         )
-        from chronos.ical_parser import extract_attendees
-        from chronos.mutations import is_all_day_span
+        from pony.calendar.ical_parser import extract_attendees
+        from pony.calendar.mutations import is_all_day_span
 
         ref = component.ref
         dtend = getattr(component, "dtend", None)
@@ -875,7 +878,7 @@ class EventForm:
         chosen because the route knows which calendars are in view, and
         the span comes from the same function the agenda's screen uses.
         """
-        from chronos.event_actions import (
+        from pony.calendar.event_actions import (
             DEFAULT_EVENT_DURATION,
             default_event_start,
         )
@@ -1055,7 +1058,7 @@ def form_from_fields(fields: dict[str, list[str]]) -> EventForm:
 
 def calendars_of(runtime: CalendarRuntime) -> Calendars:
     """The stores the calendar's own operations work over."""
-    from chronos.event_actions import Calendars
+    from pony.calendar.event_actions import Calendars
 
     return Calendars(
         config=runtime.config,
@@ -1066,7 +1069,7 @@ def calendars_of(runtime: CalendarRuntime) -> Calendars:
 
 def save(services: WebServices, form: EventForm) -> Outcome:
     """Store *form* as a new event or an edit of an existing one."""
-    from chronos.event_actions import (
+    from pony.calendar.event_actions import (
         ENDS_BEFORE_IT_STARTS,
         NEEDS_A_SUMMARY,
         EditDraft,
@@ -1200,7 +1203,7 @@ def _existing(
     UID is unique within a calendar and not beyond it, so without it
     the lookup would pick an arbitrary copy.
     """
-    from chronos.event_actions import find_component
+    from pony.calendar.event_actions import find_component
 
     runtime = services.calendar
     if runtime is None:
@@ -1220,7 +1223,7 @@ def _delete_event(context: ActionContext) -> Outcome | Reply:
     which is the same operation reached two ways with the question on
     only one of them.
     """
-    from chronos.event_actions import trash_event
+    from pony.calendar.event_actions import trash_event
 
     runtime = context.services.calendar
     if runtime is None:
@@ -1247,7 +1250,7 @@ def _import_ics(context: ActionContext) -> Outcome:
     The terminal reads a path; a browser has no path to offer, and
     uploading a file to be parsed is the same thing with an extra step.
     """
-    from chronos.event_actions import import_ics_bytes
+    from pony.calendar.event_actions import import_ics_bytes
 
     runtime = context.services.calendar
     if runtime is None:

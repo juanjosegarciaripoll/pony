@@ -17,8 +17,8 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header
 from textual.worker import Worker
 
-from chronos.outcome import Notice, Outcome
-from chronos.tui.reporting import report
+from pony.calendar.outcome import Notice, Outcome
+from pony.tui.calendar.reporting import report
 
 from ... import mailbox_actions
 from ...composer import (
@@ -93,7 +93,7 @@ from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
 
 if TYPE_CHECKING:
-    from ...calendar import CalendarRuntime
+    from ...calendar_runtime import CalendarRuntime
     from ..app import MailSyncHost
     from .sync_confirm_screen import SyncConfirmScreen
 
@@ -838,7 +838,7 @@ class MainScreen(Screen[None]):
         organizer is told, because those are one decision for the user
         even though they are two operations underneath.
         """
-        from chronos.views import all_calendar_refs
+        from pony.calendar.views import all_calendar_refs
 
         from .invitation_screen import InvitationScreen
 

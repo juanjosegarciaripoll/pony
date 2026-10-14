@@ -349,8 +349,8 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         something it cannot open -- was reachable only through
         `pony calendar doctor`.
         """
-        from chronos.domain import ComponentRef, LocalStatus, VEvent
-        from chronos.index_store import SqliteIndexRepository
+        from pony.calendar.domain import ComponentRef, LocalStatus, VEvent
+        from pony.calendar.index_store import SqliteIndexRepository
 
         self._write_config(self._CALENDAR_ACCOUNT)
         (self.calendar_home / "mirror" / "work" / "personal").mkdir(parents=True)

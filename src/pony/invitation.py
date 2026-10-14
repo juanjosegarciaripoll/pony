@@ -13,7 +13,7 @@ This module is the shared vocabulary for both directions:
   :mod:`pony.smtp_sender`.
 
 It does no I/O: importing an invitation into the calendar is
-``chronos.ingest``'s job, and sending is the SMTP sender's.  Parsing
+``pony.calendar.ingest``'s job, and sending is the SMTP sender's.  Parsing
 leans on the calendar's own iCalendar reader rather than a second one,
 so what the reader pane shows and what the calendar stores cannot
 disagree.
@@ -29,7 +29,7 @@ from email.message import EmailMessage
 from email.policy import default as default_policy
 from email.utils import formatdate, make_msgid, parseaddr
 
-from chronos.ical_parser import (
+from pony.calendar.ical_parser import (
     IcalParseError,
     ParsedComponent,
     extract_attendees,

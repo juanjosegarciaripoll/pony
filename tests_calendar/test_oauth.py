@@ -1,4 +1,4 @@
-"""Unit tests for chronos.oauth.
+"""Unit tests for pony.calendar.oauth.
 
 All HTTP is mocked; none of these tests talk to Google.
 """
@@ -13,7 +13,7 @@ import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from chronos.oauth import (
+from pony.calendar.oauth import (
     BearerTokenAuth,
     OAuthError,
     StoredTokens,
@@ -124,7 +124,7 @@ class TokenStoreTest(unittest.TestCase):
         )
         with (
             unittest.mock.patch(
-                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

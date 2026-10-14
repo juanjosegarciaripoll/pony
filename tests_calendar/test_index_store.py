@@ -7,7 +7,7 @@ import unittest.mock
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from chronos.domain import (
+from pony.calendar.domain import (
     AlarmAction,
     AlarmRecord,
     CalendarRef,
@@ -17,7 +17,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.index_store import SqliteIndexRepository
+from pony.calendar.index_store import SqliteIndexRepository
 
 
 def _ref(uid: str, recurrence_id: str | None = None) -> ComponentRef:
@@ -565,7 +565,7 @@ class AlarmRepositoryTest(unittest.TestCase):
         reminder could be shown twice by one half and not at all by the
         other.
         """
-        from chronos.alarms import ALARM_LOOKBACK, due_alarms
+        from pony.calendar.alarms import ALARM_LOOKBACK, due_alarms
 
         occurrence = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
         self.repo.set_alarms(
@@ -797,7 +797,7 @@ class NarrowComponentQueryTest(unittest.TestCase):
         issued in runs; the runs are sorted, so concatenating them is
         still sorted.
         """
-        from chronos import index_store
+        from pony.calendar import index_store
 
         uids = [f"u{n:04d}@example.com" for n in range(25)]
         for uid in uids:
@@ -835,7 +835,7 @@ class NarrowComponentQueryTest(unittest.TestCase):
         self.assertEqual([c.ref.uid for c in found], ["in@example.com"])
 
     def test_query_occurrences_can_be_restricted_to_uids(self) -> None:
-        from chronos.domain import Occurrence
+        from pony.calendar.domain import Occurrence
 
         start = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
         for uid in ("a@example.com", "b@example.com"):

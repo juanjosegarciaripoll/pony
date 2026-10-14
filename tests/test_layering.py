@@ -20,7 +20,7 @@ import sys
 import unittest
 from pathlib import Path
 
-# Modules that make up the headless backend surface.  `chronos.scheduler`
+# Modules that make up the headless backend surface.  `pony.calendar.scheduler`
 # is in here because the mail half runs the periodic sync off it: the
 # class has to stay free of Textual for `pony` to be able to import it
 # without dragging the calendar's widget tree along.
@@ -31,7 +31,7 @@ from pathlib import Path
 # cannot do, and `textual` is an optional extra, so it might not even be
 # installed.
 _BACKEND_MODULES = (
-    "chronos.scheduler",
+    "pony.calendar.scheduler",
     "pony.sync",
     "pony.storage",
     "pony.index_store",
@@ -49,11 +49,11 @@ _BACKEND_MODULES = (
     "pony.invitation_actions",
     "pony.views",
     "pony.keymap",
-    "chronos.keymap",
+    "pony.calendar.keymap",
     "pony.folder_utils",
-    "chronos.outcome",
-    "chronos.event_actions",
-    "chronos.views",
+    "pony.calendar.outcome",
+    "pony.calendar.event_actions",
+    "pony.calendar.views",
     "pony.search_parser",
     "pony.contact_naming",
     "pony.config",
@@ -68,19 +68,19 @@ _BACKEND_MODULES = (
     # the browser reaches every one of them, directly or through
     # `pony.web.syncing`, which imports the calendar's sync runner at
     # call time.
-    "chronos.sync",
-    "chronos.services",
-    "chronos.ingest",
-    "chronos.mutations",
-    "chronos.ical_parser",
-    "chronos.recurrence",
-    "chronos.storage",
-    "chronos.index_store",
-    "chronos.config",
-    "chronos.credentials",
-    "chronos.locking",
-    "chronos.paths",
-    "pony.calendar",
+    "pony.calendar.sync",
+    "pony.calendar.services",
+    "pony.calendar.ingest",
+    "pony.calendar.mutations",
+    "pony.calendar.ical_parser",
+    "pony.calendar.recurrence",
+    "pony.calendar.storage",
+    "pony.calendar.index_store",
+    "pony.calendar.config",
+    "pony.calendar.credentials",
+    "pony.calendar.locking",
+    "pony.calendar.paths",
+    "pony.calendar_runtime",
     "pony.notifications",
     "pony.invitation",
     "pony.domain",
@@ -201,14 +201,14 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
 #: them to call into.
 #:
 #: That last one is what this grew out of: the calendar's sync runner
-#: lived in `chronos/cli.py`, so the terminal UI and the browser both
-#: imported a command-line module to run a sync, and the host's own
-#: calendar glue imported one to find out where a configuration lives.
-_FRONT_END_PREFIXES = ("pony.tui", "pony.web", "chronos.tui")
+#: sat in a command-line module, so the terminal UI and the browser both
+#: imported one to run a sync, and the host's own calendar glue imported
+#: one to find out where a configuration lives.
+_FRONT_END_PREFIXES = ("pony.tui", "pony.web")
 #: The command line is Pony's, both halves of it: `pony.cli` parses and
-#: `pony.cli_calendar` holds the calendar's commands. The calendar's
-#: package has none of its own -- `chronos/cli.py` was one, which is
-#: how the terminal UI and the browser came to import a command line.
+#: `pony.cli_calendar` holds the calendar's commands. Neither model has
+#: one of its own, which is how a front end came to import a command
+#: line.
 _COMMAND_LINE_MODULES = ("pony.cli", "pony.cli_calendar")
 #: The program's entry point, which is above all five: starting the
 #: command line is what it is for.
@@ -312,7 +312,7 @@ class ComponentsStayApartTest(unittest.TestCase):
         found = _imported_modules(root / "pony" / "web" / "syncing.py", root)
 
         # This module imports the calendar's sync runner inside a method.
-        self.assertIn("chronos.services", found)
+        self.assertIn("pony.calendar.services", found)
 
 
 class ArchitectureListingTest(unittest.TestCase):
@@ -321,7 +321,7 @@ class ArchitectureListingTest(unittest.TestCase):
     It lists every module with a line saying what it is for, which is
     the first thing anyone reads to find where something lives -- and a
     new module simply did not appear in it (`pony.contact_merge`, the
-    whole of the merge policy, and `chronos.bootstrap`).  Nothing failed,
+    whole of the merge policy, and `pony.calendar.bootstrap`).  Nothing failed,
     because no test read the page.
     """
 
@@ -337,7 +337,7 @@ class ArchitectureListingTest(unittest.TestCase):
         page = self._listed()
         root = Path(__file__).resolve().parents[1] / "src"
         missing: list[str] = []
-        for package in ("pony", "chronos"):
+        for package in ("pony", "pony/calendar"):
             for module in sorted((root / package).glob("*.py")):
                 if module.name in {"__init__.py", "version.py"}:
                     continue

@@ -4,7 +4,7 @@ The month cells, the day columns and the hour range used to be private
 helpers inside the two Textual widgets, which meant a browser could
 only have them by writing them again — and a second implementation of
 "which columns does a Thursday-to-Monday trip occupy" is a second set
-of answers.  They are projections in :mod:`chronos.views` now, and these
+of answers.  They are projections in :mod:`pony.calendar.views` now, and these
 tests pin the arithmetic directly.
 """
 
@@ -13,8 +13,8 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, date, datetime, time, timedelta
 
-from chronos.domain import ComponentRef, LocalStatus, Occurrence, VEvent
-from chronos.views import (
+from pony.calendar.domain import ComponentRef, LocalStatus, Occurrence, VEvent
+from pony.calendar.views import (
     OccurrenceRow,
     compute_hour_range,
     day_column_label,
@@ -237,7 +237,7 @@ class OneDayLabelTest(unittest.TestCase):
         return datetime.combine(day, time(9, 0)).astimezone()
 
     def test_the_three_labels_name_the_same_three_days(self) -> None:
-        from chronos.views import _format_event_day
+        from pony.calendar.views import _format_event_day
 
         for offset, name in ((0, "Today"), (1, "Tomorrow"), (-1, "Yesterday")):
             day = self.TODAY + timedelta(days=offset)
@@ -252,7 +252,7 @@ class OneDayLabelTest(unittest.TestCase):
                 )
 
     def test_a_day_with_no_name_is_written_one_way(self) -> None:
-        from chronos.views import _format_event_day
+        from pony.calendar.views import _format_event_day
 
         day = date(2026, 8, 12)  # Wednesday, a season away
         self.assertIsNone(relative_day_name(day, self.TODAY))

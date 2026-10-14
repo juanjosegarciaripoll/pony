@@ -1,0 +1,420 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import date, datetime, time
+from typing import TYPE_CHECKING, cast
+
+from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
+from textual.suggester import Suggester
+from textual.widgets import Checkbox, Footer, Input, Label, Select
+
+from pony.calendar.domain import (
+    CalendarRef,
+    StoredComponent,
+    VEvent,
+)
+from pony.calendar.event_actions import (
+    ENDS_BEFORE_IT_STARTS,
+    NEEDS_A_SUMMARY,
+    EditDraft,
+    all_day_form_bounds,
+    all_day_form_dates,
+    parse_attendees,
+    parse_reminders,
+    reminders_text,
+)
+from pony.calendar.ical_parser import extract_alarm_triggers, extract_attendees
+from pony.calendar.mutations import is_all_day_span
+from pony.tui.calendar.bindings import edit_bindings
+from pony.tui.calendar.widgets.date_picker import DatePicker, InvalidDateError
+
+if TYPE_CHECKING:
+    from pony.tui.calendar.app import AttendeeCompleter
+
+_HALF_HOUR_OPTIONS = tuple(
+    (label, label)
+    for hour in range(24)
+    for minute in (0, 30)
+    if (label := f"{hour:02d}:{minute:02d}")
+)
+
+
+class EventEditScreen(Screen[None]):
+    """Form for creating a new VEVENT or editing an existing one.
+
+    `existing=None` is "new event" mode; otherwise the form pre-fills
+    from the component. The caller passes the list of writable
+    `CalendarRef`s, plus an `on_save(draft)` callback.
+    """
+
+    BINDINGS = edit_bindings()
+
+    def __init__(
+        self,
+        *,
+        calendars: tuple[CalendarRef, ...],
+        existing: StoredComponent | None,
+        default_calendar: CalendarRef | None,
+        on_save: Callable[[EditDraft], None],
+        on_delete: Callable[[StoredComponent], None] | None = None,
+        initial_start: datetime | None = None,
+        initial_end: datetime | None = None,
+        initial_all_day: bool = False,
+        attendee_completer: AttendeeCompleter | None = None,
+    ) -> None:
+        super().__init__()
+        if not calendars:
+            raise ValueError("EventEditScreen needs at least one writable calendar")
+        self._calendars = calendars
+        self._existing = existing
+        self._default_calendar = default_calendar or calendars[0]
+        self._on_save = on_save
+        self._on_delete = on_delete
+        self._initial_start = initial_start
+        self._initial_end = initial_end
+        self._initial_all_day = initial_all_day
+        self._attendee_completer = attendee_completer
+        self._error: str | None = None
+
+    def compose(self) -> ComposeResult:
+        ex = self._existing
+        summary = ex.summary or "" if ex is not None else ""
+        # Pre-fill with the system-local representation so what the user
+        # sees here matches the times shown in the calendar views, and
+        # so a no-op edit round-trips without shifting by their UTC offset.
+        initial_start = (
+            ex.dtstart
+            if ex is not None and ex.dtstart is not None
+            else self._initial_start
+        )
+        initial_end = (
+            ex.dtend
+            if isinstance(ex, VEvent) and ex.dtend is not None
+            else self._initial_end
+        )
+        all_day = (
+            is_all_day_span(initial_start, initial_end)
+            if ex is not None
+            else self._initial_all_day
+        )
+        if all_day:
+            # Dates only; the Ends field holds the last day (inclusive).
+            start_date, end_date = all_day_form_dates(initial_start, initial_end)
+            start_time = end_time = ""
+        else:
+            start_date, start_time = _local_parts(initial_start)
+            end_date, end_time = _local_parts(initial_end)
+        if start_date == end_date:
+            end_date = ""
+        location = ex.location or "" if ex is not None else ""
+        description = ex.description or "" if ex is not None else ""
+        attendees = ", ".join(
+            extract_attendees(ex.raw_ics, ex.ref.uid) if ex is not None else ()
+        )
+        reminders = reminders_text(
+            extract_alarm_triggers(ex.raw_ics, ex.ref.uid) if ex is not None else []
+        )
+        with Vertical(id="event-edit"):
+            yield Label(
+                "Edit event" if ex is not None else "New event",
+                classes="event-edit-title",
+            )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Calendar", classes="event-field-label")
+                yield Select(
+                    ((self._calendar_label(c), c) for c in self._calendars),
+                    value=self._default_calendar,
+                    allow_blank=False,
+                    id="edit-calendar",
+                    classes="event-field-control",
+                    compact=True,
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Summary", classes="event-field-label")
+                yield Input(
+                    value=summary,
+                    id="edit-summary",
+                    classes="event-field-control",
+                    compact=True,
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("All day", classes="event-field-label")
+                yield Checkbox(value=all_day, id="edit-all-day", compact=True)
+            with Horizontal(classes="event-datetime-row"):
+                yield Label("Starts", classes="event-field-label")
+                yield DatePicker(
+                    value=start_date,
+                    placeholder="YYYY-MM-DD",
+                    id="edit-start-date",
+                    classes="event-date",
+                    compact=True,
+                )
+                yield Select(
+                    _time_options(start_time),
+                    value=start_time if start_time else Select.NULL,
+                    prompt="Time",
+                    id="edit-start-time",
+                    classes="event-time",
+                    compact=True,
+                )
+            with Horizontal(classes="event-datetime-row"):
+                yield Label("Ends", classes="event-field-label")
+                yield DatePicker(
+                    value=end_date,
+                    placeholder="Same date",
+                    id="edit-end-date",
+                    classes="event-date",
+                    compact=True,
+                )
+                yield Select(
+                    _time_options(end_time),
+                    value=end_time if end_time else Select.NULL,
+                    prompt="Optional",
+                    id="edit-end-time",
+                    classes="event-time",
+                    compact=True,
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Location", classes="event-field-label")
+                yield Input(
+                    value=location,
+                    id="edit-location",
+                    classes="event-field-control",
+                    compact=True,
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Description", classes="event-field-label")
+                yield Input(
+                    value=description,
+                    id="edit-description",
+                    classes="event-field-control",
+                    compact=True,
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Invitees", classes="event-field-label")
+                yield Input(
+                    value=attendees,
+                    id="edit-attendees",
+                    placeholder="alice@example.com, bob@example.com",
+                    classes="event-field-control",
+                    compact=True,
+                    suggester=(
+                        _AttendeeSuggester(self._attendee_completer)
+                        if self._attendee_completer is not None
+                        else None
+                    ),
+                )
+            with Horizontal(classes="event-field-row"):
+                yield Label("Reminders", classes="event-field-label")
+                yield Input(
+                    value=reminders,
+                    id="edit-reminders",
+                    placeholder="Minutes before, e.g. 15, 60",
+                    classes="event-field-control",
+                    compact=True,
+                )
+            yield Label("", id="edit-error")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._sync_time_fields(self.query_one("#edit-all-day", Checkbox).value)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "edit-all-day":
+            self._sync_time_fields(event.value)
+
+    def _sync_time_fields(self, all_day: bool) -> None:
+        """All-day events have no times: grey the time selectors out."""
+        for selector in ("#edit-start-time", "#edit-end-time"):
+            self.query_one(selector, Select).disabled = all_day
+        end_date = self.query_one("#edit-end-date", DatePicker)
+        end_date.placeholder = "Last day" if all_day else "Same date"
+
+    def action_save(self) -> None:
+        try:
+            draft = self._collect()
+        except InvalidDateError as exc:
+            self._show_error(str(exc))
+            return
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
+        self._on_save(draft)
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
+
+    def action_delete(self) -> None:
+        # Only meaningful when editing — a not-yet-saved event has
+        # nothing to delete. Pop the form first so the delete
+        # confirmation (pushed by the caller) lands on top of the
+        # calendar view rather than over the edit screen.
+        if self._existing is None or self._on_delete is None:
+            return
+        existing = self._existing
+        self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
+        self._on_delete(existing)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Hide the Delete binding from the footer (and disable the key)
+        # in "new event" mode, where there is nothing to delete yet.
+        del parameters
+        if action == "delete":
+            return self._existing is not None and self._on_delete is not None
+        return True
+
+    def _collect(self) -> EditDraft:
+        select = self.query_one(  # pyright: ignore[reportUnknownVariableType]
+            "#edit-calendar", Select
+        )
+        target = cast("object", select.value)
+        if not isinstance(target, CalendarRef):
+            raise ValueError("calendar selection is required")
+        summary_input: Input = self.query_one("#edit-summary", Input)
+        summary = summary_input.value.strip()
+        if not summary:
+            raise ValueError(NEEDS_A_SUMMARY)
+        start_date_input = self.query_one("#edit-start-date", DatePicker)
+        start_date = _parse_date(start_date_input.value, "start date")
+        end_date_input = self.query_one("#edit-end-date", DatePicker)
+        end_date_text = end_date_input.value.strip()
+        all_day = self.query_one("#edit-all-day", Checkbox).value
+        if all_day:
+            last_day = (
+                _parse_date(end_date_text, "end date") if end_date_text else start_date
+            )
+            # `all_day_form_bounds` is where a backwards span is
+            # refused, in the words both front ends use: this screen
+            # had its own check and the browser had none at all, so the
+            # same typo was an error here and a silently different
+            # event there.
+            first, end = all_day_form_bounds(start_date, last_day)
+            return self._draft(target, summary, first, end, all_day=True)
+        start_time_select = self.query_one("#edit-start-time", Select)
+        start_time = _selected_time(start_time_select, "start time")
+        dtstart = datetime.combine(start_date, start_time).astimezone()
+
+        end_time_select = self.query_one("#edit-end-time", Select)
+        selected_end_time = cast("object", end_time_select.value)
+        dtend: datetime | None = None
+        if isinstance(selected_end_time, str):
+            end_date = (
+                _parse_date(end_date_text, "end date") if end_date_text else start_date
+            )
+            dtend = datetime.combine(
+                end_date, _parse_time(selected_end_time, "end time")
+            ).astimezone()
+            if dtend <= dtstart:
+                raise ValueError(ENDS_BEFORE_IT_STARTS)
+        elif end_date_text:
+            raise ValueError("end time is required when end date is set")
+        return self._draft(target, summary, dtstart, dtend, all_day=False)
+
+    def _draft(
+        self,
+        target: CalendarRef,
+        summary: str,
+        dtstart: datetime,
+        dtend: datetime | None,
+        *,
+        all_day: bool,
+    ) -> EditDraft:
+        location_input: Input = self.query_one("#edit-location", Input)
+        description_input: Input = self.query_one("#edit-description", Input)
+        attendees_input: Input = self.query_one("#edit-attendees", Input)
+        reminders_input: Input = self.query_one("#edit-reminders", Input)
+        attendees = parse_attendees(attendees_input.value)
+        alarms = parse_reminders(reminders_input.value)
+        return EditDraft(
+            target=target,
+            summary=summary,
+            dtstart=dtstart,
+            dtend=dtend,
+            location=location_input.value.strip(),
+            description=description_input.value.strip(),
+            attendees=attendees,
+            alarms=alarms,
+            existing=self._existing,
+            all_day=all_day,
+        )
+
+    def _show_error(self, message: str) -> None:
+        self._error = message
+        try:
+            label: Label = self.query_one("#edit-error", Label)
+        except Exception:  # noqa: BLE001 — Textual's NoMatches is private.
+            return
+        label.update(message)
+
+    @staticmethod
+    def _calendar_label(ref: CalendarRef) -> str:
+        return f"{ref.account_name} / {ref.calendar_name}"
+
+
+def _local_parts(dt: datetime | None) -> tuple[str, str]:
+    if dt is None:
+        return "", ""
+    local = dt.astimezone()
+    return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
+
+
+def _time_options(value: str) -> tuple[tuple[str, str], ...]:
+    if not value or any(option == value for _, option in _HALF_HOUR_OPTIONS):
+        return _HALF_HOUR_OPTIONS
+    return ((value, value), *_HALF_HOUR_OPTIONS)
+
+
+def _parse_date(value: str, label: str) -> date:
+    text = value.strip()
+    if not text:
+        raise InvalidDateError(f"{label} is required")
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise InvalidDateError(f"{label} must be YYYY-MM-DD") from exc
+
+
+def _parse_time(value: str, label: str) -> time:
+    try:
+        parsed = time.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be HH:MM") from exc
+    return parsed.replace(second=0, microsecond=0)
+
+
+def _selected_time(select: Select[object], label: str) -> time:
+    selected = select.value
+    if not isinstance(selected, str):
+        raise ValueError(f"{label} is required")
+    return _parse_time(selected, label)
+
+
+__all__ = ["EditDraft", "EventEditScreen"]
+
+
+class _AttendeeSuggester(Suggester):
+    """Inline completion for the Invitees field.
+
+    Completes the address being typed after the last comma, leaving the
+    ones already entered alone, and offers the first match as Textual's
+    ghost text — accepted with `right`, ignored by typing on. Matching
+    is case-insensitive because an address is.
+    """
+
+    def __init__(self, completer: AttendeeCompleter) -> None:
+        super().__init__(case_sensitive=False)
+        self._completer = completer
+
+    async def get_suggestion(self, value: str) -> str | None:
+        head, _, typed = value.rpartition(",")
+        prefix = f"{head}," if head else ""
+        stripped = typed.lstrip()
+        if len(stripped) < 2:
+            return None
+        padding = typed[: len(typed) - len(stripped)] or (" " if prefix else "")
+        for candidate in self._completer(stripped, limit=1):
+            return f"{prefix}{padding}{candidate}"
+        return None

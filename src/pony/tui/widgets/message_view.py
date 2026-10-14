@@ -14,7 +14,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
-from chronos.keymap import key_for
+from pony.calendar.keymap import key_for
 
 from ...authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
 from ...browser_preview import serve_html

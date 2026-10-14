@@ -7,14 +7,14 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from chronos.domain import (
+from pony.calendar.domain import (
     CalendarRef,
     ComponentRef,
     LocalStatus,
     VEvent,
     VTodo,
 )
-from chronos.recurrence import (
+from pony.calendar.recurrence import (
     MAX_OCCURRENCES,
     RecurrenceExpansionError,
     expand,
@@ -164,7 +164,7 @@ class AllDayExpansionTest(unittest.TestCase):
             zone = timezone(timedelta(hours=offset))
             with (
                 self.subTest(offset=offset),
-                mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone),
+                mock.patch("pony.calendar.ical_parser.local_tzinfo", return_value=zone),
             ):
                 occs = expand(
                     master=master,
@@ -203,7 +203,7 @@ class LocalFloatingTimeTest(unittest.TestCase):
     def test_localize_naive_old_date_does_not_convert(self) -> None:
         # Regression: Windows may raise OSError when naive ancient dates are
         # pushed through astimezone(). We attach local tzinfo directly.
-        from chronos.ical_parser import localize_naive
+        from pony.calendar.ical_parser import localize_naive
 
         naive = datetime(1900, 1, 1, 9, 0)
         localized = localize_naive(naive)
@@ -217,10 +217,10 @@ class LocalFloatingTimeTest(unittest.TestCase):
         which resolves it through the platform's localtime -- the call
         `localize_naive` exists to keep away from an ancient date.
         """
-        from chronos.ical_parser import to_utc
+        from pony.calendar.ical_parser import to_utc
 
         zone = timezone(timedelta(hours=2))
-        with mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone):
+        with mock.patch("pony.calendar.ical_parser.local_tzinfo", return_value=zone):
             self.assertEqual(
                 to_utc(datetime(1900, 1, 1, 9, 0)),
                 datetime(1900, 1, 1, 7, 0, tzinfo=UTC),
@@ -309,7 +309,7 @@ class UntilBoundedRrule(unittest.TestCase):
         # DTSTART has a TZID, but Google + legacy Outlook routinely
         # emit naive UNTIL. dateutil's rrulestr would raise
         # `ValueError: RRULE UNTIL values must be specified in UTC...`
-        # mid-sync. chronos normalises the UNTIL to UTC before parsing
+        # mid-sync. The calendar normalises the UNTIL to UTC before parsing
         # so the recurrence still expands.
         master = _event(
             "until-naive-1@example.com",
@@ -336,7 +336,7 @@ class MalformedRruleTest(unittest.TestCase):
         # RRULE), `expand` must funnel the failure through
         # `RecurrenceExpansionError` so `populate_occurrences` can
         # skip just this master instead of failing the whole sync.
-        from chronos.recurrence import RecurrenceExpansionError
+        from pony.calendar.recurrence import RecurrenceExpansionError
 
         broken_ics = corpus.recurring_until().replace(
             b"RRULE:FREQ=WEEKLY;BYDAY=FR;UNTIL=20260626T090000Z\r\n",
@@ -449,7 +449,7 @@ class PopulateOccurrencesTest(unittest.TestCase):
     and `cancel_event` early-exit. Requires a real SQLite index."""
 
     def setUp(self) -> None:
-        from chronos.index_store import SqliteIndexRepository
+        from pony.calendar.index_store import SqliteIndexRepository
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.index = SqliteIndexRepository(tmp / "index.sqlite3")
@@ -459,13 +459,13 @@ class PopulateOccurrencesTest(unittest.TestCase):
         self.window_end = datetime(2027, 1, 1, tzinfo=UTC)
 
     def _insert(self, uid: str, raw_ics: bytes, dtstart: datetime) -> None:
-        from chronos.domain import LocalStatus
+        from pony.calendar.domain import LocalStatus
 
         self.index.upsert_component(
             _event(uid, raw_ics, dtstart=dtstart, dtend=dtstart + (dtstart - dtstart))
         )
         # Re-insert with a proper dtend so the occurrence window lands.
-        from chronos.domain import ComponentRef, VEvent
+        from pony.calendar.domain import ComponentRef, VEvent
 
         ref = ComponentRef(account_name=ACCOUNT, calendar_name=CALENDAR, uid=uid)
         ev = VEvent(
@@ -586,7 +586,7 @@ class PopulateAlarmsTest(unittest.TestCase):
     """Tests for ``populate_alarms``; requires a real SQLite index."""
 
     def setUp(self) -> None:
-        from chronos.index_store import SqliteIndexRepository
+        from pony.calendar.index_store import SqliteIndexRepository
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.index = SqliteIndexRepository(tmp / "index.sqlite3")
@@ -831,7 +831,7 @@ class RestrictedRebuildCostTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from chronos.index_store import SqliteIndexRepository
+        from pony.calendar.index_store import SqliteIndexRepository
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.index = SqliteIndexRepository(tmp / "index.sqlite3")

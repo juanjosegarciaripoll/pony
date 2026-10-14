@@ -140,7 +140,7 @@ class RunCalendarTest(unittest.TestCase):
         self.assertIn("config_version = 3", text)
         self.assertIn("profile = ", text)
         # And the account is visible to the loader the program uses.
-        from pony.calendar import load_calendar_config
+        from pony.calendar_runtime import load_calendar_config
 
         config = load_calendar_config(path)
         assert config is not None
@@ -169,7 +169,7 @@ class RunCalendarTest(unittest.TestCase):
 
         self.assertIn("work", listed)
         self.assertEqual(0, code, err.getvalue())
-        from pony.calendar import load_calendar_config
+        from pony.calendar_runtime import load_calendar_config
 
         config = load_calendar_config(path)
         assert config is not None

@@ -8,15 +8,15 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from chronos.config import ConfigError, dump, load, mirror_roots, parse, save
-from chronos.domain import (
+from pony.calendar.config import ConfigError, dump, load, mirror_roots, parse, save
+from pony.calendar.domain import (
     AccountConfig,
     AppConfig,
     CommandCredential,
     EnvCredential,
     PlaintextCredential,
 )
-from chronos.paths import CalendarPaths
+from pony.calendar.paths import CalendarPaths
 
 
 def _toml(body: str) -> str:
@@ -135,7 +135,7 @@ class ParseAccountTest(unittest.TestCase):
         "url": "https://caldav.example.com/dav/",
         "username": "user@example.com",
         "credential": {"backend": "env", "variable": "CHRONOS_PERSONAL_PW"},
-        "mirror_path": "/tmp/chronos/personal",
+        "mirror_path": "/tmp/pony/calendar/personal",
     }
 
     def _wrap(self, account: dict[str, object]) -> dict[str, object]:
@@ -232,7 +232,9 @@ class ParseAccountTest(unittest.TestCase):
         acct_data = dict(self.BASE_ACCOUNT)
         acct_data["mirror_path"] = "mirrors/personal"
         with (
-            unittest.mock.patch("chronos.config.is_half_qualified", return_value=True),
+            unittest.mock.patch(
+                "pony.calendar.config.is_half_qualified", return_value=True
+            ),
             self.assertRaises(ConfigError) as ctx,
         ):
             parse(self._wrap(acct_data))
@@ -286,7 +288,7 @@ class ParseAccountTest(unittest.TestCase):
         self.assertIn("include", ctx.exception.key)
 
     def test_google_account_omits_url_and_username(self) -> None:
-        from chronos.domain import GOOGLE_CALDAV_URL, GoogleCredential
+        from pony.calendar.domain import GOOGLE_CALDAV_URL, GoogleCredential
 
         config = parse(
             {
@@ -401,7 +403,7 @@ class ParseCredentialTest(unittest.TestCase):
                 }
             )
         )
-        from chronos.domain import OAuthCredential
+        from pony.calendar.domain import OAuthCredential
 
         cred = config.accounts[0].credential
         assert isinstance(cred, OAuthCredential)
@@ -422,7 +424,7 @@ class ParseCredentialTest(unittest.TestCase):
                 }
             )
         )
-        from chronos.domain import OAuthCredential
+        from pony.calendar.domain import OAuthCredential
 
         cred = config.accounts[0].credential
         assert isinstance(cred, OAuthCredential)
@@ -444,7 +446,7 @@ class ParseCredentialTest(unittest.TestCase):
                 }
             )
         )
-        from chronos.domain import GoogleCredential
+        from pony.calendar.domain import GoogleCredential
 
         cred = config.accounts[0].credential
         assert isinstance(cred, GoogleCredential)
@@ -484,7 +486,7 @@ def _sample_config(**overrides: object) -> AppConfig:
         url="https://caldav.example.com/dav/",
         username="user@example.com",
         credential=EnvCredential(variable="CHRONOS_PERSONAL_PW"),
-        mirror_path=Path("/tmp/chronos/personal"),
+        mirror_path=Path("/tmp/pony/calendar/personal"),
         trash_retention_days=30,
         include=(re.compile(".*"),),
         exclude=(),
@@ -500,7 +502,7 @@ def _sample_config(**overrides: object) -> AppConfig:
 
 class DumpTest(unittest.TestCase):
     def test_dump_produces_valid_toml(self) -> None:
-        from chronos.config import _dumps_toml  # noqa: PLC0415
+        from pony.calendar.config import _dumps_toml  # noqa: PLC0415
 
         config = _sample_config()
         rendered = _dumps_toml(dump(config))
@@ -543,7 +545,7 @@ class DumpTest(unittest.TestCase):
         self.assertIsNone(reparsed.accounts[0].mirror_path)
 
     def test_dump_omits_url_and_username_for_google_defaults(self) -> None:
-        from chronos.domain import GoogleCredential
+        from pony.calendar.domain import GoogleCredential
 
         account = AccountConfig(
             name="google",
@@ -571,7 +573,7 @@ class DumpTest(unittest.TestCase):
 
     def test_dump_keeps_mirror_path_when_custom(self) -> None:
         config = _sample_config()
-        # _sample_config uses /tmp/chronos/personal which is NOT the
+        # _sample_config uses /tmp/pony/calendar/personal which is NOT the
         # platform default; dump should keep it. Path serialisation is
         # platform-specific (str() of a WindowsPath uses backslashes),
         # so compare via Path equality.
@@ -579,7 +581,7 @@ class DumpTest(unittest.TestCase):
         accounts = data["accounts"]
         assert isinstance(accounts, list)
         self.assertEqual(
-            Path(str(accounts[0]["mirror_path"])), Path("/tmp/chronos/personal")
+            Path(str(accounts[0]["mirror_path"])), Path("/tmp/pony/calendar/personal")
         )
 
     def test_dump_includes_editor_when_set(self) -> None:
@@ -594,7 +596,7 @@ class DumpTest(unittest.TestCase):
         self.assertEqual(data["editor"], "nvim")
 
     def test_credential_roundtrip(self) -> None:
-        from chronos.domain import GoogleCredential, OAuthCredential
+        from pony.calendar.domain import GoogleCredential, OAuthCredential
 
         for cred in (
             PlaintextCredential(password="s3cret"),
@@ -683,13 +685,13 @@ class SaveRoundTripTest(unittest.TestCase):
     def test_save_keyboard_interrupt_preserves_prior_file(self) -> None:
         # Mid-save Ctrl-C must leave the previous config intact and
         # not strand a `.tmp-*` file. Otherwise the user's next
-        # `chronos sync` could find no config or a half-written one.
+        # `pony calendar sync` could find no config or a half-written one.
         path = self.tmp / "config.toml"
         save(_sample_config(name="original-account"), path)
         original_bytes = path.read_bytes()
         with (
             unittest.mock.patch(
-                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):

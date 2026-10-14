@@ -7,10 +7,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from chronos.authorization import Authorization
-from chronos.caldav import CalDAVError
-from chronos.credentials import DefaultCredentialsProvider
-from chronos.domain import (
+from pony.calendar.authorization import Authorization
+from pony.calendar.caldav import CalDAVError
+from pony.calendar.credentials import DefaultCredentialsProvider
+from pony.calendar.domain import (
     AccountConfig,
     AppConfig,
     ComponentRef,
@@ -20,9 +20,9 @@ from chronos.domain import (
     ResourceRef,
     VEvent,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.services import DiagnosticStatus, format_report, run_doctor
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.services import DiagnosticStatus, format_report, run_doctor
+from pony.calendar.storage import VdirMirrorRepository
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -482,7 +482,7 @@ class MirrorIntegrityTest(DoctorTestCase):
 
 class FormatReportTest(unittest.TestCase):
     def test_empty_report_friendly_message(self) -> None:
-        from chronos.services import DoctorReport
+        from pony.calendar.services import DoctorReport
 
         rendered = format_report(DoctorReport(results=()))
         self.assertIn("No accounts configured", rendered)

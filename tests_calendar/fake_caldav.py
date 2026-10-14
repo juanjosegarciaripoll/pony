@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from chronos.caldav.errors import SyncTokenExpiredError
-from chronos.domain import ComponentKind, RemoteCalendar
+from pony.calendar.caldav.errors import SyncTokenExpiredError
+from pony.calendar.domain import ComponentKind, RemoteCalendar
 
 
 class FakeCalDAVError(Exception):

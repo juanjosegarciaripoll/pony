@@ -11,7 +11,7 @@ or a tab and the periodic thread, go through the same gate, and the
 second one is told the first is still running rather than opening a
 second IMAP session on the same account.  Across processes it is the
 user's call — the calendar takes a lock of its own
-(:mod:`chronos.locking`), the mail half has never had one, and a
+(:mod:`pony.calendar.locking`), the mail half has never had one, and a
 terminal left open is not a reason for the phone to refuse.
 """
 
@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Outcome, failure, info, warn
-from chronos.sync import describe_sync_result as describe_calendar_sync
+from pony.calendar.outcome import Outcome, failure, info, warn
+from pony.calendar.sync import describe_sync_result as describe_calendar_sync
 
 from ..sync import describe_halt, describe_sync_result
 from .actions import Confirmation, Reply
@@ -33,10 +33,10 @@ from .actions import Confirmation, Reply
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from chronos.domain import SyncResult as CalendarSyncResult
-    from chronos.outcome import Notice
+    from pony.calendar.domain import SyncResult as CalendarSyncResult
+    from pony.calendar.outcome import Notice
 
-    from ..calendar import CalendarRuntime
+    from ..calendar_runtime import CalendarRuntime
     from ..sync import ImapSyncService, MailSyncScheduler, SyncPlan
 
 _log = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ class SyncGate:
         runtime = self.calendar
         if runtime is None:
             return Outcome.refused(warn("No calendar configured."))
-        from chronos.services import CalendarServices, build_sync_runner
+        from pony.calendar.services import CalendarServices, build_sync_runner
 
         runner = build_sync_runner(
             CalendarServices(

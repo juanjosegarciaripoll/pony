@@ -6,8 +6,8 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input
 
-from chronos.outcome import Notice, Outcome
-from chronos.tui.reporting import report
+from pony.calendar.outcome import Notice, Outcome
+from pony.tui.calendar.reporting import report
 
 from ...contact_actions import (
     MergePlan,

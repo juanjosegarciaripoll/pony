@@ -8,8 +8,8 @@ from pathlib import Path
 
 from conftest import isolated_data_dir, resolve_fixture
 
-from chronos.paths import CalendarPaths
-from pony.calendar import (
+from pony.calendar.paths import CalendarPaths
+from pony.calendar_runtime import (
     load_calendar_config,
     open_calendar_runtime,
     parse_calendar_config,

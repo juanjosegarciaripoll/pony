@@ -8,7 +8,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Label, TextArea
 
-from chronos.tui.reporting import report
+from pony.tui.calendar.reporting import report
 
 from ...contact_actions import ContactEdit, save_contact
 from ...domain import Contact

@@ -11,7 +11,7 @@ dependencies = [
     "markdown-it-py>=3.0.0",
     "textual>=8.2.3",
     "tinymcp",
-    # Calendar subsystem (src/chronos): iCalendar parsing and the
+    # Calendar subsystem (src/pony/calendar): iCalendar parsing and the
     # recurrence expansion both CalDAV sync and the agenda views need.
     "icalendar>=7.3",
     "python-dateutil>=2.9",
@@ -34,7 +34,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pony", "src/chronos"]
+packages = ["src/pony"]
 
 [tool.ruff]
 line-length = 88
@@ -44,12 +44,12 @@ target-version = "py313"
 select = ["E", "F", "I", "B", "UP", "N", "ARG", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pony", "chronos"]
+known-first-party = ["pony"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["pony", "chronos"]
+packages = ["pony"]
 
 [[tool.mypy.overrides]]
 module = "imapclient.*"
@@ -65,7 +65,7 @@ ignore_missing_imports = true
 # Keeping both means the file checks on either, at the cost of this one
 # unused-ignore exemption.
 [[tool.mypy.overrides]]
-module = "chronos.locking"
+module = "pony.calendar.locking"
 warn_unused_ignores = false
 
 [tool.basedpyright]
@@ -86,7 +86,6 @@ testpaths = ["tests", "tests_calendar"]
 pythonpath = ["."]
 addopts = [
     "--cov=pony",
-    "--cov=chronos",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=85",
@@ -106,10 +105,9 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["src/pony", "src/chronos"]
+source = ["src/pony"]
 omit = [
     "src/pony/__main__.py",
-    "src/chronos/__main__.py",
 ]
 
 [tool.coverage.report]

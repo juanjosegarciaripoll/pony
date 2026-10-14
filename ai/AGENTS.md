@@ -3,16 +3,17 @@
 Python 3.13 MUA **and calendar**, one program, two front ends:
 
 - Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI (`pony tui`) or browser UI (`pony web`); SMTP out, optional Markdown compose.
-- Calendar (`src/chronos`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++), and its own pages in the browser UI.
+- Calendar (`src/pony/calendar`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++), and its own pages in the browser UI.
 
 Both front ends offer the same operations, because the operations are
 not in either of them: see **Where an operation lives** below.
 
 One config file, one notification space, one entry point (`pony`).
-The dependency arrow is **one way**: `pony` imports `chronos`, never the
-reverse. What the calendar needs from its host arrives as optional
-collaborators on `TuiServices` (`invitation_sender`, `attendee_completer`),
-so `tests_calendar/` still exercises the calendar standalone.
+**The two models never import each other** — `tests/test_layering.py`
+fails if one does. What the calendar needs from its host arrives as
+optional collaborators on `TuiServices` (`invitation_sender`,
+`attendee_completer`), so `tests_calendar/` exercises the calendar model
+with no mail code in the way.
 
 ## Docs
 
@@ -58,7 +59,7 @@ so `tests_calendar/` still exercises the calendar standalone.
 
    **While iterating, run the files you touched, not the suite.** The
    full run belongs at a commit boundary. A model layer under `src/pony`
-   or `src/chronos` has unit tests that finish in seconds
+   or `src/pony/calendar` has unit tests that finish in seconds
    (`tests/test_mailbox_actions.py`, `tests_calendar/test_event_actions.py`);
    reach for those before the Pilot-driven ones.
 3. **Never run a mutating command against the live environment.** Not
@@ -168,7 +169,7 @@ Key test infrastructure:
 | Invitations in the reader | `tests/test_invitation_flows.py` |
 | Invitations out of the calendar | `tests/test_invitation_sending.py` |
 | `pony calendar ...` | `tests/test_cli_calendar.py` |
-| Everything calendar-internal | `tests_calendar/` — the calendar's own suite, unchanged |
+| Everything calendar-internal | `tests_calendar/` — the calendar model's own suite |
 | Dialog / standalone screens | `tests/test_screens.py` — `_make_host(ScreenCls, …)` + `Pilot` |
 | Contacts browser | `tests/test_screens.py` via `ContactsApp(contacts=index)` |
 
@@ -213,20 +214,20 @@ both packages:
 
 | Missing | File | % |
 |---:|---|---:|
-| 292 | `chronos/cli.py` | 77.59 |
+| 292 | `pony/cli_calendar.py` | 77.59 |
 | 117 | `pony/cli.py` | 94.85 |
-| 94 | `chronos/tui/screens/main_screen.py` | 84.84 |
-| 94 | `chronos/sync.py` | 87.02 |
-| 70 | `chronos/recurrence.py` | 83.41 |
-| 63 | `chronos/ingest.py` | 82.20 |
-| 61 | `chronos/locking.py` | 46.02 |
+| 94 | `pony/tui/calendar/screens/main_screen.py` | 84.84 |
+| 94 | `pony/calendar/sync.py` | 87.02 |
+| 70 | `pony/calendar/recurrence.py` | 83.41 |
+| 63 | `pony/calendar/ingest.py` | 82.20 |
+| 61 | `pony/calendar/locking.py` | 46.02 |
 | 59 | `pony/tui/app.py` | 85.29 |
 | 50 | `pony/storage.py` | 92.78 |
 | 49 | `pony/tui/screens/main_screen.py` | 95.71 |
 
 The calendar's files dominate this list because its suite was written to
 its own 85 % floor, not Pony's habits — that is where the headroom is.
-`chronos/locking.py` is the calendar's `credentials.py`: half of it is the
+`pony/calendar/locking.py` is the calendar's `credentials.py`: half of it is the
 Windows branch and cannot run on Linux CI.
 
 `pony/credentials.py` is platform-gated and cannot rise on Linux CI
@@ -292,15 +293,15 @@ message or one of its parts, the contact operations, answering an
 invitation and the calendar's event operations each live over the
 stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
 `pony/message_export.py`, `pony/contact_actions.py`,
-`pony/invitation_actions.py`, `chronos/event_actions.py`) and return a
-`chronos.outcome.Outcome` — a count of what changed, and the notices to
+`pony/invitation_actions.py`, `pony/calendar/event_actions.py`) and return a
+`pony.calendar.outcome.Outcome` — a count of what changed, and the notices to
 show. An operation that returns something as well returns it beside the
 outcome (`FiledMessage`, `FlaggedMessage`), never instead of it. No `app.notify`, no `query_one`, no Textual import. An operation
 that blocks (SMTP, a sync) is a plain blocking call: the terminal hands
 it to a worker thread, the browser to the thread pool.
 
 **A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.keymap`
-is the mail reader's table and `chronos.keymap` is the calendar's, which
+is the mail reader's table and `pony.calendar.keymap` is the calendar's, which
 also holds the vocabulary both share (`KeyBinding`, `for_surface`,
 `web_key`) because the dependency arrow points that way. Each front end
 converts: `to_textual` for the terminal, `/keymap.json` for the browser,
@@ -321,11 +322,11 @@ end that invents its own numbering is how `s` came to save
 body-as-Markdown in the terminal and the raw `.eml` in the browser.
 
 **A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
-and `chronos/views.py` decide what a row is *of* — and, for the
+and `pony/calendar/views.py` decide what a row is *of* — and, for the
 calendar, which cell or column a span occupies and how tall the hour
 axis is; padding it to a column width or wrapping it in a Rich `Text` is
 the widget's half. Emphasis
-travels as data (`MessageRow.unread`, `chronos.views.RowEmphasis`) so a
+travels as data (`MessageRow.unread`, `pony.calendar.views.RowEmphasis`) so a
 second front end can render it as a CSS class.
 
 **A page goes in its own `pony/web` module, not in `app.py`.** `app.py`

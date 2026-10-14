@@ -127,7 +127,7 @@ def test_a_moment_is_rendered_in_the_readers_own_zone() -> None:
 
     At UTC+2, mail that arrived at 00:30 local was rendered as a *date*
     -- its UTC day was the day before -- while every calendar view
-    renders the same moment locally (`chronos.views` starts each of its
+    renders the same moment locally (`pony.calendar.views` starts each of its
     three with `start.astimezone()`).
     """
     from datetime import timedelta, timezone

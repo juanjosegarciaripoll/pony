@@ -6,11 +6,11 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
-from chronos.bootstrap import (
+from pony.calendar.bootstrap import (
     TEMPLATE_TOML,
     write_template,
 )
-from chronos.config import load as load_config
+from pony.calendar.config import load as load_config
 
 
 class TemplateContentTest(unittest.TestCase):
@@ -23,7 +23,7 @@ class TemplateContentTest(unittest.TestCase):
         # template parses to zero accounts.
         self.assertNotIn("accounts", data)
 
-    def test_loads_through_chronos_config(self) -> None:
+    def test_loads_through_the_calendars_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             write_template(path)

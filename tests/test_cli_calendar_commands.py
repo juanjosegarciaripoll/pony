@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from chronos.config import ConfigDocument, file_document, mirror_roots
-from chronos.credentials import DefaultCredentialsProvider
-from chronos.domain import (
+from pony import cli_calendar as cli
+from pony.calendar.config import ConfigDocument, file_document, mirror_roots
+from pony.calendar.credentials import DefaultCredentialsProvider
+from pony.calendar.domain import (
     AccountConfig,
     AppConfig,
     ComponentRef,
@@ -24,14 +25,13 @@ from chronos.domain import (
     ResourceRef,
     VEvent,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.oauth import (
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.oauth import (
     has_local_graphical_browser,
 )
-from chronos.paths import CalendarPaths
-from chronos.services import build_sync_runner, default_session_factory
-from chronos.storage import VdirMirrorRepository
-from pony import cli_calendar as cli
+from pony.calendar.paths import CalendarPaths
+from pony.calendar.services import build_sync_runner, default_session_factory
+from pony.calendar.storage import VdirMirrorRepository
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -96,7 +96,7 @@ def _no_context() -> cli.CliContext:
 
 def _unconfigured() -> cli.CliContext:
     """No `[calendar]` table yet, which is what the bootstrap offers to fix."""
-    from pony.calendar import CalendarNotConfiguredError
+    from pony.calendar_runtime import CalendarNotConfiguredError
 
     raise CalendarNotConfiguredError("no calendar configured")
 
@@ -214,7 +214,7 @@ class SyncCommandTest(CliTestCase):
 
     def test_sync_happy_path(self) -> None:
         self._seed_server()
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -228,7 +228,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_deletes_index_and_mirror_with_yes_flag(self) -> None:
         # Seed the mirror + index so there's something to delete.
         self._seed_server()
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -277,7 +277,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_refuses_when_mcp_server_reachable(self) -> None:
         import socket
 
-        from chronos.mcp_server import McpServerState, write_state
+        from pony.calendar.mcp_server import McpServerState, write_state
 
         self._seed_server()
 
@@ -315,7 +315,7 @@ class SyncCommandTest(CliTestCase):
         self.assertTrue(index_path.exists())
 
     def test_reset_refuses_when_sync_lock_held(self) -> None:
-        from chronos.locking import SyncLockError
+        from pony.calendar.locking import SyncLockError
 
         self._seed_server()
 
@@ -351,7 +351,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_force_bypasses_presence_checks(self) -> None:
         import socket
 
-        from chronos.mcp_server import McpServerState, write_state
+        from pony.calendar.mcp_server import McpServerState, write_state
 
         self._seed_server()
 
@@ -391,7 +391,7 @@ class SyncCommandTest(CliTestCase):
     def test_reset_proceeds_when_state_file_stale(self) -> None:
         import socket
 
-        from chronos.mcp_server import McpServerState, write_state
+        from pony.calendar.mcp_server import McpServerState, write_state
 
         self._seed_server()
 
@@ -428,7 +428,7 @@ class SyncCommandTest(CliTestCase):
 
     def test_reset_refuses_without_yes_when_non_interactive(self) -> None:
         self._seed_server()
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -451,14 +451,14 @@ class SyncCommandTest(CliTestCase):
         self.assertTrue(mirror_dir.exists())
 
     def test_sync_force_clears_sync_state_and_reruns_slow_path(self) -> None:
-        # `chronos sync --force` is the user-facing escape hatch when
+        # `pony calendar sync --force` is the user-facing escape hatch when
         # the local cache has drifted out of step with the components
         # table. It clears every per-calendar CTag so the next run
         # re-enters the slow path for every calendar (which, on its
         # tail, calls `populate_occurrences` to rebuild the cache).
         self._seed_server()
-        from chronos.authorization import Authorization
-        from chronos.domain import CalendarRef, SyncState
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.domain import CalendarRef, SyncState
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -488,11 +488,11 @@ class SyncCommandTest(CliTestCase):
         self.assertIn("cleared sync state", self.stdout.getvalue())
 
     def test_sync_account_filters_to_named_account(self) -> None:
-        # `chronos sync --account NAME` should sync only that account,
+        # `pony calendar sync --account NAME` should sync only that account,
         # leaving the others untouched — the isolation knob for debugging
         # one flaky account without churning the rest.
         self._seed_server()
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         synced: list[str] = []
 
@@ -527,8 +527,8 @@ class SyncCommandTest(CliTestCase):
         # account; sibling accounts keep their CTags so they don't all
         # re-download just because one was being debugged.
         self._seed_server()
-        from chronos.authorization import Authorization
-        from chronos.domain import CalendarRef, SyncState
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.domain import CalendarRef, SyncState
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -567,8 +567,8 @@ class SyncCommandTest(CliTestCase):
         self.assertIn("UNSET_FOR_TEST", self.stderr.getvalue())
 
     def test_sync_without_factory_builds_caldav_http_session(self) -> None:
-        from chronos.authorization import Authorization
-        from chronos.caldav import CalDAVHttpSession
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.caldav import CalDAVHttpSession
 
         session = default_session_factory(
             _account(), Authorization(basic=("user@example.com", "pw"))
@@ -576,8 +576,8 @@ class SyncCommandTest(CliTestCase):
         self.assertIsInstance(session, CalDAVHttpSession)
 
     def test_sync_reports_caldav_error_from_session(self) -> None:
-        from chronos.authorization import Authorization
-        from chronos.caldav import CalDAVError
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.caldav import CalDAVError
 
         def broken_factory(
             _account: AccountConfig, _auth: Authorization
@@ -600,8 +600,8 @@ class SyncCommandTest(CliTestCase):
         """A CalDAVError raised by the session factory itself (e.g. Google
         email-discovery failing in the default factory) must be reported
         per-account, not crash the whole sync."""
-        from chronos.authorization import Authorization
-        from chronos.caldav import CalDAVError
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.caldav import CalDAVError
 
         def broken_factory(
             _account: AccountConfig, _auth: Authorization
@@ -619,7 +619,7 @@ class SyncLockReleaseTest(CliTestCase):
     """The TUI runs sync synchronously on the UI thread. Any exception
     raised during the sync (including a Ctrl-C that bubbles up as
     KeyboardInterrupt) must release the sync lockfile so the next
-    `chronos sync` invocation isn't blocked. The persistence layers
+    `pony calendar sync` invocation isn't blocked. The persistence layers
     (mirror temp-files, SQLite transactions, OAuth-token writes) are
     each tested for atomicity in their own modules; this test pins
     the additional lockfile-release guarantee at the cli boundary.
@@ -635,7 +635,7 @@ class SyncLockReleaseTest(CliTestCase):
         )
 
     def test_keyboard_interrupt_during_runner_releases_lock(self) -> None:
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         self._seed()
         # Make discover_principal raise KeyboardInterrupt to simulate
@@ -670,9 +670,9 @@ class SyncLockReleaseTest(CliTestCase):
 
     def test_concurrent_cmd_sync_invocations_rejected(self) -> None:
         # Hold the lockfile via a separate `acquire_sync_lock` and
-        # verify `cmd_sync` exits non-zero with a "another chronos
+        # verify `cmd_sync` exits non-zero with a "another calendar
         # sync is already running" message.
-        from chronos.locking import acquire_sync_lock
+        from pony.calendar.locking import acquire_sync_lock
 
         self._seed()
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -708,7 +708,7 @@ class BuildSyncRunnerTest(CliTestCase):
 
     def test_happy_path_returns_one_result_per_account(self) -> None:
         self._seed_server()
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -733,8 +733,8 @@ class BuildSyncRunnerTest(CliTestCase):
         self.assertEqual(results[0].components_added, 0)
 
     def test_caldav_error_lands_in_errors(self) -> None:
-        from chronos.authorization import Authorization
-        from chronos.caldav import CalDAVError
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.caldav import CalDAVError
 
         def broken_factory(
             _account: AccountConfig, _auth: Authorization
@@ -754,7 +754,7 @@ class BuildSyncRunnerTest(CliTestCase):
         self.assertIn("simulated network failure", results[0].errors[0])
 
     def test_session_factory_not_implemented_lands_in_errors(self) -> None:
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def unimplemented_factory(
             _account: AccountConfig, _auth: Authorization
@@ -771,8 +771,8 @@ class BuildSyncRunnerTest(CliTestCase):
         """The default session factory may raise CalDAVError when
         constructing the session (e.g. Google email-discovery failing).
         That must land in the per-account errors tuple, not crash."""
-        from chronos.authorization import Authorization
-        from chronos.caldav import CalDAVError
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.caldav import CalDAVError
 
         def broken_factory(
             _account: AccountConfig, _auth: Authorization
@@ -788,8 +788,8 @@ class BuildSyncRunnerTest(CliTestCase):
     def test_oauth_on_commit_called_on_success(self) -> None:
         self._seed_server()
 
-        from chronos.authorization import Authorization
-        from chronos.credentials import CredentialResolutionError
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.credentials import CredentialResolutionError
 
         committed: list[int] = []
 
@@ -971,8 +971,8 @@ class AddCommandTest(CliTestCase):
         creating could not be seen anywhere until the next sync put the
         cache back.
         """
-        from chronos.domain import CalendarRef
-        from chronos.views import CalendarSelection, gather_occurrences
+        from pony.calendar.domain import CalendarRef
+        from pony.calendar.views import CalendarSelection, gather_occurrences
 
         code = self._run(
             [
@@ -1004,7 +1004,7 @@ class AddCommandTest(CliTestCase):
 
     def test_an_edit_keeps_the_reminders_it_was_not_asked_about(self) -> None:
         """Rebuilding the text from fields dropped them silently."""
-        from chronos.ical_parser import extract_alarm_triggers
+        from pony.calendar.ical_parser import extract_alarm_triggers
 
         self._run(
             [
@@ -1045,7 +1045,7 @@ class AddCommandTest(CliTestCase):
         )
 
     def test_add_with_attendees_writes_invites(self) -> None:
-        from chronos.ical_parser import extract_attendees
+        from pony.calendar.ical_parser import extract_attendees
 
         code = self._run(
             [
@@ -1141,7 +1141,7 @@ class EditCommandTest(CliTestCase):
         self.assertEqual(component.summary, "New")
 
     def test_edit_of_synced_event_is_pushed_on_next_sync(self) -> None:
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         cal_url = "https://cal.example.com/work/"
         href = "https://cal.example.com/work/a.ics"
@@ -1177,7 +1177,7 @@ class EditCommandTest(CliTestCase):
         self.assertEqual(component.local_flags, frozenset())
 
     def test_edit_keeps_all_day_events_as_dates(self) -> None:
-        from chronos.mutations import all_day_bounds, build_event_ics
+        from pony.calendar.mutations import all_day_bounds, build_event_ics
 
         start, end = all_day_bounds(date(2026, 5, 1), date(2026, 5, 1))
         ics = build_event_ics(
@@ -1254,7 +1254,7 @@ class EditCommandTest(CliTestCase):
                 synced_at=None,
             )
         )
-        with mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone):
+        with mock.patch("pony.calendar.ical_parser.local_tzinfo", return_value=zone):
             code = self._run(
                 ["edit", "outlook-day@example.com", "--summary", "Day off"]
             )
@@ -1368,7 +1368,7 @@ class DoctorCommandTest(CliTestCase):
             etag="etag-a",
         )
 
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -1391,7 +1391,7 @@ class DoctorCommandTest(CliTestCase):
             etag="etag-a",
         )
 
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -1413,7 +1413,7 @@ class DoctorCommandTest(CliTestCase):
         self.assertIn("remote-calendar-query", self.stdout.getvalue())
 
     def test_doctor_without_debug_emits_no_step_progress(self) -> None:
-        from chronos.authorization import Authorization
+        from pony.calendar.authorization import Authorization
 
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return self.session
@@ -1427,7 +1427,7 @@ class DoctorCommandTest(CliTestCase):
 class ConfigLoadErrorTest(CliTestCase):
     def test_an_unconfigured_calendar_in_non_interactive_exits_two(self) -> None:
         """What `pony calendar doctor` says with no `[calendar]` table."""
-        from pony.calendar import CalendarNotConfiguredError
+        from pony.calendar_runtime import CalendarNotConfiguredError
 
         def unconfigured() -> cli.CliContext:
             raise CalendarNotConfiguredError("no calendar configured")
@@ -1484,7 +1484,7 @@ class InitCommandTest(ConfigEditingCliTestCase):
         self.assertTrue(self.config_path.exists())
         self.assertIn("Wrote template", self.stdout.getvalue())
         # The template parses to zero accounts (every example is commented).
-        from chronos.config import load
+        from pony.calendar.config import load
 
         config = load(self.config_path)
         self.assertEqual(config.config_version, 1)
@@ -1573,7 +1573,7 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("Skipped", self.stdout.getvalue())
 
     def test_init_command_works_without_prompt_in_missing_config_path(self) -> None:
-        # `chronos init` itself is a config-editing command, so the
+        # `pony calendar init` itself is a config-editing command, so the
         # missing-config bootstrap flow MUST NOT trigger for it — that
         # would prompt to create a template before letting init create
         # one, which is silly. Verify by passing no prompt at all.
@@ -1612,15 +1612,15 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "s3cret",
                 "--mirror-path",
-                "/tmp/chronos/personal",
+                "/tmp/pony/calendar/personal",
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
+        from pony.calendar.config import load
 
         config = load(self.config_path)
         self.assertEqual(len(config.accounts), 1)
-        from chronos.domain import PlaintextCredential
+        from pony.calendar.domain import PlaintextCredential
 
         cred = config.accounts[0].credential
         assert isinstance(cred, PlaintextCredential)
@@ -1645,7 +1645,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
+        from pony.calendar.config import load
 
         config = load(self.config_path)
         # An account that declared nothing keeps nothing: the default
@@ -1682,8 +1682,8 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
-        from chronos.domain import EnvCredential
+        from pony.calendar.config import load
+        from pony.calendar.domain import EnvCredential
 
         config = load(self.config_path)
         cred = config.accounts[0].credential
@@ -1710,8 +1710,8 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
-        from chronos.domain import CommandCredential
+        from pony.calendar.config import load
+        from pony.calendar.domain import CommandCredential
 
         config = load(self.config_path)
         cred = config.accounts[0].credential
@@ -1828,7 +1828,7 @@ class AccountRmCommandTest(ConfigEditingCliTestCase):
         self.stdout.seek(0)
         code = self._run(["account", "rm", "gone"])
         self.assertEqual(code, 0)
-        from chronos.config import load
+        from pony.calendar.config import load
 
         config = load(self.config_path)
         self.assertEqual(config.accounts, ())
@@ -1862,12 +1862,12 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
                 "--client-secret",
                 "GOCSPX-secret",
                 "--mirror-path",
-                "/tmp/chronos/google",
+                "/tmp/pony/calendar/google",
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
-        from chronos.domain import OAuthCredential
+        from pony.calendar.config import load
+        from pony.calendar.domain import OAuthCredential
 
         config = load(self.config_path)
         cred = config.accounts[0].credential
@@ -1896,8 +1896,8 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from chronos.config import load
-        from chronos.domain import GOOGLE_CALDAV_URL, GoogleCredential
+        from pony.calendar.config import load
+        from pony.calendar.domain import GOOGLE_CALDAV_URL, GoogleCredential
 
         config = load(self.config_path)
         account = config.accounts[0]
@@ -2003,8 +2003,8 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         self.stdout.seek(0)
 
     def test_authorize_with_injected_flow_saves_tokens(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import StoredTokens
 
         self._add_oauth_account()
         token_path = self.tmp / "tokens.json"
@@ -2023,12 +2023,12 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
         # Override the token store location by editing the saved config
         # to point at our tmp path.
-        from chronos.config import load, save
+        from pony.calendar.config import load, save
 
         config = load(self.config_path)
         account = config.accounts[0]
         credential = account.credential
-        from chronos.domain import AccountConfig, AppConfig
+        from pony.calendar.domain import AccountConfig, AppConfig
 
         assert isinstance(credential, OAuthCredential)
         updated_account = AccountConfig(
@@ -2111,8 +2111,8 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
     def test_authorize_accepts_google_backend(self) -> None:
         """`google` is OAuth shorthand; `oauth authorize` must run the
         loopback flow with the underlying client_id/secret + Google scope."""
-        from chronos.domain import GOOGLE_OAUTH_SCOPE, OAuthCredential
-        from chronos.oauth import StoredTokens
+        from pony.calendar.domain import GOOGLE_OAUTH_SCOPE, OAuthCredential
+        from pony.calendar.oauth import StoredTokens
 
         self._run(["init"])
         self._run(
@@ -2162,7 +2162,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
     def test_authorize_defaults_to_remote_browser_when_headless(self) -> None:
-        from chronos.oauth import StoredTokens
+        from pony.calendar.oauth import StoredTokens
 
         self._add_oauth_account()
         flow = mock.MagicMock(
@@ -2174,7 +2174,9 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         )
         with (
-            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
+            mock.patch(
+                "pony.calendar.oauth.has_local_graphical_browser", return_value=False
+            ),
             mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
@@ -2189,7 +2191,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         self.assertTrue(CalendarPaths(root=self.tmp).token_path("google").exists())
 
     def test_authorize_uses_loopback_when_graphical(self) -> None:
-        from chronos.oauth import StoredTokens
+        from pony.calendar.oauth import StoredTokens
 
         self._add_oauth_account()
         flow = mock.MagicMock(
@@ -2201,7 +2203,9 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             )
         )
         with (
-            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
+            mock.patch(
+                "pony.calendar.oauth.has_local_graphical_browser", return_value=True
+            ),
             mock.patch("pony.cli_calendar._default_loopback_flow", flow),
         ):
             code = cli.cmd_oauth_authorize(
@@ -2220,8 +2224,8 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
     """`default_cli_authorizer` picks a usable OAuth flow for the terminal."""
 
     def test_raises_when_no_tty(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import OAuthError
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import OAuthError
 
         spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
         with (
@@ -2235,8 +2239,8 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         self.assertIn("TTY", str(ctx.exception))
 
     def test_delegates_to_loopback_flow_when_graphical(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import StoredTokens
 
         spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
         tokens = StoredTokens(
@@ -2246,7 +2250,9 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         with (
             mock.patch("pony.cli_calendar.sys.stdin") as stdin,
             mock.patch("pony.cli_calendar.sys.stdout") as stdout,
-            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=True),
+            mock.patch(
+                "pony.calendar.oauth.has_local_graphical_browser", return_value=True
+            ),
             mock.patch("pony.cli_calendar._default_loopback_flow", flow),
         ):
             stdin.isatty.return_value = True
@@ -2259,8 +2265,8 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         self.assertTrue(any("OAuth authorization required" in w for w in write_calls))
 
     def test_delegates_to_remote_browser_flow_when_headless(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import StoredTokens
 
         spec = OAuthCredential(client_id="c", client_secret="s", scope="x")
         tokens = StoredTokens(
@@ -2270,7 +2276,9 @@ class CliAuthorizerTest(CalendarRootMixin, unittest.TestCase):
         with (
             mock.patch("pony.cli_calendar.sys.stdin") as stdin,
             mock.patch("pony.cli_calendar.sys.stdout") as stdout,
-            mock.patch("chronos.oauth.has_local_graphical_browser", return_value=False),
+            mock.patch(
+                "pony.calendar.oauth.has_local_graphical_browser", return_value=False
+            ),
             mock.patch("pony.cli_calendar._default_remote_browser_flow", flow),
         ):
             stdin.isatty.return_value = True
@@ -2317,7 +2325,7 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
 
         code = self._run(["config", "edit"], open_editor=editor)
         self.assertEqual(code, 0)
-        from chronos.config import load
+        from pony.calendar.config import load
 
         self.assertTrue(load(self.config_path).use_utf8)
 

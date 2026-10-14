@@ -4,8 +4,8 @@ import unittest
 from datetime import UTC, date, datetime, timedelta, timezone
 from unittest import mock
 
-from chronos.ical_parser import parse_vcalendar
-from chronos.mutations import all_day_bounds, build_event_ics, is_all_day_span
+from pony.calendar.ical_parser import parse_vcalendar
+from pony.calendar.mutations import all_day_bounds, build_event_ics, is_all_day_span
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
@@ -47,7 +47,7 @@ class AllDayTest(unittest.TestCase):
         """
         zone = timezone(timedelta(hours=2))
         start = datetime(2026, 9, 25, 0, 0, tzinfo=zone)
-        with mock.patch("chronos.ical_parser.local_tzinfo", return_value=zone):
+        with mock.patch("pony.calendar.ical_parser.local_tzinfo", return_value=zone):
             self.assertTrue(is_all_day_span(start, start + timedelta(days=1)))
             self.assertFalse(
                 is_all_day_span(start, start + timedelta(hours=2)),

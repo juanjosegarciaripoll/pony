@@ -4,8 +4,8 @@ Current MCP architecture.
 
 ## Modes
 
-- `chronos mcp` in self-contained stdio mode when no running app instance is detected.
-- `chronos mcp` in stdio-to-TCP bridge mode when a running TUI instance has published MCP server state.
+- `pony calendar mcp` in self-contained stdio mode when no running app instance is detected.
+- `pony calendar mcp` in stdio-to-TCP bridge mode when a running TUI instance has published MCP server state.
 - TCP server started by the TUI on `127.0.0.1` with a per-session auth token stored in the MCP state file.
 
 ## Current tools

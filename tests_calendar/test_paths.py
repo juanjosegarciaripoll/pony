@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chronos.paths import CalendarPaths, expand_path
+from pony.calendar.paths import CalendarPaths, expand_path
 
 
 class ExpandPathTest(unittest.TestCase):
     def test_tilde_expands_to_home(self) -> None:
-        expanded = expand_path("~/chronos/mirror")
+        expanded = expand_path("~/calendar/mirror")
         self.assertTrue(expanded.is_absolute())
-        self.assertIn("chronos", str(expanded))
+        self.assertIn("calendar", str(expanded))
         self.assertNotIn("~", str(expanded))
 
     def test_env_var_dollar_expansion(self) -> None:
@@ -102,7 +102,7 @@ class HandedOverRootTest(unittest.TestCase):
 
     def test_the_module_offers_no_process_wide_root(self) -> None:
         """What the audit asked for: no `activate`, no `active`."""
-        import chronos.paths as module
+        import pony.calendar.paths as module
 
         self.assertFalse(hasattr(module, "activate"))
         self.assertFalse(hasattr(module, "active"))

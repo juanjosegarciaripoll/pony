@@ -1,6 +1,6 @@
 import unittest
 
-from chronos import __version__
+from pony.calendar import __version__
 
 
 class SmokeTest(unittest.TestCase):

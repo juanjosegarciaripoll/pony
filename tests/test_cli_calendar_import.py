@@ -16,7 +16,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from chronos.domain import (
+from pony.calendar.domain import (
     AccountConfig,
     AppConfig,
     ComponentRef,
@@ -24,9 +24,9 @@ from chronos.domain import (
     PlaintextCredential,
     VEvent,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.paths import CalendarPaths
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.paths import CalendarPaths
+from pony.calendar.storage import VdirMirrorRepository
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -80,8 +80,8 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
         config: AppConfig | None = None,
         session_factory: object | None = None,
     ) -> object:
-        from chronos.credentials import DefaultCredentialsProvider
         from pony import cli_calendar as cli
+        from pony.calendar.credentials import DefaultCredentialsProvider
 
         return cli.CliContext(
             config=config or self._config(),

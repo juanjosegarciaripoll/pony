@@ -3,7 +3,7 @@
 Saving, rescheduling, trashing and importing used to be written out
 inside the calendar's ``MainScreen``, so reaching the recurrence-cache
 rebuild that makes a saved event visible meant starting a Textual app.
-They live in :mod:`chronos.event_actions` now, over the stores, and
+They live in :mod:`pony.calendar.event_actions` now, over the stores, and
 these tests go straight at them, against real SQLite and a real vdir.
 """
 
@@ -16,7 +16,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from chronos.domain import (
+from pony.calendar.domain import (
     AccountConfig,
     AppConfig,
     CalendarRef,
@@ -27,7 +27,7 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.event_actions import (
+from pony.calendar.event_actions import (
     Calendars,
     EditDraft,
     import_ics_file,
@@ -36,8 +36,8 @@ from chronos.event_actions import (
     save_event,
     trash_event,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.storage import VdirMirrorRepository
 
 _CALENDAR = CalendarRef(account_name="personal", calendar_name="work")
 _NOW = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
@@ -379,7 +379,7 @@ class NewEventDefaultsTest(unittest.TestCase):
         return (CalendarRef("personal", "work"), CalendarRef("personal", "home"))
 
     def test_the_span_is_the_default_start_plus_the_default_duration(self) -> None:
-        from chronos.event_actions import (
+        from pony.calendar.event_actions import (
             DEFAULT_EVENT_DURATION,
             default_event_start,
             new_event_defaults,
@@ -394,7 +394,7 @@ class NewEventDefaultsTest(unittest.TestCase):
         self.assertEqual(defaults.dtend - defaults.dtstart, DEFAULT_EVENT_DURATION)
 
     def test_the_calendar_in_view_is_the_one_it_goes_in(self) -> None:
-        from chronos.event_actions import new_event_defaults
+        from pony.calendar.event_actions import new_event_defaults
 
         refs = self._refs()
         defaults = new_event_defaults(
@@ -408,7 +408,7 @@ class NewEventDefaultsTest(unittest.TestCase):
         self.assertEqual(defaults.calendar, refs[1])
 
     def test_a_calendar_not_in_view_falls_back_to_the_first(self) -> None:
-        from chronos.event_actions import new_event_defaults
+        from pony.calendar.event_actions import new_event_defaults
 
         refs = self._refs()
         defaults = new_event_defaults(
@@ -422,7 +422,7 @@ class NewEventDefaultsTest(unittest.TestCase):
         self.assertEqual(defaults.calendar, refs[0])
 
     def test_no_calendars_means_no_defaults(self) -> None:
-        from chronos.event_actions import new_event_defaults
+        from pony.calendar.event_actions import new_event_defaults
 
         self.assertIsNone(
             new_event_defaults(

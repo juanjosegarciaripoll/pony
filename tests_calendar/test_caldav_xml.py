@@ -1,11 +1,11 @@
-"""Unit tests for chronos.caldav.xml — all parsers and body builders."""
+"""Unit tests for pony.calendar.caldav.xml — all parsers and body builders."""
 
 from __future__ import annotations
 
 import unittest
 from xml.etree import ElementTree as ET
 
-from chronos.caldav.xml import (
+from pony.calendar.caldav.xml import (
     _build_multiget_body,
     _build_sync_collection_body,
     _parse_calendar_home_set,
@@ -17,7 +17,7 @@ from chronos.caldav.xml import (
     _parse_sync_collection,
     _parse_sync_token_propfind,
 )
-from chronos.domain import ComponentKind
+from pony.calendar.domain import ComponentKind
 
 _BASE = "https://cal.example.com/dav/"
 

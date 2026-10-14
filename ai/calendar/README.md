@@ -3,7 +3,7 @@
 The calendar subsystem's own specifications, carried over when it became
 part of Pony Express. They describe behaviour that is still exactly as
 written — CalDAV reconciliation, recurrence expansion, the MCP tools —
-and are the reference for changes to `src/chronos`.
+and are the reference for changes to `src/pony/calendar`.
 
 | File | Purpose |
 |---|---|
@@ -21,7 +21,7 @@ Two things these files predate:
 - **Pony's rules govern**, so the calendar's old `AGENTS.md` and
   `CONVENTIONS.md` are not carried over either: `ai/AGENTS.md` and
   `ai/CONVENTIONS.md` at the root apply to both halves. Where these files
-  say `chronos ...` as a command, the command is now `pony calendar ...`.
+  name a command of the calendar's own, the command is `pony calendar ...`.
 
 The load-bearing invariant is unchanged and worth repeating here:
 `href IS NULL` on a component row means it should exist on the server but

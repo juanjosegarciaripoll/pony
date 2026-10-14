@@ -30,7 +30,7 @@ from pony.domain import FolderRef
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
-    from pony.calendar import CalendarRuntime
+    from pony.calendar_runtime import CalendarRuntime
     from pony.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")

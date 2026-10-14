@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from chronos.domain import AlarmAction, ComponentKind
-from chronos.ical_parser import (
+from pony.calendar.domain import AlarmAction, ComponentKind
+from pony.calendar.ical_parser import (
     IcalParseError,
     extract_alarm_triggers,
     extract_attendees,
@@ -237,7 +237,7 @@ class ExtractAttendeesTest(unittest.TestCase):
         display-name form is normalised; a value that is not an address
         is dropped rather than carried to a writer that cannot write it.
         """
-        from chronos.mutations import normalize_attendee_emails
+        from pony.calendar.mutations import normalize_attendee_emails
 
         raw = corpus.event_with_unwritable_attendee()
         attendees = extract_attendees(raw, "bad-attendee-1@example.com")

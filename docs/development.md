@@ -50,7 +50,7 @@ uv run basedpyright
 uv run python -m pytest
 ```
 
-`uv run mypy` checks both packages (`pony` and `chronos`) from the
+`uv run mypy` checks the whole package (`pony`, the calendar inside it) from the
 configuration in `pyproject.toml`; passing a path would check only part of
 the project. `pytest` with no arguments runs `tests/` and `tests_calendar/`
 and enforces the coverage floor — never pass `--no-cov`.
@@ -215,7 +215,7 @@ only after every build succeeds.
 ```
 pony/
   src/pony/           # mail: the main package
-  src/chronos/        # calendar: CalDAV, recurrence, agenda screens
+  src/pony/calendar/        # calendar: CalDAV, recurrence, agenda screens
   tests/              # mail test suite, plus the two halves together
   tests_calendar/     # the calendar's own test suite
   docs/               # documentation (MkDocs source)

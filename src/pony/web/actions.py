@@ -3,7 +3,7 @@
 ``POST /action/<name>`` is the browser's one way of changing something,
 and every action behind it has the same shape as the terminal's: it is
 handed what the page says is selected, it calls one model operation, and
-it returns an :class:`~chronos.outcome.Outcome` — a count and the
+it returns an :class:`~pony.calendar.outcome.Outcome` — a count and the
 notices to show.  The page decides how to show them, exactly as
 ``MainScreen._report`` does.
 
@@ -26,8 +26,8 @@ from ..domain import FolderRef, MessageRef
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from chronos.domain import CalendarRef
-    from chronos.outcome import Outcome
+    from pony.calendar.domain import CalendarRef
+    from pony.calendar.outcome import Outcome
 
     from ..domain import IndexedMessage
     from .app import WebServices
@@ -136,7 +136,7 @@ def holds_form(outcome: Outcome) -> bool:
     """Whether a form must stay up with what the user typed still in it.
 
     One rule for all three forms, because they had three.  Compose and
-    the event form tested :attr:`~chronos.outcome.Outcome.blocked`,
+    the event form tested :attr:`~pony.calendar.outcome.Outcome.blocked`,
     which is ``failed or not acted`` -- so a save that legitimately
     changed nothing read as a failure and the form stayed up with
     nothing to explain it.  The contact form tested whether a record
@@ -163,7 +163,7 @@ def held_for_confirmation(
     ``confirm`` added.  One helper so that every irreversible operation
     asks the same way and none of them forgets to ask at all.
     """
-    from chronos.outcome import Outcome
+    from pony.calendar.outcome import Outcome
 
     if context.first("confirm"):
         return None
@@ -211,7 +211,7 @@ def parse_calendar(value: str) -> CalendarRef | None:
     separates, because a calendar name may contain one and an account
     name may not.
     """
-    from chronos.domain import CalendarRef
+    from pony.calendar.domain import CalendarRef
 
     account, _, name = value.partition("/")
     if not account or not name:

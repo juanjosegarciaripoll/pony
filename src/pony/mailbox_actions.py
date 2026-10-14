@@ -10,7 +10,7 @@ move with its own copy of the policy checks; a cross-account move was a
 copy with its own copy of the byte handling.
 
 They live here instead, over the stores rather than over widgets, and
-they report through :class:`chronos.outcome.Outcome` instead of calling
+they report through :class:`pony.calendar.outcome.Outcome` instead of calling
 into a UI.  That makes each one testable without a running app, lets a
 second front end offer the same actions without reimplementing them, and
 leaves exactly one place where the policy that guards a destructive move
@@ -27,7 +27,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, NoticeLog, Outcome, failure, warn
+from pony.calendar.outcome import Notice, NoticeLog, Outcome, failure, warn
 
 from .accounts import find_imap_account
 from .domain import (

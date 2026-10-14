@@ -1,7 +1,7 @@
 // Keyboard dispatch for the browser front end.
 //
 // The keymap is not written here. Every page carries its own surface's
-// table, served from `pony.keymap` and `chronos.keymap` — the same
+// table, served from `pony.keymap` and `pony.calendar.keymap` — the same
 // tables the Textual front end builds its bindings from — so a key
 // cannot mean one thing in the terminal and another here, and the help
 // overlay cannot advertise a key that does not exist. It arrives in the

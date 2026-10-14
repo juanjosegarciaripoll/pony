@@ -1,7 +1,7 @@
-"""Unit tests for chronos.caldav.protocol.
+"""Unit tests for pony.calendar.caldav.protocol.
 
 Each function is exercised with a stub Client (MagicMock) that returns recorded
-response bodies. Tests verify the returned chronos-typed values and correct
+response bodies. Tests verify the returned typed values and correct
 exception translation for 401/403/404/409/412/500.
 """
 
@@ -10,14 +10,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from chronos.caldav.errors import (
+from pony.calendar.caldav.errors import (
     CalDAVAuthError,
     CalDAVConflictError,
     CalDAVError,
     CalDAVNotFoundError,
     SyncTokenExpiredError,
 )
-from chronos.caldav.protocol import (
+from pony.calendar.caldav.protocol import (
     calendar_multiget,
     calendar_query,
     delete_resource,
@@ -30,8 +30,8 @@ from chronos.caldav.protocol import (
     put_resource,
     sync_collection,
 )
-from chronos.domain import ComponentKind
-from chronos.http import HttpResponse, HttpStatusError
+from pony.calendar.domain import ComponentKind
+from pony.calendar.http import HttpResponse, HttpStatusError
 
 # ---------------------------------------------------------------------------
 # Stub helpers

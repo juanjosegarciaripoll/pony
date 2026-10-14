@@ -2,7 +2,7 @@
 
 ``CONFIG_VERSION`` went from 2 to 3 and two hand-written copies stayed
 behind: the block ``pony account add`` prints when it has no terminal,
-and the example in :mod:`pony.calendar`'s own docstring.  The file Pony
+and the example in :mod:`pony.calendar_runtime`'s own docstring.  The file Pony
 *writes* was right because it interpolates the constant; the advice it
 *printed* told a user to hand-write a config the loader then refused.
 
@@ -53,10 +53,10 @@ def test_the_account_template_quotes_the_version_the_loader_wants(
 
 
 def test_the_calendar_sections_documented_example_does_too() -> None:
-    import pony.calendar
+    import pony.calendar_runtime
 
-    assert pony.calendar.__doc__ is not None
-    assert _stated_versions(pony.calendar.__doc__) == {CONFIG_VERSION}
+    assert pony.calendar_runtime.__doc__ is not None
+    assert _stated_versions(pony.calendar_runtime.__doc__) == {CONFIG_VERSION}
 
 
 def test_the_sample_config_agrees_with_the_constant() -> None:

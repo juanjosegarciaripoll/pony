@@ -21,14 +21,14 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
-from chronos.domain import CalendarRef
-from chronos.outcome import Notice
 from pony import invitation_actions
+from pony.calendar.domain import CalendarRef
+from pony.calendar.outcome import Notice
 from pony.invitation import parse_invitation
 from pony.invitation_actions import InvitationChoice
 
 if TYPE_CHECKING:
-    from pony.calendar import CalendarRuntime
+    from pony.calendar_runtime import CalendarRuntime
     from pony.invitation import Invitation
 
 _ACCOUNT = "personal"

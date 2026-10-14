@@ -7,8 +7,8 @@ import unittest.mock
 import urllib.parse
 from pathlib import Path
 
-from chronos.domain import ResourceRef
-from chronos.storage import (
+from pony.calendar.domain import ResourceRef
+from pony.calendar.storage import (
     MirrorError,
     ResourceNotFoundError,
     VdirMirrorRepository,
@@ -188,7 +188,7 @@ class MirrorCrashSafetyTest(unittest.TestCase):
             raise KeyboardInterrupt
 
         with (
-            unittest.mock.patch("chronos.storage.os.replace", side_effect=boom),
+            unittest.mock.patch("pony.calendar.storage.os.replace", side_effect=boom),
             self.assertRaises(KeyboardInterrupt),
         ):
             self.mirror.write(ref, b"new bytes that would have replaced original")
@@ -208,7 +208,7 @@ class MirrorCrashSafetyTest(unittest.TestCase):
             raise KeyboardInterrupt
 
         with (
-            unittest.mock.patch("chronos.storage.os.replace", side_effect=boom),
+            unittest.mock.patch("pony.calendar.storage.os.replace", side_effect=boom),
             self.assertRaises(KeyboardInterrupt),
         ):
             self.mirror.write(ref, b"some content")
@@ -227,7 +227,7 @@ class MirrorCrashSafetyTest(unittest.TestCase):
 
         with (
             unittest.mock.patch(
-                "chronos.storage.os.fsync", side_effect=OSError("disk full")
+                "pony.calendar.storage.os.fsync", side_effect=OSError("disk full")
             ),
             self.assertRaises(OSError),
         ):
@@ -239,7 +239,7 @@ class MirrorCrashSafetyTest(unittest.TestCase):
         self.assertEqual(self._leftovers(), [])
 
     def test_list_resources_ignores_stale_tmp_files(self) -> None:
-        # Even if a previous chronos run died so abruptly that the
+        # Even if a previous run died so abruptly that the
         # exception cleanup didn't get a chance to run (kill -9, OOM),
         # `list_resources` must not surface the orphaned `.tmp-*`
         # file as a real resource. The next sync's `_apply_server_deletions`
@@ -334,7 +334,7 @@ class UntrustedNameTest(unittest.TestCase):
 
 
 class AtomicWriteTest(unittest.TestCase):
-    """One dance, in `chronos.atomic`, for every file either half replaces.
+    """One dance, in `pony.calendar.atomic`, for every file either half replaces.
 
     It was written out five times inside this package and not at all in
     the mail half, which used `write_text` for its profile stamp and its
@@ -350,13 +350,13 @@ class AtomicWriteTest(unittest.TestCase):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def test_a_failure_leaves_the_old_file_and_no_leftover(self) -> None:
-        from chronos.atomic import write_atomically
+        from pony.calendar.atomic import write_atomically
 
         target = self.tmp / "thing.toml"
         write_atomically(target, b"first", suffix=".toml")
         with (
             unittest.mock.patch(
-                "chronos.atomic.os.replace", side_effect=KeyboardInterrupt
+                "pony.calendar.atomic.os.replace", side_effect=KeyboardInterrupt
             ),
             self.assertRaises(KeyboardInterrupt),
         ):
@@ -367,7 +367,7 @@ class AtomicWriteTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "file modes mean nothing on Windows")
     def test_an_owner_only_file_is_owner_only_before_the_rename(self) -> None:
-        from chronos.atomic import write_atomically
+        from pony.calendar.atomic import write_atomically
 
         target = self.tmp / "tokens.json"
         seen: list[int] = []
@@ -377,7 +377,7 @@ class AtomicWriteTest(unittest.TestCase):
             seen.append(Path(str(source)).stat().st_mode & 0o777)
             real_replace(str(source), str(destination))
 
-        with unittest.mock.patch("chronos.atomic.os.replace", _record):
+        with unittest.mock.patch("pony.calendar.atomic.os.replace", _record):
             write_atomically(target, b"{}", suffix=".json", owner_only=True)
 
         self.assertEqual(seen, [0o600])
@@ -397,20 +397,20 @@ class UidFilenameTest(unittest.TestCase):
     """
 
     def test_a_reserved_stem_is_escaped_and_round_trips(self) -> None:
-        from chronos.storage import _filename_to_uid, _uid_to_filename
+        from pony.calendar.storage import _filename_to_uid, _uid_to_filename
 
         name = _uid_to_filename("NUL")
         self.assertNotEqual(name, "NUL.ics")
         self.assertEqual(_filename_to_uid(name), "NUL")
 
     def test_an_empty_uid_is_refused_rather_than_written(self) -> None:
-        from chronos.storage import _uid_to_filename
+        from pony.calendar.storage import _uid_to_filename
 
         with self.assertRaises(MirrorError):
             _uid_to_filename("")
 
     def test_a_truncated_prefix_is_cut_between_characters(self) -> None:
-        from chronos.storage import _MAX_ENCODED_UID_LEN, _uid_to_filename
+        from pony.calendar.storage import _MAX_ENCODED_UID_LEN, _uid_to_filename
 
         # Long enough that the prefix is cut, with multi-byte characters
         # straddling the cut at every alignment.
@@ -425,7 +425,7 @@ class UidFilenameTest(unittest.TestCase):
                 self.assertTrue(uid.startswith(decoded))
 
     def test_an_ordinary_uid_round_trips(self) -> None:
-        from chronos.storage import _filename_to_uid, _uid_to_filename
+        from pony.calendar.storage import _filename_to_uid, _uid_to_filename
 
         for uid in ("plain@example.com", "with space@example.com", "a/b@example.com"):
             with self.subTest(uid=uid):

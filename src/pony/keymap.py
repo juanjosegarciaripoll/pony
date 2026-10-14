@@ -12,9 +12,9 @@ program a key is live on — and each front end converts it:
 serves it as JSON.  Both help screens render from it, so neither can
 advertise a key the other does not have.
 
-The vocabulary — :class:`chronos.keymap.KeyBinding`, :func:`for_surface`
+The vocabulary — :class:`pony.calendar.keymap.KeyBinding`, :func:`for_surface`
 and :func:`web_key` — is shared with the calendar, which keeps its own
-table in :mod:`chronos.keymap`.  The two deliberately echo each other,
+table in :mod:`pony.calendar.keymap`.  The two deliberately echo each other,
 so ``c`` creates and ``g`` syncs on both sides.
 
 The action names are the ones the front ends already dispatch on
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from chronos.keymap import KeyBinding, for_surface, web_key
+from pony.calendar.keymap import KeyBinding, for_surface, web_key
 
 
 class Surface(StrEnum):

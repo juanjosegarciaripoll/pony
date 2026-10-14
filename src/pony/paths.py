@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from urllib.parse import quote
 
-from chronos.atomic import write_atomically
-from chronos.paths import expand_path
+from pony.calendar.atomic import write_atomically
+from pony.calendar.paths import expand_path
 
 APP_NAME = "pony"
 ROOT_ENV = "PONY_ROOT"

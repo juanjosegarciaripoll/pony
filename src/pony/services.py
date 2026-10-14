@@ -44,7 +44,7 @@ def _calendar_status(status: object) -> CheckStatus:
     calendar says ``FAIL``, which is why the two renderers cannot share
     a tag table.
     """
-    from chronos.services import DiagnosticStatus
+    from pony.calendar.services import DiagnosticStatus
 
     if status is DiagnosticStatus.FAIL:
         return CheckStatus.ERROR
@@ -63,13 +63,15 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
     An unconfigured calendar is not a problem to report: plenty of
     people only want the mail client.
     """
-    from chronos import config as calendar_config
-    from chronos import services as calendar_services
-    from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
-    from chronos.paths import CalendarPaths
-    from chronos.storage import VdirMirrorRepository
+    from pony.calendar import config as calendar_config
+    from pony.calendar import services as calendar_services
+    from pony.calendar.index_store import (
+        SqliteIndexRepository as CalendarIndexRepository,
+    )
+    from pony.calendar.paths import CalendarPaths
+    from pony.calendar.storage import VdirMirrorRepository
 
-    from .calendar import load_calendar_config
+    from .calendar_runtime import load_calendar_config
 
     calendar_paths = CalendarPaths(root=root)
 

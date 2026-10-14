@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import Empty, Full, Queue
 
-from chronos.outcome import ProgressGate, progress_stride
-from chronos.scheduler import PeriodicSync, SyncOutcome
+from pony.calendar.outcome import ProgressGate, progress_stride
+from pony.calendar.scheduler import PeriodicSync, SyncOutcome
 
 from .accounts import find_imap_account, select_imap_accounts
 from .domain import (
@@ -3106,7 +3106,7 @@ class ImapSyncService:
 type MailSyncScheduler = PeriodicSync[SyncResult]
 """The mail reader's periodic sync, spelled once for everyone holding one.
 
-The scheduler class itself is subsystem-agnostic — it lives in `chronos`
+The scheduler class itself is subsystem-agnostic — it is shared
 only because that is the half of the program the other may import — so
 what makes this one the mail reader's is just what its runner returns.
 """

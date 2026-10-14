@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, Outcome, failure, info, warn
+from pony.calendar.outcome import Notice, Outcome, failure, info, warn
 
 from .domain import FolderRef, IndexedMessage, MessageFlag, MessageRef
 from .folder_utils import holds_drafts, resolve_folder

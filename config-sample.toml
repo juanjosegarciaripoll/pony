@@ -187,7 +187,7 @@ smtp_connect_timeout_seconds = 10
 # database, it travels with the config file to every machine.
 #
 # [viewers]
-# "text/calendar" = ["chronos", "import"]
+# "text/calendar" = ["khal", "import"]
 # "application/pdf" = ["zathura"]
 # "image/png" = ["feh", "--scale-down"]
 

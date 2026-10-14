@@ -9,7 +9,7 @@ vocabulary instead of each inventing one.
 
 The operations live here rather than in a screen for the reason the rest
 of the action modules do: they are I/O over a message, they report
-through :class:`chronos.outcome.Outcome`, and both front ends need them.
+through :class:`pony.calendar.outcome.Outcome`, and both front ends need them.
 What they report is deliberately specific -- the names actually written
 and where -- because "Saved 3 file(s)" leaves a user to go and look.
 """
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from chronos.outcome import Notice, Outcome, failure, info, warn
+from pony.calendar.outcome import Notice, Outcome, failure, info, warn
 
 from .domain import ViewerRule
 from .message_renderer import (

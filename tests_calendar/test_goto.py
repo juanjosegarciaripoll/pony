@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from chronos.tui.goto import GotoError, parse_goto
+from pony.tui.calendar.goto import GotoError, parse_goto
 
 # A Wednesday, viewed in the middle of a month.
 VIEWED = date(2026, 9, 23)

@@ -21,8 +21,8 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
-from chronos.domain import CalendarRef
-from chronos.outcome import Notice
+from pony.calendar.domain import CalendarRef
+from pony.calendar.outcome import Notice
 from pony.domain import Contact
 from pony.invitation_actions import _with_method, send_event_invitations
 from pony.tui.calendar_host import contact_completer
@@ -206,7 +206,7 @@ class ContactCompleterTest(unittest.TestCase):
 
 def _suggester() -> object:
     """The editor's inline completer, over a fixed address book."""
-    from chronos.tui.screens.event_edit_screen import _AttendeeSuggester
+    from pony.tui.calendar.screens.event_edit_screen import _AttendeeSuggester
 
     def _completer(prefix: str, *, limit: int = 10) -> tuple[str, ...]:
         known = ("Ana Lopez <ana@example.com>", "Bob <bob@example.com>")
@@ -311,7 +311,7 @@ async def test_an_event_with_no_attendees_sends_nothing() -> None:
 
 def test_the_calendar_screen_passes_the_completer_to_its_editor() -> None:
     """The editor is given whatever completer the services carry."""
-    from chronos.tui.screens.event_edit_screen import EventEditScreen
+    from pony.tui.calendar.screens.event_edit_screen import EventEditScreen
 
     def _completer(prefix: str, *, limit: int = 10) -> tuple[str, ...]:  # noqa: ARG001
         return ()
@@ -327,7 +327,7 @@ def test_the_calendar_screen_passes_the_completer_to_its_editor() -> None:
 
 
 def test_an_editor_without_a_completer_is_still_valid() -> None:
-    from chronos.tui.screens.event_edit_screen import EventEditScreen
+    from pony.tui.calendar.screens.event_edit_screen import EventEditScreen
 
     screen = EventEditScreen(
         calendars=(CalendarRef("personal", "work"),),

@@ -17,7 +17,7 @@ uv run python -m pytest
 `uv run mypy` with no path checks both packages from the `pyproject.toml`
 configuration; a path would check only part of the project.
 
-`pytest` runs with `--cov=pony --cov=chronos --cov-branch --cov-fail-under=85`
+`pytest` runs with `--cov=pony --cov-branch --cov-fail-under=85`
 over both suites (`tests/` and `tests_calendar/`); new code must keep combined
 statement+branch coverage at or above **85 %**. The gate is live — run
 `uv run python -m pytest` and never pass `--no-cov`. New code ships with

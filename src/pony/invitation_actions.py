@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, NoticeLog, Outcome, failure, info, warn
+from pony.calendar.outcome import Notice, NoticeLog, Outcome, failure, info, warn
 
 from .delivery import resolve_send_password
 from .invitation import (
@@ -32,9 +32,9 @@ from .invitation import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from chronos.domain import CalendarRef
+    from pony.calendar.domain import CalendarRef
 
-    from .calendar import CalendarRuntime
+    from .calendar_runtime import CalendarRuntime
     from .domain import AnyAccount, AppConfig
     from .invitation import Invitation
     from .protocols import CredentialsProvider
@@ -73,7 +73,7 @@ def file_invitation(
     A re-sent invitation for an event already filed is a correction, not
     a duplicate to skip, so an existing component is replaced.
     """
-    from chronos.ingest import IngestError, ingest_ics_bytes
+    from pony.calendar.ingest import IngestError, ingest_ics_bytes
 
     try:
         report = ingest_ics_bytes(

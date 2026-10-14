@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from .calendar import CalendarRuntime
+    from .calendar_runtime import CalendarRuntime
     from .message_renderer import AttachmentInfo
 
-from chronos.atomic import write_atomically
-from chronos.outcome import Outcome
-from chronos.paths import expand_path
+from pony.calendar.atomic import write_atomically
+from pony.calendar.outcome import Outcome
+from pony.calendar.paths import expand_path
 
 from . import cli_calendar
 from .accounts import (
@@ -1655,7 +1655,7 @@ def _rescan_progress(folder_name: str, done: int, total: int) -> None:
     """Overwrite-in-place progress ticker.
 
     How often this is called is the engine's business (see
-    ``chronos.outcome.ProgressGate``); it used to throttle itself here,
+    ``pony.calendar.outcome.ProgressGate``); it used to throttle itself here,
     which fixed the flooding for this front end only.
     """
     end = "\n" if done == total else ""
@@ -3060,7 +3060,7 @@ def _web_mail_scheduler(
     """
     if not config.background_sync_enabled:
         return None
-    from chronos.scheduler import PeriodicSync
+    from pony.calendar.scheduler import PeriodicSync
 
     service = build_sync_service(
         config=config,
@@ -3092,7 +3092,7 @@ def _open_calendar_or_warn(
     """
     import logging
 
-    from .calendar import calendar_paths, open_calendar_runtime
+    from .calendar_runtime import calendar_paths, open_calendar_runtime
 
     try:
         return open_calendar_runtime(calendar_paths(paths), config_path)
@@ -3114,7 +3114,7 @@ def run_calendar(
     from datetime import UTC, datetime
 
     from . import cli_calendar
-    from .calendar import (
+    from .calendar_runtime import (
         CalendarNotConfiguredError,
         calendar_paths,
         hosted_calendar_document,

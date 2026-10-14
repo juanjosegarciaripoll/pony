@@ -23,7 +23,7 @@ from typing import Any
 
 from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
 
-from chronos.atomic import write_atomically
+from pony.calendar.atomic import write_atomically
 
 from .accounts import build_mirrors
 from .config import load_config
@@ -53,7 +53,7 @@ def write_mcp_state(state_file: Path, state: McpState) -> None:
     whole mail index, and it was written with `write_text`: created at
     the ambient umask, so world-readable on most systems, and visible
     half-written to a reader that got there between the open and the
-    flush.  `chronos.atomic.write_atomically` is the dance both halves
+    flush.  `pony.calendar.atomic.write_atomically` is the dance both halves
     use for a file that must not be found half written, and
     ``owner_only`` means the content is never readable by anyone else,
     not even for the instant before a `chmod`.

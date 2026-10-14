@@ -705,7 +705,7 @@ class ViewersConfigTestCase(unittest.TestCase):
     def test_rejects_command_that_is_not_a_list(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
             parse_config(
-                self._config_with_viewers({"text/calendar": "chronos import"}),
+                self._config_with_viewers({"text/calendar": "pony calendar import"}),
                 base_dir=TMP_ROOT,
             )
         self.assertIn("must be a list of strings", str(ctx.exception))

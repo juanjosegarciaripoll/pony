@@ -135,10 +135,10 @@ def test_every_compose_key_wins_over_the_focused_field() -> None:
 
 
 def test_the_calendar_keeps_its_own_table_in_the_same_vocabulary() -> None:
-    from chronos.keymap import CALENDAR_KEYMAP, CalendarSurface
-    from chronos.keymap import for_surface as for_calendar_surface
-    from chronos.tui.bindings import main_bindings
-    from chronos.tui.bindings import to_textual as calendar_to_textual
+    from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface
+    from pony.calendar.keymap import for_surface as for_calendar_surface
+    from pony.tui.calendar.bindings import main_bindings
+    from pony.tui.calendar.bindings import to_textual as calendar_to_textual
 
     assert all(isinstance(binding, KeyBinding) for binding in CALENDAR_KEYMAP)
     assert main_bindings() == calendar_to_textual(
@@ -148,7 +148,7 @@ def test_the_calendar_keeps_its_own_table_in_the_same_vocabulary() -> None:
 
 def test_both_halves_spell_the_keys_they_share_the_same_way() -> None:
     """`c` creates, `g` syncs and `Q` quits on both sides."""
-    from chronos.keymap import KEY_NEW, KEY_QUIT, KEY_SYNC, KEY_SYNC_DIALOG
+    from pony.calendar.keymap import KEY_NEW, KEY_QUIT, KEY_SYNC, KEY_SYNC_DIALOG
 
     mail = {binding.action: binding.key for binding in MAIL_KEYMAP}
     assert mail["compose_new"] == KEY_NEW
@@ -158,7 +158,7 @@ def test_both_halves_spell_the_keys_they_share_the_same_way() -> None:
 
 
 def test_every_calendar_binding_has_a_web_spelling_too() -> None:
-    from chronos.keymap import CALENDAR_KEYMAP
+    from pony.calendar.keymap import CALENDAR_KEYMAP
 
     for binding in CALENDAR_KEYMAP:
         spelled = web_key(binding.key)
@@ -267,6 +267,26 @@ def test_the_message_list_binds_the_list_surface() -> None:
     )
 
 
+def _mail_tui_modules() -> list[str]:
+    """Every module of the terminal's mail half.
+
+    `pony.tui.calendar` is the other half's screens and is held to the
+    calendar's own table (`CALENDAR_KEYMAP`), not the reader's -- the
+    agenda means something else by `d` than the message list does.
+    `pony.tui.calendar_host` is the mail side's glue and stays in.
+    """
+    import pkgutil
+
+    import pony.tui
+
+    return [
+        info.name
+        for info in pkgutil.walk_packages(pony.tui.__path__, "pony.tui.")
+        if info.name != "pony.tui.calendar"
+        and not info.name.startswith("pony.tui.calendar.")
+    ]
+
+
 def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
     """One key, one action, wherever it is bound.
 
@@ -276,12 +296,9 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
     mean a different thing there without the table saying so.
     """
     import importlib
-    import pkgutil
 
     from textual.binding import Binding as TextualBinding
     from textual.widgets import Input, TextArea
-
-    import pony.tui
 
     table = {
         binding.key: binding.action
@@ -298,14 +315,14 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
     }
 
     offenders: list[str] = []
-    for info in pkgutil.walk_packages(pony.tui.__path__, "pony.tui."):
-        module = importlib.import_module(info.name)
+    for name_of_module in _mail_tui_modules():
+        module = importlib.import_module(name_of_module)
         for name in dir(module):
             obj = getattr(module, name)
             bindings = getattr(obj, "BINDINGS", None)
             if not isinstance(bindings, list):
                 continue
-            if getattr(obj, "__module__", "") != info.name:
+            if getattr(obj, "__module__", "") != name_of_module:
                 continue
             # A text field owns its own editing chords -- ctrl+left is
             # "previous word" in anything you can type into, and a field
@@ -322,7 +339,7 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
                 expected = table.get(binding.key)
                 if expected is not None and expected != binding.action:
                     offenders.append(
-                        f"{info.name}.{name} binds {binding.key!r} to "
+                        f"{name_of_module}.{name} binds {binding.key!r} to "
                         f"{binding.action!r}, the table says {expected!r}",
                     )
     assert offenders == []
@@ -370,22 +387,19 @@ def test_every_key_bound_in_a_screen_is_in_the_table_or_named_here() -> None:
     here rather than joining them quietly.
     """
     import importlib
-    import pkgutil
 
     from textual.binding import Binding as TextualBinding
 
-    import pony.tui
-
     known = {(binding.key, binding.action) for binding in MAIL_KEYMAP}
     local: dict[str, set[str]] = {}
-    for info in pkgutil.walk_packages(pony.tui.__path__, "pony.tui."):
-        module = importlib.import_module(info.name)
+    for name_of_module in _mail_tui_modules():
+        module = importlib.import_module(name_of_module)
         for name in dir(module):
             obj = getattr(module, name)
             bindings = getattr(obj, "BINDINGS", None)
             if not isinstance(bindings, list):
                 continue
-            if getattr(obj, "__module__", "") != info.name:
+            if getattr(obj, "__module__", "") != name_of_module:
                 continue
             for binding in bindings:
                 if not isinstance(binding, TextualBinding):
@@ -477,8 +491,8 @@ def test_the_standalone_apps_answer_the_application_keys() -> None:
 
 def test_the_calendar_agenda_opens_what_the_table_says_enter_opens() -> None:
     """`enter` is `open_event`, and the agenda has to answer it."""
-    from chronos.keymap import KEY_OPEN
-    from chronos.tui.screens.main_screen import MainScreen as CalendarScreen
+    from pony.calendar.keymap import KEY_OPEN
+    from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
 
     assert KEY_OPEN == "enter"
     # `EventList` is a `DataTable`, whose own `enter` posts `RowSelected`;

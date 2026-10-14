@@ -27,20 +27,20 @@ from textual.widgets import DirectoryTree, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
-from chronos.credentials import (
+from pony.accounts import build_mirrors
+from pony.calendar.credentials import (
     DefaultCredentialsProvider as CalendarCredentialsProvider,
 )
-from chronos.domain import AccountConfig as CalendarAccountConfig
-from chronos.domain import AppConfig as CalendarAppConfig
-from chronos.domain import CalendarRef, ResourceRef
-from chronos.domain import PlaintextCredential as CalendarPlaintextCredential
-from chronos.index_store import SqliteIndexRepository as CalendarIndex
-from chronos.paths import CalendarPaths
-from chronos.recurrence import rebuild_caches
-from chronos.storage import VdirMirrorRepository
-from chronos.storage_indexing import index_calendar
-from pony.accounts import build_mirrors
-from pony.calendar import CalendarRuntime
+from pony.calendar.domain import AccountConfig as CalendarAccountConfig
+from pony.calendar.domain import AppConfig as CalendarAppConfig
+from pony.calendar.domain import CalendarRef, ResourceRef
+from pony.calendar.domain import PlaintextCredential as CalendarPlaintextCredential
+from pony.calendar.index_store import SqliteIndexRepository as CalendarIndex
+from pony.calendar.paths import CalendarPaths
+from pony.calendar.recurrence import rebuild_caches
+from pony.calendar.storage import VdirMirrorRepository
+from pony.calendar.storage_indexing import index_calendar
+from pony.calendar_runtime import CalendarRuntime
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     AccountConfig,

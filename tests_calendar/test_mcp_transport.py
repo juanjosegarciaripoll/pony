@@ -17,9 +17,14 @@ from pathlib import Path
 
 from tinymcp import serve_tcp
 
-from chronos.index_store import SqliteIndexRepository
-from chronos.mcp_server import McpServerState, read_state, remove_state, write_state
-from chronos.storage import VdirMirrorRepository
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.mcp_server import (
+    McpServerState,
+    read_state,
+    remove_state,
+    write_state,
+)
+from pony.calendar.storage import VdirMirrorRepository
 
 # ---------------------------------------------------------------------------
 # State file tests
@@ -72,7 +77,7 @@ class TcpTestCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.index.close)
 
     def _server_and_token(self) -> tuple[object, str]:
-        from chronos.mcp_server import build_mcp_server
+        from pony.calendar.mcp_server import build_mcp_server
 
         return (
             build_mcp_server(index=self.index, mirror=self.mirror),
@@ -104,7 +109,7 @@ class StartTcpServerTest(TcpTestCase):
         self.fail("state file not written within 2 s")
 
     async def test_server_writes_state_file_and_accepts_connections(self) -> None:
-        from chronos.mcp_server import start_tcp_server
+        from pony.calendar.mcp_server import start_tcp_server
 
         task = asyncio.create_task(
             start_tcp_server(
@@ -146,7 +151,7 @@ class StartTcpServerTest(TcpTestCase):
         """No state file → run_mcp_stdio uses standalone mode directly."""
         from unittest.mock import AsyncMock, patch
 
-        from chronos.mcp_server import run_mcp_stdio
+        from pony.calendar.mcp_server import run_mcp_stdio
 
         standalone = AsyncMock()
         with patch("tinymcp.transport.run_stdio_standalone", standalone):
@@ -159,7 +164,7 @@ class StartTcpServerTest(TcpTestCase):
         """run_mcp_stdio detects the state file and delegates to the bridge."""
         from unittest.mock import patch
 
-        from chronos.mcp_server import run_mcp_stdio, start_tcp_server
+        from pony.calendar.mcp_server import run_mcp_stdio, start_tcp_server
 
         task = asyncio.create_task(
             start_tcp_server(

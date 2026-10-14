@@ -3,13 +3,13 @@
 One command line serves both halves of the program, so these commands
 live here, beside the mail ones, and `pony.cli` hangs them under
 `calendar` in the same parser: `pony --help` lists both, and
-`pony calendar --help` lists these.  They lived in `chronos/cli.py`, a
-command line inside the calendar's model, which is what let the
-terminal UI and the browser import one.
+`pony calendar --help` lists these.  Nothing of this belongs to the
+calendar's model: a command line inside it is what let the terminal UI
+and the browser import one.
 
 Every command works through the model and reports what it did: the
-stores and the layout arrive as a `chronos.services.CalendarServices`,
-the configuration as a `chronos.config.ConfigDocument` -- whose
+stores and the layout arrive as a `pony.calendar.services.CalendarServices`,
+the configuration as a `pony.calendar.config.ConfigDocument` -- whose
 `[calendar]` table lives in Pony's own file -- and nothing here
 reaches into a screen.  There is no calendar application to launch:
 the agenda is a screen of the one app, on ++f2++.
@@ -33,17 +33,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TextIO
 
-from chronos.bootstrap import (
+from pony.calendar.bootstrap import (
     IsInteractiveFn,
     PromptFn,
     default_is_interactive,
     default_prompt,
     write_template,
 )
-from chronos.caldav import CalDAVError
-from chronos.config import ConfigDocument, ConfigError
-from chronos.credentials import CredentialResolutionError
-from chronos.domain import (
+from pony.calendar.caldav import CalDAVError
+from pony.calendar.config import ConfigDocument, ConfigError
+from pony.calendar.credentials import CredentialResolutionError
+from pony.calendar.domain import (
     CALENDAR_CONFIG_VERSION,
     GOOGLE_CALDAV_URL,
     AccountConfig,
@@ -61,11 +61,11 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.event_actions import Calendars, EditDraft, save_event, trash_event
-from chronos.ical_parser import extract_alarm_triggers, extract_attendees
-from chronos.locking import SyncLockError, acquire_sync_lock
-from chronos.mutations import is_all_day_span
-from chronos.oauth import (
+from pony.calendar.event_actions import Calendars, EditDraft, save_event, trash_event
+from pony.calendar.ical_parser import extract_alarm_triggers, extract_attendees
+from pony.calendar.locking import SyncLockError, acquire_sync_lock
+from pony.calendar.mutations import is_all_day_span
+from pony.calendar.oauth import (
     OAuthError,
     StoredTokens,
     run_loopback_flow,
@@ -73,13 +73,13 @@ from chronos.oauth import (
     save_tokens,
     use_remote_browser_flow,
 )
-from chronos.paths import CalendarPaths
-from chronos.protocols import (
+from pony.calendar.paths import CalendarPaths
+from pony.calendar.protocols import (
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from chronos.services import (
+from pony.calendar.services import (
     CalendarServices,
     ProgressFn,
     SessionFactory,
@@ -87,9 +87,9 @@ from chronos.services import (
     format_report,
     run_doctor,
 )
-from chronos.sync import describe_account_sync, sync_account
+from pony.calendar.sync import describe_account_sync, sync_account
 
-from .calendar import CalendarNotConfiguredError
+from .calendar_runtime import CalendarNotConfiguredError
 
 ContextFactory = Callable[[], "CliContext"]
 EditorFn = Callable[[Path], None]
@@ -161,7 +161,7 @@ def run(
     on is the host's answer and not something to read back out of the
     command's own flags.  The host owns that, because the host is what knows where
     they are: this module used to open a second mirror and index of its
-    own, beside the ones `pony.calendar.open_calendar_runtime` opens.
+    own, beside the ones `pony.calendar_runtime.open_calendar_runtime` opens.
     """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
@@ -391,11 +391,11 @@ def default_cli_authorizer(
 ) -> StoredTokens:
     """Run an OAuth flow inline when sync hits an unauthorized account.
 
-    Wired into `_default_context_factory` so plain `chronos sync` "just
+    Wired into `_default_context_factory` so plain `pony calendar sync` "just
     works" the first time. Local desktop sessions open a browser and
     capture the loopback redirect. Headless terminals use the
     remote-browser flow: open the URL elsewhere, then paste the final
-    redirect URL back into chronos.
+    redirect URL back into Pony Express.
 
     Refuses to prompt when stdin/stdout aren't a TTY — cron / scripted
     invocations get a clean error rather than silently blocking on a
@@ -1011,7 +1011,7 @@ def cmd_reset(
     and `--force` isn't enough" — it deletes the SQLite index (plus
     `-wal` / `-shm` sidecars) and the entire vdir mirror tree.
     Configuration and OAuth tokens are deliberately untouched, so the
-    next `chronos sync` knows where to fetch from but starts with a
+    next `pony calendar sync` knows where to fetch from but starts with a
     blank slate.
 
     `index_path` and `mirror_dir` default to the context's layout;
@@ -1035,7 +1035,7 @@ def cmd_reset(
         return 0
 
     if not force:
-        from chronos.mcp_server import is_server_reachable
+        from pony.calendar.mcp_server import is_server_reachable
 
         live = is_server_reachable(mcp_state_file or ctx.paths.mcp_state_file)
         if live is not None:
@@ -1286,14 +1286,14 @@ def _doctor_progress(stderr: TextIO) -> ProgressFn:
 def cmd_mcp(ctx: CliContext) -> int:
     """Run the MCP server.
 
-    Bridges to a running chronos instance when one is detected via the
+    Bridges to a running instance when one is detected via the
     state file; otherwise runs self-contained over stdio.  Nothing may
     print to stdout while the server runs (stdin/stdout carry the
     JSON-RPC stream).
     """
     import asyncio
 
-    from chronos.mcp_server import run_mcp_stdio
+    from pony.calendar.mcp_server import run_mcp_stdio
 
     asyncio.run(
         run_mcp_stdio(
@@ -1327,7 +1327,7 @@ def cmd_import(
     changes reach the server.  Interactive sessions are asked first
     (unless ``yes``); ``sync=False`` skips the step entirely.
     """
-    from chronos.ingest import IngestError, ingest_ics_bytes
+    from pony.calendar.ingest import IngestError, ingest_ics_bytes
 
     target = _resolve_import_calendar(
         ctx,
@@ -1714,7 +1714,7 @@ def cmd_oauth_authorize(
 ) -> int:
     """Re-run OAuth authorization for an account.
 
-    Usually unnecessary — the first `chronos sync` for an unauthorized
+    Usually unnecessary — the first `pony calendar sync` for an unauthorized
     account auto-runs the same flow inline. Useful when the user wants
     to re-consent to new scopes, swap OAuth clients, or reset a revoked
     refresh token without waiting for the next sync to discover it.

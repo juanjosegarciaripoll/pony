@@ -1,4 +1,4 @@
-"""Tests for `chronos.locking.acquire_sync_lock`.
+"""Tests for `pony.calendar.locking.acquire_sync_lock`.
 
 The lock guarantees that at most one process holds it at a time, that
 the holder's PID is recorded, and that a stale lock (whose holder
@@ -16,7 +16,7 @@ from collections.abc import Callable
 from multiprocessing import Process, Queue
 from pathlib import Path
 
-from chronos.locking import SyncLockError, acquire_sync_lock
+from pony.calendar.locking import SyncLockError, acquire_sync_lock
 
 
 def _hold_lock_until_signaled(
@@ -98,7 +98,7 @@ class AcquireSyncLockTest(unittest.TestCase):
         # 999999 might happen to be alive (unlikely, but cheap to
         # rule out for determinism).
         with (
-            unittest.mock.patch("chronos.locking._pid_alive", return_value=False),
+            unittest.mock.patch("pony.calendar.locking._pid_alive", return_value=False),
             acquire_sync_lock(self.lock_path),
         ):
             pass
@@ -112,7 +112,7 @@ class AcquireSyncLockTest(unittest.TestCase):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         self.lock_path.write_text("not-a-number\n", encoding="ascii")
         with (
-            unittest.mock.patch("chronos.locking._pid_alive", return_value=False),
+            unittest.mock.patch("pony.calendar.locking._pid_alive", return_value=False),
             acquire_sync_lock(self.lock_path),
         ):
             pass
@@ -121,7 +121,7 @@ class AcquireSyncLockTest(unittest.TestCase):
 class SyncLockErrorIsRuntimeErrorTest(unittest.TestCase):
     def test_inheritance(self) -> None:
         # Callers can catch with the broad `RuntimeError` if they
-        # want to without importing the chronos-specific class.
+        # want to without importing the calendar-specific class.
         self.assertTrue(issubclass(SyncLockError, RuntimeError))
 
 

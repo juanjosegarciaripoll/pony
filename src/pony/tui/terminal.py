@@ -11,7 +11,7 @@ from pathlib import Path
 
 from textual.app import App, SuspendNotSupported
 
-from chronos.tui.terminal import osc777_notification
+from pony.tui.calendar.terminal import osc777_notification
 
 MAIL_TITLE_PREFIX = "✉ "
 

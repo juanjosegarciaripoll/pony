@@ -43,8 +43,8 @@ from tui_helpers import (
 
 import pony.tui.screens.add_attachment_screen as add_attachment_module
 import pony.tui.screens.save_folder_picker_screen as save_folder_module
-from chronos.scheduler import SyncOutcome
 from pony.browser_preview import close_preview
+from pony.calendar.scheduler import SyncOutcome
 from pony.credentials import PlaintextCredentialsProvider
 from pony.domain import (
     FolderRef,

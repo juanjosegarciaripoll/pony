@@ -7,18 +7,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chronos.credentials import (
+from pony.calendar.credentials import (
     CredentialResolutionError,
     DefaultCredentialsProvider,
 )
-from chronos.domain import (
+from pony.calendar.domain import (
     AccountConfig,
     CommandCredential,
     CredentialSpec,
     EnvCredential,
     PlaintextCredential,
 )
-from chronos.paths import CalendarPaths
+from pony.calendar.paths import CalendarPaths
 
 
 def _account(
@@ -132,7 +132,7 @@ class TokenPathTest(unittest.TestCase):
         activated last, which in a process hosting two was a coin
         toss. Now it is handed one, and says so when it is not.
         """
-        from chronos.domain import OAuthCredential
+        from pony.calendar.domain import OAuthCredential
 
         provider = DefaultCredentialsProvider(env={})
         account = _account(
@@ -153,7 +153,7 @@ class GoogleBackendTest(unittest.TestCase):
     def test_google_routes_through_oauth_with_google_scope(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from chronos.domain import GOOGLE_OAUTH_SCOPE, GoogleCredential
+        from pony.calendar.domain import GOOGLE_OAUTH_SCOPE, GoogleCredential
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         paths = CalendarPaths(root=tmp)
@@ -171,7 +171,7 @@ class GoogleBackendTest(unittest.TestCase):
         bearer = MagicMock()
         bearer.persist = MagicMock()
         with patch(
-            "chronos.credentials.build_bearer_auth", return_value=bearer
+            "pony.calendar.credentials.build_bearer_auth", return_value=bearer
         ) as mock_build:
             auth = provider.build_auth(account)
         mock_build.assert_called_once_with(
@@ -196,8 +196,8 @@ class InteractiveAuthorizerTest(unittest.TestCase):
     def test_missing_tokens_calls_authorizer_and_persists(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import StoredTokens
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         token_path = tmp / "tokens.json"
@@ -231,7 +231,7 @@ class InteractiveAuthorizerTest(unittest.TestCase):
         bearer = MagicMock()
         bearer.persist = MagicMock()
         with patch(
-            "chronos.credentials.build_bearer_auth", return_value=bearer
+            "pony.calendar.credentials.build_bearer_auth", return_value=bearer
         ) as mock_build:
             auth = provider.build_auth(account)
 
@@ -247,7 +247,7 @@ class InteractiveAuthorizerTest(unittest.TestCase):
         bearer.get_header.assert_called_once()
 
     def test_missing_tokens_without_authorizer_raises_clean_error(self) -> None:
-        from chronos.domain import OAuthCredential
+        from pony.calendar.domain import OAuthCredential
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         token_path = tmp / "absent.json"
@@ -268,8 +268,8 @@ class InteractiveAuthorizerTest(unittest.TestCase):
         self.assertIn("pony calendar sync", message)
 
     def test_authorizer_failure_surfaces_as_credential_error(self) -> None:
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import OAuthError, StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import OAuthError, StoredTokens
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         token_path = tmp / "absent.json"
@@ -305,8 +305,8 @@ class InvalidGrantReauthTest(unittest.TestCase):
     def test_invalid_grant_triggers_reauth_when_authorizer_available(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import InvalidGrantError, StoredTokens
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import InvalidGrantError, StoredTokens
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         token_path = tmp / "tok.json"
@@ -339,7 +339,7 @@ class InvalidGrantReauthTest(unittest.TestCase):
         fresh_bearer.get_header.return_value = "Bearer new_at"
 
         bearers = [stale_bearer, fresh_bearer]
-        with patch("chronos.credentials.build_bearer_auth", side_effect=bearers):
+        with patch("pony.calendar.credentials.build_bearer_auth", side_effect=bearers):
             auth = provider.build_auth(account)
 
         assert auth.bearer_token_fn is not None
@@ -353,8 +353,8 @@ class InvalidGrantReauthTest(unittest.TestCase):
     def test_invalid_grant_without_authorizer_propagates_error(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import InvalidGrantError, OAuthError
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import InvalidGrantError, OAuthError
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         token_path = tmp / "tok.json"
@@ -370,7 +370,7 @@ class InvalidGrantReauthTest(unittest.TestCase):
         bearer = MagicMock()
         bearer.get_header.side_effect = InvalidGrantError("revoked")
 
-        with patch("chronos.credentials.build_bearer_auth", return_value=bearer):
+        with patch("pony.calendar.credentials.build_bearer_auth", return_value=bearer):
             auth = provider.build_auth(account)
 
         assert auth.bearer_token_fn is not None

@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from chronos.outcome import Notice, Outcome, failure, info, warn
+from pony.calendar.outcome import Notice, Outcome, failure, info, warn
 
 from .. import mailbox_actions
 from ..authentication import MessageAuthentication
@@ -53,8 +53,8 @@ from .layout import PageSurface, Tab, columns, page, pane
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from chronos.domain import CalendarRef
-    from chronos.outcome import Notice
+    from pony.calendar.domain import CalendarRef
+    from pony.calendar.outcome import Notice
 
     from ..domain import FolderMessageSummary, IndexedMessage, MessageRef
     from ..invitation import Invitation

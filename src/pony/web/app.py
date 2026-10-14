@@ -3,9 +3,9 @@
 This is a second front end, not a second program.  Every operation it
 offers is a call into :mod:`pony.mailbox_actions`, :mod:`pony.delivery`,
 :mod:`pony.contact_actions`, :mod:`pony.invitation_actions` or
-:mod:`chronos.event_actions`; every row it renders comes from
-:mod:`pony.views` or :mod:`chronos.views`; every key it answers to comes
-from :mod:`pony.keymap` or :mod:`chronos.keymap`.  What is new here is
+:mod:`pony.calendar.event_actions`; every row it renders comes from
+:mod:`pony.views` or :mod:`pony.calendar.views`; every key it answers to comes
+from :mod:`pony.keymap` or :mod:`pony.calendar.keymap`.  What is new here is
 HTTP, HTML and a stylesheet.
 
 Two things it does differently from the terminal, both deliberate:
@@ -48,7 +48,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from chronos.outcome import Notice, Outcome, Severity, warn
+from pony.calendar.outcome import Notice, Outcome, Severity, warn
 
 from .. import contact_actions, mailbox_actions
 from ..domain import FolderRef, MessageFlag, MessageRef
@@ -74,7 +74,7 @@ if TYPE_CHECKING:
 
     from starlette.requests import Request
 
-    from ..calendar import CalendarRuntime
+    from ..calendar_runtime import CalendarRuntime
     from ..domain import AppConfig, IndexedMessage
     from ..protocols import (
         ContactRepository,
@@ -839,8 +839,8 @@ async def _calendar_page(services: WebServices, request: Request) -> Response:
 async def _event_form(services: WebServices, request: Request) -> Response:
     uid = request.query_params.get("uid", "")
     if uid:
-        from chronos.domain import CalendarRef
-        from chronos.event_actions import find_component
+        from pony.calendar.domain import CalendarRef
+        from pony.calendar.event_actions import find_component
 
         runtime = services.calendar
         account = request.query_params.get("account", "")
@@ -899,7 +899,7 @@ def _first_calendar(services: WebServices, request: Request) -> str:
     The first one in view, as it is in the terminal: creating an event
     while looking at one calendar files it there.
     """
-    from chronos.event_actions import new_event_defaults
+    from pony.calendar.event_actions import new_event_defaults
 
     refs = calendar_view.calendar_targets(services)
     today = datetime.now(UTC).astimezone().date()

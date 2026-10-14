@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from chronos.domain import (
+from pony.calendar.domain import (
     CalendarRef,
     ComponentRef,
     LocalStatus,
@@ -13,10 +13,10 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.index_store import SqliteIndexRepository
-from chronos.recurrence import populate_occurrences
-from chronos.storage import VdirMirrorRepository
-from chronos.storage_indexing import index_calendar
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.recurrence import populate_occurrences
+from pony.calendar.storage import VdirMirrorRepository
+from pony.calendar.storage_indexing import index_calendar
 from tests_calendar import corpus
 
 ACCOUNT = "personal"
@@ -71,7 +71,7 @@ class SetAndQueryOccurrencesTest(unittest.TestCase):
         self.addCleanup(self.index.close)
 
     def _seed_weekly(self) -> None:
-        from chronos.domain import ResourceRef
+        from pony.calendar.domain import ResourceRef
 
         self.mirror.write(
             ResourceRef(ACCOUNT, CALENDAR, "weekly-1@example.com"),
@@ -384,7 +384,7 @@ class RenderCostTest(unittest.TestCase):
         return seen
 
     def test_one_day_render_reads_one_component(self) -> None:
-        from chronos.views import CalendarSelection, gather_occurrences
+        from pony.calendar.views import CalendarSelection, gather_occurrences
 
         seen = self._count_component_reads()
         rows = gather_occurrences(
@@ -414,7 +414,7 @@ class RenderCostTest(unittest.TestCase):
         have changed what a render shows.  The duplicate itself is a
         separate bug.
         """
-        from chronos.views import CalendarSelection, gather_occurrences
+        from pony.calendar.views import CalendarSelection, gather_occurrences
 
         rows = gather_occurrences(
             index=self.index,
@@ -435,7 +435,7 @@ class RenderCostTest(unittest.TestCase):
         )
 
     def test_listing_todos_does_not_read_the_events(self) -> None:
-        from chronos.views import CalendarSelection, gather_todos
+        from pony.calendar.views import CalendarSelection, gather_todos
 
         seen = self._count_component_reads()
         todos = gather_todos(

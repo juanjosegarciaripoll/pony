@@ -17,8 +17,8 @@ import json
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from chronos.keymap import CALENDAR_KEYMAP, CalendarSurface, web_key
-from chronos.keymap import for_surface as for_calendar_surface
+from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface, web_key
+from pony.calendar.keymap import for_surface as for_calendar_surface
 
 from ..keymap import MAIL_KEYMAP, Surface, for_surface
 from .html import Raw, document, element, join
@@ -26,8 +26,8 @@ from .html import Raw, document, element, join
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from chronos.keymap import KeyBinding
-    from chronos.outcome import Notice
+    from pony.calendar.keymap import KeyBinding
+    from pony.calendar.outcome import Notice
 
 
 class Tab(StrEnum):

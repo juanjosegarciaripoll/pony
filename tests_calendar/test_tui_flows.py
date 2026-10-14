@@ -19,8 +19,8 @@ from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Label, Select
 
-from chronos.credentials import DefaultCredentialsProvider
-from chronos.domain import (
+from pony.calendar.credentials import DefaultCredentialsProvider
+from pony.calendar.domain import (
     AccountConfig,
     AlarmAction,
     AlarmRecord,
@@ -36,31 +36,15 @@ from chronos.domain import (
     VEvent,
     VTodo,
 )
-from chronos.event_actions import EditDraft
-from chronos.index_store import SqliteIndexRepository
-from chronos.paths import CalendarPaths
-from chronos.protocols import CalendarSyncOutcome
-from chronos.recurrence import populate_occurrences
-from chronos.scheduler import SyncOutcome
-from chronos.storage import VdirMirrorRepository
-from chronos.storage_indexing import index_calendar
-from chronos.tui.app import CALENDAR_CSS, TuiServices, start_calendar_sync
-from chronos.tui.reporting import on_ui_thread
-from chronos.tui.screens.confirm_screen import ConfirmScreen
-from chronos.tui.screens.event_detail_screen import EventDetailScreen
-from chronos.tui.screens.event_edit_screen import EventEditScreen
-from chronos.tui.screens.import_ics_screen import ImportIcsScreen
-from chronos.tui.screens.main_screen import MainScreen
-from chronos.tui.screens.search_dialog_screen import SearchDialogScreen
-from chronos.tui.screens.sync_confirm_screen import SyncConfirmScreen
-from chronos.tui.widgets.date_picker import (
-    DatePicker,
-    InvalidDateError,
-    parse_date_input,
-)
-from chronos.tui.widgets.event_list import EventList, component_ref_for_row
-from chronos.tui.widgets.event_view import EventView
-from chronos.views import (
+from pony.calendar.event_actions import EditDraft
+from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.paths import CalendarPaths
+from pony.calendar.protocols import CalendarSyncOutcome
+from pony.calendar.recurrence import populate_occurrences
+from pony.calendar.scheduler import SyncOutcome
+from pony.calendar.storage import VdirMirrorRepository
+from pony.calendar.storage_indexing import index_calendar
+from pony.calendar.views import (
     IN_PROGRESS_MARK,
     AgendaWindow,
     CalendarSelection,
@@ -86,12 +70,28 @@ from chronos.views import (
     search_components,
     week_window,
 )
-from chronos.views import (
+from pony.calendar.views import (
     agenda_mode_window as agenda_window_for,
 )
-from chronos.views import (
+from pony.calendar.views import (
     grid_window as grid_window_for,
 )
+from pony.tui.calendar.app import CALENDAR_CSS, TuiServices, start_calendar_sync
+from pony.tui.calendar.reporting import on_ui_thread
+from pony.tui.calendar.screens.confirm_screen import ConfirmScreen
+from pony.tui.calendar.screens.event_detail_screen import EventDetailScreen
+from pony.tui.calendar.screens.event_edit_screen import EventEditScreen
+from pony.tui.calendar.screens.import_ics_screen import ImportIcsScreen
+from pony.tui.calendar.screens.main_screen import MainScreen
+from pony.tui.calendar.screens.search_dialog_screen import SearchDialogScreen
+from pony.tui.calendar.screens.sync_confirm_screen import SyncConfirmScreen
+from pony.tui.calendar.widgets.date_picker import (
+    DatePicker,
+    InvalidDateError,
+    parse_date_input,
+)
+from pony.tui.calendar.widgets.event_list import EventList, component_ref_for_row
+from pony.tui.calendar.widgets.event_view import EventView
 from tests_calendar import corpus
 
 ACCOUNT_NAME = "personal"
@@ -251,7 +251,7 @@ class ViewScreenTitleTest(unittest.TestCase):
         )
 
     def test_month_title_is_the_month_and_the_year(self) -> None:
-        from chronos.views import month_title
+        from pony.calendar.views import month_title
 
         self.assertEqual(month_title(date(2026, 4, 25)), "April 2026")
 
@@ -899,7 +899,7 @@ def _detail_text(component: StoredComponent, today: date) -> str:
     widest label and joining them with newlines is the widget's, which
     is the point of the split.
     """
-    from chronos.tui.widgets.event_view import render_fields
+    from pony.tui.calendar.widgets.event_view import render_fields
 
     return render_fields(event_detail_fields(component, today))
 
@@ -1001,7 +1001,7 @@ class CalendarHostApp(App[None]):
             self.services.sync_scheduler.stop()
 
     # The callbacks arrive on the scheduler's thread and have to hop
-    # onto the UI's, which is `chronos.tui.reporting.on_ui_thread` --
+    # onto the UI's, which is `pony.tui.calendar.reporting.on_ui_thread` --
     # the same hop `PonyApp` makes for the same reason.
 
     def _sync_started(self) -> None:
@@ -1310,7 +1310,7 @@ class StartupFocusTest(TuiFlowTestCase):
             await pilot.pause()  # call_after_refresh needs a second tick
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
-            from chronos.tui.widgets.timeline_grid import TimelineGrid
+            from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
             self.assertTrue(
                 screen.query_one(EventList).has_focus,
@@ -1584,7 +1584,7 @@ class NewEventFlowTest(TuiFlowTestCase):
             # The sentence both front ends use: the rule is
             # `all_day_form_bounds`', because the browser clamped the
             # same typo and saved a one-day event.
-            from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+            from pony.calendar.event_actions import ENDS_BEFORE_IT_STARTS
 
             self.assertIn(
                 ENDS_BEFORE_IT_STARTS,
@@ -1592,7 +1592,7 @@ class NewEventFlowTest(TuiFlowTestCase):
             )
 
     async def test_new_event_can_invite_attendees(self) -> None:
-        from chronos.ical_parser import extract_attendees, extract_organizer
+        from pony.calendar.ical_parser import extract_attendees, extract_organizer
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -1673,7 +1673,7 @@ class EditExistingEventTest(TuiFlowTestCase):
         self.assertIn(b"Edited summary", raw)
 
     async def test_edit_prefills_and_preserves_attendees(self) -> None:
-        from chronos.ical_parser import extract_attendees
+        from pony.calendar.ical_parser import extract_attendees
 
         services = self.services()
         raw = corpus.event_with_attendees()
@@ -1779,10 +1779,10 @@ class EditExistingEventTest(TuiFlowTestCase):
         # The agenda window covers 2026-04-25 → 2026-05-09 (NOW.date()
         # + 14 days). simple-event-1 starts 2026-05-01, so it falls
         # inside the window after the edit.
-        from chronos.views import (
+        from pony.calendar.views import (
             CalendarSelection as _Sel,
         )
-        from chronos.views import (
+        from pony.calendar.views import (
             agenda_window,
             gather_occurrences,
         )
@@ -1924,7 +1924,7 @@ class DeleteFlowTest(TuiFlowTestCase):
 
 class HelpScreenTest(TuiFlowTestCase):
     async def test_f1_opens_help_grouped_by_area(self) -> None:
-        from chronos.tui.screens.help_screen import HelpScreen
+        from pony.tui.calendar.screens.help_screen import HelpScreen
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -1981,7 +1981,7 @@ class HelpScreenTest(TuiFlowTestCase):
             self.assertIsInstance(pilot.app.screen, MainScreen)
 
     async def test_help_dialog_body_widget_is_not_empty(self) -> None:
-        from chronos.tui.screens.help_screen import HelpScreen
+        from pony.tui.calendar.screens.help_screen import HelpScreen
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -2088,7 +2088,7 @@ class SyncFlowTest(TuiFlowTestCase):
         # The dialog stays up after the runner returns and renders a
         # summary line plus a Close button, replacing the prior
         # background-notification flow.
-        from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
+        from pony.tui.calendar.screens.sync_progress_screen import SyncProgressScreen
 
         def runner(**_kwargs: object) -> Sequence[SyncResult]:
             return (
@@ -2120,7 +2120,7 @@ class SyncFlowTest(TuiFlowTestCase):
             from textual.widgets import Button, Static
 
             summary = progress.query_one("#sync-progress-summary", Static)
-            # The one sentence `chronos.sync` writes for every surface.
+            # The one sentence `pony.calendar.sync` writes for every surface.
             self.assertIn("+3 added", str(summary.content))
             self.assertIn("1 updated", str(summary.content))
             # The Cancel button is hidden once the worker reports
@@ -2140,7 +2140,7 @@ class SyncFlowTest(TuiFlowTestCase):
         # polling boundary.
         import threading
 
-        from chronos.tui.screens.sync_progress_screen import SyncProgressScreen
+        from pony.tui.calendar.screens.sync_progress_screen import SyncProgressScreen
 
         gate = threading.Event()  # block the runner until we cancel
         observed: dict[str, threading.Event | None] = {"cancel": None}
@@ -2270,7 +2270,10 @@ class BackgroundSyncTest(TuiFlowTestCase):
         app starts on mount and stops on unmount, so the agenda being
         popped cannot stop the calendar syncing.
         """
-        from chronos.tui.widgets.sync_status import SCHEDULED_SYNC_MARK, SyncStatus
+        from pony.tui.calendar.widgets.sync_status import (
+            SCHEDULED_SYNC_MARK,
+            SyncStatus,
+        )
 
         services = self.services(sync_runner=lambda **_: ())
         app = CalendarHostApp(services)
@@ -2365,7 +2368,7 @@ class BackgroundSyncTest(TuiFlowTestCase):
         It used to be a second way into the sync dialog, which left the
         mail reader's `G` (go to folder) meaning something else entirely.
         """
-        from chronos.tui.screens.goto_screen import GotoScreen
+        from pony.tui.calendar.screens.goto_screen import GotoScreen
 
         for key in ("G", "shift+g", "colon"):
             services = self.services(sync_runner=lambda **_: ())
@@ -2478,7 +2481,7 @@ class AlarmMessageTest(unittest.TestCase):
         )
 
     def test_start_time_and_description(self) -> None:
-        from chronos.alarms import alarm_message
+        from pony.calendar.alarms import alarm_message
 
         start = datetime(2026, 5, 1, 10, 0).astimezone()
         message = alarm_message(
@@ -2487,7 +2490,7 @@ class AlarmMessageTest(unittest.TestCase):
         self.assertEqual(message, "Starts 10:00\nBring slides")
 
     def test_google_boilerplate_is_dropped(self) -> None:
-        from chronos.alarms import alarm_message
+        from pony.calendar.alarms import alarm_message
 
         start = datetime(2026, 5, 1, 10, 0).astimezone()
         message = alarm_message(
@@ -2497,7 +2500,7 @@ class AlarmMessageTest(unittest.TestCase):
         self.assertEqual(message, "Started 10:00")
 
     def test_other_day_shows_date(self) -> None:
-        from chronos.alarms import alarm_message
+        from pony.calendar.alarms import alarm_message
 
         start = datetime(2026, 5, 2, 9, 30).astimezone()
         message = alarm_message(self._alarm(start, None), start - timedelta(days=1))
@@ -2506,7 +2509,7 @@ class AlarmMessageTest(unittest.TestCase):
 
 class MonthGridHelpersTest(unittest.TestCase):
     def test_grid_dates_span_whole_weeks(self) -> None:
-        from chronos.views import grid_dates
+        from pony.calendar.views import grid_dates
 
         # Sep 2026 starts on a Tuesday: Mon 31 Aug .. Sun 4 Oct.
         self.assertEqual(grid_dates(date(2026, 9, 17)), (date(2026, 8, 31), 5))
@@ -2516,7 +2519,7 @@ class MonthGridHelpersTest(unittest.TestCase):
         self.assertEqual(grid_dates(date(2026, 8, 1)), (date(2026, 7, 27), 6))
 
     def test_bucket_covers_every_day_of_a_span(self) -> None:
-        from chronos.tui.widgets.month_grid import _bucket_by_day
+        from pony.tui.calendar.widgets.month_grid import _bucket_by_day
 
         all_day = TimelineGridHelpersTest._all_day_row(
             "h",
@@ -2544,7 +2547,7 @@ class MonthGridHelpersTest(unittest.TestCase):
 
 class MonthViewFlowTest(TuiFlowTestCase):
     async def test_month_view_navigation_and_drill_down(self) -> None:
-        from chronos.tui.widgets.month_grid import MonthGrid
+        from pony.tui.calendar.widgets.month_grid import MonthGrid
 
         app = CalendarHostApp(self.services())
         async with app.run_test(size=(110, 32)) as pilot:
@@ -2584,7 +2587,7 @@ class MonthViewFlowTest(TuiFlowTestCase):
     async def test_moving_into_a_neighbouring_month_flips_the_view(self) -> None:
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.month_grid import MonthGrid
+        from pony.tui.calendar.widgets.month_grid import MonthGrid
 
         app = CalendarHostApp(self.services())
         async with app.run_test(size=(110, 32)) as pilot:
@@ -2610,7 +2613,7 @@ class GotoDialogTest(TuiFlowTestCase):
     async def test_colon_opens_dialog_and_jumps(self) -> None:
         from textual.widgets import Input, Label
 
-        from chronos.tui.screens.goto_screen import GotoScreen
+        from pony.tui.calendar.screens.goto_screen import GotoScreen
 
         app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
@@ -2651,7 +2654,7 @@ class GotoDialogTest(TuiFlowTestCase):
 
 class Osc777Test(unittest.TestCase):
     def test_sequence(self) -> None:
-        from chronos.tui.app import osc777_notification
+        from pony.tui.calendar.app import osc777_notification
 
         self.assertEqual(
             osc777_notification("Standup", "Starts 10:00"),
@@ -2659,7 +2662,7 @@ class Osc777Test(unittest.TestCase):
         )
 
     def test_control_chars_and_title_semicolons_are_neutralised(self) -> None:
-        from chronos.tui.app import osc777_notification
+        from pony.tui.calendar.app import osc777_notification
 
         seq = osc777_notification("A;B\x1b", "Starts 10:00\nBring\x07 slides")
         self.assertEqual(seq, "\x1b]777;notify;A,B;Starts 10:00 · Bring slides\x07")
@@ -2724,7 +2727,7 @@ class ClockTickTest(TuiFlowTestCase):
 
 class FormatCountdownTest(unittest.TestCase):
     def test_formats(self) -> None:
-        from chronos.tui.widgets.sync_status import format_countdown
+        from pony.tui.calendar.widgets.sync_status import format_countdown
 
         self.assertEqual(format_countdown(3600), "1:00:00")
         self.assertEqual(format_countdown(3599), "59:30")
@@ -2767,7 +2770,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
-            from chronos.event_actions import NEEDS_A_SUMMARY
+            from pony.calendar.event_actions import NEEDS_A_SUMMARY
 
             # One sentence for the rule, which the browser shows too.
             self.assertEqual(edit._error, NEEDS_A_SUMMARY)
@@ -2804,7 +2807,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
-            from chronos.event_actions import ENDS_BEFORE_IT_STARTS
+            from pony.calendar.event_actions import ENDS_BEFORE_IT_STARTS
 
             # The sentence is the one both front ends use, which is why
             # it is a constant in `event_actions` and not a string here.
@@ -2853,33 +2856,33 @@ class AlarmHelperTest(unittest.TestCase):
     """Unit tests for alarm-related pure helpers in mutations/views/edit."""
 
     def test_fmt_duration_negative_minutes(self) -> None:
-        from chronos.mutations import _fmt_duration
+        from pony.calendar.mutations import _fmt_duration
 
         self.assertEqual(_fmt_duration(timedelta(minutes=-15)), "-PT15M")
 
     def test_fmt_duration_negative_hours(self) -> None:
-        from chronos.mutations import _fmt_duration
+        from pony.calendar.mutations import _fmt_duration
 
         self.assertEqual(_fmt_duration(timedelta(hours=-1)), "-PT1H")
 
     def test_fmt_duration_mixed(self) -> None:
-        from chronos.mutations import _fmt_duration
+        from pony.calendar.mutations import _fmt_duration
 
         self.assertEqual(_fmt_duration(timedelta(hours=-1, minutes=-30)), "-PT1H30M")
 
     def test_fmt_duration_positive(self) -> None:
-        from chronos.mutations import _fmt_duration
+        from pony.calendar.mutations import _fmt_duration
 
         self.assertEqual(_fmt_duration(timedelta(minutes=5)), "PT5M")
 
     def test_fmt_duration_zero(self) -> None:
-        from chronos.mutations import _fmt_duration
+        from pony.calendar.mutations import _fmt_duration
 
         self.assertEqual(_fmt_duration(timedelta(0)), "PT0S")
 
     def test_build_event_ics_with_alarm_writes_valarm(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.mutations import build_event_ics
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.mutations import build_event_ics
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2903,7 +2906,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn("END:VALARM", text)
 
     def test_build_event_ics_no_alarms_has_no_valarm(self) -> None:
-        from chronos.mutations import build_event_ics
+        from pony.calendar.mutations import build_event_ics
 
         ics = build_event_ics(
             "uid@test",
@@ -2915,7 +2918,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertNotIn(b"VALARM", ics)
 
     def test_build_event_ics_with_attendees_writes_invites(self) -> None:
-        from chronos.mutations import build_event_ics
+        from pony.calendar.mutations import build_event_ics
 
         ics = build_event_ics(
             "uid@test",
@@ -2934,7 +2937,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn("RSVP=TRUE", text)
 
     def test_build_event_ics_rejects_invalid_attendee(self) -> None:
-        from chronos.mutations import build_event_ics
+        from pony.calendar.mutations import build_event_ics
 
         with self.assertRaises(ValueError):
             build_event_ics(
@@ -2947,7 +2950,7 @@ class AlarmHelperTest(unittest.TestCase):
             )
 
     def test_reschedule_event_ics_preserves_other_properties(self) -> None:
-        from chronos.mutations import reschedule_event_ics
+        from pony.calendar.mutations import reschedule_event_ics
 
         moved = reschedule_event_ics(
             corpus.event_with_attendees(),
@@ -2963,7 +2966,7 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn(b"SEQUENCE:1", moved)
 
     def test_reschedule_event_ics_rejects_recurring_series(self) -> None:
-        from chronos.mutations import reschedule_event_ics
+        from pony.calendar.mutations import reschedule_event_ics
 
         with self.assertRaisesRegex(ValueError, "recurring events"):
             reschedule_event_ics(
@@ -2975,8 +2978,8 @@ class AlarmHelperTest(unittest.TestCase):
             )
 
     def test_build_event_ics_end_related_alarm(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.mutations import build_event_ics
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.mutations import build_event_ics
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -2996,8 +2999,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn("TRIGGER;RELATED=END:-PT5M", text)
 
     def test_format_alarm_minutes_before_start(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3008,8 +3011,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "15 min before start")
 
     def test_format_alarm_hours(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3020,8 +3023,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "1 h before start")
 
     def test_format_alarm_mixed_hours_minutes(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3032,8 +3035,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "1h30m before start")
 
     def test_format_alarm_end_related(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3044,8 +3047,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "5 min before end")
 
     def test_format_alarm_after_start(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3056,8 +3059,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "10 min after start")
 
     def test_format_alarm_at_start(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.views import _format_alarm
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.views import _format_alarm
 
         alarm = ParsedAlarm(
             action=AlarmAction.DISPLAY,
@@ -3068,14 +3071,14 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(_format_alarm(alarm), "at start")
 
     def test_parse_reminders_single(self) -> None:
-        from chronos.event_actions import parse_reminders
+        from pony.calendar.event_actions import parse_reminders
 
         alarms = parse_reminders("15")
         self.assertEqual(len(alarms), 1)
         self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
 
     def test_parse_reminders_multiple(self) -> None:
-        from chronos.event_actions import parse_reminders
+        from pony.calendar.event_actions import parse_reminders
 
         alarms = parse_reminders("15, 60")
         self.assertEqual(len(alarms), 2)
@@ -3084,27 +3087,27 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertIn(timedelta(minutes=-60), offsets)
 
     def test_parse_reminders_empty(self) -> None:
-        from chronos.event_actions import parse_reminders
+        from pony.calendar.event_actions import parse_reminders
 
         self.assertEqual(parse_reminders(""), ())
         self.assertEqual(parse_reminders("  "), ())
 
     def test_parse_reminders_ignores_non_numeric(self) -> None:
-        from chronos.event_actions import parse_reminders
+        from pony.calendar.event_actions import parse_reminders
 
         alarms = parse_reminders("15, abc, 30")
         self.assertEqual(len(alarms), 2)
 
     def test_parse_reminders_ignores_zero_and_negative(self) -> None:
-        from chronos.event_actions import parse_reminders
+        from pony.calendar.event_actions import parse_reminders
 
         alarms = parse_reminders("0, -5, 15")
         self.assertEqual(len(alarms), 1)
         self.assertEqual(alarms[0].trigger_offset, timedelta(minutes=-15))
 
     def test_reminders_text_start_relative(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.event_actions import reminders_text
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.event_actions import reminders_text
 
         alarms = [
             ParsedAlarm(
@@ -3117,8 +3120,8 @@ class AlarmHelperTest(unittest.TestCase):
         self.assertEqual(reminders_text(alarms), "15")
 
     def test_reminders_text_skips_end_relative(self) -> None:
-        from chronos.domain import AlarmAction, ParsedAlarm
-        from chronos.event_actions import reminders_text
+        from pony.calendar.domain import AlarmAction, ParsedAlarm
+        from pony.calendar.event_actions import reminders_text
 
         alarms = [
             ParsedAlarm(
@@ -3190,7 +3193,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
         app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from chronos.tui.widgets.calendar_panel import CalendarPanel
+            from pony.tui.calendar.widgets.calendar_panel import CalendarPanel
 
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
@@ -3201,7 +3204,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
         app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from chronos.tui.widgets.calendar_panel import CalendarPanel
+            from pony.tui.calendar.widgets.calendar_panel import CalendarPanel
 
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
@@ -3225,7 +3228,7 @@ class CalendarPanelToggleTest(TuiFlowTestCase):
         app = CalendarHostApp(services)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from chronos.tui.widgets.calendar_panel import CalendarPanel
+            from pony.tui.calendar.widgets.calendar_panel import CalendarPanel
 
             screen = pilot.app.screen
             assert isinstance(screen, MainScreen)
@@ -3262,7 +3265,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
     """
 
     def test_day_header_uses_friendly_words_for_three_special_days(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _day_header
+        from pony.tui.calendar.widgets.timeline_grid import _day_header
 
         today = date(2026, 4, 25)  # Saturday
         self.assertEqual(_day_header(today, today), "Today Sat")
@@ -3270,21 +3273,21 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertEqual(_day_header(today - timedelta(days=1), today), "Yesterday Fri")
 
     def test_day_header_for_arbitrary_dates_uses_short_form(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _day_header
+        from pony.tui.calendar.widgets.timeline_grid import _day_header
 
         today = date(2026, 4, 25)
         self.assertEqual(_day_header(date(2026, 5, 4), today), "Mon 04 May")
         self.assertEqual(_day_header(date(2026, 6, 15), today), "Mon 15 Jun")
 
     def test_slot_time_label_zero_pads(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _format_slot_time
+        from pony.tui.calendar.widgets.timeline_grid import _format_slot_time
 
         self.assertEqual(_format_slot_time(0), "00:00")
         self.assertEqual(_format_slot_time(7 * 60 + 30), "07:30")
         self.assertEqual(_format_slot_time(23 * 60 + 30), "23:30")
 
     def test_compute_hour_range_default_when_all_events_inside(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+        from pony.tui.calendar.widgets.timeline_grid import _compute_hour_range
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         event = _empty_event(ref)
@@ -3312,7 +3315,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         Reading the hour off the end would see 0 — the wrapped hour on the
         *next* day — and leave a 23:00 meeting with no row to appear in.
         """
-        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+        from pony.tui.calendar.widgets.timeline_grid import _compute_hour_range
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         rows = (
@@ -3330,7 +3333,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertEqual(_compute_hour_range([(date(2026, 5, 1), rows)]), (6, 24))
 
     def test_compute_hour_range_widens_for_late_events(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _compute_hour_range
+        from pony.tui.calendar.widgets.timeline_grid import _compute_hour_range
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "x")
         event = _empty_event(ref)
@@ -3362,7 +3365,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertEqual(end, 24)  # 23:45 ends → 24
 
     def test_cell_for_slot_picks_matching_event(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "standup")
         event = VEvent(
@@ -3410,7 +3413,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_end_empty)
 
     def test_cell_for_slot_appends_plus_when_overlapping(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         ref_a = ComponentRef(ACCOUNT_NAME, WORK_CAL, "a")
         ref_b = ComponentRef(ACCOUNT_NAME, WORK_CAL, "b")
@@ -3452,7 +3455,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_end)
 
     def test_cell_for_slot_multi_hour_event_fills_all_covered_slots(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "long")
         event = VEvent(
@@ -3510,7 +3513,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
     def test_cell_for_slot_midnight_crossing_event_fills_remaining_day_slots(
         self,
     ) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "late")
         event = VEvent(
@@ -3562,7 +3565,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
     def test_cell_for_slot_newly_starting_event_takes_priority_over_running(
         self,
     ) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         ref_running = ComponentRef(ACCOUNT_NAME, WORK_CAL, "running")
         ref_new = ComponentRef(ACCOUNT_NAME, WORK_CAL, "new")
@@ -3647,7 +3650,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         under its start date alone and disappeared from the week
         beginning on the 20th.
         """
-        from chronos.tui.widgets.timeline_grid import bucket_by_day
+        from pony.tui.calendar.widgets.timeline_grid import bucket_by_day
 
         trip = self._multi_day_timed_row()
         buckets = bucket_by_day([trip], date(2026, 5, 20), 7)
@@ -3657,7 +3660,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
 
     def test_bucket_by_day_stops_at_a_midnight_end(self) -> None:
-        from chronos.tui.widgets.timeline_grid import bucket_by_day
+        from pony.tui.calendar.widgets.timeline_grid import bucket_by_day
 
         evening = self._all_day_row(
             "evening",
@@ -3673,7 +3676,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
 
     def test_cell_for_slot_fills_a_continuation_day(self) -> None:
         """Middle days of a timed span are covered end to end."""
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         rows = (self._multi_day_timed_row(),)
         ref = rows[0].component.ref
@@ -3734,7 +3737,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
 
     def test_is_full_day_accepts_local_and_utc_midnight(self) -> None:
-        from chronos.views import is_full_day
+        from pony.calendar.views import is_full_day
 
         # Standard VALUE=DATE all-day event: UTC midnight to UTC midnight.
         utc_all_day = self._all_day_row(
@@ -3756,7 +3759,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertTrue(is_full_day(local_all_day.occurrence))
 
     def test_is_full_day_rejects_timed_events(self) -> None:
-        from chronos.views import is_full_day
+        from pony.calendar.views import is_full_day
 
         # Ordinary short meeting.
         short = self._all_day_row(
@@ -3782,7 +3785,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_full_day(day_long_offset.occurrence))
 
     def test_cell_for_slot_skips_local_midnight_all_day_event(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _cell_for_slot
+        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
 
         rows = (
             self._all_day_row(
@@ -3800,7 +3803,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertFalse(is_end)
 
     def test_full_day_rows_cover_every_day_of_a_multi_day_span(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _full_day_rows
+        from pony.tui.calendar.widgets.timeline_grid import _full_day_rows
 
         # Three-day all-day span: May 1, 2, 3 (end May 4 is exclusive).
         rows = (
@@ -3821,7 +3824,7 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertEqual(_full_day_rows(date(2026, 5, 4), rows), [])
 
     def test_full_day_rows_returns_each_event_for_a_busy_day(self) -> None:
-        from chronos.tui.widgets.timeline_grid import _full_day_rows
+        from pony.tui.calendar.widgets.timeline_grid import _full_day_rows
 
         # Two all-day events on the same day plus a multi-day span that
         # also covers it → three stacked banner lines, in event order.
@@ -3871,7 +3874,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         )
 
     async def test_day_view_swaps_in_timeline_and_hides_detail_pane(self) -> None:
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -3893,7 +3896,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_all_day_banner_stacks_one_row_per_full_day_event(self) -> None:
         # Two all-day events on the same day must occupy two distinct,
         # individually selectable banner cells (not collapse to "+N").
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         day = date(2026, 5, 1)
         rows = [
@@ -3932,7 +3935,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_current_slot_and_running_event_are_highlighted(self) -> None:
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import _NOW_LINE_CHAR, TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import _NOW_LINE_CHAR, TimelineGrid
 
         day = date(2026, 5, 1)
 
@@ -4001,7 +4004,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         # so it must re-render when the theme changes (subscribed to
         # theme_changed_signal) — otherwise only CSS-styled widgets would
         # pick up a higher-contrast theme.
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         day = date(2026, 5, 1)
         rows = [
@@ -4043,7 +4046,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             self.assertNotEqual(style_flexoki, style_nord)
 
     async def test_grid_view_passes_four_day_columns(self) -> None:
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4062,7 +4065,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         # the detail must appear as a separate modal screen so the
         # timeline gets the full centre-pane height. Pressing Enter
         # on a cell that holds an event opens that modal.
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4104,7 +4107,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         """
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4148,7 +4151,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_mouse_click_on_timed_event_opens_detail_modal(self) -> None:
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4187,7 +4190,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_drag_empty_slots_opens_create_form_with_selected_times(self) -> None:
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4263,7 +4266,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_multi_day_all_day_event_is_one_bar_across_its_days(self) -> None:
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid, bucket_by_day
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid, bucket_by_day
 
         # Started the day before the first shown column; ends (exclusive)
         # on the fourth column's date.
@@ -4320,7 +4323,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         from textual.coordinate import Coordinate
         from textual.widgets import Checkbox
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4383,7 +4386,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
     async def test_drag_event_reschedules_it_and_preserves_duration(self) -> None:
         from textual.events import MouseDown, MouseMove, MouseUp
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4442,7 +4445,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
         """The end of an event is outside its half-open occupied interval."""
         from textual.coordinate import Coordinate
 
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
@@ -4528,9 +4531,9 @@ class OAuthCopyUrlTest(TuiFlowTestCase):
 
         from textual.widgets import Button, Label
 
-        from chronos.domain import OAuthCredential
-        from chronos.oauth import OAuthError
-        from chronos.tui.screens.oauth_progress_screen import OAuthProgressScreen
+        from pony.calendar.domain import OAuthCredential
+        from pony.calendar.oauth import OAuthError
+        from pony.tui.calendar.screens.oauth_progress_screen import OAuthProgressScreen
 
         auth_url = "https://accounts.google.com/o/oauth2/auth?scope=" + "x" * 300
         spec = OAuthCredential(client_id="cid", client_secret="secret")
@@ -4551,7 +4554,7 @@ class OAuthCopyUrlTest(TuiFlowTestCase):
         services = self.services()
         app = CalendarHostApp(services)
         with mock.patch(
-            "chronos.tui.screens.oauth_progress_screen.run_paste_redirect_flow",
+            "pony.tui.calendar.screens.oauth_progress_screen.run_paste_redirect_flow",
             fake_flow,
         ):
             async with app.run_test() as pilot:
@@ -4619,7 +4622,7 @@ class AgendaKeysTest(TuiFlowTestCase):
         return screen
 
     async def test_enter_on_an_agenda_row_opens_the_event(self) -> None:
-        from chronos.tui.screens.event_detail_screen import EventDetailScreen
+        from pony.tui.calendar.screens.event_detail_screen import EventDetailScreen
 
         app = CalendarHostApp(self.services())
         async with app.run_test() as pilot:
@@ -4690,7 +4693,7 @@ class ViewRepaintTest(TuiFlowTestCase):
         self.assertFalse(any("Simple event" in cell for cell in after), after)
 
     async def test_a_new_event_appears_in_the_timeline_it_was_added_to(self) -> None:
-        from chronos.tui.widgets.timeline_grid import TimelineGrid
+        from pony.tui.calendar.widgets.timeline_grid import TimelineGrid
 
         services = self.services()
         app = CalendarHostApp(services)
