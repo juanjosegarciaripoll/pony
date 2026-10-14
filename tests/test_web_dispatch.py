@@ -64,8 +64,8 @@ from web_helpers import (
     script,
 )
 
-from pony.domain import Contact, FolderRef, MessageRef
 from pony.keys import web_key
+from pony.mail.domain import Contact, FolderRef, MessageRef
 from pony.web import WebServices, build_web_app
 from pony.web.actions import MARKED_ONLY_ACTIONS
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS

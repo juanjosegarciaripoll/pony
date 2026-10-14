@@ -8,8 +8,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from unittest import mock
 
-import pony.sync as sync_module
-from pony.domain import (
+import pony.mail.sync as sync_module
+from pony.mail.domain import (
     AccountConfig,
     AppConfig,
     FolderConfig,
@@ -22,7 +22,7 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.sync import (
+from pony.mail.sync import (
     AccountSyncPlan,
     FolderSyncPlan,
     FolderSyncResult,

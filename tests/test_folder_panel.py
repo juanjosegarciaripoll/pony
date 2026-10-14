@@ -2,7 +2,7 @@
 
 The widget itself needs a running Textual app to mount; this file
 exercises what shapes what it displays — ``build_folder_tree``, now in
-``pony.views`` because the web front end renders the same tree — so the
+``pony.mail.views`` because the web front end renders the same tree — so the
 nesting and unread-aggregation logic can be pinned without a UI. The
 countdown and label formatting that are still the widget's own are
 imported from it.
@@ -12,17 +12,17 @@ from __future__ import annotations
 
 import unittest
 
-from pony.domain import FolderRef
-from pony.tui.widgets.folder_panel import (
-    COUNTDOWN_STEP_SECONDS,
-    format_account_label,
-    format_countdown,
-)
-from pony.views import (
+from pony.mail.domain import FolderRef
+from pony.mail.views import (
     FolderTreeNode,
     _split_folder_name,
     build_folder_tree,
     has_inbox_mail,
+)
+from pony.tui.widgets.folder_panel import (
+    COUNTDOWN_STEP_SECONDS,
+    format_account_label,
+    format_countdown,
 )
 
 
@@ -312,7 +312,7 @@ async def test_a_jump_from_a_non_inbox_node_lands_on_an_inbox() -> None:
 
 async def test_selecting_a_folder_node_posts_the_selection() -> None:
     """Activating a folder row is what loads it into the message list."""
-    from pony.domain import FolderRef as _FolderRef
+    from pony.mail.domain import FolderRef as _FolderRef
     from pony.tui.screens.main_screen import MainScreen
     from pony.tui.widgets.folder_panel import FolderPanel
 
@@ -333,7 +333,7 @@ async def test_selecting_a_folder_node_posts_the_selection() -> None:
 
 async def test_selecting_an_unknown_folder_still_posts_it() -> None:
     """A ref with no node — e.g. a folder created this session — still loads."""
-    from pony.domain import FolderRef as _FolderRef
+    from pony.mail.domain import FolderRef as _FolderRef
     from pony.tui.screens.main_screen import MainScreen
     from pony.tui.widgets.folder_panel import FolderPanel
 

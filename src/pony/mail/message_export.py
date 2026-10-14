@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Final
 
 from pony.outcome import Notice, Outcome, failure, info, warn
 
+from ..paths import contain
 from .domain import ViewerRule
 from .message_renderer import (
     AttachmentPayload,
@@ -30,7 +31,6 @@ from .message_renderer import (
     proposed_filename,
     unique_destination,
 )
-from .paths import contain
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

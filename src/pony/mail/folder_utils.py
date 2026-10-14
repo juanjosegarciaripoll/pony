@@ -257,7 +257,7 @@ def holds_drafts(config: AppConfig, folder: FolderRef) -> bool:
     """True when *folder* is where this account's drafts are kept.
 
     Asked by both front ends before offering to resume a message, and
-    again by :mod:`pony.delivery` before retiring the one it was resumed
+    again by :mod:`pony.mail.delivery` before retiring the one it was resumed
     from, so a localised ``Borradores`` has to answer the same as
     ``Drafts``.
     """

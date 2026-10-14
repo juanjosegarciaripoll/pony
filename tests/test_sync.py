@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AppConfig,
     FolderConfig,
@@ -27,11 +27,11 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.message_projection import project_rfc822_message
-from pony.protocols import ImapClientSession, MirrorRepository
-from pony.storage import MaildirMirrorRepository
-from pony.sync import ImapSyncService, format_plan_detail
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.message_projection import project_rfc822_message
+from pony.mail.protocols import ImapClientSession, MirrorRepository
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.sync import ImapSyncService, format_plan_detail
 
 # ---------------------------------------------------------------------------
 # FakeImapSession
@@ -41,7 +41,7 @@ from pony.sync import ImapSyncService, format_plan_detail
 class FakeImapSession:
     """Simulates an IMAP server folder with a preset set of messages.
 
-    Implements :class:`pony.protocols.ImapClientSession`.
+    Implements :class:`pony.mail.protocols.ImapClientSession`.
 
     ``folders`` maps folder_name → dict[uid, (message_id, flags, raw_bytes)].
     ``stored_flags`` records every ``store_flags`` call for assertion in tests.
@@ -1132,7 +1132,7 @@ class DeletedFlagMergeTestCase(unittest.TestCase):
     """3a: \\Deleted must not be propagated by automatic union merge."""
 
     def test_deleted_flag_stripped_from_merge(self) -> None:
-        from pony.sync import _merge_flags
+        from pony.mail.sync import _merge_flags
 
         merged = _merge_flags(
             local=frozenset({MessageFlag.SEEN}),
@@ -1144,7 +1144,7 @@ class DeletedFlagMergeTestCase(unittest.TestCase):
 
     def test_convergent_changes_union_cleanly(self) -> None:
         """3c: when both sides set the same flag, union still yields just that flag."""
-        from pony.sync import _merge_flags
+        from pony.mail.sync import _merge_flags
 
         merged = _merge_flags(
             local=frozenset({MessageFlag.SEEN}),
@@ -1155,7 +1155,7 @@ class DeletedFlagMergeTestCase(unittest.TestCase):
 
     def test_divergent_changes_union(self) -> None:
         """When sides set different flags, the merge is the union of both."""
-        from pony.sync import _merge_flags
+        from pony.mail.sync import _merge_flags
 
         merged = _merge_flags(
             local=frozenset({MessageFlag.FLAGGED}),
@@ -1240,7 +1240,7 @@ class FetchFailureTestCase(unittest.TestCase):
 
         tmp = TMP_ROOT / "sync" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.storage import MaildirMirrorRepository
 
         mirror = MaildirMirrorRepository(
             account_name="personal", root_dir=tmp / "mirror"
@@ -1538,7 +1538,7 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
 
     def test_format_plan_detail_shows_confirm_stats(self) -> None:
         """format_plan_detail emits an explicit [CONFIRM: N of M (Z%)] suffix."""
-        from pony.sync import format_plan_detail
+        from pony.mail.sync import format_plan_detail
 
         raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
             uid: (
@@ -1744,7 +1744,7 @@ class CleanupTestCase(unittest.TestCase):
         # Manually insert a row for a different account.
         from datetime import UTC, datetime
 
-        from pony.domain import IndexedMessage, MessageRef, MessageStatus
+        from pony.mail.domain import IndexedMessage, MessageRef, MessageStatus
 
         stale_ref = MessageRef(
             account_name="removed-account",
@@ -1770,7 +1770,7 @@ class CleanupTestCase(unittest.TestCase):
         self.assertIn("removed-account", index.list_indexed_accounts())
 
         # A second sync must leave it alone, and say how to remove it.
-        with self.assertLogs("pony.sync", level="WARNING") as captured:
+        with self.assertLogs("pony.mail.sync", level="WARNING") as captured:
             service.sync()
         self.assertIn("removed-account", index.list_indexed_accounts())
         self.assertTrue(
@@ -1830,7 +1830,7 @@ class ProgressCallbackTestCase(unittest.TestCase):
     """Verify that plan() and execute() fire ProgressInfo callbacks."""
 
     def test_plan_fires_progress(self) -> None:
-        from pony.sync import ProgressInfo
+        from pony.mail.sync import ProgressInfo
 
         raw = _make_raw_message("Test", "<plan-prog@test>")
         service, *_ = _setup(
@@ -1848,7 +1848,7 @@ class ProgressCallbackTestCase(unittest.TestCase):
         self.assertEqual(scan_events[-1].current, scan_events[-1].total)
 
     def test_execute_fires_per_op_progress(self) -> None:
-        from pony.sync import ProgressInfo
+        from pony.mail.sync import ProgressInfo
 
         raw1 = _make_raw_message("Msg1", "<exec-prog1@test>")
         raw2 = _make_raw_message("Msg2", "<exec-prog2@test>")
@@ -2137,7 +2137,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         )
         from datetime import UTC, datetime
 
-        from pony.domain import (
+        from pony.mail.domain import (
             IndexedMessage,
             MessageRef,
             MessageStatus,
@@ -2263,7 +2263,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
         answers drift, no view is gathered, the arm never fires, and the
         row waits for a MOVE of a message that is not there.
         """
-        from pony.sync import PushAppendOp, PushMoveOp
+        from pony.mail.sync import PushAppendOp, PushMoveOp
 
         raw = _make_raw_message("Half moved", "<halfmoved@example.com>")
         service, index, _, session = _setup(
@@ -2365,10 +2365,10 @@ class FastPathTestCase(unittest.TestCase):
         """A pending uid=NULL row is APPENDed on the fast path — no FETCH."""
         from datetime import UTC, datetime
 
-        from pony.domain import (
+        from pony.mail.domain import (
             IndexedMessage as _IndexedMessage,
         )
-        from pony.domain import (
+        from pony.mail.domain import (
             MessageRef as _MessageRef,
         )
 
@@ -2690,8 +2690,8 @@ class DedupSyncPropagationTestCase(unittest.TestCase):
 class SyncPlanUtilityTestCase(unittest.TestCase):
     """Tests for SyncPlan methods and format helpers."""
 
-    from pony.domain import MessageRef
-    from pony.sync import (
+    from pony.mail.domain import MessageRef
+    from pony.mail.sync import (
         AccountSyncPlan,
         FetchNewOp,
         FolderSyncPlan,
@@ -2713,17 +2713,17 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
     )
 
     def _ref(self, id_: int = 1) -> MessageRef:
-        from pony.domain import MessageRef
+        from pony.mail.domain import MessageRef
 
         return MessageRef(account_name="acct", folder_name="INBOX", id=id_)
 
     def _empty_folder(self, name: str = "INBOX") -> FolderSyncPlan:
-        from pony.sync import FolderSyncPlan
+        from pony.mail.sync import FolderSyncPlan
 
         return FolderSyncPlan(folder_name=name, uid_validity=1, highest_uid=1, ops=())
 
     def test_is_empty_true_for_empty_plan(self) -> None:
-        from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
+        from pony.mail.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
 
         folder = FolderSyncPlan(
             folder_name="INBOX", uid_validity=1, highest_uid=0, ops=()
@@ -2733,14 +2733,14 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertTrue(plan.is_empty())
 
     def test_is_empty_false_when_creates(self) -> None:
-        from pony.sync import AccountSyncPlan, SyncPlan
+        from pony.mail.sync import AccountSyncPlan, SyncPlan
 
         acct = AccountSyncPlan(account_name="acct", folders=(), creates=("Archive",))
         plan = SyncPlan(accounts=(acct,))
         self.assertFalse(plan.is_empty())
 
     def test_is_empty_false_when_ops(self) -> None:
-        from pony.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
+        from pony.mail.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
 
         op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
         folder = FolderSyncPlan(
@@ -2751,7 +2751,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertFalse(plan.is_empty())
 
     def test_count_ops_for_fetch(self) -> None:
-        from pony.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
+        from pony.mail.sync import AccountSyncPlan, FetchNewOp, FolderSyncPlan, SyncPlan
 
         op = FetchNewOp(uid=1, message_id="<x@x>", server_flags=frozenset())
         folder = FolderSyncPlan(
@@ -2760,12 +2760,12 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         acct = AccountSyncPlan(account_name="acct", folders=(folder,))
         plan = SyncPlan(accounts=(acct,))
         self.assertEqual(plan.count_ops(FetchNewOp), 1)
-        from pony.sync import ServerDeleteOp
+        from pony.mail.sync import ServerDeleteOp
 
         self.assertEqual(plan.count_ops(ServerDeleteOp), 0)
 
     def test_categorize_restore_op(self) -> None:
-        from pony.sync import RestoreOp, _categorize_ops
+        from pony.mail.sync import RestoreOp, _categorize_ops
 
         op = RestoreOp(message_ref=self._ref())
         counts = _categorize_ops((op,))
@@ -2773,28 +2773,28 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertEqual(counts["restore"], 1)
 
     def test_categorize_reupload_op(self) -> None:
-        from pony.sync import ReUploadOp, _categorize_ops
+        from pony.mail.sync import ReUploadOp, _categorize_ops
 
         op = ReUploadOp(message_ref=self._ref(), local_flags=frozenset())
         counts = _categorize_ops((op,))
         self.assertIn("reupload", counts)
 
     def test_categorize_purge_op(self) -> None:
-        from pony.sync import PurgeLocalOp, _categorize_ops
+        from pony.mail.sync import PurgeLocalOp, _categorize_ops
 
         op = PurgeLocalOp(message_ref=self._ref(), storage_key="key1")
         counts = _categorize_ops((op,))
         self.assertIn("purge", counts)
 
     def test_categorize_uidvalidity_reset_op(self) -> None:
-        from pony.sync import UidValidityResetOp, _categorize_ops
+        from pony.mail.sync import UidValidityResetOp, _categorize_ops
 
         op = UidValidityResetOp()
         counts = _categorize_ops((op,))
         self.assertIn("uidvalidity_reset", counts)
 
     def test_format_plan_detail_with_skipped_folders(self) -> None:
-        from pony.sync import AccountSyncPlan, SyncPlan, format_plan_detail
+        from pony.mail.sync import AccountSyncPlan, SyncPlan, format_plan_detail
 
         acct = AccountSyncPlan(
             account_name="acct",
@@ -2807,7 +2807,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("Spam", detail)
 
     def test_format_plan_detail_with_creates(self) -> None:
-        from pony.sync import AccountSyncPlan, SyncPlan, format_plan_detail
+        from pony.mail.sync import AccountSyncPlan, SyncPlan, format_plan_detail
 
         acct = AccountSyncPlan(
             account_name="acct",
@@ -2820,7 +2820,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("Archive", detail)
 
     def test_format_plan_detail_new_folder(self) -> None:
-        from pony.sync import (
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             SyncPlan,
@@ -2840,7 +2840,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("new folder", detail)
 
     def test_format_plan_detail_with_confirmation_needed(self) -> None:
-        from pony.sync import (
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             ServerDeleteOp,
@@ -2864,7 +2864,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("CONFIRM", detail)
 
     def test_format_plan_summary_with_ops(self) -> None:
-        from pony.sync import (
+        from pony.mail.sync import (
             AccountSyncPlan,
             FetchNewOp,
             FolderSyncPlan,
@@ -2882,7 +2882,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("download", summary)
 
     def test_categorize_push_move_op(self) -> None:
-        from pony.sync import PushMoveOp, _categorize_ops
+        from pony.mail.sync import PushMoveOp, _categorize_ops
 
         op = PushMoveOp(
             message_ref=self._ref(),
@@ -2894,35 +2894,35 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("push_move", counts)
 
     def test_categorize_push_append_op(self) -> None:
-        from pony.sync import PushAppendOp, _categorize_ops
+        from pony.mail.sync import PushAppendOp, _categorize_ops
 
         op = PushAppendOp(message_ref=self._ref())
         counts = _categorize_ops((op,))
         self.assertIn("push_append", counts)
 
     def test_categorize_push_delete_op(self) -> None:
-        from pony.sync import PushDeleteOp, _categorize_ops
+        from pony.mail.sync import PushDeleteOp, _categorize_ops
 
         op = PushDeleteOp(message_ref=self._ref(), server_uid=1, storage_key="k")
         counts = _categorize_ops((op,))
         self.assertIn("push_delete", counts)
 
     def test_categorize_pull_flags_op(self) -> None:
-        from pony.sync import PullFlagsOp, _categorize_ops
+        from pony.mail.sync import PullFlagsOp, _categorize_ops
 
         op = PullFlagsOp(uid=1, message_ref=self._ref(), new_flags=frozenset())
         counts = _categorize_ops((op,))
         self.assertIn("pull_flags", counts)
 
     def test_categorize_push_flags_op(self) -> None:
-        from pony.sync import PushFlagsOp, _categorize_ops
+        from pony.mail.sync import PushFlagsOp, _categorize_ops
 
         op = PushFlagsOp(uid=1, message_ref=self._ref(), new_flags=frozenset())
         counts = _categorize_ops((op,))
         self.assertIn("push_flags", counts)
 
     def test_categorize_merge_flags_op(self) -> None:
-        from pony.sync import MergeFlagsOp, _categorize_ops
+        from pony.mail.sync import MergeFlagsOp, _categorize_ops
 
         op = MergeFlagsOp(
             uid=1,
@@ -2936,7 +2936,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
     def test_categorize_unknown_op_uses_other_key(self) -> None:
         from unittest.mock import MagicMock
 
-        from pony.sync import _categorize_ops
+        from pony.mail.sync import _categorize_ops
 
         # Create a mock object that's not a known op type
         unknown_op = MagicMock(spec=[])
@@ -2944,7 +2944,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         self.assertIn("other", counts)
 
     def test_format_op_counts_includes_other(self) -> None:
-        from pony.sync import _format_op_counts
+        from pony.mail.sync import _format_op_counts
 
         counts = {"other": 3}
         parts = _format_op_counts(counts)
@@ -2952,7 +2952,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
 
     def test_format_plan_detail_empty_folder_no_ops_no_new(self) -> None:
         """format_plan_detail skips output when folder has no ops and is_new=False."""
-        from pony.sync import (
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             SyncPlan,
@@ -2974,8 +2974,8 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
 
     def test_format_plan_detail_needs_confirmation_no_total(self) -> None:
         """Format confirms when needs_confirmation=True but pending_delete_total=0."""
-        from pony.domain import MessageRef
-        from pony.sync import (
+        from pony.mail.domain import MessageRef
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             ServerDeleteOp,
@@ -3230,7 +3230,7 @@ class ExecuteFailureTestCase(unittest.TestCase):
         """A trashed row the server never saw is dropped from index + mirror."""
         from datetime import UTC, datetime
 
-        from pony.domain import IndexedMessage, MessageRef
+        from pony.mail.domain import IndexedMessage, MessageRef
 
         service, index, mirror, _session = self._seeded()
         service.sync()
@@ -3356,8 +3356,8 @@ class ReadOnlyAppendSuppressionTestCase(unittest.TestCase):
         ``PushAppendOp``; the read-only guard has to win over it, or the
         sync would keep retrying an APPEND the server will always refuse.
         """
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         tmp = TMP_ROOT / "sync" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
@@ -3748,7 +3748,7 @@ class UidValidityResetCostTestCase(unittest.TestCase):
         self.assertIsNotNone(same[0].uid, "no handle, so the delete is stranded")
 
     def test_the_plan_names_the_re_keying(self) -> None:
-        from pony.sync import AdoptUidOp, FetchNewOp
+        from pony.mail.sync import AdoptUidOp, FetchNewOp
 
         service, _index, _mirror, session = _setup(server_folders=self._ten())
         service.sync()
@@ -3824,7 +3824,7 @@ class StaleUidEpochTestCase(unittest.TestCase):
         )
 
     def test_no_upload_is_planned_for_a_row_whose_epoch_ended(self) -> None:
-        from pony.sync import PushAppendOp
+        from pony.mail.sync import PushAppendOp
 
         service, index, _, session = self._folder_of(6)
         service.sync()
@@ -4036,7 +4036,7 @@ class MassPushGuardTestCase(unittest.TestCase):
         (account_result,) = result.accounts
         self.assertEqual(account_result.held_folders, ("INBOX",))
         self.assertIn("INBOX", account_result.skipped_folders)
-        from pony.sync import describe_sync_result
+        from pony.mail.sync import describe_sync_result
 
         said = describe_sync_result(result)
         self.assertIn("Held for confirmation: personal/INBOX.", said)
@@ -4061,7 +4061,7 @@ class MassPushGuardTestCase(unittest.TestCase):
         anyway -- which made declining, the answer that leaves the index
         without its UIDs, look like the careful one.
         """
-        from pony.sync import describe_halt
+        from pony.mail.sync import describe_halt
 
         service, index, _, _ = self._folder_of(6)
         service.sync()
@@ -4075,7 +4075,12 @@ class MassPushGuardTestCase(unittest.TestCase):
 
     def test_a_deletion_halt_is_not_given_the_upload_caveat(self) -> None:
         """It is only true of uploads, so it is only said about them."""
-        from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan, describe_halt
+        from pony.mail.sync import (
+            AccountSyncPlan,
+            FolderSyncPlan,
+            SyncPlan,
+            describe_halt,
+        )
 
         plan = SyncPlan(
             accounts=(
@@ -4231,7 +4236,7 @@ class MassPushRatioOnEveryPathTestCase(unittest.TestCase):
 
         plan = service.plan()
         (folder_plan,) = plan.accounts[0].folders
-        from pony.sync import PushAppendOp
+        from pony.mail.sync import PushAppendOp
 
         appends = [op for op in folder_plan.ops if isinstance(op, PushAppendOp)]
         self.assertEqual(len(appends), 5)
@@ -4448,13 +4453,13 @@ class FetchBackpressureTestCase(unittest.TestCase):
     """
 
     def test_the_queue_between_fetch_and_ingest_is_bounded(self) -> None:
-        from pony.sync import _FETCH_QUEUE_DEPTH
+        from pony.mail.sync import _FETCH_QUEUE_DEPTH
 
         self.assertGreater(_FETCH_QUEUE_DEPTH, 0)
 
     def test_a_slow_consumer_holds_the_fetch_back(self) -> None:
         """What the producer has read, minus what the consumer has taken."""
-        from pony.sync import _FETCH_QUEUE_DEPTH
+        from pony.mail.sync import _FETCH_QUEUE_DEPTH
 
         count = _FETCH_QUEUE_DEPTH * 6
         service, index, _mirror, session = _setup(
@@ -4543,7 +4548,7 @@ class AdoptionCostTestCase(unittest.TestCase):
         """Adoption and the row want the same projection, not two."""
         from unittest.mock import patch
 
-        from pony import sync as sync_module
+        from pony.mail import sync as sync_module
 
         service, index, _mirror, _session = _setup(
             server_folders={

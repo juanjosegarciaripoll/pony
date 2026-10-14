@@ -10,14 +10,14 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.bbdb import read_bbdb, write_bbdb
-from pony.domain import (
+from pony.mail.bbdb import read_bbdb, write_bbdb
+from pony.mail.domain import (
     Contact,
     IndexedMessage,
     MessageRef,
     MessageStatus,
 )
-from pony.index_store import SqliteIndexRepository
+from pony.mail.index_store import SqliteIndexRepository
 from pony.paths import AppPaths
 
 
@@ -789,18 +789,18 @@ class BbdbParserInternalsTest(unittest.TestCase):
     """Tests for bbdb.py parsing helpers not otherwise exercised."""
 
     def test_lisp_string_empty_returns_nil(self) -> None:
-        from pony.bbdb import _lisp_string
+        from pony.mail.bbdb import _lisp_string
 
         self.assertEqual(_lisp_string(""), "nil")
 
     def test_sexp_to_string_non_string_returns_empty(self) -> None:
-        from pony.bbdb import _sexp_to_string
+        from pony.mail.bbdb import _sexp_to_string
 
         self.assertEqual(_sexp_to_string(42), "")
         self.assertEqual(_sexp_to_string(None), "")
 
     def test_parse_bbdb_record_too_few_fields_returns_none(self) -> None:
-        from pony.bbdb import _parse_bbdb_record
+        from pony.mail.bbdb import _parse_bbdb_record
 
         # A record with fewer than 8 fields
         result = _parse_bbdb_record('["Alice" "Smith"]')
@@ -809,7 +809,7 @@ class BbdbParserInternalsTest(unittest.TestCase):
     def test_read_bbdb_skips_comment_lines(self) -> None:
         import tempfile
 
-        from pony.bbdb import read_bbdb
+        from pony.mail.bbdb import read_bbdb
 
         content = "; this is a comment\n; another comment\n"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".bbdb", delete=False) as f:
@@ -822,7 +822,7 @@ class BbdbParserInternalsTest(unittest.TestCase):
             path.unlink(missing_ok=True)
 
     def test_extract_notes_with_nested_list(self) -> None:
-        from pony.bbdb import _extract_notes
+        from pony.mail.bbdb import _extract_notes
 
         # Nested list structure: [[("notes", "text")]]
         xfields = [[("notes", "my notes")]]
@@ -830,20 +830,20 @@ class BbdbParserInternalsTest(unittest.TestCase):
         self.assertEqual(result, "my notes")
 
     def test_extract_notes_with_flat_tuple(self) -> None:
-        from pony.bbdb import _extract_notes
+        from pony.mail.bbdb import _extract_notes
 
         xfields = [("notes", "flat notes")]
         result = _extract_notes(xfields)
         self.assertEqual(result, "flat notes")
 
     def test_extract_notes_empty_returns_empty(self) -> None:
-        from pony.bbdb import _extract_notes
+        from pony.mail.bbdb import _extract_notes
 
         self.assertEqual(_extract_notes([]), "")
         self.assertEqual(_extract_notes(None), "")
 
     def test_parse_bbdb_date_from_string(self) -> None:
-        from pony.bbdb import _parse_bbdb_date
+        from pony.mail.bbdb import _parse_bbdb_date
 
         result = _parse_bbdb_date("2024-01-15")
         self.assertIsNotNone(result)
@@ -851,25 +851,25 @@ class BbdbParserInternalsTest(unittest.TestCase):
         self.assertEqual(result.year, 2024)
 
     def test_parse_bbdb_date_from_tuple(self) -> None:
-        from pony.bbdb import _parse_bbdb_date
+        from pony.mail.bbdb import _parse_bbdb_date
 
         result = _parse_bbdb_date(("creation-date", "2024-06-01"))
         self.assertIsNotNone(result)
 
     def test_parse_bbdb_date_from_list(self) -> None:
-        from pony.bbdb import _parse_bbdb_date
+        from pony.mail.bbdb import _parse_bbdb_date
 
         result = _parse_bbdb_date([("timestamp", "2024-03-15")])
         self.assertIsNotNone(result)
 
     def test_parse_bbdb_date_invalid_returns_none(self) -> None:
-        from pony.bbdb import _parse_bbdb_date
+        from pony.mail.bbdb import _parse_bbdb_date
 
         result = _parse_bbdb_date("not-a-date")
         self.assertIsNone(result)
 
     def test_parse_bbdb_date_none_returns_none(self) -> None:
-        from pony.bbdb import _parse_bbdb_date
+        from pony.mail.bbdb import _parse_bbdb_date
 
         result = _parse_bbdb_date(None)
         self.assertIsNone(result)
@@ -877,7 +877,7 @@ class BbdbParserInternalsTest(unittest.TestCase):
     def test_read_bbdb_line_not_ending_with_bracket_skipped(self) -> None:
         import tempfile
 
-        from pony.bbdb import read_bbdb
+        from pony.mail.bbdb import read_bbdb
 
         # A line that starts with [ but doesn't end with ]
         content = "[incomplete record without end bracket\n"
@@ -1105,7 +1105,7 @@ class BbdbFieldRoundTripTests(unittest.TestCase):
 
     def test_a_non_utf8_file_reports_itself(self) -> None:
         """It used to raise UnicodeDecodeError out of the CLI."""
-        from pony.bbdb import BbdbError
+        from pony.mail.bbdb import BbdbError
 
         path = TMP_ROOT / "bbdb-round" / f"{uuid4().hex}.bbdb"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1251,7 +1251,7 @@ class ContactEmailOwnershipTests(unittest.TestCase):
         return repo
 
     def test_claiming_a_taken_address_reports_the_owner(self) -> None:
-        from pony.index_store import ContactEmailConflictError
+        from pony.mail.index_store import ContactEmailConflictError
 
         repo = self._store()
         repo.upsert_contact(
@@ -1272,7 +1272,7 @@ class ContactEmailOwnershipTests(unittest.TestCase):
     def test_the_rejected_save_leaves_the_contact_untouched(self) -> None:
         # Replacing the only address with a taken one used to leave the
         # contact with no address at all, and report success.
-        from pony.index_store import ContactEmailConflictError
+        from pony.mail.index_store import ContactEmailConflictError
 
         repo = self._store()
         repo.upsert_contact(contact=_make_contact(emails=("shared@x.com",)))
@@ -1431,7 +1431,7 @@ class ContactHygieneTests(unittest.TestCase):
         """``getaddresses`` returns a bare word for a malformed header."""
         from email.message import EmailMessage
 
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.message_projection import project_rfc822_message
 
         repo = self._store()
         message = EmailMessage()
@@ -1492,7 +1492,7 @@ class ContactLookupCostTests(unittest.TestCase):
         self.assertEqual(self.calls, 0)
 
     def test_opening_a_contact_by_id_does_not_list_the_book(self) -> None:
-        from pony.contact_actions import contact_by_id
+        from pony.mail.contact_actions import contact_by_id
 
         stored = self.repo.upsert_contact(contact=_make_contact())
         assert stored.id is not None
@@ -1505,7 +1505,7 @@ class ContactLookupCostTests(unittest.TestCase):
         self.assertEqual(self.calls, 0)
 
     def test_labelling_a_merge_does_not_list_the_book(self) -> None:
-        from pony.contact_actions import MergePlan, plan_merge
+        from pony.mail.contact_actions import MergePlan, plan_merge
 
         first = self.repo.upsert_contact(contact=_make_contact())
         second = self.repo.upsert_contact(
@@ -1572,7 +1572,7 @@ class ContactLookupCostTests(unittest.TestCase):
 
     def test_re_importing_the_same_address_less_record_still_merges(self) -> None:
         from pony.cli import import_bbdb_contacts
-        from pony.contact_actions import ImportTally
+        from pony.mail.contact_actions import ImportTally
 
         tmp = TMP_ROOT / "contacts" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)

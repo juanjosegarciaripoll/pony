@@ -1,11 +1,11 @@
 """The browser front end: routes over the same actions the TUI calls.
 
 This is a second front end, not a second program.  Every operation it
-offers is a call into :mod:`pony.mailbox_actions`, :mod:`pony.delivery`,
-:mod:`pony.contact_actions`, :mod:`pony.invitation_actions` or
+offers is a call into :mod:`pony.mail.mailbox_actions`, :mod:`pony.mail.delivery`,
+:mod:`pony.mail.contact_actions`, :mod:`pony.invitation_actions` or
 :mod:`pony.calendar.event_actions`; every row it renders comes from
-:mod:`pony.views` or :mod:`pony.calendar.views`; every key it answers to comes
-from :mod:`pony.keymap` or :mod:`pony.calendar.keymap`.  What is new here is
+:mod:`pony.mail.views` or :mod:`pony.calendar.views`; every key it answers to comes
+from :mod:`pony.mail.keymap` or :mod:`pony.calendar.keymap`.  What is new here is
 HTTP, HTML and a stylesheet.
 
 Two things it does differently from the terminal, both deliberate:
@@ -50,16 +50,16 @@ from starlette.staticfiles import StaticFiles
 
 from pony.outcome import Notice, Outcome, Severity, warn
 
-from .. import contact_actions, mailbox_actions
-from ..domain import FolderRef, MessageFlag, MessageRef
-from ..html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
-from ..message_export import (
+from ..mail import contact_actions, mailbox_actions
+from ..mail.domain import FolderRef, MessageFlag, MessageRef
+from ..mail.html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
+from ..mail.message_export import (
     message_parts,
     parse_part_selection,
     part_key,
     part_payload,
 )
-from ..message_renderer import build_browser_html, render_message
+from ..mail.message_renderer import build_browser_html, render_message
 from . import calendar as calendar_view
 from . import compose as compose_view
 from . import contacts as contacts_view
@@ -75,14 +75,14 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from ..calendar_runtime import CalendarRuntime
-    from ..domain import AppConfig, IndexedMessage
-    from ..protocols import (
+    from ..mail.domain import AppConfig, IndexedMessage
+    from ..mail.protocols import (
         ContactRepository,
         CredentialsProvider,
         IndexRepository,
         MirrorRepository,
     )
-    from ..sync import MailSyncScheduler
+    from ..mail.sync import MailSyncScheduler
     from .actions import Action
 
 
@@ -203,7 +203,7 @@ def _wire_sync(services: WebServices) -> None:
     gate.calendar = services.calendar
     gate.scheduler = services.scheduler
     if services.credentials is not None and gate.service is None:
-        from ..sync import build_sync_service
+        from ..mail.sync import build_sync_service
 
         gate.service = build_sync_service(
             config=services.config,
@@ -548,7 +548,7 @@ async def _message_raw(services: WebServices, request: Request) -> Response:
     before, so three of them were distinguished by the browser's own
     numbering and nothing else.
     """
-    from ..message_renderer import proposed_filename
+    from ..mail.message_renderer import proposed_filename
 
     raw = await run_in_threadpool(_raw_from, services, request)
     if isinstance(raw, Response):
@@ -568,7 +568,7 @@ async def _parts(services: WebServices, request: Request) -> Response:
 
     ``select`` is the grammar the terminal's ``S`` prompt takes --
     ``0``, ``T``, ``1,3``, ``1-3``, ``*`` -- parsed by the one function
-    that defines it (:func:`pony.message_export.parse_part_selection`).
+    that defines it (:func:`pony.mail.message_export.parse_part_selection`).
     The browser had no way to reach that grammar, so ``S`` there sent
     whatever was typed to ``/message/attachment?n=`` as a single part
     name and anything else landed on a bare "Which part?" page, with

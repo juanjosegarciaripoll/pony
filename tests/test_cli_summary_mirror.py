@@ -28,7 +28,7 @@ import pony.cli
 
 
 class _FakeImapSession:
-    """Stand-in for :class:`pony.imap_client.ImapSession`.
+    """Stand-in for :class:`pony.mail.imap_client.ImapSession`.
 
     Recorded canned data lets ``run_server_summary`` print a folder table
     without touching a real server.  Class attributes carry the scripted
@@ -222,8 +222,8 @@ class MirrorFolderTest(unittest.TestCase):
             self.assertIn("Run `pony sync`", output)
 
             # Destination folder now holds an indexed row with uid=NULL.
-            from pony.domain import FolderRef
-            from pony.index_store import SqliteIndexRepository
+            from pony.mail.domain import FolderRef
+            from pony.mail.index_store import SqliteIndexRepository
 
             paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -318,7 +318,7 @@ class MirrorFolderTest(unittest.TestCase):
         self.assertIn("Aborted.", output)
 
     def test_unreadable_source_file_is_skipped(self) -> None:
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.storage import MaildirMirrorRepository
 
         def _boom(*_args: Any, **_kwargs: Any) -> bytes:  # noqa: ANN401
             raise OSError("unreadable")
@@ -334,7 +334,7 @@ class MirrorFolderTest(unittest.TestCase):
         self.assertIn("Could not read source message", output)
 
     def test_delete_failure_during_overwrite_is_logged(self) -> None:
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.storage import MaildirMirrorRepository
 
         def _boom(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
             raise OSError("cannot delete")
@@ -358,15 +358,15 @@ class MirrorFolderTest(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import (
+        from pony.mail.domain import (
             AccountConfig,
             FolderRef,
             MessageRef,
             MessageStatus,
         )
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         config = load_config(config_path)
         account = next(iter(config.accounts))
@@ -463,8 +463,8 @@ class FolderListTableTest(unittest.TestCase):
     def test_lists_synced_folder_shows_last_sync(self) -> None:
         from datetime import UTC, datetime
 
-        from pony.domain import FolderSyncState
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderSyncState
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Hi", body="body")
@@ -509,8 +509,8 @@ class MirrorFolderPreservesFlagsTest(unittest.TestCase):
     def test_read_and_flagged_state_survives_the_copy(self) -> None:
         import dataclasses
 
-        from pony.domain import FolderRef, MessageFlag
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             seeded = _seed_one_message(config_path, subject="Read me", body="body")
@@ -548,8 +548,8 @@ class MirrorFolderPreservesFlagsTest(unittest.TestCase):
 
     def test_the_copy_is_a_fresh_unsynced_row(self) -> None:
         """It must look like a local addition so sync APPENDs it."""
-        from pony.domain import FolderRef
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Fresh", body="body")

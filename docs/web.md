@@ -243,7 +243,7 @@ Invitations](tui.md#invitations) for what each answer means.
 ## The keyboard
 
 The browser does not have a keymap of its own. Every page carries the
-table for the page it is, served from `pony.keymap` and
+table for the page it is, served from `pony.mail.keymap` and
 `pony.calendar.keymap` — the tables the Textual screens build their bindings
 from — and `keydown` is matched against it. A key cannot mean one thing
 in the terminal and another here, and the footer cannot advertise a key

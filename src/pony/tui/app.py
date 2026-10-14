@@ -24,20 +24,20 @@ from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
 from pony.tui.reporting import on_ui_thread
 
 from ..calendar_runtime import CalendarRuntime
-from ..composer import DraftSpec
-from ..domain import AnyAccount, AppConfig, ViewerRule
 from ..invitation_actions import send_event_invitations, sender_for_invitation
-from ..keymap import APPLICATION_KEYS, Surface
-from ..notifications import Notification, NotificationCenter, NotificationSource
-from ..paths import resolve
-from ..protocols import (
+from ..mail.composer import DraftSpec
+from ..mail.domain import AnyAccount, AppConfig, ViewerRule
+from ..mail.keymap import APPLICATION_KEYS, Surface
+from ..mail.protocols import (
     ContactRepository,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from ..sync import MailSyncOutcome, MailSyncScheduler, build_sync_service
-from ..views import has_inbox_mail
+from ..mail.sync import MailSyncOutcome, MailSyncScheduler, build_sync_service
+from ..mail.views import has_inbox_mail
+from ..notifications import Notification, NotificationCenter, NotificationSource
+from ..paths import resolve
 from .bindings import to_textual
 from .calendar_host import AlarmPoller, build_calendar_services
 from .screens.main_screen import MainScreen

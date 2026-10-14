@@ -12,9 +12,9 @@ from textual.timer import Timer
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
-from ...domain import AppConfig, FolderRef
-from ...protocols import IndexRepository, MirrorRepository
-from ...views import FolderTreeNode, build_folder_tree, has_inbox_mail
+from ...mail.domain import AppConfig, FolderRef
+from ...mail.protocols import IndexRepository, MirrorRepository
+from ...mail.views import FolderTreeNode, build_folder_tree, has_inbox_mail
 from ..bindings import FOLDER_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
@@ -246,10 +246,10 @@ class FolderPanel(DraggableEdgeMixin, Tree[FolderPanelNodeData]):
         """``{folder_name: unread_count}`` for one account.
 
         Which folders exist is a question about the stores, not about
-        this widget: see :func:`pony.mailbox_actions.folder_unread_counts`,
+        this widget: see :func:`pony.mail.mailbox_actions.folder_unread_counts`,
         which the browser's folder pane asks as well.
         """
-        from ...mailbox_actions import Mailboxes, folder_unread_counts
+        from ...mail.mailbox_actions import Mailboxes, folder_unread_counts
 
         return folder_unread_counts(
             Mailboxes(

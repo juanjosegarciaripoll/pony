@@ -14,14 +14,14 @@ from textual.widgets import DataTable
 from textual.widgets._data_table import ColumnKey
 from textual.worker import Worker
 
-from ...domain import (
+from ...mail.domain import (
     FolderMessageSummary,
     FolderRef,
     IndexedMessage,
     MessageFlag,
 )
-from ...protocols import IndexRepository
-from ...views import ROW_BATCH, correspondent_label, message_row, summary_of
+from ...mail.protocols import IndexRepository
+from ...mail.views import ROW_BATCH, correspondent_label, message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
@@ -168,7 +168,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
     def _cell_for(self, summary: FolderMessageSummary) -> Text:
         """Pad one projected row into this table's columns.
 
-        The fields come from :func:`pony.views.message_row`; what is
+        The fields come from :func:`pony.mail.views.message_row`; what is
         left here is the part that only means anything in a terminal —
         padding and truncating each field to a character width, and
         choosing between the widget's dim default and full brightness.

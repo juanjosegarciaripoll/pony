@@ -42,11 +42,11 @@ from pony.tui.bindings import BindingType
 from pony.tui.calendar.app import AttendeeCompleter, InvitationSender, TuiServices
 
 from ..calendar_runtime import CalendarRuntime
-from ..compose_utils import format_display_address
-from ..domain import AppConfig
+from ..mail.compose_utils import format_display_address
+from ..mail.domain import AppConfig
+from ..mail.protocols import ContactRepository
+from ..mail.protocols import IndexRepository as MailIndexRepository
 from ..notifications import Notification, NotificationSource
-from ..protocols import ContactRepository
-from ..protocols import IndexRepository as MailIndexRepository
 
 # How far ahead the mail reader's status line looks for an event.  A day
 # is enough to answer "what is next" without turning the line into an

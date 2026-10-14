@@ -1,6 +1,6 @@
 """Turning the shared keymap into Textual bindings.
 
-The keymap itself is data in :mod:`pony.keymap`, because the browser
+The keymap itself is data in :mod:`pony.mail.keymap`, because the browser
 front end needs the same table and a ``textual.binding.Binding`` means
 nothing to it.  This module is the terminal's half of it: a converter,
 plus the two groups several list widgets assign straight into their
@@ -17,7 +17,7 @@ from textual.binding import Binding
 
 from pony.keys import KeyBinding
 
-from ..keymap import (
+from ..mail.keymap import (
     FOLDER_KEYS,
     INVITATION_KEYS,
     MARK_KEYS,

@@ -32,25 +32,25 @@ from pathlib import Path
 # installed.
 _BACKEND_MODULES = (
     "pony.scheduler",
-    "pony.sync",
-    "pony.storage",
-    "pony.index_store",
-    "pony.storage_indexing",
-    "pony.message_projection",
-    "pony.message_renderer",
-    "pony.pdf_export",
-    "pony.compose_utils",
-    "pony.composer",
-    "pony.accounts",
-    "pony.mailbox_ops",
-    "pony.mailbox_actions",
-    "pony.delivery",
-    "pony.contact_actions",
+    "pony.mail.sync",
+    "pony.mail.storage",
+    "pony.mail.index_store",
+    "pony.mail.storage_indexing",
+    "pony.mail.message_projection",
+    "pony.mail.message_renderer",
+    "pony.mail.pdf_export",
+    "pony.mail.compose_utils",
+    "pony.mail.composer",
+    "pony.mail.accounts",
+    "pony.mail.mailbox_ops",
+    "pony.mail.mailbox_actions",
+    "pony.mail.delivery",
+    "pony.mail.contact_actions",
     "pony.invitation_actions",
-    "pony.views",
-    "pony.keymap",
+    "pony.mail.views",
+    "pony.mail.keymap",
     "pony.calendar.keymap",
-    "pony.folder_utils",
+    "pony.mail.folder_utils",
     "pony.outcome",
     "pony.sqlite",
     "pony.keys",
@@ -58,14 +58,14 @@ _BACKEND_MODULES = (
     "pony.atomic",
     "pony.calendar.event_actions",
     "pony.calendar.views",
-    "pony.search_parser",
-    "pony.contact_naming",
+    "pony.mail.search_parser",
+    "pony.mail.contact_naming",
     "pony.config",
-    "pony.imap_client",
-    "pony.smtp_sender",
-    "pony.credentials",
+    "pony.mail.imap_client",
+    "pony.mail.smtp_sender",
+    "pony.mail.credentials",
     "pony.services",
-    "pony.bbdb",
+    "pony.mail.bbdb",
     "pony.mcp_server",
     "pony.cli",
     # Added after an audit found the list hand-kept and these missing:
@@ -87,15 +87,15 @@ _BACKEND_MODULES = (
     "pony.calendar_runtime",
     "pony.notifications",
     "pony.invitation",
-    "pony.domain",
+    "pony.mail.domain",
     "pony.paths",
     # The terminal's `w` serves its page from here instead of writing a
     # file, and it has to do that without the `web` extra installed:
     # `http.server` only, no Starlette, and no widget tree either.
-    "pony.browser_preview",
-    "pony.html_policy",
-    "pony.handoff",
-    "pony.authentication",
+    "pony.mail.browser_preview",
+    "pony.mail.html_policy",
+    "pony.mail.handoff",
+    "pony.mail.authentication",
     "pony.web",
 )
 
@@ -209,6 +209,15 @@ class WebFrontEndIsIndependentTest(unittest.TestCase):
 #: imported one to run a sync, and the host's own calendar glue imported
 #: one to find out where a configuration lives.
 _FRONT_END_PREFIXES = ("pony.tui", "pony.web")
+#: The two models.  Each owns a store, a sync and the operations over
+#: them, and neither may reach into the other: mail does not open the
+#: calendar's index and the calendar does not open a mailbox.  What the
+#: two genuinely share sits below both of them (`pony.outcome`,
+#: `pony.sqlite`, `pony.paths`, `pony.keys`, ...), and where they
+#: genuinely meet sits above both (`pony.invitation` -- calendar data
+#: arriving by mail -- `pony.config`, `pony.services`,
+#: `pony.calendar_runtime`).
+_MODEL_PREFIXES = ("pony.mail", "pony.calendar")
 #: The command line is Pony's, both halves of it: `pony.cli` parses and
 #: `pony.cli_calendar` holds the calendar's commands. Neither model has
 #: one of its own, which is how a front end came to import a command
@@ -270,6 +279,36 @@ def _belongs_to(module: str, prefixes: tuple[str, ...]) -> bool:
 class ComponentsStayApartTest(unittest.TestCase):
     """The five components, and who is allowed to know about whom."""
 
+    def test_neither_model_imports_the_other(self) -> None:
+        """Mail and calendar meet above each other, never inside.
+
+        This was a one-way rule enforced by the packaging -- `pony`
+        could import `chronos` and not the reverse -- which put
+        everything shared on the calendar's side whatever it was about,
+        and let the mail half reach into the calendar for things that
+        were nobody's in particular.  One package has no such direction,
+        so the rule is symmetric and lives here instead.
+        """
+        root = Path(__file__).resolve().parent.parent / "src"
+        offenders: list[str] = []
+        for module, path in _source_files():
+            mine = next(
+                (p for p in _MODEL_PREFIXES if _belongs_to(module, (p,))),
+                None,
+            )
+            if mine is None:
+                continue
+            theirs = tuple(p for p in _MODEL_PREFIXES if p != mine)
+            for imported in _imported_modules(path, root):
+                if _belongs_to(imported, theirs):
+                    offenders.append(f"{module} -> {imported}")
+
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "one model reaches into the other: " + ", ".join(sorted(offenders)),
+        )
+
     def test_no_model_module_imports_a_front_end(self) -> None:
         root = Path(__file__).resolve().parent.parent / "src"
         offenders: list[str] = []
@@ -324,7 +363,7 @@ class ArchitectureListingTest(unittest.TestCase):
 
     It lists every module with a line saying what it is for, which is
     the first thing anyone reads to find where something lives -- and a
-    new module simply did not appear in it (`pony.contact_merge`, the
+    new module simply did not appear in it (`pony.mail.contact_merge`, the
     whole of the merge policy, and `pony.calendar.bootstrap`).  Nothing failed,
     because no test read the page.
     """
@@ -341,7 +380,7 @@ class ArchitectureListingTest(unittest.TestCase):
         page = self._listed()
         root = Path(__file__).resolve().parents[1] / "src"
         missing: list[str] = []
-        for package in ("pony", "pony/calendar"):
+        for package in ("pony", "pony/mail", "pony/calendar"):
             for module in sorted((root / package).glob("*.py")):
                 if module.name in {"__init__.py", "version.py"}:
                     continue

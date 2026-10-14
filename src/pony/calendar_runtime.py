@@ -47,7 +47,7 @@ from pony.calendar.paths import CalendarPaths
 from pony.calendar.storage import VdirMirrorRepository
 
 from .config import ConfigError, load_config, read_raw_config
-from .domain import CONFIG_VERSION
+from .mail.domain import CONFIG_VERSION
 
 if TYPE_CHECKING:
     from pony.calendar.config import ConfigDocument

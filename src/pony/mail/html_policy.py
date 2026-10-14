@@ -2,14 +2,14 @@
 
 Both front ends show the HTML part of a message as a page of its own —
 the browser at ``GET /message/body``, the terminal through
-:mod:`pony.browser_preview` — and the restrictions have to be the same
+:mod:`pony.mail.browser_preview` — and the restrictions have to be the same
 in both, so they live here instead of in either transport.  A constant
 in one of them is a constant the other does not have: that is how the
 terminal came to open the identical bytes at a ``file://`` URL, where no
 header applies at all.
 
 Nothing here imports Starlette or Textual.  See
-:func:`pony.message_renderer.build_browser_html` for what produces the
+:func:`pony.mail.message_renderer.build_browser_html` for what produces the
 document these headers accompany.
 """
 

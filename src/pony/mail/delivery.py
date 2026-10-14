@@ -69,7 +69,7 @@ def file_message(
 
     *override* is the folder named in the account's configuration, used
     in preference to looking one up; without it the hint is resolved
-    through :func:`pony.folder_utils.resolve_folder`, which is what
+    through :func:`pony.mail.folder_utils.resolve_folder`, which is what
     finds a server's localised ``Sent`` or ``Drafts``.
 
     The inserted row has no UID, which is what makes sync append it to

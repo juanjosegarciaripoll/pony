@@ -25,23 +25,42 @@ configuration file, one notification space. See
 
 ## Package layout
 
+One package, four tiers: below everything, what both halves share and
+neither owns; above it the two models; above them the three front ends;
+and between the models, the few modules where mail and calendar
+genuinely meet.
+
 ```
 src/pony/
   __init__.py
   __main__.py          # python -m pony entrypoint
   version.py           # __version__ (stamped by the release workflow)
-  cli.py               # argparse command dispatch, both halves of it
-  cli_calendar.py      # the calendar's commands (`pony calendar ...`)
-  config.py            # TOML config loader and validator
+
+  # shared, and about neither half
+  paths.py             # application directory resolution
   outcome.py           # what an operation changed, and the notices to show
   atomic.py            # replacing a file without leaving half of one
   sqlite.py            # one connection per thread, and timestamps in UTC
   scheduler.py         # the periodic sync both halves run on
   keys.py              # the vocabulary a keyboard is described with
   shell.py             # splitting a command line the way the platform quotes it
+  notifications.py     # the notification space mail and calendar share
+
+  # where the two halves meet
+  config.py            # the one config file: mail keys, and the [calendar] table
+  calendar_runtime.py  # the [calendar] config section + opening its stores
+  invitation.py        # iTIP: reading invitations, writing replies/requests
+  invitation_actions.py# file an invitation, answer its organizer
+  services.py          # doctor diagnostics, mirror integrity, both halves
+
+  # the command line
+  cli.py               # argparse command dispatch, both halves of it
+  cli_calendar.py      # the calendar's commands (`pony calendar ...`)
+  mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
+
+src/pony/mail/         # the mail model
   domain.py            # typed core data models
   protocols.py         # repository and service interfaces
-  paths.py             # application directory resolution
   accounts.py          # account lookup and mirror construction
   credentials.py       # plaintext / env / command / encrypted backends
   storage.py           # Maildir and mbox mirror repositories
@@ -54,7 +73,6 @@ src/pony/
   delivery.py          # filing a message that has been written or sent
   contact_actions.py   # harvest, list, the form's fields, delete, merge
   contact_merge.py     # what one record holds when two are combined
-  invitation_actions.py# file an invitation, answer its organizer
   message_export.py    # the parts of a message (0 it, T its text, 1..N), saved
   keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
@@ -73,68 +91,65 @@ src/pony/
   imap_client.py       # ImapSession wrapper around imaplib
   smtp_sender.py       # SMTP submission
   bbdb.py              # BBDB v3 reader/writer
-  calendar_runtime.py  # the [calendar] config section + opening its stores
-  invitation.py        # iTIP: reading invitations, writing replies/requests
-  notifications.py     # the notification space mail and calendar share
   pdf_export.py        # message HTML -> PDF via an external converter
-  services.py          # doctor diagnostics, mirror integrity
   fixture_flow.py      # deterministic fixture ingest flow
-  mcp_server.py        # MCP server (stdio + TCP bridge via tinymcp)
-  tui/
-    app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
-    calendar/          # the calendar's screens (below)
-    reporting.py       # an Outcome as toasts, and the hop onto the UI thread
-    bindings.py        # shared mark/motion Binding tuples
-    calendar_host.py   # where the mail app meets the calendar's screens
-    pdf_export.py      # thread-worker wrapper around pony.pdf_export
-    terminal.py        # OSC sequences for window-title push/pop/set
-    ui_state.py        # persisted pane sizes (ui_state.json)
-    screens/
-      main_screen.py             # three-pane mail reader
-      compose_screen.py          # email composer
-      sync_confirm_screen.py     # sync plan confirmation
-      search_dialog_screen.py    # search query input
-      contact_browser_screen.py  # contacts list
-      contact_detail_screen.py   # contact detail view
-      contact_edit_screen.py     # contact editor
-      confirm_screen.py          # generic yes/no dialog
-      dialog_screen.py           # base class for modal yes/no dialogs
-      link_action_screen.py      # Open / Copy / Cancel dialog for body links
-      floating_input_screen.py   # base class for bottom floating-input bars
-      save_draft_screen.py       # draft save confirmation
-      save_folder_picker_screen.py # directory picker for saving files
-      add_attachment_screen.py   # file picker
-      attachment_picker_screen.py# pick parts by number (0 = message, T = text)
-      eml_viewer_screen.py       # standalone .eml viewer
-      invitation_screen.py       # i — accept / decline / file an invitation
-      goto_folder_screen.py      # G — fuzzy jump to folder
-      new_folder_screen.py       # N — create new folder
-      pick_folder_screen.py      # modal (account, folder) target picker
-      help_screen.py             # F1 — keybinding cheatsheet
-    widgets/
-      folder_panel.py        # collapsible folder tree
-      message_list.py        # async-streamed message table
-      message_view.py        # scrollable message reader
-      contact_suggester.py   # autocomplete dropdown
-      address_input.py       # address field that keeps pasted lists whole
-      edge_drag.py           # mouse-draggable pane borders
-  web/                   # the browser front end (extra: pony[web])
-    app.py               # Starlette routes over the same actions
-    layout.py            # the chrome: tabs, pane frames, footer, overlays
-    mail.py              # folder tree, list, reader, the mail actions
-    compose.py           # the compose form, sending, staged attachments
-    contacts.py          # the contacts list, its form, its bulk actions
-    calendar.py          # agenda, timeline and month views, the event form
-    syncing.py           # the server's one sync slot
-    actions.py           # what a POSTed action is handed
-    urls.py              # every link in the front end
-    html.py              # escaping element builder, in place of templates
-    static/              # one stylesheet, one keymap dispatcher
+
+src/pony/tui/          # the terminal front end
+  app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
+  calendar/          # the calendar's screens (below)
+  reporting.py       # an Outcome as toasts, and the hop onto the UI thread
+  bindings.py        # shared mark/motion Binding tuples
+  calendar_host.py   # where the mail app meets the calendar's screens
+  pdf_export.py      # thread-worker wrapper around pony.mail.pdf_export
+  terminal.py        # OSC sequences for window-title push/pop/set
+  ui_state.py        # persisted pane sizes (ui_state.json)
+  screens/
+    main_screen.py             # three-pane mail reader
+    compose_screen.py          # email composer
+    sync_confirm_screen.py     # sync plan confirmation
+    search_dialog_screen.py    # search query input
+    contact_browser_screen.py  # contacts list
+    contact_detail_screen.py   # contact detail view
+    contact_edit_screen.py     # contact editor
+    confirm_screen.py          # generic yes/no dialog
+    dialog_screen.py           # base class for modal yes/no dialogs
+    link_action_screen.py      # Open / Copy / Cancel dialog for body links
+    floating_input_screen.py   # base class for bottom floating-input bars
+    save_draft_screen.py       # draft save confirmation
+    save_folder_picker_screen.py # directory picker for saving files
+    add_attachment_screen.py   # file picker
+    attachment_picker_screen.py# pick parts by number (0 = message, T = text)
+    eml_viewer_screen.py       # standalone .eml viewer
+    invitation_screen.py       # i — accept / decline / file an invitation
+    goto_folder_screen.py      # G — fuzzy jump to folder
+    new_folder_screen.py       # N — create new folder
+    pick_folder_screen.py      # modal (account, folder) target picker
+    help_screen.py             # F1 — keybinding cheatsheet
+  widgets/
+    folder_panel.py        # collapsible folder tree
+    message_list.py        # async-streamed message table
+    message_view.py        # scrollable message reader
+    contact_suggester.py   # autocomplete dropdown
+    address_input.py       # address field that keeps pasted lists whole
+    edge_drag.py           # mouse-draggable pane borders
+
+src/pony/web/          # the browser front end (extra: pony[web])
+  app.py               # Starlette routes over the same actions
+  layout.py            # the chrome: tabs, pane frames, footer, overlays
+  mail.py              # folder tree, list, reader, the mail actions
+  compose.py           # the compose form, sending, staged attachments
+  contacts.py          # the contacts list, its form, its bulk actions
+  calendar.py          # agenda, timeline and month views, the event form
+  syncing.py           # the server's one sync slot
+  actions.py           # what a POSTed action is handed
+  urls.py              # every link in the front end
+  html.py              # escaping element builder, in place of templates
+  static/              # one stylesheet, one keymap dispatcher
 ```
 
 ## Subsystems
 
-### Domain layer (`pony.domain`, `pony.protocols`)
+### Domain layer (`pony.mail.domain`, `pony.mail.protocols`)
 
 Typed domain models and protocol interfaces. Models are frozen dataclasses;
 protocols define the contracts for repositories and services. This layer is
@@ -166,7 +181,7 @@ drive-qualified path onto a root discards the root.
 Path values in the config support `~`, `$VAR`, and `%VAR%` expansion via
 `_expand_path`.
 
-### Storage (`pony.storage`)
+### Storage (`pony.mail.storage`)
 
 Mirror repository implementations for Maildir and mbox. Both implement the
 same `MirrorRepository` protocol: store, retrieve, list, and delete raw
@@ -179,7 +194,7 @@ Maildir encodes them in the filename suffix and mbox in the `Status` /
 `X-Status` headers. The index remains authoritative: a mirror write that
 fails is logged and skipped rather than failing the action.
 
-### Index (`pony.index_store`)
+### Index (`pony.mail.index_store`)
 
 SQLite-backed metadata store implementing `IndexRepository` and
 `ContactRepository`. All message state lives in a single unified `messages`
@@ -193,7 +208,7 @@ does and does not promise.
 Tables: `messages`, `messages_fts`, `contacts`, `contacts_fts`,
 `contact_emails`, `contact_aliases`, `folder_sync_state`, `credentials`.
 
-### Sync (`pony.sync`, `pony.imap_client`)
+### Sync (`pony.mail.sync`, `pony.mail.imap_client`)
 
 Two-pass IMAP sync engine: plan (read-only comparison) then execute (apply
 changes). Three-way flag merge with union policy. Two safety
@@ -207,7 +222,7 @@ a push — and the planner is the sole observer, emitting `PushMoveOp` or
 `PushAppendOp`. New UIDs are captured from `APPENDUID` / `COPYUID`. Folder
 creation works the same way: the mirror exposes a new directory and the
 execute phase issues `IMAP CREATE`. The row rewrites themselves live in
-`pony.mailbox_ops`.
+`pony.mail.mailbox_ops`.
 
 Connections are bounded on both ends. `ImapSession` sets an explicit
 connect timeout (`imap_connect_timeout_seconds`, default 10 s) and a read
@@ -238,7 +253,7 @@ run, so the next sync retries the host from scratch.
 
 Full algorithm: [Synchronization](synchronization.md).
 
-### Send (`pony.smtp_sender`, `pony.compose_utils`, `pony.composer`)
+### Send (`pony.mail.smtp_sender`, `pony.mail.compose_utils`, `pony.mail.composer`)
 
 SMTP submission with SSL and STARTTLS. Reply/forward quoting preserves
 existing quote levels. Markdown mode builds `multipart/alternative` messages
@@ -283,14 +298,14 @@ Textual, calls `app.notify`, or touches a widget.
 
 | Module | Operations |
 |---|---|
-| `pony.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message, planning a deduplication |
-| `pony.delivery` | filing a draft or a sent copy, and sending: the password, the pre-send draft, SMTP, the Sent copy |
-| `pony.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge, importing an address book |
+| `pony.mail.mailbox_actions` | archive, move, copy, trash, flags, folder creation, retiring a message, planning a deduplication |
+| `pony.mail.delivery` | filing a draft or a sent copy, and sending: the password, the pre-send draft, SMTP, the Sent copy |
+| `pony.mail.contact_actions` | harvesting an address, listing, the form's fields, deleting, planning and applying a merge, importing an address book |
 | `pony.invitation_actions` | filing an invitation, answering its organizer, inviting an event's attendees |
-| `pony.message_export` | the parts of a message, saved to disk or handed to a viewer |
+| `pony.mail.message_export` | the parts of a message, saved to disk or handed to a viewer |
 | `pony.calendar.event_actions` | saving, rescheduling, trashing and importing an event, and what a blank form starts with |
 
-The *projections* are what a view is of: `pony.views` turns an indexed
+The *projections* are what a view is of: `pony.mail.views` turns an indexed
 message into the four fields and the one state a list row shows, or a
 contact into its five columns, and `pony.calendar.views` holds the calendar's
 window arithmetic, the index query each view needs, the strings its rows
@@ -347,7 +362,7 @@ into the app.
 
 What a screen does *not* do is decide what an action means: that lives in
 the action modules above, and the screen reports the outcome. The
-message list is the same split one level down — `pony.views` decides the
+message list is the same split one level down — `pony.mail.views` decides the
 fields of a row, and the widget pads them into fixed-width columns,
 which is the only part of it that means anything in a terminal.
 
@@ -411,8 +426,8 @@ message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 `pony web` serves the same stores over HTTP (`pony.web`, Starlette and
 Uvicorn, installed by the `web` extra). It is a second front end, not a
 second program: every operation is a call into the action modules, every
-row comes from `pony.views` or `pony.calendar.views`, and every key comes from
-`pony.keymap` or `pony.calendar.keymap`. What is new in the package is HTTP,
+row comes from `pony.mail.views` or `pony.calendar.views`, and every key comes from
+`pony.mail.keymap` or `pony.calendar.keymap`. What is new in the package is HTTP,
 HTML and the keyboard dispatch.
 
 What it offers is what the terminal offers: the folder tree, the message
@@ -438,7 +453,7 @@ is the application, not a document to scroll.
 
 **One keymap, two front ends.** `pony.calendar.keymap` holds the vocabulary —
 `KeyBinding(key, action, description, surface)`, `for_surface`,
-`web_key` — and the calendar's table; `pony.keymap` holds the mail
+`web_key` — and the calendar's table; `pony.mail.keymap` holds the mail
 reader's. `pony.tui.bindings.to_textual` and
 `pony.tui.calendar.bindings.to_textual` turn a slice into Textual `Binding`s —
 which is where `MainScreen.BINDINGS`, `PonyApp.BINDINGS`,
@@ -493,7 +508,7 @@ The reader shows what `render_message` produced — the same text the CLI
 prints and the MCP tools return, with URLs and addresses linkified and
 nothing to execute. `w` opens `/message/body`, which returns
 `build_browser_html` output — `cid:` images already inlined as data
-URIs — under the headers in `pony.html_policy`, as a top-level page
+URIs — under the headers in `pony.mail.html_policy`, as a top-level page
 rather than a frame inside the application. Attachments are downloaded
 with `X-Content-Type-Options: nosniff`.
 
@@ -545,16 +560,16 @@ held in a state file; `pony mcp` finds that file and proxies stdio↔TCP, so the
 consumer never opens a competing SQLite handle. With no TUI running, `pony mcp`
 opens its own connections and serves stdio directly.
 
-### Message rendering (`pony.message_renderer`, `pony.tui.pdf_export`)
+### Message rendering (`pony.mail.message_renderer`, `pony.tui.pdf_export`)
 
 `render_message()` produces plain text, stripping `<style>` and `<script>`
 first. `build_browser_html()` produces self-contained HTML with CID-resolved
-inline images for the `w` key. `pony.pdf_export` feeds that same HTML to
+inline images for the `w` key. `pony.mail.pdf_export` feeds that same HTML to
 whichever external converter is present (Chromium/Chrome, `wkhtmltopdf`,
 WeasyPrint or LibreOffice).
 
 **Who a message is from is the receiving server's answer, not Pony's.**
-`pony.authentication` reads the first `Authentication-Results` header
+`pony.mail.authentication` reads the first `Authentication-Results` header
 (RFC 8601) into a verdict on `RenderedMessage`, so the terminal, the
 browser and the printed page show one answer decided in one place. It
 reaches the reader as one padlock on the `From` line, because a header
@@ -574,12 +589,12 @@ message is in the mirror.
 **A message's HTML is never shown inside either front end, and never as
 a file.** It is a page of its own, and both front ends serve it: the
 browser at `GET /message/body`, the terminal through
-`pony.browser_preview`, which binds `127.0.0.1` on a kernel-chosen port,
+`pony.mail.browser_preview`, which binds `127.0.0.1` on a kernel-chosen port,
 answers one unguessable path with the document held in memory, and
 closes after two minutes or when the next message is opened. Nothing of
 the message reaches the disk, and because a `file://` document carries
 no headers while a served one does, the restrictions apply to both.
-Those restrictions are one definition in `pony.html_policy`, which
+Those restrictions are one definition in `pony.mail.html_policy`, which
 neither transport owns, so the two pages cannot drift apart.
 
 `browser_preview` is not the browser front end: `http.server` from the
@@ -730,7 +745,7 @@ Neither line appears when there is nothing to say.
 
 `pony.invitation` is the shared vocabulary for iTIP (RFC 5546) in both
 directions. It does no I/O — importing is `pony.calendar.ingest`'s job and sending
-is `pony.smtp_sender`'s — and it parses with the calendar's own iCalendar
+is `pony.mail.smtp_sender`'s — and it parses with the calendar's own iCalendar
 reader rather than a second one, so what the reader pane shows and what the
 calendar stores cannot disagree.
 
@@ -817,7 +832,7 @@ config.toml
 4. A front end — the TUI or the browser UI — queries the index for
    lists/search results and uses storage for raw message content and
    attachments. Neither queries differently: both go through the
-   projections in `pony.views` / `pony.calendar.views`.
+   projections in `pony.mail.views` / `pony.calendar.views`.
 5. Compose/send workflows write drafts and pending actions through shared
    service interfaces.
 

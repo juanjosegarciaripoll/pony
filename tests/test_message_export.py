@@ -4,7 +4,7 @@ One numbering serves both front ends: ``0`` is the message as it
 arrived, ``T`` is its body as text, and ``1..N`` are its attachments.
 The reader's ``s`` is part 0, its ``S`` prompt takes any of them, and
 the browser offers the same set — so the rules belong to
-:mod:`pony.message_export` rather than to either screen.
+:mod:`pony.mail.message_export` rather than to either screen.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 
 import corpus
 
-from pony.message_export import (
+from pony.mail.message_export import (
     TEXT_BODY,
     WHOLE_MESSAGE,
     listed_parts,
@@ -24,7 +24,7 @@ from pony.message_export import (
     part_payload,
     save_parts,
 )
-from pony.message_renderer import render_message
+from pony.mail.message_renderer import render_message
 from pony.paths import contain
 
 
@@ -192,8 +192,8 @@ class OpeningPartsTest(unittest.TestCase):
     """
 
     def test_an_attachment_is_written_and_given_its_viewer(self) -> None:
-        from pony.domain import ViewerRule
-        from pony.message_export import parts_to_open
+        from pony.mail.domain import ViewerRule
+        from pony.mail.message_export import parts_to_open
 
         rendered = render_message(corpus.multipart_mixed_attachment())
         with TemporaryDirectory() as raw:
@@ -217,7 +217,7 @@ class OpeningPartsTest(unittest.TestCase):
             self.assertEqual(part.command, ("less",))
 
     def test_a_message_is_not_written_out_at_all(self) -> None:
-        from pony.message_export import parts_to_open
+        from pony.mail.message_export import parts_to_open
 
         rendered = render_message(corpus.plain_text())
         with TemporaryDirectory() as raw:
@@ -232,7 +232,7 @@ class OpeningPartsTest(unittest.TestCase):
             self.assertEqual(outcome.changed, 1)
 
     def test_a_part_that_is_not_there_is_a_warning(self) -> None:
-        from pony.message_export import parts_to_open
+        from pony.mail.message_export import parts_to_open
 
         rendered = render_message(corpus.plain_text())
         with TemporaryDirectory() as raw:
@@ -245,7 +245,7 @@ class OpeningPartsTest(unittest.TestCase):
             )
 
     def test_the_downloads_directory_falls_back_to_the_platform_one(self) -> None:
-        from pony.message_export import downloads_dir
+        from pony.mail.message_export import downloads_dir
 
         self.assertEqual(downloads_dir(Path("/elsewhere")), Path("/elsewhere"))
         # The fallback is sandboxed under `PONY_ROOT`, which the whole

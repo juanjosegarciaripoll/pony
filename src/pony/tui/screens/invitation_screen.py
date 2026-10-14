@@ -35,7 +35,7 @@ class InvitationScreen(DialogScreen[InvitationChoice | None]):
 
     DEFAULT_BUTTON_ID = "invitation-accept"
 
-    # From `pony.keymap`'s INVITATION surface: the dialog's three
+    # From `pony.mail.keymap`'s INVITATION surface: the dialog's three
     # answers are a part of the program a key is live on, so they
     # belong in the table with the rest rather than in this file alone.
     BINDINGS = list(INVITATION_BINDINGS)

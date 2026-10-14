@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from pony.message_export import parse_part_selection
+from pony.mail.message_export import parse_part_selection
 
 
 class ParsePartSelectionTest(unittest.TestCase):

@@ -21,17 +21,17 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 from test_sync import FakeImapSession, _make_raw_message
 
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AppConfig,
     MessageFlag,
     MirrorConfig,
     SmtpConfig,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.protocols import ImapClientSession, MirrorRepository
-from pony.storage import MaildirMirrorRepository
-from pony.sync import ImapSyncService
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.protocols import ImapClientSession, MirrorRepository
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.sync import ImapSyncService
 
 
 class _FixedCredentials:

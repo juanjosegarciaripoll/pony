@@ -14,12 +14,12 @@ from email.message import EmailMessage
 
 import corpus
 
-from pony.authentication import (
+from pony.mail.authentication import (
     Authenticity,
     MessageAuthentication,
     parse_authentication,
 )
-from pony.message_renderer import build_browser_html, render_message
+from pony.mail.message_renderer import build_browser_html, render_message
 
 
 def _message(

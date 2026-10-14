@@ -19,7 +19,7 @@ from uuid import uuid4
 import corpus
 from conftest import TMP_ROOT
 
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AppConfig,
     FolderRef,
@@ -28,7 +28,10 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.index_store import SqliteIndexRepository
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.message_projection import project_rfc822_message
+from pony.mail.message_renderer import AttachmentPayload
+from pony.mail.storage import MaildirMirrorRepository
 from pony.mcp_server import (
     _attachment_to_dict,
     _contact_to_dict,
@@ -36,10 +39,7 @@ from pony.mcp_server import (
     _sync_state_to_dict,
     build_mcp_server,
 )
-from pony.message_projection import project_rfc822_message
-from pony.message_renderer import AttachmentPayload
 from pony.paths import AppPaths
-from pony.storage import MaildirMirrorRepository
 
 
 class AttachmentToDictTest(unittest.TestCase):
@@ -192,7 +192,7 @@ def _build_mcp_from_env(paths: AppPaths, config: AppConfig) -> object:
     """Build an McpServer from an in-memory config (bypassing disk config load)."""
     from unittest.mock import patch
 
-    from pony.accounts import build_mirrors
+    from pony.mail.accounts import build_mirrors
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
@@ -308,7 +308,7 @@ class McpToolListMessagesLimitTest(unittest.TestCase):
     def test_only_the_asked_for_rows_are_built(self) -> None:
         from unittest.mock import patch
 
-        import pony.index_store as index_store
+        import pony.mail.index_store as index_store
 
         built = 0
         real = index_store._indexed_message_from_row  # noqa: SLF001

@@ -13,9 +13,9 @@ from unittest import mock
 from conftest import TMP_ROOT
 
 from pony.cli import main, run_eml_to_pdf
-from pony.pdf_export import NoPdfConverterError
+from pony.mail.pdf_export import NoPdfConverterError
 
-_CONVERT = "pony.pdf_export.html_to_pdf"
+_CONVERT = "pony.mail.pdf_export.html_to_pdf"
 
 
 def _eml(path: Path, subject: str = "A subject") -> Path:

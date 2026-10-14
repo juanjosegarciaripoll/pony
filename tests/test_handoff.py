@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from pony.handoff import activate, handoff_path
+from pony.mail.handoff import activate, handoff_path
 from pony.paths import default_data_dir
 
 

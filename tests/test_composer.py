@@ -1,4 +1,4 @@
-"""Tests for pony.composer.
+"""Tests for pony.mail.composer.
 
 The composer UI asks for a DraftSpec and renders it; how a reply is
 assembled — which identity sends it, how the subject is prefixed, who
@@ -14,8 +14,8 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.compose_utils import build_email_message
-from pony.composer import (
+from pony.mail.compose_utils import build_email_message
+from pony.mail.composer import (
     DraftSpec,
     forward_attachment_name,
     forward_draft,
@@ -25,14 +25,14 @@ from pony.composer import (
     reply_draft,
     resumed_draft,
 )
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
     MirrorConfig,
     SmtpConfig,
 )
-from pony.message_renderer import RenderedMessage
+from pony.mail.message_renderer import RenderedMessage
 
 
 def _account(

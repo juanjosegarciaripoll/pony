@@ -2,7 +2,7 @@
 
 These used to be module-level privates inside the message-list widget,
 reachable only by importing it — which meant importing Textual to ask
-what marker a flagged message gets.  They live in :mod:`pony.views` now.
+what marker a flagged message gets.  They live in :mod:`pony.mail.views` now.
 
 ``format_received`` takes *now* rather than reading the clock, so these
 pin both ends of the comparison instead of guarding against New Year's
@@ -24,7 +24,7 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import (
+from pony.mail.domain import (
     Contact,
     FolderMessageSummary,
     FolderRef,
@@ -32,7 +32,7 @@ from pony.domain import (
     MessageRef,
     MessageStatus,
 )
-from pony.views import (
+from pony.mail.views import (
     ANSWERED_MARK,
     ATTACHMENT_MARK,
     FLAGGED_MARK,
@@ -266,7 +266,7 @@ def test_the_correspondent_column_is_named_once() -> None:
     the recipient is `folder_utils.shows_recipient`; what the column is
     called is this.
     """
-    from pony.views import correspondent_label
+    from pony.mail.views import correspondent_label
 
     assert correspondent_label(shows_recipient=True) == "To"
     assert correspondent_label(shows_recipient=False) == "From"

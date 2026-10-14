@@ -4,7 +4,7 @@ The header line carries one character — a padlock, shut only when the
 domain in ``From`` is the domain that signed the message.  Everything
 behind it is here, because a lock is read as "safe" and the only honest
 place to say what it actually means is somewhere with room for a
-sentence.  See :mod:`pony.authentication`.
+sentence.  See :mod:`pony.mail.authentication`.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from textual.widgets import Button, Label, Static
 from .dialog_screen import DialogScreen
 
 if TYPE_CHECKING:
-    from ...authentication import MessageAuthentication
+    from ...mail.authentication import MessageAuthentication
 
 
 class SenderCheckScreen(DialogScreen):

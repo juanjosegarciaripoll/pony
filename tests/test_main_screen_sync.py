@@ -9,7 +9,7 @@ from unittest.mock import Mock
 from textual.worker import WorkerState
 from tui_helpers import build_pony_app
 
-from pony.sync import (
+from pony.mail.sync import (
     AccountSyncPlan,
     AccountSyncResult,
     FetchNewOp,
@@ -587,7 +587,7 @@ async def test_a_failing_plan_reaches_the_screen_through_a_real_worker(
     application's exception handler, so the arm this exercises could
     never run.
     """
-    from pony.sync import ImapSyncService
+    from pony.mail.sync import ImapSyncService
 
     def _boom(_self: ImapSyncService, **_kw: object) -> SyncPlan:
         raise RuntimeError("fictional planning failure")
@@ -678,7 +678,7 @@ async def test_a_confirmed_plan_executes_through_a_real_worker(
     monkeypatch: Any,
 ) -> None:
     """Plan, confirm with ``y``, execute -- no mocked worker anywhere."""
-    from pony.sync import ImapSyncService
+    from pony.mail.sync import ImapSyncService
 
     plan = _one_folder_plan()
     result = _one_message_result()

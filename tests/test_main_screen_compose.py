@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from corpus import mid_thread_message, plain_text, unthreaded_message
 from tui_helpers import build_pony_app
 
-from pony.domain import Contact, FolderRef, MessageFlag
+from pony.mail.domain import Contact, FolderRef, MessageFlag
 from pony.tui.screens.contact_edit_screen import ContactEditScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
@@ -185,7 +185,7 @@ async def test_resuming_a_draft_hands_the_composer_the_row_to_retire() -> None:
 
 def _local_account(paths: object, name: str = "local"):  # type: ignore[no-untyped-def]
     """A local (non-IMAP) account with no SMTP block — it cannot send."""
-    from pony.domain import LocalAccountConfig, MirrorConfig
+    from pony.mail.domain import LocalAccountConfig, MirrorConfig
 
     mirror_dir = paths.data_dir / "mirrors" / name  # type: ignore[attr-defined]
     mirror_dir.mkdir(parents=True, exist_ok=True)

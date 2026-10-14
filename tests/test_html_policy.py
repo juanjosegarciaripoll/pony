@@ -25,9 +25,9 @@ from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from pony.browser_preview import close_preview, serve_html
-from pony.html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
-from pony.pdf_export import find_converter, html_to_pdf
+from pony.mail.browser_preview import close_preview, serve_html
+from pony.mail.html_policy import MESSAGE_HTML_CSP, MESSAGE_HTML_HEADERS
+from pony.mail.pdf_export import find_converter, html_to_pdf
 
 BROWSERS = (
     "chromium",

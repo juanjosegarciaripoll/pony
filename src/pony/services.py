@@ -9,9 +9,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from .config import ConfigError
-from .domain import AnyAccount, AppConfig
+from .mail.domain import AnyAccount, AppConfig
+from .mail.protocols import IndexRepository
 from .paths import AppPaths
-from .protocols import IndexRepository
 
 
 class CheckStatus(StrEnum):
@@ -318,7 +318,7 @@ def build_service_status(
     # ------------------------------------------------------------------ #
     if config is not None and paths.index_db_file.exists():
         try:
-            from .index_store import SqliteIndexRepository
+            from .mail.index_store import SqliteIndexRepository
 
             index = SqliteIndexRepository(
                 database_path=paths.index_db_file,
@@ -371,7 +371,7 @@ def check_mirror_integrity(
     mbox stores all messages in a single file (no per-message files
     to orphan).
     """
-    from .domain import FolderRef
+    from .mail.domain import FolderRef
 
     label = f'Mirror integrity "{account.name}"'
     mirror_path = account.mirror.path

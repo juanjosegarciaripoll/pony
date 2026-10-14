@@ -21,7 +21,7 @@ from textual.widgets import Label, Static
 from tui_helpers import build_pony_app, make_calendar_runtime, make_tmp_paths
 
 from pony.calendar_runtime import CalendarRuntime
-from pony.domain import FolderRef
+from pony.mail.domain import FolderRef
 from pony.notifications import NotificationSource
 from pony.tui.calendar.app import TuiServices
 from pony.tui.calendar.screens.main_screen import MainScreen as CalendarScreen
@@ -556,7 +556,7 @@ async def test_the_calendar_keeps_its_countdown_across_f2() -> None:
 
 async def test_the_mail_sync_runs_while_the_agenda_is_in_front() -> None:
     """Reading the agenda does not stop mail arriving."""
-    from pony.sync import ImapSyncService
+    from pony.mail.sync import ImapSyncService
 
     runtime = make_calendar_runtime(make_tmp_paths("mail-under-agenda"))
     app, *_ = build_pony_app(label="mail-under-agenda", calendar=runtime)

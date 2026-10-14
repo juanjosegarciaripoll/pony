@@ -27,7 +27,6 @@ from textual.widgets import DirectoryTree, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
-from pony.accounts import build_mirrors
 from pony.calendar.credentials import (
     DefaultCredentialsProvider as CalendarCredentialsProvider,
 )
@@ -41,8 +40,9 @@ from pony.calendar.recurrence import rebuild_caches
 from pony.calendar.storage import VdirMirrorRepository
 from pony.calendar.storage_indexing import index_calendar
 from pony.calendar_runtime import CalendarRuntime
-from pony.credentials import PlaintextCredentialsProvider
-from pony.domain import (
+from pony.mail.accounts import build_mirrors
+from pony.mail.credentials import PlaintextCredentialsProvider
+from pony.mail.domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
@@ -52,10 +52,10 @@ from pony.domain import (
     SmtpConfig,
     ViewerRule,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.message_projection import project_rfc822_message
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.message_projection import project_rfc822_message
+from pony.mail.protocols import CredentialsProvider, IndexRepository, MirrorRepository
 from pony.paths import AppPaths
-from pony.protocols import CredentialsProvider, IndexRepository, MirrorRepository
 from pony.tui.app import ComposeApp, PonyApp
 
 

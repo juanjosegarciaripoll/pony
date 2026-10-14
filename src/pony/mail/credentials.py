@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import ConfigError
+from ..config import ConfigError
 
 if TYPE_CHECKING:
     from .domain import AppConfig

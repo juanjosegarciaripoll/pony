@@ -1,4 +1,4 @@
-"""Tests for ``pony.smtp_sender`` — connect bounding, retries, messages."""
+"""Tests for ``pony.mail.smtp_sender`` — connect bounding, retries, messages."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import unittest
 from email.message import EmailMessage
 from unittest.mock import MagicMock, patch
 
-from pony.domain import SmtpConfig
-from pony.smtp_sender import (
+from pony.mail.domain import SmtpConfig
+from pony.mail.smtp_sender import (
     DEFAULT_CONNECT_ATTEMPTS,
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     SMTPError,
@@ -100,7 +100,7 @@ class ConnectRetryTest(unittest.TestCase):
         attempts = [TimeoutError("timed out"), TimeoutError("timed out"), server]
         with (
             patch("smtplib.SMTP_SSL", side_effect=attempts) as ctor,
-            patch("pony.smtp_sender.time.sleep"),
+            patch("pony.mail.smtp_sender.time.sleep"),
         ):
             _send()
         self.assertEqual(ctor.call_count, 3)
@@ -109,7 +109,7 @@ class ConnectRetryTest(unittest.TestCase):
     def test_gives_up_after_the_attempt_limit(self) -> None:
         with (
             patch("smtplib.SMTP_SSL", side_effect=TimeoutError("timed out")) as ctor,
-            patch("pony.smtp_sender.time.sleep"),
+            patch("pony.mail.smtp_sender.time.sleep"),
             self.assertRaises(SMTPError) as caught,
         ):
             _send(connect_attempts=3)
@@ -123,7 +123,7 @@ class ConnectRetryTest(unittest.TestCase):
         self.assertGreater(DEFAULT_CONNECT_ATTEMPTS, 1)
         with (
             patch("smtplib.SMTP_SSL", side_effect=TimeoutError("timed out")) as ctor,
-            patch("pony.smtp_sender.time.sleep"),
+            patch("pony.mail.smtp_sender.time.sleep"),
             self.assertRaises(SMTPError),
         ):
             _send()
@@ -135,7 +135,7 @@ class ConnectRetryTest(unittest.TestCase):
             patch(
                 "smtplib.SMTP_SSL", side_effect=ConnectionRefusedError("refused")
             ) as ctor,
-            patch("pony.smtp_sender.time.sleep"),
+            patch("pony.mail.smtp_sender.time.sleep"),
             self.assertRaises(SMTPError) as caught,
         ):
             _send()
@@ -148,7 +148,7 @@ class ConnectRetryTest(unittest.TestCase):
         seen: list[tuple[int, int]] = []
         with (
             patch("smtplib.SMTP_SSL", side_effect=[TimeoutError("x"), _server()]),
-            patch("pony.smtp_sender.time.sleep"),
+            patch("pony.mail.smtp_sender.time.sleep"),
         ):
             _send(on_attempt=lambda a, t: seen.append((a, t)), connect_attempts=4)
         self.assertEqual(seen, [(1, 4), (2, 4)])
@@ -156,7 +156,7 @@ class ConnectRetryTest(unittest.TestCase):
     def test_a_send_that_works_first_time_does_not_sleep(self) -> None:
         with (
             patch("smtplib.SMTP_SSL", return_value=_server()),
-            patch("pony.smtp_sender.time.sleep") as sleep,
+            patch("pony.mail.smtp_sender.time.sleep") as sleep,
         ):
             _send()
         sleep.assert_not_called()

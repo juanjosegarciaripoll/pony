@@ -7,7 +7,7 @@ import unittest
 
 from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
-from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
+from pony.mail.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
 from pony.paths import AppPaths
 from pony.services import (
     CheckStatus,
@@ -221,7 +221,7 @@ class CheckMirrorIntegrityTest(unittest.TestCase):
         import shutil
 
         shutil.rmtree(account.mirror.path)
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.index_store import SqliteIndexRepository
 
         paths.data_dir.mkdir(parents=True, exist_ok=True)
         index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -233,7 +233,7 @@ class CheckMirrorIntegrityTest(unittest.TestCase):
     def test_no_synced_folders_returns_ok(self) -> None:
         paths = _tmp_paths("mi-no-sync")
         account = _make_account(paths)
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.index_store import SqliteIndexRepository
 
         paths.data_dir.mkdir(parents=True, exist_ok=True)
         index = SqliteIndexRepository(database_path=paths.index_db_file)

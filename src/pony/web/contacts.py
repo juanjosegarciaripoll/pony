@@ -2,7 +2,7 @@
 
 One list with the same columns the terminal shows, the same marking
 vocabulary, and the same four operations over the marks: new, edit,
-delete and merge.  Each is a call into :mod:`pony.contact_actions`,
+delete and merge.  Each is a call into :mod:`pony.mail.contact_actions`,
 which is also where the form's fields are split and joined, so a
 contact edited here and a contact edited in the terminal end up with
 the same record.
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from pony.outcome import Outcome, warn
 
-from ..contact_actions import (
+from ..mail.contact_actions import (
     ContactEdit,
     contact_by_id,
     delete_contacts,
@@ -24,8 +24,8 @@ from ..contact_actions import (
     plan_merge,
     save_contact,
 )
-from ..domain import Contact
-from ..views import contact_row
+from ..mail.domain import Contact
+from ..mail.views import contact_row
 from . import urls
 from .actions import held_for_confirmation
 from .html import Raw, element, fragment, join
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
     from pony.outcome import Notice
 
-    from ..protocols import ContactRepository
+    from ..mail.protocols import ContactRepository
     from .actions import Action, ActionContext, Reply
     from .app import WebServices
 

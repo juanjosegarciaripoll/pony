@@ -1,6 +1,6 @@
 """What a saved file is called.
 
-The proposals are `pony.message_renderer`'s rather than any screen's,
+The proposals are `pony.mail.message_renderer`'s rather than any screen's,
 which is what lets `s` in the terminal and a download in the browser
 name the same message the same way.
 """
@@ -11,7 +11,7 @@ import unittest
 
 import corpus
 
-from pony.message_renderer import (
+from pony.mail.message_renderer import (
     proposed_attachment_filename,
     proposed_filename,
     render_message,
@@ -47,7 +47,7 @@ class ProposedBodyFilenameTest(unittest.TestCase):
         self.assertIn("2026", name)
 
     def test_fallback_when_no_date(self) -> None:
-        from pony.message_renderer import RenderedMessage
+        from pony.mail.message_renderer import RenderedMessage
 
         rendered = RenderedMessage(
             subject="Test",

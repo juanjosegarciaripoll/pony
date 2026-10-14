@@ -1,8 +1,8 @@
 """The browser front end, over real stores and a real ASGI client.
 
 Every route here is a thin shell over code that already has its own
-tests: the actions in :mod:`pony.mailbox_actions`, the row projections
-in :mod:`pony.views`, the keymap in :mod:`pony.keymap`.  So these check
+tests: the actions in :mod:`pony.mail.mailbox_actions`, the row projections
+in :mod:`pony.mail.views`, the keymap in :mod:`pony.mail.keymap`.  So these check
 what is genuinely new — the routing, the escaping, the token gate, how a
 hostile body is served, and that an action reached over HTTP is the same
 call the terminal makes.
@@ -35,14 +35,14 @@ from tui_helpers import (
 )
 from web_helpers import form_fields, link_to
 
-from pony.domain import FolderRef, MessageFlag, MessageStatus
 from pony.keys import KeyBinding, web_key
-from pony.views import ROW_BATCH
+from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+from pony.mail.views import ROW_BATCH
 from pony.web import WebServices, build_web_app
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS, TOKEN_COOKIE
 
 if TYPE_CHECKING:
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 JS = Path(__file__).resolve().parents[1] / "src/pony/web/static/pony.js"
@@ -1259,7 +1259,7 @@ def test_an_action_ignores_ids_that_are_not_numbers() -> None:
 
 def _plan(*, halted: bool = False) -> object:
     """A sync plan with one folder, halted or not."""
-    from pony.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
+    from pony.mail.sync import AccountSyncPlan, FolderSyncPlan, SyncPlan
 
     folder = FolderSyncPlan(
         folder_name="INBOX",
@@ -1276,7 +1276,7 @@ def _plan(*, halted: bool = False) -> object:
 
 
 def _result() -> object:
-    from pony.sync import AccountSyncResult, FolderSyncResult, SyncResult
+    from pony.mail.sync import AccountSyncResult, FolderSyncResult, SyncResult
 
     return SyncResult(
         accounts=(
@@ -1816,7 +1816,7 @@ def test_every_button_that_names_an_action_names_a_real_one() -> None:
 
 def test_the_folder_pane_shows_folders_the_mirror_has_not_materialised() -> None:
     """A synced-but-absent folder is in the reader's tree; it belongs here too."""
-    from pony.domain import FolderSyncState
+    from pony.mail.domain import FolderSyncState
 
     services, index = _services("web-folder-tree-sync-state")
     index.record_folder_sync_state(
@@ -1843,7 +1843,7 @@ def test_an_account_and_a_parent_folder_both_fold() -> None:
     own row as the summary -- the name still opens the folder, the
     twisty beside it shows or hides what is below.
     """
-    from pony.domain import FolderSyncState
+    from pony.mail.domain import FolderSyncState
 
     services, index = _services("web-folder-folds")
     index.record_folder_sync_state(
@@ -2058,7 +2058,7 @@ def test_the_move_prompt_offers_a_folder_with_no_directory_yet() -> None:
     a different set from the pane beside them -- the divergence the
     terminal's `action_goto_folder` had.
     """
-    from pony.domain import FolderSyncState
+    from pony.mail.domain import FolderSyncState
     from pony.web.mail import folder_options
 
     services, index = _services("web-folder-options")

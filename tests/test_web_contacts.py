@@ -1,6 +1,6 @@
 """The contacts browser in a browser.
 
-The operations are :mod:`pony.contact_actions`, tested there; what is
+The operations are :mod:`pony.mail.contact_actions`, tested there; what is
 checked here is that the page offers all four of them, that the form
 round-trips a record, and that a clash is reported rather than
 swallowed.
@@ -19,11 +19,11 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
-from pony.domain import Contact
+from pony.mail.domain import Contact
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
 
 
 def _services(label: str) -> tuple[WebServices, SqliteIndexRepository]:

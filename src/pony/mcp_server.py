@@ -25,13 +25,13 @@ from tinymcp import LOOPBACK_HOST, McpServer, run_mcp, serve_tcp
 
 from pony.atomic import write_atomically
 
-from .accounts import build_mirrors
 from .config import load_config
-from .domain import AccountConfig, SearchQuery
-from .index_store import SqliteIndexRepository
-from .message_renderer import AttachmentPayload, extract_attachment, render_message
+from .mail.accounts import build_mirrors
+from .mail.domain import AccountConfig, SearchQuery
+from .mail.index_store import SqliteIndexRepository
+from .mail.message_renderer import AttachmentPayload, extract_attachment, render_message
+from .mail.protocols import MirrorRepository
 from .paths import resolve
-from .protocols import MirrorRepository
 
 # ---------------------------------------------------------------------------
 # MCP state (TUI ↔ bridge IPC)
@@ -282,7 +282,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
 
         Use *search_messages* for full-text search across folders.
         """
-        from .domain import FolderRef
+        from .mail.domain import FolderRef
 
         folder_ref = FolderRef(account_name=account, folder_name=folder)
         # The cap belongs in the query: slicing afterwards built an
@@ -319,7 +319,7 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
         message_id: str,
     ) -> bytes | None:
         """Resolve Message-ID → mirror bytes (or ``None`` on miss)."""
-        from .domain import FolderRef
+        from .mail.domain import FolderRef
 
         mirror = mirrors.get(account)
         if mirror is None:

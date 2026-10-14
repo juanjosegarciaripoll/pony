@@ -11,7 +11,7 @@ from textual.events import Key
 from textual.screen import Screen
 from textual.widgets import Input, Label, ListItem, ListView
 
-from ...domain import FolderRef
+from ...mail.domain import FolderRef
 
 
 def _fuzzy_filter(query: str, folders: list[FolderRef]) -> list[FolderRef]:

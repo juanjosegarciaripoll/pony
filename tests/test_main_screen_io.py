@@ -9,7 +9,7 @@ from corpus import multipart_mixed_attachment, plain_text
 from textual.widgets import Label
 from tui_helpers import build_pony_app
 
-from pony.domain import FolderRef
+from pony.mail.domain import FolderRef
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_view import MessageViewPanel
 

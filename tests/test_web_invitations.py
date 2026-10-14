@@ -26,12 +26,12 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import FolderRef
+from pony.mail.domain import FolderRef
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
     from pony.calendar_runtime import CalendarRuntime
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 ACCOUNT = "personal"
@@ -239,7 +239,7 @@ def test_accepting_files_the_event_and_answers_the_organizer() -> None:
     services, index = _services("web-invite-accept", calendar=runtime)
     sent = Mock()
 
-    with patch("pony.smtp_sender.send_message", sent), _client(services) as client:
+    with patch("pony.mail.smtp_sender.send_message", sent), _client(services) as client:
         response = client.post(
             "/action/respond_invitation",
             data={
@@ -262,7 +262,7 @@ def test_filing_only_tells_nobody() -> None:
     services, index = _services("web-invite-file", calendar=runtime)
     sent = Mock()
 
-    with patch("pony.smtp_sender.send_message", sent), _client(services) as client:
+    with patch("pony.mail.smtp_sender.send_message", sent), _client(services) as client:
         response = client.post(
             "/action/respond_invitation",
             data={

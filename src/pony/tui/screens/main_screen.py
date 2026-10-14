@@ -21,8 +21,14 @@ from pony.keys import for_surface
 from pony.outcome import Notice, Outcome
 from pony.tui.reporting import report
 
-from ... import mailbox_actions
-from ...composer import (
+from ...mail import mailbox_actions
+from ...invitation import Invitation
+from ...invitation_actions import (
+    InvitationChoice,
+    replying_account,
+    respond_to_invitation,
+)
+from ...mail.composer import (
     DraftSpec,
     forward_attachment_name,
     forward_draft,
@@ -30,8 +36,8 @@ from ...composer import (
     reply_draft,
     resumed_draft,
 )
-from ...contact_actions import contact_for_address, harvest_folder
-from ...domain import (
+from ...mail.contact_actions import contact_for_address, harvest_folder
+from ...mail.domain import (
     AnyAccount,
     AppConfig,
     FolderMessageSummary,
@@ -39,16 +45,10 @@ from ...domain import (
     IndexedMessage,
     MessageFlag,
 )
-from ...folder_utils import holds_drafts, shows_recipient
-from ...invitation import Invitation
-from ...invitation_actions import (
-    InvitationChoice,
-    replying_account,
-    respond_to_invitation,
-)
-from ...keymap import MAIL_KEYMAP, Surface
-from ...mailbox_actions import Mailboxes
-from ...message_export import (
+from ...mail.folder_utils import holds_drafts, shows_recipient
+from ...mail.keymap import MAIL_KEYMAP, Surface
+from ...mail.mailbox_actions import Mailboxes
+from ...mail.message_export import (
     WHOLE_MESSAGE,
     PartKey,
     downloads_dir,
@@ -56,20 +56,19 @@ from ...message_export import (
     parts_to_open,
     save_parts,
 )
-from ...message_renderer import (
+from ...mail.message_renderer import (
     RenderedMessage,
     render_message,
     save_every_attachment,
     save_one_attachment,
 )
-from ...notifications import NotificationCenter
-from ...protocols import (
+from ...mail.protocols import (
     ContactRepository,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from ...sync import (
+from ...mail.sync import (
     ImapSyncService,
     MailSyncOutcome,
     MailSyncScheduler,
@@ -79,7 +78,8 @@ from ...sync import (
     build_sync_service,
     describe_sync_result,
 )
-from ...views import has_inbox_mail
+from ...mail.views import has_inbox_mail
+from ...notifications import NotificationCenter
 from ..bindings import to_textual
 from ..terminal import (
     format_terminal_title,
@@ -128,7 +128,7 @@ class MainScreen(Screen[None]):
     """
 
     # Every key the reader answers to, from the one keymap both front
-    # ends read (see `pony.keymap`).
+    # ends read (see `pony.mail.keymap`).
     BINDINGS = to_textual(
         for_surface(MAIL_KEYMAP, Surface.READER, Surface.LIST),
     )
@@ -967,7 +967,7 @@ class MainScreen(Screen[None]):
         loop.  Running it here froze the terminal for as long as the
         query took.
         """
-        from ...search_parser import parse_query
+        from ...mail.search_parser import parse_query
 
         search = self._search
         if search is None:
@@ -1737,7 +1737,7 @@ class MainScreen(Screen[None]):
         The message's own folder decides whether it is a draft, because
         resuming one retires it: handed a received message, this would
         mark that mail trashed and let the next sync expunge it from the
-        server.  :func:`pony.delivery.file_draft` refuses the same thing
+        server.  :func:`pony.mail.delivery.file_draft` refuses the same thing
         a second time — this is the half that keeps the composer from
         opening at all.
         """
@@ -1800,8 +1800,8 @@ class MainScreen(Screen[None]):
     def open_current_in_browser(self) -> None:
         import webbrowser
 
-        from ...browser_preview import serve_html
-        from ...message_renderer import build_browser_html
+        from ...mail.browser_preview import serve_html
+        from ...mail.message_renderer import build_browser_html
 
         current = self._current_message_bytes(noun="browser view")
         if current is None:
@@ -1810,7 +1810,7 @@ class MainScreen(Screen[None]):
         # Served over loopback rather than written to a temporary file:
         # nothing of the message reaches the disk, and the page arrives
         # under the same policy as the browser front end's own
-        # `/message/body`.  See `pony.browser_preview`.
+        # `/message/body`.  See `pony.mail.browser_preview`.
         try:
             url = serve_html(build_browser_html(raw))
         except OSError as exc:
@@ -1823,7 +1823,7 @@ class MainScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
-        from ...message_renderer import build_browser_html, proposed_filename
+        from ...mail.message_renderer import build_browser_html, proposed_filename
         from ..pdf_export import export_pdf_in_thread
         from .save_folder_picker_screen import SaveFolderPickerScreen
 

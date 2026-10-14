@@ -3,7 +3,7 @@
 Archive, move, copy, trash, flag changes and folder creation used to be
 written out inside ``MainScreen``, so the only way to reach them was to
 start a Textual app, drive a Pilot and read the toasts back.  They live
-in :mod:`pony.mailbox_actions` now, over the stores, and these tests are
+in :mod:`pony.mail.mailbox_actions` now, over the stores, and these tests are
 what that buys: the policy that refuses a destructive move and the
 bookkeeping that keeps sync honest are checked directly, against real
 SQLite and real maildirs.
@@ -27,8 +27,8 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony import mailbox_actions
-from pony.domain import (
+from pony.mail import mailbox_actions
+from pony.mail.domain import (
     AnyAccount,
     AppConfig,
     FolderConfig,
@@ -40,7 +40,7 @@ from pony.domain import (
     MessageStatus,
     MirrorConfig,
 )
-from pony.mailbox_actions import Mailboxes
+from pony.mail.mailbox_actions import Mailboxes
 
 if TYPE_CHECKING:
     from pony.paths import AppPaths
@@ -727,7 +727,7 @@ class PlanDedupTest(unittest.TestCase):
         )
 
     def test_the_copy_carrying_the_most_information_is_kept(self) -> None:
-        from pony.mailbox_actions import plan_dedup
+        from pony.mail.mailbox_actions import plan_dedup
 
         bare = self._row(1)
         informed = self._row(
@@ -741,7 +741,7 @@ class PlanDedupTest(unittest.TestCase):
         self.assertEqual(group.trash, (bare,))
 
     def test_among_equals_the_oldest_row_is_kept(self) -> None:
-        from pony.mailbox_actions import plan_dedup
+        from pony.mail.mailbox_actions import plan_dedup
 
         first = self._row(1)
         second = self._row(2)
@@ -752,7 +752,7 @@ class PlanDedupTest(unittest.TestCase):
 
     def test_rows_the_server_has_not_seen_are_not_duplicates(self) -> None:
         """A row with no UID is a local draft; one in flux is in flux."""
-        from pony.mailbox_actions import plan_dedup
+        from pony.mail.mailbox_actions import plan_dedup
 
         self.assertEqual(plan_dedup([self._row(1), self._row(2, uid=None)]), ())
         self.assertEqual(
@@ -764,7 +764,7 @@ class PlanDedupTest(unittest.TestCase):
         )
 
     def test_groups_come_back_in_a_stable_order(self) -> None:
-        from pony.mailbox_actions import plan_dedup
+        from pony.mail.mailbox_actions import plan_dedup
 
         rows = [
             self._row(1, message_id="<b@example.com>"),
@@ -790,8 +790,8 @@ class CopyFlushesTheTargetMirrorTest(unittest.TestCase):
     """
 
     def test_a_copy_into_an_mbox_leaves_no_handle_open(self) -> None:
-        from pony.mailbox_actions import copy_messages
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.mailbox_actions import copy_messages
+        from pony.mail.storage import MboxMirrorRepository
 
         paths = make_tmp_paths("copy-flush")
         mirror_dir = paths.data_dir / "mirrors" / "local"

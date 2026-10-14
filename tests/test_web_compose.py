@@ -1,7 +1,7 @@
 """Writing and sending mail from the browser.
 
-The prefilling is :mod:`pony.composer`'s and the sending is
-:func:`pony.delivery.deliver_message`, both tested on their own; what is
+The prefilling is :mod:`pony.mail.composer`'s and the sending is
+:func:`pony.mail.delivery.deliver_message`, both tested on their own; what is
 checked here is the form around them — that a reply arrives addressed
 and quoted, that Send reaches SMTP with what the fields said, that a
 failed send keeps the text on screen, and that an attachment uploaded as
@@ -29,14 +29,14 @@ from tui_helpers import (
 )
 from web_helpers import form_fields
 
-from pony import delivery
-from pony.domain import FolderRef, MessageRef
+from pony.mail import delivery
+from pony.mail.domain import FolderRef, MessageRef
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
     from email.message import EmailMessage
 
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
     from pony.paths import AppPaths
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
@@ -273,7 +273,7 @@ def test_sending_reaches_smtp_with_what_the_form_said() -> None:
 
 
 def test_a_failed_send_keeps_the_form_and_the_text() -> None:
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     services, _index = _services("compose-send-fails")
 
@@ -568,7 +568,7 @@ def test_a_staged_upload_is_let_go_of_once_the_message_has_gone() -> None:
 
 def test_a_refused_send_keeps_the_upload_for_the_next_attempt() -> None:
     """The form comes back with the token in it, so the file has to stay."""
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
     from pony.web.compose import staged_path
 
     services, _index = _services("compose-staging-kept")
@@ -606,7 +606,7 @@ def test_forwarding_twice_does_not_leave_two_copies_behind() -> None:
     Four failed sends of one forward left four whole copies of the
     message in the staging directory.
     """
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
     from pony.web.compose import staging_dir
 
     services, index = _services("compose-forward-copies")
@@ -736,7 +736,7 @@ def test_an_account_the_form_names_but_cannot_send_from_is_refused() -> None:
 
 
 def test_a_reply_sent_from_the_browser_marks_the_original_answered() -> None:
-    from pony.domain import MessageFlag
+    from pony.mail.domain import MessageFlag
 
     services, index = _services("compose-reply-answered")
     (original,) = index.list_folder_messages(folder=INBOX)
@@ -768,7 +768,7 @@ def test_a_reply_sent_from_the_browser_marks_the_original_answered() -> None:
 
 
 def test_saving_a_resumed_draft_leaves_one_copy() -> None:
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     services, index = _services("compose-save-resumed")
     (original,) = index.list_folder_messages(folder=INBOX)

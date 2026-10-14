@@ -25,17 +25,17 @@ from test_cli import (
 from test_sync import FakeImapSession, _make_raw_message
 
 from pony.config import load_config
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     FolderRef,
     MessageFlag,
     MessageRef,
     MessageStatus,
 )
-from pony.imap_client import ImapAuthError
-from pony.index_store import SqliteIndexRepository
-from pony.message_projection import project_rfc822_message
-from pony.storage import MaildirMirrorRepository
+from pony.mail.imap_client import ImapAuthError
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.message_projection import project_rfc822_message
+from pony.mail.storage import MaildirMirrorRepository
 
 # Type alias for the per-folder seed map FakeImapSession accepts.
 _FolderMap = dict[str, dict[int, tuple[str, frozenset[Any], bytes]]]

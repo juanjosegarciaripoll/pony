@@ -395,7 +395,7 @@ async def test_a_sent_message_keeps_quoted_recipients_intact(
         await pilot.pause()
         screen = _screen(app)
         monkeypatch.setattr(
-            "pony.delivery.smtp_send",
+            "pony.mail.delivery.smtp_send",
             Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
@@ -445,7 +445,7 @@ async def test_a_non_plaintext_account_can_actually_send(
             get_password=Mock(return_value="resolved-from-env")
         )
         monkeypatch.setattr(
-            "pony.delivery.smtp_send",
+            "pony.mail.delivery.smtp_send",
             Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
@@ -482,7 +482,7 @@ async def test_a_failing_credential_lookup_is_reported_not_crashed(
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
         monkeypatch.setattr(
-            "pony.delivery.smtp_send",
+            "pony.mail.delivery.smtp_send",
             Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
@@ -511,7 +511,7 @@ async def test_without_a_provider_the_configured_password_is_used(
         screen = _screen(app)
         assert screen._credentials is None
         monkeypatch.setattr(
-            "pony.delivery.smtp_send",
+            "pony.mail.delivery.smtp_send",
             Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
@@ -547,7 +547,7 @@ async def test_no_password_anywhere_is_refused_with_a_clear_notice(
             side_effect=lambda message, **_kw: notices.append(str(message))
         )
         monkeypatch.setattr(
-            "pony.delivery.smtp_send",
+            "pony.mail.delivery.smtp_send",
             Mock(side_effect=lambda **kwargs: sent.append(kwargs)),
         )
         screen.action_send()
@@ -812,7 +812,7 @@ async def test_the_completion_list_stays_shut_when_a_row_is_tidied() -> None:
     """The tidy-up is not typing, so it must not reopen the dropdown."""
     from textual.widgets import OptionList
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="tidy-quiet")
     _index.upsert_contact(
@@ -898,9 +898,9 @@ async def test_escape_in_compose_puts_the_suggestions_away_first() -> None:
     from textual.widgets import OptionList
     from tui_helpers import make_index, make_test_account, make_test_config
 
-    from pony.composer import DraftSpec
-    from pony.domain import Contact
-    from pony.mailbox_actions import Mailboxes
+    from pony.mail.composer import DraftSpec
+    from pony.mail.domain import Contact
+    from pony.mail.mailbox_actions import Mailboxes
     from pony.tui.screens.save_draft_screen import SaveDraftScreen
     from pony.tui.widgets.contact_suggester import RecipientInput
 

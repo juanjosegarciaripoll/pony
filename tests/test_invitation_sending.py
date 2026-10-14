@@ -22,8 +22,8 @@ from tui_helpers import (
 )
 
 from pony.calendar.domain import CalendarRef
-from pony.domain import Contact
 from pony.invitation_actions import _with_method, send_event_invitations
+from pony.mail.domain import Contact
 from pony.outcome import Notice
 from pony.tui.calendar_host import contact_completer
 
@@ -87,7 +87,7 @@ class SendEventInvitationsTest(unittest.TestCase):
         self.paths = make_tmp_paths("invite-send")
         self.account = make_test_account(self.paths)
         self.sent = Mock()
-        import pony.smtp_sender as smtp_module
+        import pony.mail.smtp_sender as smtp_module
 
         self._original = smtp_module.send_message
         smtp_module.send_message = self.sent  # type: ignore[assignment]
@@ -164,7 +164,7 @@ class SendEventInvitationsTest(unittest.TestCase):
         self.assertIn("Room 3", text)
 
     def test_an_smtp_failure_is_reported_not_raised(self) -> None:
-        from pony.smtp_sender import SMTPError
+        from pony.mail.smtp_sender import SMTPError
 
         self.sent.side_effect = SMTPError("smtp.example.com refused the message")
         delivery = self._send()
@@ -258,7 +258,7 @@ async def test_saving_an_event_with_attendees_posts_the_invitation() -> None:
     app, *_ = build_pony_app(label="posting", calendar=runtime)
     sent = Mock()
     async with app.run_test() as pilot:
-        import pony.smtp_sender as smtp_module
+        import pony.mail.smtp_sender as smtp_module
 
         original = smtp_module.send_message
         smtp_module.send_message = sent  # type: ignore[assignment]
@@ -287,7 +287,7 @@ async def test_an_event_with_no_attendees_sends_nothing() -> None:
     app, *_ = build_pony_app(label="no-attendees", calendar=runtime)
     sent = Mock()
     async with app.run_test() as pilot:
-        import pony.smtp_sender as smtp_module
+        import pony.mail.smtp_sender as smtp_module
 
         original = smtp_module.send_message
         smtp_module.send_message = sent  # type: ignore[assignment]

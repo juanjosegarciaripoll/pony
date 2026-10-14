@@ -13,8 +13,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-from pony.browser_preview import close_preview, serve_html
-from pony.html_policy import MESSAGE_HTML_CSP
+from pony.mail.browser_preview import close_preview, serve_html
+from pony.mail.html_policy import MESSAGE_HTML_CSP
 
 _HTML = "<html><head><title>hello</title></head><body><p>body</p></body></html>"
 

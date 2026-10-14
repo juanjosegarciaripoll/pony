@@ -16,7 +16,7 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import (
+from pony.mail.domain import (
     AnyAccount,
     FolderConfig,
     FolderRef,
@@ -24,9 +24,9 @@ from pony.domain import (
     MessageStatus,
     MirrorConfig,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.protocols import MirrorRepository
-from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.protocols import MirrorRepository
+from pony.mail.storage import MaildirMirrorRepository, MboxMirrorRepository
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.folder_panel import FolderPanel
@@ -133,7 +133,7 @@ async def test_archive_policy_guards(folders: FolderConfig, expected: str) -> No
 async def test_archive_reports_mirror_failures() -> None:
     """A mirror that refuses the rename is reported, not swallowed.
 
-    The move itself is :mod:`pony.mailbox_actions`' job and is tested
+    The move itself is :mod:`pony.mail.mailbox_actions`' job and is tested
     there; what this covers is that the screen passes its notices on.
     """
     paths = make_tmp_paths("main-mirror-failures")
@@ -198,7 +198,7 @@ async def test_copy_move_and_folder_creation_error_guards() -> None:
 
 def _local_account(paths: object, name: str = "local"):  # type: ignore[no-untyped-def]
     """A local (non-IMAP) account backed by a maildir mirror."""
-    from pony.domain import LocalAccountConfig, MirrorConfig
+    from pony.mail.domain import LocalAccountConfig, MirrorConfig
 
     mirror_dir = paths.data_dir / "mirrors" / name  # type: ignore[attr-defined]
     mirror_dir.mkdir(parents=True, exist_ok=True)
@@ -368,9 +368,9 @@ def test_marking_an_already_answered_message_is_a_noop() -> None:
     """``add_flag`` says whether the row changed, and what it did."""
     from tui_helpers import make_index, make_test_account, make_tmp_paths
 
-    from pony import mailbox_actions
-    from pony.domain import AppConfig
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail import mailbox_actions
+    from pony.mail.domain import AppConfig
+    from pony.mail.storage import MaildirMirrorRepository
 
     paths = make_tmp_paths("answered-noop")
     account = make_test_account(paths)
@@ -390,8 +390,8 @@ def test_marking_an_already_answered_message_is_a_noop() -> None:
         folder=folder,
         raw_message=plain_text(),
     )
-    from pony.domain import MessageRef
-    from pony.message_projection import project_rfc822_message
+    from pony.mail.domain import MessageRef
+    from pony.mail.message_projection import project_rfc822_message
 
     row = index.insert_message(
         message=project_rfc822_message(
@@ -859,7 +859,7 @@ async def test_goto_offers_a_folder_that_has_no_directory_yet() -> None:
     shows both, because the tree asks `folder_unread_counts`; the goto
     dialog asked the mirror and offered neither.
     """
-    from pony.domain import FolderSyncState
+    from pony.mail.domain import FolderSyncState
     from pony.tui.screens.goto_folder_screen import GotoFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")

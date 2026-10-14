@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from pony.calendar.sync import describe_sync_result as describe_calendar_sync
 from pony.outcome import Outcome, failure, info, warn
 
-from ..sync import describe_halt, describe_sync_result
+from ..mail.sync import describe_halt, describe_sync_result
 from .actions import Confirmation, Reply
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from pony.outcome import Notice
 
     from ..calendar_runtime import CalendarRuntime
-    from ..sync import ImapSyncService, MailSyncScheduler, SyncPlan
+    from ..mail.sync import ImapSyncService, MailSyncScheduler, SyncPlan
 
 _log = logging.getLogger(__name__)
 

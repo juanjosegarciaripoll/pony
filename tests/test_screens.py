@@ -22,8 +22,8 @@ from conftest import TMP_ROOT
 from tui_helpers import DeterministicDirOnlyTree
 
 import pony.tui.screens.save_folder_picker_screen as save_picker_module
-from pony.domain import FolderRef
-from pony.message_export import downloads_dir
+from pony.mail.domain import FolderRef
+from pony.mail.message_export import downloads_dir
 from pony.tui.app import ContactsApp, EmlViewerApp
 from pony.tui.screens.confirm_screen import ConfirmScreen
 from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
@@ -383,7 +383,7 @@ async def test_sync_confirm_planning_mode_shows_title() -> None:
 
 
 async def test_sync_confirm_cancel_button_dismisses_false() -> None:
-    from pony.sync import SyncPlan
+    from pony.mail.sync import SyncPlan
 
     empty_plan = SyncPlan(accounts=())
     app = _make_host(SyncConfirmScreen, empty_plan, None)
@@ -395,7 +395,7 @@ async def test_sync_confirm_cancel_button_dismisses_false() -> None:
 
 
 async def test_sync_confirm_n_key_dismisses_false() -> None:
-    from pony.sync import SyncPlan
+    from pony.mail.sync import SyncPlan
 
     empty_plan = SyncPlan(accounts=())
     app = _make_host(SyncConfirmScreen, empty_plan, None)
@@ -407,7 +407,7 @@ async def test_sync_confirm_n_key_dismisses_false() -> None:
 
 
 async def test_sync_confirm_y_key_calls_on_confirm() -> None:
-    from pony.sync import SyncPlan
+    from pony.mail.sync import SyncPlan
 
     called: list[bool] = []
 
@@ -437,7 +437,7 @@ async def test_sync_confirm_show_plan_transitions() -> None:
     """
     from textual.widgets import Button
 
-    from pony.sync import SyncPlan
+    from pony.mail.sync import SyncPlan
 
     empty_plan = SyncPlan(accounts=())
     app = _make_host(SyncConfirmScreen, None, None)
@@ -985,7 +985,7 @@ async def test_pick_folder_screen_escape_returns_none() -> None:
         seed_message,
     )
 
-    from pony.domain import FolderRef
+    from pony.mail.domain import FolderRef
     from pony.tui.screens.pick_folder_screen import PickFolderScreen
 
     paths = make_tmp_paths("pick-folder-escape")
@@ -1024,7 +1024,7 @@ async def test_pick_folder_screen_mounts_without_error() -> None:
         seed_message,
     )
 
-    from pony.domain import FolderRef
+    from pony.mail.domain import FolderRef
     from pony.tui.screens.pick_folder_screen import PickFolderScreen
 
     paths = make_tmp_paths("pick-folder-mount")
@@ -1060,7 +1060,7 @@ async def test_pick_folder_screen_mounts_without_error() -> None:
 
 async def test_sync_confirm_update_progress_with_total() -> None:
     """update_progress with total > 0 shows the progress bar."""
-    from pony.sync import ProgressInfo
+    from pony.mail.sync import ProgressInfo
 
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
@@ -1073,7 +1073,7 @@ async def test_sync_confirm_update_progress_with_total() -> None:
 
 async def test_sync_confirm_update_progress_no_total() -> None:
     """update_progress with total == 0 hides the progress bar."""
-    from pony.sync import ProgressInfo
+    from pony.mail.sync import ProgressInfo
 
     app = _make_host(SyncConfirmScreen, None, None)
     async with app.run_test() as pilot:
@@ -1128,7 +1128,7 @@ async def test_contacts_app_search_bar() -> None:
 # AttachmentPickerScreen
 # ===========================================================================
 #
-# The grammar it parses is `pony.message_export.parse_part_selection`,
+# The grammar it parses is `pony.mail.message_export.parse_part_selection`,
 # which both front ends read; `tests/test_part_selection.py` is where
 # it is pinned.  Seven copies of those cases used to sit here as well.
 
@@ -1163,7 +1163,7 @@ async def test_attachment_picker_screen_escape_returns_none() -> None:
 
 async def test_sync_confirm_with_ops_shows_summary() -> None:
     """SyncConfirmScreen composed with a plan that has ops shows a summary."""
-    from pony.sync import (
+    from pony.mail.sync import (
         AccountSyncPlan,
         FetchNewOp,
         FolderSyncPlan,
@@ -1190,7 +1190,7 @@ async def test_sync_confirm_with_ops_shows_summary() -> None:
 
 async def test_sync_confirm_with_skipped_folders() -> None:
     """SyncConfirmScreen with skipped folders shows the skipped text."""
-    from pony.sync import AccountSyncPlan, SyncPlan
+    from pony.mail.sync import AccountSyncPlan, SyncPlan
 
     acct = AccountSyncPlan(
         account_name="acct",
@@ -1213,8 +1213,8 @@ async def test_sync_confirm_with_skipped_folders() -> None:
 
 async def test_sync_confirm_with_confirmation_needed() -> None:
     """SyncConfirmScreen with a folder needing confirmation shows warning."""
-    from pony.domain import MessageRef
-    from pony.sync import (
+    from pony.mail.domain import MessageRef
+    from pony.mail.sync import (
         AccountSyncPlan,
         FolderSyncPlan,
         ServerDeleteOp,
@@ -1256,7 +1256,7 @@ async def test_sync_confirm_with_confirmation_needed() -> None:
 
 async def test_sync_confirm_button_ignored_while_syncing() -> None:
     """Button presses while syncing are ignored."""
-    from pony.sync import SyncPlan
+    from pony.mail.sync import SyncPlan
 
     called: list[bool] = []
 
@@ -1286,7 +1286,7 @@ async def test_contact_detail_screen_mounts() -> None:
     """ContactDetailScreen displays a contact without crashing."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail")
@@ -1308,7 +1308,7 @@ async def test_contact_detail_screen_escape_dismisses() -> None:
     """Pressing Escape dismisses ContactDetailScreen."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-esc")
@@ -1335,7 +1335,7 @@ async def test_contact_edit_screen_mounts() -> None:
     """ContactEditScreen mounts and shows input fields."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit")
@@ -1357,7 +1357,7 @@ async def test_contact_edit_screen_escape_dismisses_none() -> None:
     """Pressing Escape dismisses ContactEditScreen with None."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit-esc")
@@ -1378,7 +1378,7 @@ async def test_contact_edit_screen_save_ctrl_s() -> None:
     """Pressing ctrl+s saves and dismisses ContactEditScreen with a Contact."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit-save")
@@ -1400,7 +1400,7 @@ async def test_contact_browser_with_contacts_shows_rows() -> None:
     from textual.widgets import DataTable
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     paths = make_tmp_paths("cb-rows")
     index = make_index(paths)
@@ -1427,7 +1427,7 @@ async def test_contact_browser_search_filters_rows() -> None:
     from textual.widgets import DataTable
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     paths = make_tmp_paths("cb-search")
     index = make_index(paths)
@@ -1459,7 +1459,7 @@ async def test_contact_browser_mark_contact() -> None:
     """Pressing m marks a contact (action_mark_down), shift+up unmarks."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     paths = make_tmp_paths("cb-mark")
     index = make_index(paths)
@@ -1499,7 +1499,7 @@ async def test_contact_suggester_get_suggestion_no_comma() -> None:
 
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-1")
@@ -1520,7 +1520,7 @@ async def test_contact_suggester_with_comma_completes_last_token() -> None:
 
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-2")
@@ -1556,7 +1556,7 @@ async def test_contact_suggester_no_email_returns_none() -> None:
 
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-4")
@@ -1575,7 +1575,7 @@ async def test_recipient_input_lists_and_selects_multiple_matches() -> None:
     from textual.widgets import Input, OptionList
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-options"))
@@ -1624,7 +1624,7 @@ async def test_recipient_input_replaces_only_current_token() -> None:
     from textual.widgets import Input
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-token"))
@@ -1661,7 +1661,7 @@ async def test_recipient_input_hides_short_empty_and_escaped_results() -> None:
     from textual.widgets import Input, OptionList
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-hide"))
@@ -1710,7 +1710,7 @@ async def test_recipient_input_caps_addresses_and_ignores_invalid_selection() ->
     from textual.widgets import OptionList
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-cap"))
@@ -1964,7 +1964,7 @@ async def test_contact_detail_screen_with_all_fields() -> None:
 
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-full")
@@ -2000,7 +2000,7 @@ async def test_contact_detail_screen_no_emails() -> None:
     """ContactDetailScreen shows '(none)' when contact has no email."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-no-email")
@@ -2024,7 +2024,7 @@ async def test_contact_browser_enter_row_opens_detail() -> None:
     """Pressing Enter on a row opens ContactDetailScreen."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("cb-enter")
@@ -2077,7 +2077,7 @@ async def test_contact_browser_edit_key() -> None:
     """Pressing e opens ContactEditScreen for the current contact."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("cb-edit")
@@ -2107,7 +2107,7 @@ async def test_contact_browser_delete_shows_confirm() -> None:
     """Pressing D on a marked contact shows ConfirmScreen."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.confirm_screen import ConfirmScreen
 
     paths = make_tmp_paths("cb-delete")
@@ -2145,7 +2145,7 @@ def _contacts_index(label: str, *names: str):  # type: ignore[no-untyped-def]
     """Return an index seeded with one contact per ``First Last`` name."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     index = make_index(make_tmp_paths(label))
     for name in names:
@@ -2318,7 +2318,7 @@ async def test_contact_browser_search_submitted() -> None:
     from textual.widgets import DataTable, Input
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     paths = make_tmp_paths("cb-search-sub")
     index = make_index(paths)
@@ -2437,7 +2437,7 @@ def _contacts_app(label: str, contacts: list[object] | None = None):  # type: ig
     """A ContactsApp over an index seeded with *contacts*."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     paths = make_tmp_paths(label)
     index = make_index(paths)
@@ -2448,7 +2448,7 @@ def _contacts_app(label: str, contacts: list[object] | None = None):  # type: ig
 
 
 def _contact(first: str, emails: tuple[str, ...]) -> object:
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
 
     return Contact(id=None, first_name=first, last_name="Tester", emails=emails)
 
@@ -2548,7 +2548,7 @@ async def test_saving_a_new_or_edited_contact_refreshes_the_table() -> None:
     """The editor's callback is what re-reads the index after a save."""
     from textual.widgets import DataTable
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
 
     app, index = _contacts_app(
@@ -2602,7 +2602,7 @@ async def test_recipient_completion_preserves_a_quoted_name_before_it() -> None:
     from textual.widgets import Input
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-quoted"))
@@ -2638,7 +2638,7 @@ async def test_eml_viewer_screen_uses_configured_viewer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The standalone viewer honours the same [viewers] table."""
-    from pony.domain import ViewerRule
+    from pony.mail.domain import ViewerRule
     from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
 
     launch_mock = MagicMock()
@@ -2671,7 +2671,7 @@ async def test_recipient_options_keep_their_geometry_when_focused() -> None:
     from textual.widgets import Input, OptionList
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-geometry"))
@@ -2711,7 +2711,7 @@ async def test_clicking_a_recipient_option_selects_that_row() -> None:
     from textual.widgets import Input, OptionList
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.domain import Contact
+    from pony.mail.domain import Contact
     from pony.tui.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-click"))

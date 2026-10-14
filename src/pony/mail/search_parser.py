@@ -62,7 +62,7 @@ def _tokenize(raw: str) -> list[str]:
 
 
 def parse_query(raw: str) -> SearchQuery:
-    """Parse *raw* into a :class:`~pony.domain.SearchQuery`."""
+    """Parse *raw* into a :class:`~pony.mail.domain.SearchQuery`."""
     # A NUL cannot reach SQLite as part of a MATCH expression: it
     # terminates the string and raises.  Reachable through the MCP tool,
     # where JSON can encode \u0000.

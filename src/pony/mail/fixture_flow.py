@@ -5,10 +5,10 @@ from __future__ import annotations
 import dataclasses
 from email.message import EmailMessage
 
+from ..paths import AppPaths
 from .domain import AppConfig, MessageRef, SearchQuery
 from .index_store import SqliteIndexRepository
 from .message_projection import project_rfc822_message
-from .paths import AppPaths
 
 
 def run_fixture_ingest(*, config: AppConfig, paths: AppPaths) -> int:

@@ -1,4 +1,4 @@
-"""Tests for pony.mailbox_ops.
+"""Tests for pony.mail.mailbox_ops.
 
 These two row rewrites *are* the local-mutation half of the sync
 contract: the planner has no queue to consult, only the row (see
@@ -12,14 +12,14 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
-from pony.domain import (
+from pony.mail.domain import (
     FolderRef,
     IndexedMessage,
     MessageFlag,
     MessageRef,
     MessageStatus,
 )
-from pony.mailbox_ops import landed_in_folder, moved_to_folder
+from pony.mail.mailbox_ops import landed_in_folder, moved_to_folder
 
 SOURCE = FolderRef(account_name="work", folder_name="INBOX")
 TARGET = FolderRef(account_name="work", folder_name="Archive")

@@ -23,7 +23,7 @@ from conftest import (
 )
 
 from pony.cli import main
-from pony.domain import MessageFlag
+from pony.mail.domain import MessageFlag
 from pony.paths import AppPaths
 
 
@@ -138,10 +138,10 @@ class CliTestCase(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef, MessageRef, MessageStatus
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef, MessageRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
@@ -206,10 +206,10 @@ class CliTestCase(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef, MessageFlag, MessageRef, MessageStatus
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
@@ -274,10 +274,10 @@ class CliTestCase(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef, MessageRef
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef, MessageRef
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
@@ -659,7 +659,7 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
 
     def test_prompt_yes_exports_contacts_and_deletes(self) -> None:
         """Answering y must export contacts and delete DB + mirrors."""
-        from pony.bbdb import read_bbdb
+        from pony.mail.bbdb import read_bbdb
 
         with isolated_app_env() as env_root, temporary_config() as config_path:
             db, mirror = self._seed_legacy_db_and_mirror(config_path)
@@ -706,10 +706,10 @@ def _seed_one_message(
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -771,10 +771,10 @@ def _seed_dup_messages(
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -844,10 +844,10 @@ def _seed_message_with_attachments(config_path: Path) -> _SeedHandle:
     import corpus
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -948,8 +948,8 @@ class DedupFolderTestCase(unittest.TestCase):
 
     def test_dry_run_reports_without_writing(self) -> None:
         """Dry-run prints groups but leaves all rows ACTIVE."""
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_dup_messages(
@@ -985,8 +985,8 @@ class DedupFolderTestCase(unittest.TestCase):
 
     def test_apply_trashes_losers_keeps_most_flags(self) -> None:
         """``--apply`` trashes copies with fewer flags; winner stays ACTIVE."""
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_dup_messages(
@@ -1026,8 +1026,8 @@ class DedupFolderTestCase(unittest.TestCase):
 
     def test_tiebreaker_answered_beats_flagged(self) -> None:
         """With equal flag counts, ANSWERED wins over FLAGGED."""
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             # Both have two flags; ANSWERED should win the tiebreaker.
@@ -1063,8 +1063,8 @@ class DedupFolderTestCase(unittest.TestCase):
         """A pre-existing TRASHED row is neither picked as winner nor re-touched."""
         import dataclasses
 
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             handles = _seed_dup_messages(
@@ -1108,8 +1108,8 @@ class DedupFolderTestCase(unittest.TestCase):
         """Rows with an empty Message-ID are never treated as duplicates."""
         import dataclasses
 
-        from pony.domain import FolderRef, MessageFlag, MessageStatus
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             handles = _seed_dup_messages(
@@ -1292,10 +1292,10 @@ def _seed_multipart_alternative(config_path: Path) -> _SeedHandle:
     import corpus
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -1339,10 +1339,10 @@ def _seed_plain_text_fixture(config_path: Path) -> _SeedHandle:
     import corpus
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -1564,7 +1564,7 @@ class MessageIdBracketNormalisationTest(unittest.TestCase):
 def _make_indexed(message_id: str):  # type: ignore[no-untyped-def]
     from datetime import UTC, datetime
 
-    from pony.domain import IndexedMessage, MessageRef, MessageStatus
+    from pony.mail.domain import IndexedMessage, MessageRef, MessageStatus
 
     return IndexedMessage(
         message_ref=MessageRef(account_name="acct", folder_name="INBOX", id=0),
@@ -1809,7 +1809,7 @@ class MoreCliCommandsTest(unittest.TestCase):
             # It loads, which is the whole point.
             config = load_config(fresh)
 
-        from pony.domain import CONFIG_VERSION
+        from pony.mail.domain import CONFIG_VERSION
 
         self.assertIn(f"config_version = {CONFIG_VERSION}", written)
         self.assertEqual(config.accounts, ())
@@ -1820,8 +1820,8 @@ class MoreCliCommandsTest(unittest.TestCase):
 
     def test_contacts_show_finds_existing_contact(self) -> None:
         """``pony contacts show`` displays details for a known contact."""
-        from pony.domain import Contact
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import Contact
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             paths = isolated_paths()
@@ -2154,10 +2154,10 @@ class MessageGetCcTest(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             config = load_config(config_path)
@@ -2327,7 +2327,7 @@ class OpsDetailTableTest(unittest.TestCase):
     """``_build_ops_detail_table`` renders every non-download op kind."""
 
     def _index(self):  # type: ignore[no-untyped-def]
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.index_store import SqliteIndexRepository
 
         root = TMP_ROOT / "ops-detail" / uuid4().hex
         root.mkdir(parents=True, exist_ok=True)
@@ -2337,8 +2337,8 @@ class OpsDetailTableTest(unittest.TestCase):
 
     def test_every_op_kind_appears(self) -> None:
         from pony.cli import _build_ops_detail_table
-        from pony.domain import MessageRef
-        from pony.sync import (
+        from pony.mail.domain import MessageRef
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             MergeFlagsOp,
@@ -2399,8 +2399,8 @@ class OpsDetailTableTest(unittest.TestCase):
         so a repeated ref costs one.
         """
         from pony.cli import _build_ops_detail_table
-        from pony.domain import MessageRef
-        from pony.sync import (
+        from pony.mail.domain import MessageRef
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             PushFlagsOp,
@@ -2463,8 +2463,8 @@ class OpsDetailTableTest(unittest.TestCase):
 
     def test_empty_flag_sets_render_as_dash(self) -> None:
         from pony.cli import _build_ops_detail_table
-        from pony.domain import MessageRef
-        from pony.sync import (
+        from pony.mail.domain import MessageRef
+        from pony.mail.sync import (
             AccountSyncPlan,
             FolderSyncPlan,
             PushFlagsOp,
@@ -2504,10 +2504,10 @@ def _seed_fixture(config_path: Path, raw: bytes) -> _SeedHandle:
     import dataclasses
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -2558,9 +2558,9 @@ def _seed_index_only(
     from email.message import EmailMessage
 
     from pony.config import load_config
-    from pony.domain import AccountConfig, MessageRef, MessageStatus
-    from pony.index_store import SqliteIndexRepository
-    from pony.message_projection import project_rfc822_message
+    from pony.mail.domain import AccountConfig, MessageRef, MessageStatus
+    from pony.mail.index_store import SqliteIndexRepository
+    from pony.mail.message_projection import project_rfc822_message
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -2598,8 +2598,8 @@ def _seed_index_only(
 def _seed_with_empty_mirror_bytes(config_path: Path) -> _SeedHandle:
     """Seed a row whose mirror file exists but is zero bytes long."""
     from pony.config import load_config
-    from pony.domain import AccountConfig, FolderRef
-    from pony.storage import MaildirMirrorRepository
+    from pony.mail.domain import AccountConfig, FolderRef
+    from pony.mail.storage import MaildirMirrorRepository
 
     config = load_config(config_path)
     account = next(iter(config.accounts))
@@ -2949,8 +2949,8 @@ class ContactsShowDetailTests(unittest.TestCase):
         """A fully-populated contact shows affix, aliases, org, notes, last seen."""
         from datetime import UTC, datetime
 
-        from pony.domain import Contact
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.domain import Contact
+        from pony.mail.index_store import SqliteIndexRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             paths = isolated_paths()
@@ -2991,9 +2991,9 @@ class RescanReconciliationTests(unittest.TestCase):
         from email.message import EmailMessage
 
         from pony.config import load_config
-        from pony.domain import FolderRef
-        from pony.index_store import SqliteIndexRepository
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             doomed = _seed_one_message(
@@ -3145,7 +3145,7 @@ class AppLaunchingCommandTests(unittest.TestCase):
         """
         from unittest.mock import patch
 
-        from pony.index_store import SqliteIndexRepository
+        from pony.mail.index_store import SqliteIndexRepository
 
         closed: list[bool] = []
 
@@ -3260,7 +3260,7 @@ class AppLaunchingCommandTests(unittest.TestCase):
     def test_the_view_command_passes_configured_viewers(self) -> None:
         from unittest.mock import patch
 
-        from pony.domain import ViewerRule
+        from pony.mail.domain import ViewerRule
 
         with isolated_app_env(), temporary_config() as config_path:
             with config_path.open("a", encoding="utf-8") as handle:
@@ -3723,7 +3723,7 @@ class SearchQueryLanguageTests(unittest.TestCase):
         """Not just "prefixes happen to work" — the same parser is called."""
         from unittest.mock import patch
 
-        from pony.search_parser import parse_query
+        from pony.mail.search_parser import parse_query
 
         with isolated_app_env(), temporary_config() as config_path:
             _seed_one_message(config_path, subject="Subject", body="body")
@@ -3765,10 +3765,10 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
     def _seed(self, mirror_dir: Path) -> str:
         import dataclasses
 
-        from pony.domain import FolderRef, MessageRef, MessageStatus
-        from pony.index_store import SqliteIndexRepository
-        from pony.message_projection import project_rfc822_message
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef, MessageRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.message_projection import project_rfc822_message
+        from pony.mail.storage import MaildirMirrorRepository
 
         paths = isolated_paths()
         paths.ensure_runtime_dirs()
@@ -4276,9 +4276,9 @@ class ReindexCommandTest(unittest.TestCase):
 
     def test_reindex_recovers_rows_and_watermarks_from_the_mirror(self) -> None:
         from pony.config import load_config
-        from pony.domain import FolderRef
-        from pony.index_store import SqliteIndexRepository
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             paths = isolated_paths()
@@ -4323,8 +4323,8 @@ class ReindexCommandTest(unittest.TestCase):
         every message in it had become an upload candidate.
         """
         from pony.config import load_config
-        from pony.domain import FolderRef
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             paths = isolated_paths()
@@ -4353,8 +4353,8 @@ class ReindexCommandTest(unittest.TestCase):
     def test_two_files_with_one_handle_are_reported_not_fatal(self) -> None:
         """The rebuild carries on and names the count it left behind."""
         from pony.config import load_config
-        from pony.domain import FolderRef
-        from pony.storage import MaildirMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.storage import MaildirMirrorRepository
 
         with isolated_app_env(), temporary_config() as config_path:
             paths = isolated_paths()
@@ -4503,9 +4503,9 @@ class WebQuitWiringTest(unittest.TestCase):
         from unittest.mock import patch
 
         import pony.web as web_module
-        from pony.domain import FolderRef
-        from pony.index_store import SqliteIndexRepository
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.storage import MboxMirrorRepository
 
         class _FakeServer:
             def __init__(self, config: object) -> None:

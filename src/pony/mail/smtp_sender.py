@@ -7,7 +7,7 @@ The sender takes an explicit :class:`SmtpConfig` plus ``username`` and
 optional extras enabling a local account to send).
 
 Connecting is bounded and retried on the same terms as
-:mod:`pony.imap_client`; see :data:`DEFAULT_CONNECT_TIMEOUT_SECONDS` and
+:mod:`pony.mail.imap_client`; see :data:`DEFAULT_CONNECT_TIMEOUT_SECONDS` and
 :data:`DEFAULT_CONNECT_ATTEMPTS`.  Only the connect is retried — once the
 session reaches ``DATA`` a retry risks delivering the message twice.
 """

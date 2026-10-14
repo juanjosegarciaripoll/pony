@@ -2,8 +2,8 @@
 
 Folders, a message list and a reader, divided the way the terminal
 divides them, each pane scrolling on its own.  Every row comes from
-:mod:`pony.views` and every operation is a call into
-:mod:`pony.mailbox_actions`, :mod:`pony.delivery` or
+:mod:`pony.mail.views` and every operation is a call into
+:mod:`pony.mail.mailbox_actions`, :mod:`pony.mail.delivery` or
 :mod:`pony.invitation_actions`, so this module is markup, links and the
 plumbing between a form field and an argument.
 
@@ -23,15 +23,15 @@ from typing import TYPE_CHECKING
 
 from pony.outcome import Notice, Outcome, failure, info, warn
 
-from .. import mailbox_actions
-from ..authentication import MessageAuthentication
-from ..domain import FolderRef, MessageFlag
-from ..folder_utils import shows_recipient
+from ..mail import mailbox_actions
 from ..invitation import CALENDAR_CONTENT_TYPES
-from ..mailbox_actions import folder_unread_counts
-from ..message_export import listed_parts
-from ..message_renderer import fmt_size, parse_styled_body, render_message
-from ..views import (
+from ..mail.authentication import MessageAuthentication
+from ..mail.domain import FolderRef, MessageFlag
+from ..mail.folder_utils import shows_recipient
+from ..mail.mailbox_actions import folder_unread_counts
+from ..mail.message_export import listed_parts
+from ..mail.message_renderer import fmt_size, parse_styled_body, render_message
+from ..mail.views import (
     ROW_BATCH,
     build_folder_tree,
     correspondent_label,
@@ -56,10 +56,10 @@ if TYPE_CHECKING:
     from pony.calendar.domain import CalendarRef
     from pony.outcome import Notice
 
-    from ..domain import FolderMessageSummary, IndexedMessage, MessageRef
     from ..invitation import Invitation
-    from ..message_renderer import AttachmentInfo, RenderedMessage
-    from ..views import FolderTreeNode
+    from ..mail.domain import FolderMessageSummary, IndexedMessage, MessageRef
+    from ..mail.message_renderer import AttachmentInfo, RenderedMessage
+    from ..mail.views import FolderTreeNode
     from .app import WebServices
 
 
@@ -432,7 +432,7 @@ def rows(
         summaries = batch[:ROW_BATCH]
     # The server's own zone, which is the one `format_received` renders
     # a row in: one `datetime.now(UTC)` here put every row's date back
-    # into UTC, which is the drift `pony.views.format_received`
+    # into UTC, which is the drift `pony.mail.views.format_received`
     # describes.
     now = datetime.now().astimezone()
     rendered = [
@@ -506,7 +506,7 @@ def _search(
     same thing in both, and the same scoping rule: the account the open
     folder belongs to, narrowed to that folder.
     """
-    from ..search_parser import parse_query
+    from ..mail.search_parser import parse_query
 
     # Scoped in the query, not afterwards: `search` bounds what it
     # materialises, so filtering the result dropped the hits that were
@@ -778,7 +778,7 @@ def _attachments(
 
     Numbered as the reader numbers them, so the number beside a file
     here is the one ``S`` takes in either front end, and the download
-    names match because both ask :mod:`pony.message_export` for them.
+    names match because both ask :mod:`pony.mail.message_export` for them.
     Parts ``0`` and ``T`` -- the message as it arrived and its body as
     text -- are served and can be asked for by name; they are not
     listed, because every message has them.
@@ -1102,7 +1102,7 @@ def _new_folder(context: ActionContext) -> Outcome:
 
 
 def _harvest_contacts(context: ActionContext) -> Outcome:
-    from ..contact_actions import harvest_folder
+    from ..mail.contact_actions import harvest_folder
 
     folder = context.folder
     return harvest_folder(

@@ -2,11 +2,18 @@
 
 Python 3.13 MUA **and calendar**, one program, two front ends:
 
-- Mail (`src/pony`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI (`pony tui`) or browser UI (`pony web`); SMTP out, optional Markdown compose.
+- Mail (`src/pony/mail`): IMAP sync → Maildir/mbox mirror → SQLite index → Textual TUI (`pony tui`) or browser UI (`pony web`); SMTP out, optional Markdown compose.
 - Calendar (`src/pony/calendar`): CalDAV sync → `.ics` mirror → SQLite index + recurrence/alarm cache → its own screens, hosted by the mail app (++f2++), and its own pages in the browser UI.
 
 Both front ends offer the same operations, because the operations are
 not in either of them: see **Where an operation lives** below.
+
+One package, four tiers: what both halves share (`pony.outcome`,
+`pony.paths`, `pony.sqlite`, `pony.keys`, ...), the two models
+(`pony.mail`, `pony.calendar`), the three front ends over them
+(`pony.tui`, `pony.web`, `pony.cli` + `pony.cli_calendar`), and the few
+modules where the halves meet (`pony.config`, `pony.invitation`,
+`pony.services`, `pony.calendar_runtime`).
 
 One config file, one notification space, one entry point (`pony`).
 **The two models never import each other** — `tests/test_layering.py`
@@ -58,8 +65,8 @@ with no mail code in the way.
    a file's classes across workers.
 
    **While iterating, run the files you touched, not the suite.** The
-   full run belongs at a commit boundary. A model layer under `src/pony`
-   or `src/pony/calendar` has unit tests that finish in seconds
+   full run belongs at a commit boundary. A model layer under
+   `src/pony/mail` or `src/pony/calendar` has unit tests that finish in seconds
    (`tests/test_mailbox_actions.py`, `tests_calendar/test_event_actions.py`);
    reach for those before the Pilot-driven ones.
 3. **Never run a mutating command against the live environment.** Not
@@ -152,7 +159,7 @@ Key test infrastructure:
 | Notification space | `tests/test_notifications.py` |
 | Mail + calendar in one app | `tests/test_calendar_in_app.py` — `build_pony_app(calendar=make_calendar_runtime(...))` |
 | Browser front end | `tests/test_web_app.py` — Starlette `TestClient` over real stores |
-| Browser compose and send | `tests/test_web_compose.py` — patched `pony.delivery.smtp_send` |
+| Browser compose and send | `tests/test_web_compose.py` — patched `pony.mail.delivery.smtp_send` |
 | Browser contacts | `tests/test_web_contacts.py` |
 | Browser calendar views | `tests/test_web_calendar.py` |
 | Browser invitations | `tests/test_web_invitations.py` |
@@ -300,7 +307,7 @@ outcome (`FiledMessage`, `FlaggedMessage`), never instead of it. No `app.notify`
 that blocks (SMTP, a sync) is a plain blocking call: the terminal hands
 it to a worker thread, the browser to the thread pool.
 
-**A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.keymap`
+**A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.mail.keymap`
 is the mail reader's table and `pony.calendar.keymap` is the calendar's, which
 also holds the vocabulary both share (`KeyBinding`, `for_surface`,
 `web_key`) because the dependency arrow points that way. Each front end

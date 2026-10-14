@@ -57,13 +57,13 @@ from web_helpers import (
     select_value,
 )
 
-from pony import delivery
-from pony.domain import FolderRef, MessageFlag
+from pony.mail import delivery
+from pony.mail.domain import FolderRef, MessageFlag
 from pony.web import WebServices, build_web_app
 
 if TYPE_CHECKING:
     from pony.calendar_runtime import CalendarRuntime
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 ARCHIVE = FolderRef(account_name="acct", folder_name="Archive")
@@ -440,7 +440,7 @@ def test_writing_from_the_list_and_sending_files_the_sent_copy() -> None:
 
 def test_a_refused_send_keeps_the_form_and_the_next_attempt_sends_it() -> None:
     """A refusal is not a lost message: the form comes back usable."""
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     services, index, _calendar = _services("flow-send-refused")
     sent: list[dict[str, object]] = []
@@ -600,7 +600,10 @@ def test_accepting_an_invitation_files_it_and_answers_the_organiser() -> None:
     assert runtime is not None
     posted = Mock()
 
-    with patch("pony.smtp_sender.send_message", posted), _client(services) as client:
+    with (
+        patch("pony.mail.smtp_sender.send_message", posted),
+        _client(services) as client,
+    ):
         folder = client.get(MAIL).text
         opened = client.get(row_link(folder)).text
 

@@ -515,7 +515,7 @@ seen as a delete in the source plus a fetch in the target.
 There is no pending-operations table. A local mutation is recorded by
 rewriting the message's index row, and the planner is the sole observer — so
 the field sets below *are* the contract. They are implemented once, in
-`pony.mailbox_ops`: `landed_in_folder` for a message arriving in a folder,
+`pony.mail.mailbox_ops`: `landed_in_folder` for a message arriving in a folder,
 `moved_to_folder` for a move within one account.
 
 | Action | Index mutation | Sync op |

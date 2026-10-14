@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 if TYPE_CHECKING:
-    from ..domain import FolderRef, MessageRef
-    from ..message_export import PartKey
+    from ..mail.domain import FolderRef, MessageRef
+    from ..mail.message_export import PartKey
 
 MAIL = "/mail"
 ROWS = "/mail/rows"

@@ -1,7 +1,7 @@
 """Centered modal help screen listing the reader's keyboard shortcuts.
 
 Replaces Textual's built-in command-palette side panel.  The content is
-rendered from :mod:`pony.keymap` — the same table the footer and the
+rendered from :mod:`pony.mail.keymap` — the same table the footer and the
 browser's ``/keymap.json`` are built from — because this used to be a
 third hand-typed copy of it, with a docstring asking whoever changed a
 binding to remember.  Nobody did: it contradicted itself on ``N``
@@ -36,7 +36,7 @@ from textual.widgets import Footer, Label, Static
 
 from pony.keys import KeyBinding, for_surface
 
-from ...keymap import MAIL_KEYMAP, Surface
+from ...mail.keymap import MAIL_KEYMAP, Surface
 
 # Which section each action belongs under.  Keyed on the action name, so
 # renaming a key never moves it and adding one only has to be mentioned

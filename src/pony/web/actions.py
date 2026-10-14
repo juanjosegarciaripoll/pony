@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
-from ..domain import FolderRef, MessageRef
+from ..mail.domain import FolderRef, MessageRef
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from pony.calendar.domain import CalendarRef
     from pony.outcome import Outcome
 
-    from ..domain import IndexedMessage
+    from ..mail.domain import IndexedMessage
     from .app import WebServices
 
 
@@ -84,7 +84,7 @@ class ActionContext:
 
     @property
     def messages(self) -> list[IndexedMessage]:
-        from .. import mailbox_actions
+        from ..mail import mailbox_actions
 
         return mailbox_actions.resolve_messages(
             self.services.mailboxes,

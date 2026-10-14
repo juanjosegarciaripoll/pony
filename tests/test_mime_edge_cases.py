@@ -17,9 +17,9 @@ from datetime import UTC, datetime
 
 import corpus
 
-from pony.domain import MessageRef
-from pony.message_projection import project_rfc822_message
-from pony.message_renderer import (
+from pony.mail.domain import MessageRef
+from pony.mail.message_projection import project_rfc822_message
+from pony.mail.message_renderer import (
     build_browser_html,
     extract_attachment,
     render_message,

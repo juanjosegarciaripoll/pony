@@ -22,7 +22,7 @@ from conftest import TMP_ROOT
 from corpus import plain_text
 from tui_helpers import build_pony_app
 
-from pony.domain import FolderRef
+from pony.mail.domain import FolderRef
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.ui_state import (
     DEFAULT_FOLDER_WIDTH_PCT,

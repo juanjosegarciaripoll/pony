@@ -1,7 +1,7 @@
 """IMAP session wrapper.
 
 Wraps :mod:`imapclient` with a typed interface that matches
-:class:`pony.protocols.ImapClientSession`.  All wire-level parsing is
+:class:`pony.mail.protocols.ImapClientSession`.  All wire-level parsing is
 confined here; the sync engine works only with domain types.
 
 Transient errors (``ssl.SSLEOFError``, connection resets, timeouts) are
@@ -183,7 +183,7 @@ def _format_imap_flags(
 class ImapSession:
     """One authenticated IMAP session over TLS.
 
-    Implements :class:`pony.protocols.ImapClientSession`.
+    Implements :class:`pony.mail.protocols.ImapClientSession`.
     Uses :mod:`imapclient` for robust protocol handling, UTF-7 folder
     names, and optional COMPRESS=DEFLATE.
 

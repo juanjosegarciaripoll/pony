@@ -25,14 +25,14 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 from test_sync import FakeImapSession, _make_raw_message, _setup
 
-from pony.domain import (
+from pony.mail.domain import (
     FolderRef,
     MessageFlag,
     MessageRef,
     MessageStatus,
 )
-from pony.storage import MaildirMirrorRepository
-from pony.sync import (
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.sync import (
     FetchNewOp,
     FolderSyncPlan,
     ImapSyncService,
@@ -191,7 +191,7 @@ class VanishedRowTestCase(unittest.TestCase):
     def test_a_restore_for_an_already_deleted_row_is_skipped(self) -> None:
         service, index, _mirror, _session = self._synced_service()
         row = index.list_folder_messages(folder=_PERSONAL_INBOX)[0]
-        from pony.domain import AccountConfig, FolderConfig
+        from pony.mail.domain import AccountConfig, FolderConfig
 
         account = service._config.accounts[0]
         assert isinstance(account, AccountConfig)
@@ -225,8 +225,8 @@ class VanishedRowTestCase(unittest.TestCase):
 
         raw = _make_raw_message("Local draft", "<draft@example.com>")
         storage_key = mirror.store_message(folder=_PERSONAL_INBOX, raw_message=raw)
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         saved = index.insert_message(
             message=project_rfc822_message(
@@ -255,8 +255,8 @@ class VanishedRowTestCase(unittest.TestCase):
 
         raw = _make_raw_message("Orphan draft", "<orphan-draft@example.com>")
         storage_key = mirror.store_message(folder=_PERSONAL_INBOX, raw_message=raw)
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         index.insert_message(
             message=project_rfc822_message(
@@ -282,16 +282,16 @@ class CleanupTestCase(unittest.TestCase):
 
     def test_local_accounts_and_zero_retention_are_skipped(self) -> None:
         """Local accounts have no server; retention 0 means keep forever."""
-        from pony.domain import (
+        from pony.mail.domain import (
             AccountConfig,
             AppConfig,
             LocalAccountConfig,
             MirrorConfig,
             SmtpConfig,
         )
-        from pony.index_store import SqliteIndexRepository
-        from pony.storage import MaildirMirrorRepository
-        from pony.sync import ImapSyncService
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.mail.storage import MaildirMirrorRepository
+        from pony.mail.sync import ImapSyncService
 
         tmp = TMP_ROOT / "sync" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
@@ -371,7 +371,7 @@ class SlowPathReconciliationTestCase(unittest.TestCase):
         return service, index, mirror, session
 
     def _make_read_only(self, service) -> None:  # type: ignore[no-untyped-def]
-        from pony.domain import AppConfig, FolderConfig
+        from pony.mail.domain import AppConfig, FolderConfig
 
         account = service._config.accounts[0]
         service._config = AppConfig(
@@ -503,7 +503,7 @@ class UidValidityResetTestCase(unittest.TestCase):
         service.sync()
 
         session.uid_validity = 0
-        with self.assertLogs("pony.sync", level="WARNING") as captured:
+        with self.assertLogs("pony.mail.sync", level="WARNING") as captured:
             service.sync()
 
         self.assertTrue(
@@ -525,7 +525,7 @@ class UidValidityResetTestCase(unittest.TestCase):
         sync removed either copy.  The move waits for the source UID to
         be re-adopted and completes on the next pass.
         """
-        from pony.domain import MessageRef
+        from pony.mail.domain import MessageRef
 
         raw = _make_raw_message("Moving", "<moving@example.com>")
         service, index, mirror, session = _setup(
@@ -579,8 +579,8 @@ class AppendWithoutUidplusTestCase(unittest.TestCase):
 
     def test_a_plain_draft_stays_active_when_no_uid_comes_back(self) -> None:
         """Without APPENDUID the row keeps uid=NULL for the next sync to resolve."""
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         service, index, mirror, session = _setup(
             server_folders={"INBOX": _server_message(1, "Existing")}
@@ -620,7 +620,7 @@ class PushFailureTestCase(unittest.TestCase):
 
     def test_a_failed_move_is_reported_and_leaves_the_row_pending(self) -> None:
         """A MOVE whose source UID is gone must not clear PENDING_MOVE."""
-        from pony.domain import MessageRef
+        from pony.mail.domain import MessageRef
 
         raw = _make_raw_message("Mover", "<mover@example.com>")
         service, index, mirror, session = _setup(

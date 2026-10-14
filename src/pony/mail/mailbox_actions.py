@@ -16,7 +16,7 @@ second front end offer the same actions without reimplementing them, and
 leaves exactly one place where the policy that guards a destructive move
 is decided.
 
-The row rewrites themselves stay in :mod:`pony.mailbox_ops`, which is
+The row rewrites themselves stay in :mod:`pony.mail.mailbox_ops`, which is
 pure; this module is what adds the I/O and the account policy around
 them.
 """

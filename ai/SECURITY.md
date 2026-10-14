@@ -17,7 +17,7 @@ second surface.  What stands between them:
   `tests/test_web_app.py` checks a hostile subject through a real
   request.
 - **Who a message claims to be from is stated, when the server said.**
-  `pony.authentication` reads the first `Authentication-Results`
+  `pony.mail.authentication` reads the first `Authentication-Results`
   header and shows whether the signing domain *is* the `From` domain.
   It is deliberately narrow: only the topmost header, because a message
   can arrive carrying reports the sender wrote; alignment compared,
@@ -143,7 +143,7 @@ came from is gone.
   other, and the window closes after two minutes or when the next
   message is opened, whichever comes first.  A terminal-only install
   needs no `web` extra for it — `http.server` answers one GET.
-- `MESSAGE_HTML_CSP` moved to `pony.html_policy`, which neither
+- `MESSAGE_HTML_CSP` moved to `pony.mail.html_policy`, which neither
   transport owns, so the terminal's page and `GET /message/body` cannot
   drift apart.  Both now also send `X-Content-Type-Options: nosniff` and
   `Cache-Control: no-store`; without the latter the browser's own cache

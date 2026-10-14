@@ -377,7 +377,7 @@ class ParseCredentialTest(unittest.TestCase):
         """The word that works for mail and not for the calendar.
 
         A mail account's ``credentials_source = "encrypted"`` is the
-        DPAPI/SHAKE store in `pony.credentials`.  The same word on a
+        DPAPI/SHAKE store in `pony.mail.credentials`.  The same word on a
         calendar account used to parse into a spec no resolver could
         answer, so the config loaded and the first sync failed; the
         refusal belongs where the word is read, and it names what does

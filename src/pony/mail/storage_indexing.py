@@ -308,7 +308,7 @@ def reindex_account_from_mirror(
 
     The mirror is self-describing: a Maildir filename carries the server
     handle it was fetched with (``,V=<uidvalidity>,U=<uid>`` — see
-    :func:`pony.storage.uid_of`), so an index can be rebuilt without
+    :func:`pony.mail.storage.uid_of`), so an index can be rebuilt without
     asking the server for a single byte.  That is the point of putting
     the handle in the name: losing the index costs a local pass over the
     files, not a re-download of the mailbox.

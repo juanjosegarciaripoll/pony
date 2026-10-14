@@ -20,7 +20,7 @@ from unittest.mock import patch
 from tui_helpers import make_tmp_paths
 
 from pony.config import ConfigError
-from pony.domain import CONFIG_VERSION
+from pony.mail.domain import CONFIG_VERSION
 
 if TYPE_CHECKING:
     import pytest

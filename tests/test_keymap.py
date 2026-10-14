@@ -1,6 +1,6 @@
 """The one keymap both front ends read.
 
-The point of `pony.keymap` is that a key cannot mean one thing in the
+The point of `pony.mail.keymap` is that a key cannot mean one thing in the
 terminal and another in the browser, so most of what matters here is
 agreement: that the Textual bindings are built from the table, that the
 web spelling of each key round-trips, and that no two bindings on one
@@ -13,7 +13,8 @@ import collections
 
 from textual.binding import Binding
 
-from pony.keymap import (
+from pony.keys import KeyBinding, for_surface, web_key
+from pony.mail.keymap import (
     APPLICATION_KEYS,
     LIST_KEYS,
     MAIL_KEYMAP,
@@ -22,7 +23,6 @@ from pony.keymap import (
     READER_KEYS,
     Surface,
 )
-from pony.keys import KeyBinding, for_surface, web_key
 from pony.tui.bindings import MARK_BINDINGS, MOTION_BINDINGS, to_textual
 
 
@@ -127,7 +127,7 @@ def test_the_composer_binds_the_compose_surface() -> None:
 
 def test_every_compose_key_wins_over_the_focused_field() -> None:
     """A bare Input would otherwise swallow them as text."""
-    from pony.keymap import COMPOSE_KEYS
+    from pony.mail.keymap import COMPOSE_KEYS
 
     assert all(binding.priority for binding in COMPOSE_KEYS)
 
@@ -189,7 +189,7 @@ def test_the_open_message_binds_its_own_surface() -> None:
     because they differ only by the argument they carry and their
     action lives on the screen.
     """
-    from pony.keymap import MESSAGE_KEYS
+    from pony.mail.keymap import MESSAGE_KEYS
     from pony.tui.widgets.message_view import MessageViewPanel
 
     from_table = to_textual(for_surface(MAIL_KEYMAP, Surface.MESSAGE))
@@ -222,7 +222,7 @@ def test_the_panes_that_read_one_key_two_ways_say_which() -> None:
     hold only the list's half, which is why the message pane's keys
     were invisible to everything but the pane.
     """
-    from pony.keymap import LIST_KEYS, MESSAGE_KEYS
+    from pony.mail.keymap import LIST_KEYS, MESSAGE_KEYS
 
     in_list = {binding.key: binding.action for binding in LIST_KEYS}
     in_message = {binding.key: binding.action for binding in MESSAGE_KEYS}
@@ -343,7 +343,7 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
 
 #: Every class under ``pony.tui`` still allowed to bind a key the table
 #: does not have, and why.  A key that runs an *operation* belongs in
-#: `pony.keymap`, because both front ends offer the operations; a key
+#: `pony.mail.keymap`, because both front ends offer the operations; a key
 #: that answers a question, moves a cursor inside a widget or edits text
 #: in a field belongs to the thing asking, and has no browser meaning to
 #: keep in step with.
@@ -455,7 +455,7 @@ def test_the_compose_footer_is_rendered_from_the_table() -> None:
     """The one-line cheatsheet was a fourth copy, already out of date."""
     import re
 
-    from pony.keymap import COMPOSE_KEYS
+    from pony.mail.keymap import COMPOSE_KEYS
     from pony.tui.screens.compose_screen import _compose_cheatsheet
 
     plain = re.sub(r"\[[^]]*\]", "", _compose_cheatsheet())

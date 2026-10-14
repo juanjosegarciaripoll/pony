@@ -3,7 +3,7 @@
 The public surface is intentionally small:
 
 - ``ConfigError``     – the single exception type for all config problems
-- ``AppConfig``       – re-exported from ``pony.domain`` for caller convenience
+- ``AppConfig``       – re-exported from ``pony.mail.domain`` for caller convenience
 - ``load_config``     – read a TOML/JSON file and return a validated AppConfig
 - ``parse_config``    – validate an already-loaded raw dict and return AppConfig
 - ``read_raw_config`` – read the file without validating it, for the
@@ -22,7 +22,7 @@ from typing import cast
 
 from pony.paths import expand_path, is_half_qualified
 
-from .domain import (
+from .mail.domain import (
     CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
@@ -34,7 +34,7 @@ from .domain import (
     SmtpConfig,
     ViewerRule,
 )
-from .domain import (
+from .mail.domain import (
     AppConfig as AppConfig,  # explicit re-export
 )
 from .paths import contain, resolve

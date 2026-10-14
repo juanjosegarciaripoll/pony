@@ -2,7 +2,7 @@
 
 A :class:`KeyBinding` is one key, one action, one description, and the
 surfaces it is live on.  Each half of the program writes its own table in
-this vocabulary -- :mod:`pony.keymap` for the mail reader,
+this vocabulary -- :mod:`pony.mail.keymap` for the mail reader,
 :mod:`pony.calendar.keymap` for the calendar -- and each front end
 converts the table it needs: :func:`pony.tui.bindings.to_textual` for the
 terminal, ``/keymap.json`` for the browser.  Both help screens render
@@ -11,7 +11,7 @@ not have, and a key cannot mean one thing in the terminal and another in
 a browser.
 
 The surfaces themselves are not shared: a mail surface is a pane of the
-reader (:class:`pony.keymap.Surface`), a calendar surface a view of the
+reader (:class:`pony.mail.keymap.Surface`), a calendar surface a view of the
 agenda (:class:`pony.calendar.keymap.CalendarSurface`).  Only the shape
 of a binding and the two functions that read a table are.
 """
@@ -31,7 +31,7 @@ class KeyBinding:
 
     *surface* is which part of the program the key is live on, named by
     the half of the program that owns the table
-    (:class:`pony.keymap.Surface`, :class:`CalendarSurface`).  It is
+    (:class:`pony.mail.keymap.Surface`, :class:`CalendarSurface`).  It is
     typed as a plain string so one dataclass can serve both.
 
     *show* is whether this belongs in a footer or a toolbar — the keys

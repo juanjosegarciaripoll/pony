@@ -11,9 +11,9 @@ import pytest
 
 import pony.cli as cli
 from pony.config import ConfigError
-from pony.domain import AppConfig
+from pony.mail.domain import AppConfig
+from pony.mail.storage_indexing import RescanResult
 from pony.paths import AppPaths
-from pony.storage_indexing import RescanResult
 
 
 def _paths(root: Path) -> AppPaths:

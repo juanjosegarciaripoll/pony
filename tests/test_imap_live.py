@@ -17,10 +17,10 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 from imap_live import Dovecot, FixedCredentials, skip_reason
 
-from pony.accounts import build_mirror
-from pony.domain import FolderRef, MessageFlag, MessageStatus
-from pony.index_store import SqliteIndexRepository
-from pony.sync import ImapSyncService
+from pony.mail.accounts import build_mirror
+from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.sync import ImapSyncService
 
 _SKIP = skip_reason()
 
@@ -252,8 +252,8 @@ class LiveImapTestCase(unittest.TestCase):
 
     def test_an_append_round_trips_through_the_server(self) -> None:
         """A locally composed message is uploaded and keeps one row."""
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         self.service.sync()
         raw = _message("composed", "<composed@example.test>")

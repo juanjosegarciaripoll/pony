@@ -56,8 +56,8 @@ from tui_helpers import (
     seed_message,
 )
 
-from pony.domain import FolderRef
-from pony.views import ROW_BATCH
+from pony.mail.domain import FolderRef
+from pony.mail.views import ROW_BATCH
 
 if TYPE_CHECKING:
     from starlette.requests import Request

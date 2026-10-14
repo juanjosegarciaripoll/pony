@@ -43,18 +43,17 @@ from tui_helpers import (
 
 import pony.tui.screens.add_attachment_screen as add_attachment_module
 import pony.tui.screens.save_folder_picker_screen as save_folder_module
-from pony.browser_preview import close_preview
-from pony.credentials import PlaintextCredentialsProvider
-from pony.domain import (
+from pony.mail.browser_preview import close_preview
+from pony.mail.credentials import PlaintextCredentialsProvider
+from pony.mail.domain import (
     FolderRef,
     LocalAccountConfig,
     MessageFlag,
     MessageStatus,
     MirrorConfig,
 )
-from pony.scheduler import SyncOutcome
-from pony.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
-from pony.sync import (
+from pony.mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
+from pony.mail.sync import (
     AccountSyncResult,
     FolderSyncResult,
     ImapSyncService,
@@ -62,6 +61,7 @@ from pony.sync import (
     SyncPlan,
     SyncResult,
 )
+from pony.scheduler import SyncOutcome
 from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.help_screen import HelpScreen
 from pony.tui.screens.main_screen import MainScreen
@@ -176,7 +176,7 @@ async def test_compose_send_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         send_mock,
     )
 
@@ -207,7 +207,7 @@ async def test_compose_send_requires_to(monkeypatch: pytest.MonkeyPatch) -> None
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="send-noto")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         send_mock,
     )
 
@@ -276,7 +276,7 @@ async def test_forward_sends_original_message_as_removable_eml_attachment(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         send_mock,
     )
 
@@ -327,7 +327,7 @@ async def test_forward_eml_attachment_can_be_removed(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         send_mock,
     )
 
@@ -1414,7 +1414,7 @@ async def test_compose_new_opens_compose_screen(
         label="compose-new",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("c")
@@ -1468,11 +1468,11 @@ async def test_compose_send_smtp_error_notifies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When SMTP fails, a notification is shown and the screen stays."""
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="smtp-error")
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
     )
     notifications = _capture_notifications(app)
@@ -1525,7 +1525,7 @@ async def test_compose_send_keeps_the_ui_responsive(
         release.wait(timeout=10)
 
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         _blocking_send,
     )
 
@@ -1568,7 +1568,7 @@ async def test_compose_send_refuses_a_second_send_while_one_is_in_flight(
         release.wait(timeout=10)
 
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         _blocking_send,
     )
     notifications = _capture_notifications(app)
@@ -1600,7 +1600,7 @@ async def test_compose_send_announces_a_connect_retry(
         on_attempt(2, 4)
 
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         _retrying_send,
     )
     notifications = _capture_notifications(app)
@@ -1624,7 +1624,7 @@ async def test_compose_send_passes_the_configured_timeout(
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = Mock()
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         send_mock,
     )
 
@@ -1646,7 +1646,7 @@ async def test_compose_send_discards_pre_send_draft_on_success(
     app, _cfg, _paths, index, mirrors = build_compose_app(label="send-draft-cleanup")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", Mock())
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1663,12 +1663,12 @@ async def test_compose_send_failure_keeps_the_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An SMTP failure leaves the pre-send draft in place and says so."""
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-draft-kept")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     monkeypatch.setattr(
-        "pony.delivery.smtp_send",
+        "pony.mail.delivery.smtp_send",
         lambda **_: (_ for _ in ()).throw(SMTPError("connection refused")),
     )
     notifications = _capture_notifications(app)
@@ -1691,7 +1691,7 @@ async def test_compose_send_survives_a_failed_draft_cleanup(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Drafts")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", Mock())
     monkeypatch.setattr(
         mirrors["acct"],
         "delete_message",
@@ -1712,7 +1712,7 @@ async def test_compose_send_reports_a_failed_sent_copy(
     """A mirror write error is surfaced instead of silently losing the copy."""
     app, _cfg, _paths, _index, mirrors = build_compose_app(label="send-store-fails")
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
-    monkeypatch.setattr("pony.delivery.smtp_send", Mock())
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", Mock())
     monkeypatch.setattr(
         mirrors["acct"],
         "store_message",
@@ -1733,7 +1733,7 @@ async def test_compose_send_without_a_mirror_still_sends(
     """With no mirror for the account, the send proceeds and files nothing."""
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="send-no-mirror")
     send_mock = Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2029,7 +2029,7 @@ async def test_main_screen_attachment_dispatch_and_open_error(
     """Nested mail stays in Pony and external viewer errors stay contained."""
     from corpus import nested_forward
 
-    from pony.message_renderer import extract_attachment
+    from pony.mail.message_renderer import extract_attachment
     from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -2113,7 +2113,7 @@ async def test_reply_shortcut_opens_compose_screen(
         label="reply-r",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2147,7 +2147,7 @@ async def test_reply_all_opens_compose_with_cc(
         label="reply-all",
         seed=[(folder, raw)],
     )
-    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2176,7 +2176,7 @@ async def test_compose_send_with_contacts_harvests_recipients(
     mirrors = make_mirrors(config)
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     import dataclasses as _dc
 
@@ -2406,7 +2406,7 @@ async def test_compose_reply_all_shortcut(monkeypatch: pytest.MonkeyPatch) -> No
         label="reply-all-2",
         seed=[(folder, plain_text())],
     )
-    monkeypatch.setattr("pony.delivery.smtp_send", lambda **_: None)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", lambda **_: None)
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
         await pilot.press("enter")
@@ -2647,7 +2647,7 @@ async def test_compose_send_fails_without_password(
     index = make_index(paths)
     mirrors = make_mirrors(config)
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     from pony.tui.app import ComposeApp
 
@@ -2677,7 +2677,7 @@ async def test_compose_send_with_no_sent_folder(
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="no-sent")
     # Don't create the Sent folder so _save_to_folder hits the "folder not found" path
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2868,7 +2868,7 @@ async def test_move_to_folder_direct() -> None:
         screen._move_to_folder(msgs, archive)  # noqa: SLF001
 
     # Row should be moved to Archive folder
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     moved_rows = [
         r
@@ -2998,7 +2998,7 @@ async def test_resuming_a_draft_and_saving_leaves_one_row_in_drafts() -> None:
     """
     from email.message import EmailMessage
 
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     folder = FolderRef(account_name="acct", folder_name="Drafts")
     draft_msg = EmailMessage()
@@ -3228,7 +3228,7 @@ async def test_reply_and_send_marks_answered(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -3306,7 +3306,7 @@ async def test_compose_reply_sends_and_marks_answered(
     )
     mirrors["acct"].create_folder(account_name="acct", folder_name="Sent")
     send_mock = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-    monkeypatch.setattr("pony.delivery.smtp_send", send_mock)
+    monkeypatch.setattr("pony.mail.delivery.smtp_send", send_mock)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -3436,7 +3436,7 @@ async def test_move_from_read_only_folder_is_refused() -> None:
     """Move refuses to touch a read-only source folder."""
     import dataclasses as _dc
 
-    from pony.domain import FolderConfig
+    from pony.mail.domain import FolderConfig
 
     paths = make_tmp_paths("cross-readonly-src")
     account1 = _dc.replace(
@@ -3710,7 +3710,7 @@ def _two_imap_accounts(label: str, *, folders2: object = None):  # type: ignore[
 
 async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
     """A target folder the account never syncs would strand the message."""
-    from pony.domain import FolderConfig
+    from pony.mail.domain import FolderConfig
 
     app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
         "target-excluded",
@@ -3733,7 +3733,7 @@ async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
 
 async def test_move_to_a_read_only_target_is_refused() -> None:
     """A read-only target could never push the new message back."""
-    from pony.domain import FolderConfig
+    from pony.mail.domain import FolderConfig
 
     app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
         "target-readonly",
@@ -3919,7 +3919,7 @@ async def test_open_attachment_uses_configured_viewer(
 
     from corpus import calendar_invite
 
-    from pony.domain import ViewerRule
+    from pony.mail.domain import ViewerRule
 
     launch_mock = MagicMock()
     monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
@@ -3953,7 +3953,7 @@ async def test_open_attachment_without_matching_viewer_uses_os_default(
 
     from corpus import calendar_invite
 
-    from pony.domain import ViewerRule
+    from pony.mail.domain import ViewerRule
 
     launch_mock = MagicMock()
     monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)

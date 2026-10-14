@@ -1,10 +1,10 @@
-"""Tests for pony.folder_utils."""
+"""Tests for pony.mail.folder_utils."""
 
 from __future__ import annotations
 
 import unittest
 
-from pony.folder_utils import find_folder, is_sent_folder
+from pony.mail.folder_utils import find_folder, is_sent_folder
 
 
 class FindFolderExactMatchTest(unittest.TestCase):

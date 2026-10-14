@@ -1,10 +1,10 @@
-"""Tests for ``pony.message_copy.copy_message_bytes``."""
+"""Tests for ``pony.mail.message_copy.copy_message_bytes``."""
 
 from __future__ import annotations
 
 import unittest
 
-from pony.message_copy import copy_message_bytes
+from pony.mail.message_copy import copy_message_bytes
 
 
 def _sample(message_id: bytes = b"<orig@example.com>", *, crlf: bool = False) -> bytes:

@@ -10,7 +10,7 @@ This module is the shared vocabulary for both directions:
 * :func:`extract_invitation` finds and parses the part on a message;
 * :func:`reply_ics` builds the ``METHOD:REPLY`` that answers it;
 * :func:`build_itip_message` wraps either method in a message ready for
-  :mod:`pony.smtp_sender`.
+  :mod:`pony.mail.smtp_sender`.
 
 It does no I/O: importing an invitation into the calendar is
 ``pony.calendar.ingest``'s job, and sending is the SMTP sender's.  Parsing

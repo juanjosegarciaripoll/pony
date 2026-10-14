@@ -21,13 +21,13 @@ from typing import TYPE_CHECKING
 
 from pony.outcome import Notice, NoticeLog, Outcome, failure, info, warn
 
-from .delivery import resolve_send_password
 from .invitation import (
     build_itip_message,
     parse_invitation,
     request_body,
     request_subject,
 )
+from .mail.delivery import resolve_send_password
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -35,9 +35,9 @@ if TYPE_CHECKING:
     from pony.calendar.domain import CalendarRef
 
     from .calendar_runtime import CalendarRuntime
-    from .domain import AnyAccount, AppConfig
     from .invitation import Invitation
-    from .protocols import CredentialsProvider
+    from .mail.domain import AnyAccount, AppConfig
+    from .mail.protocols import CredentialsProvider
 
 _log = logging.getLogger(__name__)
 
@@ -115,8 +115,8 @@ def reply_to_invitation(
     one it will match the answer to.
     """
     from .invitation import build_itip_message, reply_body, reply_ics, reply_subject
-    from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
-    from .smtp_sender import send_message as smtp_send
+    from .mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
+    from .mail.smtp_sender import send_message as smtp_send
 
     organizer = invitation.organizer
     if not organizer:
@@ -304,8 +304,8 @@ def send_event_invitations(
     sending, and clients treat an invitation addressed to its own
     organizer as a duplicate of the event they just created.
     """
-    from .smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
-    from .smtp_sender import send_message as smtp_send
+    from .mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS, SMTPError
+    from .mail.smtp_sender import send_message as smtp_send
 
     sender = account.email_address or account.username or ""
     organizer_address = (organizer or sender).strip().lower()

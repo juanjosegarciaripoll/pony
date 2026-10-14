@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from pony.contact_naming import (
+from pony.mail.contact_naming import (
     clean_display_name,
     harvested_name,
     split_display_name,
@@ -97,7 +97,7 @@ class HarvestPathsAgreeTest(unittest.TestCase):
 
         from tui_helpers import make_index, make_tmp_paths
 
-        from pony.domain import IndexedMessage, MessageRef, MessageStatus
+        from pony.mail.domain import IndexedMessage, MessageRef, MessageStatus
 
         for display in self._NAMES:
             with self.subTest(display=display):

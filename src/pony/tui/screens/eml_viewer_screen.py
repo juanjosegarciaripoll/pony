@@ -9,11 +9,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
-from ...domain import ViewerRule
-from ...handoff import handoff_path
-from ...message_export import downloads_dir as resolve_downloads_dir
-from ...message_export import viewer_command
-from ...message_renderer import extract_attachment
+from ...mail.domain import ViewerRule
+from ...mail.handoff import handoff_path
+from ...mail.message_export import downloads_dir as resolve_downloads_dir
+from ...mail.message_export import viewer_command
+from ...mail.message_renderer import extract_attachment
 from ..terminal import (
     launch_file,
     suspend_for_external_program,
@@ -125,7 +125,7 @@ class EmlViewerScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render this message to a PDF in a folder the user picks."""
-        from ...message_renderer import (
+        from ...mail.message_renderer import (
             build_browser_html,
             proposed_filename,
             render_message,

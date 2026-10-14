@@ -1,4 +1,4 @@
-"""Tests for pony.compose_utils."""
+"""Tests for pony.mail.compose_utils."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import corpus
 
-from pony.compose_utils import (
+from pony.mail.compose_utils import (
     _add_blockquote_hardbreaks,
     _split_at_quote_boundary,
     build_email_message,
@@ -28,9 +28,9 @@ from pony.compose_utils import (
     split_address_list,
     split_trailing_address,
 )
-from pony.domain import AccountConfig, MirrorConfig, SmtpConfig
-from pony.message_renderer import RenderedMessage
-from pony.smtp_sender import (
+from pony.mail.domain import AccountConfig, MirrorConfig, SmtpConfig
+from pony.mail.message_renderer import RenderedMessage
+from pony.mail.smtp_sender import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     SMTPError,
     send_message,

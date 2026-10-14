@@ -19,17 +19,17 @@ from pony.outcome import Outcome
 from pony.paths import expand_path
 
 from . import cli_calendar
-from .accounts import (
+from .config import ConfigError, load_config, read_raw_config
+from .mail.accounts import (
     build_mirror,
     build_mirrors,
     find_account,
     find_imap_account,
 )
-from .browser_preview import close_preview
-from .config import ConfigError, load_config, read_raw_config
-from .contact_actions import ImportTally, import_contacts
-from .credentials import build_credentials_provider, encrypt_password
-from .domain import (
+from .mail.browser_preview import close_preview
+from .mail.contact_actions import ImportTally, import_contacts
+from .mail.credentials import build_credentials_provider, encrypt_password
+from .mail.domain import (
     CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
@@ -40,32 +40,23 @@ from .domain import (
     MessageRef,
     MessageStatus,
 )
-from .fixture_flow import run_fixture_ingest
-from .handoff import activate as activate_handoff
-from .imap_client import ImapAuthError, ImapSession
-from .index_store import (
+from .mail.fixture_flow import run_fixture_ingest
+from .mail.handoff import activate as activate_handoff
+from .mail.imap_client import ImapAuthError, ImapSession
+from .mail.index_store import (
     SchemaMismatchError,
     SqliteIndexRepository,
     load_contacts_for_backup,
 )
-from .paths import (
-    PROFILE_STAMP,
-    AppPaths,
-    ProfileMismatchError,
-    claim_profile,
-    resolve,
-    sample_config_path,
-)
-from .protocols import (
+from .mail.protocols import (
     CredentialsProvider,
     ImapClientSession,
     IndexRepository,
     MirrorRepository,
 )
-from .search_parser import parse_query
-from .services import CheckStatus, ServiceStatus, build_service_status
-from .storage_indexing import RescanResult, ScanState, rescan_local_account
-from .sync import (
+from .mail.search_parser import parse_query
+from .mail.storage_indexing import RescanResult, ScanState, rescan_local_account
+from .mail.sync import (
     ImapSyncService,
     MailSyncScheduler,
     MergeFlagsOp,
@@ -80,11 +71,20 @@ from .sync import (
     format_plan_detail,
     format_plan_summary,
 )
+from .paths import (
+    PROFILE_STAMP,
+    AppPaths,
+    ProfileMismatchError,
+    claim_profile,
+    resolve,
+    sample_config_path,
+)
+from .services import CheckStatus, ServiceStatus, build_service_status
 from .version import __version__
 
 if TYPE_CHECKING:
     from .calendar_runtime import CalendarRuntime
-    from .message_renderer import AttachmentInfo
+    from .mail.message_renderer import AttachmentInfo
 
 
 def _configure_logging(*, debug: bool) -> None:
@@ -849,7 +849,7 @@ def run_schema_reset_prompt(
     """
     from datetime import UTC, datetime
 
-    from .bbdb import write_bbdb
+    from .mail.bbdb import write_bbdb
 
     config = try_load_config(config_path)
     timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -1564,7 +1564,7 @@ def run_reindex(
     or deleted index can be rebuilt from the files already on disk
     instead of re-downloading the mailbox.
     """
-    from .storage_indexing import reindex_account_from_mirror
+    from .mail.storage_indexing import reindex_account_from_mirror
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -1763,7 +1763,7 @@ def run_dedup_folder(
     # `mailbox_actions.plan_dedup`'s, as the trashing is
     # `trash_messages`': what is left here is printing the plan and
     # asking for `--apply`.
-    from .mailbox_actions import Mailboxes, plan_dedup, trash_messages
+    from .mail.mailbox_actions import Mailboxes, plan_dedup, trash_messages
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -1905,7 +1905,7 @@ def run_mirror_folder(
         f"from {src_account}/{src_folder} to {dst_account}/{dst_folder}..."
     )
 
-    from .mailbox_actions import Mailboxes, copy_messages
+    from .mail.mailbox_actions import Mailboxes, copy_messages
 
     def _progress(done: int, of: int) -> None:
         if done == of or done % 20 == 0:
@@ -1989,7 +1989,7 @@ def run_message_get(
     # Fall back to the yes/no summary when the body isn't available
     # locally (e.g. a headers-only row, or an account whose mirror is
     # unreachable).
-    from .message_renderer import fmt_size
+    from .mail.message_renderer import fmt_size
 
     rendered_attachments = _try_render_attachments(
         config_path=config_path,
@@ -2066,7 +2066,7 @@ def _try_render_attachments(
     use that as a signal to fall back to the index's yes/no flag.
     Returns an empty tuple when the message has no attachments.
     """
-    from .message_renderer import render_message
+    from .mail.message_renderer import render_message
 
     config = try_load_config(config_path)
     if config is None:
@@ -2098,7 +2098,7 @@ def run_message_body(
     """Print the full decoded body of a message from the local mirror."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .message_renderer import fmt_size, render_message
+    from .mail.message_renderer import fmt_size, render_message
 
     acc = _require_account(config, account)
 
@@ -2158,7 +2158,7 @@ def run_message_attachment(
     """Write one attachment's bytes to a file or to stdout."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    from .message_renderer import extract_attachment, safe_attachment_filename
+    from .mail.message_renderer import extract_attachment, safe_attachment_filename
 
     acc = _require_account(config, account)
 
@@ -3212,7 +3212,7 @@ def run_compose(
     if err is not None:
         return err
 
-    from .compose_utils import new_compose_body
+    from .mail.compose_utils import new_compose_body
     from .tui import ComposeApp
 
     # --markdown/--no-markdown override; fall back to account default
@@ -3534,7 +3534,7 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
     if cred_source == "encrypted":
         pw = getpass.getpass(f"Password for {name}: ")
         if pw:
-            from .credentials import encrypt_password
+            from .mail.credentials import encrypt_password
 
             index = SqliteIndexRepository(database_path=paths.index_db_file)
             index.initialize()
@@ -3648,7 +3648,7 @@ def run_eml_to_pdf(*, files: Sequence[Path], out_dir: Path | None) -> int:
     The same rendering the viewer's ++ctrl+p++ uses — the message becomes
     the self-contained HTML of the browser view, which an external
     converter turns into a PDF.  Pony bundles no PDF engine; see
-    :mod:`pony.pdf_export` for the ones it will use.
+    :mod:`pony.mail.pdf_export` for the ones it will use.
 
     Output lands beside each input (``report.eml`` → ``report.pdf``) or in
     *out_dir*.  An existing file is never overwritten: the name gains
@@ -3660,8 +3660,8 @@ def run_eml_to_pdf(*, files: Sequence[Path], out_dir: Path | None) -> int:
     whole directory worth attempting in one go.  The exit status is 1 if
     any file failed.
     """
-    from .message_renderer import build_browser_html, unique_destination
-    from .pdf_export import NoPdfConverterError, html_to_pdf
+    from .mail.message_renderer import build_browser_html, unique_destination
+    from .mail.pdf_export import NoPdfConverterError, html_to_pdf
 
     if out_dir is not None:
         try:
@@ -3814,7 +3814,7 @@ def run_contacts_export(
     postal addresses or xfields beyond ``notes``, and no stable record
     id — so writing over it would destroy data Pony never had.
     """
-    from .bbdb import write_bbdb
+    from .mail.bbdb import write_bbdb
 
     dest = Path(output_path) if output_path else paths.data_dir / "contacts.bbdb"
 
@@ -3838,7 +3838,7 @@ def import_bbdb_contacts(
     and what to say about one an import cannot arbitrate -- is
     `contact_actions.import_contacts`'.
     """
-    from .bbdb import read_bbdb
+    from .mail.bbdb import read_bbdb
 
     return import_contacts(index, read_bbdb(bbdb_path))
 
@@ -3867,7 +3867,7 @@ def run_contacts_import(
         print(f"File not found: {src}")
         return 1
 
-    from .bbdb import BbdbError
+    from .mail.bbdb import BbdbError
 
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()

@@ -374,7 +374,7 @@ class IndexRepository(Protocol):
         Ordered by ``received_at`` descending.
 
         *limit* and *offset* take one batch of that order
-        (`pony.views.ROW_BATCH` is what both front ends ask for), so a
+        (`pony.mail.views.ROW_BATCH` is what both front ends ask for), so a
         list can be drawn from the first batch while the rest is still
         coming.
         """

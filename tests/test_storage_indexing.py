@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import (
+from pony.mail.domain import (
     FolderRef,
     IndexedMessage,
     MessageFlag,
@@ -17,9 +17,9 @@ from pony.domain import (
     MessageStatus,
     SearchQuery,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.storage import MaildirMirrorRepository
-from pony.storage_indexing import (
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.storage_indexing import (
     RescanResult,
     ingest_account_from_mirror,
     rescan_local_account,
@@ -210,7 +210,7 @@ class ScanStateFastPathTestCase(unittest.TestCase):
         # Second pass: folder untouched, mtime matches, so the on-disk
         # listing must be skipped — prove it by making list_messages
         # throw, and rely on the fast path to never call it.
-        import pony.storage as storage_mod
+        import pony.mail.storage as storage_mod
 
         orig_list = storage_mod.MaildirMirrorRepository.list_messages
 
@@ -305,7 +305,7 @@ class ProjectedFieldsTestCase(unittest.TestCase):
     def test_each_projected_field_is_noticed_and_copied(self) -> None:
         import dataclasses
 
-        from pony.storage_indexing import (
+        from pony.mail.storage_indexing import (
             _PROJECTED_FIELDS,
             _projection_matches,
             _with_projection,

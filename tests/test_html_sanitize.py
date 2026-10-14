@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from pony.html_sanitize import html_to_preview_text, strip_invisible_blocks
+from pony.mail.html_sanitize import html_to_preview_text, strip_invisible_blocks
 
 
 class StripInvisibleBlocksTest(unittest.TestCase):

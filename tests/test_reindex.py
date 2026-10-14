@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import FolderRef, MessageFlag
-from pony.index_store import SqliteIndexRepository
-from pony.storage import MaildirMirrorRepository
-from pony.storage_indexing import reindex_account_from_mirror
+from pony.mail.domain import FolderRef, MessageFlag
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.storage_indexing import reindex_account_from_mirror
 
 INBOX = FolderRef(account_name="personal", folder_name="INBOX")
 
@@ -177,7 +177,7 @@ class ReindexFromMirrorTest(unittest.TestCase):
         an epoch with no UIDs under it and the next sync refetched the
         whole folder it had just rebuilt.
         """
-        from pony.storage_indexing import rescan_local_account
+        from pony.mail.storage_indexing import rescan_local_account
 
         for uid in (3, 11, 7):
             self._store(f"m{uid}", uid=uid, uid_validity=7)
@@ -244,8 +244,8 @@ class ReindexFromMirrorTest(unittest.TestCase):
         self._store("missing", uid=2, uid_validity=7)
         import dataclasses
 
-        from pony.domain import MessageRef
-        from pony.message_projection import project_rfc822_message
+        from pony.mail.domain import MessageRef
+        from pony.mail.message_projection import project_rfc822_message
 
         projected = project_rfc822_message(
             message_ref=MessageRef(

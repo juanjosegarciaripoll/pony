@@ -28,7 +28,7 @@ from pony.cli import (
     run_account_add_interactive,
     run_account_set_password,
 )
-from pony.imap_client import ImapAuthError
+from pony.mail.imap_client import ImapAuthError
 
 
 class _FakeSession:

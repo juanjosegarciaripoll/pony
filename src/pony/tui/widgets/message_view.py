@@ -16,13 +16,13 @@ from textual.widgets import Static
 
 from pony.keys import key_for
 
-from ...authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
-from ...browser_preview import serve_html
-from ...domain import FolderMessageSummary, FolderRef
 from ...invitation import Invitation, extract_invitation
-from ...keymap import MAIL_KEYMAP
-from ...message_export import listed_parts
-from ...message_renderer import (
+from ...mail.authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
+from ...mail.browser_preview import serve_html
+from ...mail.domain import FolderMessageSummary, FolderRef
+from ...mail.keymap import MAIL_KEYMAP
+from ...mail.message_export import listed_parts
+from ...mail.message_renderer import (
     RenderedMessage,
     build_browser_html,
     fmt_size,
@@ -30,7 +30,7 @@ from ...message_renderer import (
     save_every_attachment,
     save_one_attachment,
 )
-from ...protocols import MirrorRepository
+from ...mail.protocols import MirrorRepository
 from ..bindings import MESSAGE_BINDINGS
 from ..terminal import suspend_for_external_program
 
@@ -104,7 +104,7 @@ class MessageViewPanel(VerticalScroll):
     # below answers before the first one is loaded.
     _invitation: Invitation | None = None
 
-    # The pane's own keys come from `pony.keymap`'s MESSAGE surface, so
+    # The pane's own keys come from `pony.mail.keymap`'s MESSAGE surface, so
     # they reach the footer, both help screens and `/keymap.json`
     # instead of existing in this file alone.  The part accelerators
     # stay here: they are the one set the table would make unreadable
@@ -231,7 +231,7 @@ class MessageViewPanel(VerticalScroll):
         The document goes out over loopback rather than into a temporary
         file, so no part of the message is written to the disk and the
         browser applies the same headers the web front end sends with
-        it.  See :mod:`pony.browser_preview`.
+        it.  See :mod:`pony.mail.browser_preview`.
         """
         if self._rendered is None:
             return
@@ -341,7 +341,7 @@ class MessageViewPanel(VerticalScroll):
         lines.append(f"Subject: {_escape(r.subject)}")
 
         if r.attachments:
-            # Numbered as `pony.message_export` numbers them, so the
+            # Numbered as `pony.mail.message_export` numbers them, so the
             # digit that opens a part is the one beside it here and the
             # one typed at the `S` prompt.  The message itself and its
             # text are parts 0 and T and are reachable by name, but

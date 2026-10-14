@@ -20,7 +20,7 @@ from uuid import uuid4
 from conftest import TMP_ROOT
 from test_sync import FakeImapSession, _make_raw_message
 
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AppConfig,
     FolderRef,
@@ -29,11 +29,11 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.index_store import SqliteIndexRepository
-from pony.message_copy import copy_message_bytes
-from pony.protocols import ImapClientSession, MirrorRepository
-from pony.storage import MaildirMirrorRepository
-from pony.sync import ImapSyncService
+from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.message_copy import copy_message_bytes
+from pony.mail.protocols import ImapClientSession, MirrorRepository
+from pony.mail.storage import MaildirMirrorRepository
+from pony.mail.sync import ImapSyncService
 
 
 def _simulate_tui_copy(

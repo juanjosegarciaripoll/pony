@@ -22,8 +22,8 @@ from test_cli import (
     temporary_config,
 )
 
-from pony.bbdb import write_bbdb
-from pony.domain import Contact
+from pony.mail.bbdb import write_bbdb
+from pony.mail.domain import Contact
 
 
 def _temp_dir() -> Path:

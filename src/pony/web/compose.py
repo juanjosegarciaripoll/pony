@@ -2,8 +2,8 @@
 
 The form is the composer's fields and nothing else: what goes in them
 for a reply, a forward or a resumed draft is decided by
-:mod:`pony.composer`, exactly as it is for the terminal, and what
-happens when Send is pressed is :func:`pony.delivery.deliver_message` —
+:mod:`pony.mail.composer`, exactly as it is for the terminal, and what
+happens when Send is pressed is :func:`pony.mail.delivery.deliver_message` —
 one call that drafts, sends, files the Sent copy and harvests the
 addresses.
 
@@ -29,8 +29,8 @@ from urllib.parse import parse_qs, urlencode
 
 from pony.outcome import Outcome, warn
 
-from ..compose_utils import build_email_message
-from ..composer import (
+from ..mail.compose_utils import build_email_message
+from ..mail.composer import (
     DraftSpec,
     forward_attachment_name,
     forward_draft,
@@ -39,10 +39,10 @@ from ..composer import (
     reply_draft,
     resumed_draft,
 )
-from ..delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
-from ..domain import FolderRef, MessageRef
-from ..folder_utils import holds_drafts
-from ..message_renderer import render_message, safe_attachment_filename
+from ..mail.delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
+from ..mail.domain import FolderRef, MessageRef
+from ..mail.folder_utils import holds_drafts
+from ..mail.message_renderer import render_message, safe_attachment_filename
 from . import urls
 from .html import Raw, element, fragment, join
 from .layout import PageSurface, Tab, page, pane
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
     from pony.outcome import Notice
 
-    from ..domain import AnyAccount, AppConfig, IndexedMessage
+    from ..mail.domain import AnyAccount, AppConfig, IndexedMessage
     from .app import WebServices
 
 _TOKEN = re.compile(r"\A[0-9a-f]{16}\Z")

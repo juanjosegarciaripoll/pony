@@ -111,7 +111,7 @@ def _detect_attachments(headers: bytes, raw_message: bytes) -> bool:
 
     The rule has to be the one the reader applies, because it is the
     numbering the whole program exposes: ``message_renderer``'s
-    :func:`~pony.message_renderer.is_attachment_part` counts a part that
+    :func:`~pony.mail.message_renderer.is_attachment_part` counts a part that
     says it is an attachment, one that carries a filename, *or* one that
     is neither plain text nor HTML and so cannot be body.  This used to
     be a single regex searched over the whole raw message with no
@@ -266,7 +266,7 @@ def _decode_text(decoded: bytes, part_headers: bytes) -> str:
     ``Niño café``): ``body_text`` is what the full-text index is built
     from, so the message becomes unfindable by its own words.  Every
     other decoder in the program consults ``get_content_charset`` --
-    :mod:`pony.message_renderer`, :mod:`pony.compose_utils` -- and this
+    :mod:`pony.mail.message_renderer`, :mod:`pony.mail.compose_utils` -- and this
     is the same rule applied to headers that have not been through
     ``email.parser``.
 

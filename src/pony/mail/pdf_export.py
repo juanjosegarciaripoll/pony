@@ -2,7 +2,7 @@
 
 Pony bundles no PDF library.  Instead this module shells out to whichever
 HTML-to-PDF tool is installed, preferring higher-fidelity engines.  The HTML is
-produced by :func:`pony.message_renderer.build_browser_html` — the same
+produced by :func:`pony.mail.message_renderer.build_browser_html` — the same
 self-contained document used for the ``w`` browser view.
 
 Nothing here knows about the terminal: ``pony view --pdf`` converts files
@@ -14,8 +14,8 @@ printing a ``file://`` document applies no headers to it, so the
 message's own scripts ran and its remote images were fetched while the
 PDF was being made — measured: a ``<script>`` authored text into the
 output and a tracking pixel reached its server.  Printing the page
-:func:`pony.browser_preview.document_server` serves instead puts it
-under :data:`pony.html_policy.MESSAGE_HTML_CSP`, where both are refused
+:func:`pony.mail.browser_preview.document_server` serves instead puts it
+under :data:`pony.mail.html_policy.MESSAGE_HTML_CSP`, where both are refused
 and the PDF is otherwise identical.  Switching scripting off at the
 command line is not an alternative: ``--disable-javascript`` is ignored
 by current Chromium, and ``--blink-settings=scriptEnabled=false``, which

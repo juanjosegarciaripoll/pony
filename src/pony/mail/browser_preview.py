@@ -1,6 +1,6 @@
 """Hand one rendered message to the user's browser over loopback.
 
-The terminal's ``w`` wrote :func:`pony.message_renderer.build_browser_html`
+The terminal's ``w`` wrote :func:`pony.mail.message_renderer.build_browser_html`
 to a ``NamedTemporaryFile(delete=False)`` and opened it as a ``file://``
 URL.  Two things follow from that, and both are bad:
 
@@ -10,7 +10,7 @@ URL.  Two things follow from that, and both are bad:
   whose ``/tmp`` is a RAM-backed tmpfs it is mail resident in memory
   until the next reboot.
 * **A ``file://`` document carries no headers.**  The policy the browser
-  front end serves message pages under, :data:`pony.html_policy.MESSAGE_HTML_CSP`,
+  front end serves message pages under, :data:`pony.mail.html_policy.MESSAGE_HTML_CSP`,
   did not apply to the terminal's pages at all: same bytes, no
   restrictions, and a local origin that can read local files.
 
@@ -179,7 +179,7 @@ def document_server(html: str) -> Iterator[str]:
 
     Separate from the reader's preview on purpose: printing a message
     must not withdraw the window the reader already has open.  Used by
-    :func:`pony.pdf_export.html_to_pdf`, which points the converter at
+    :func:`pony.mail.pdf_export.html_to_pdf`, which points the converter at
     the URL so the document it renders arrives under the policy instead
     of off the disk.
     """

@@ -1,6 +1,6 @@
 """Textual-side wrapper around the headless PDF converter.
 
-The conversion itself lives in :mod:`pony.pdf_export`, which knows nothing
+The conversion itself lives in :mod:`pony.mail.pdf_export`, which knows nothing
 about the terminal.  This module adds only what a running app needs: the
 blocking call is made on a thread worker and every outcome is reported
 through the app rather than raised at the caller.
@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..pdf_export import (
+from ..mail.pdf_export import (
     Converter,
     NoPdfConverterError,
     find_converter,

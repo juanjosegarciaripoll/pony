@@ -1,4 +1,4 @@
-"""Tests for ``pony.imap_client`` — pure helpers and mocked session."""
+"""Tests for ``pony.mail.imap_client`` — pure helpers and mocked session."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from imapclient import SocketTimeout
 
-from pony.domain import MessageFlag
-from pony.imap_client import (
+from pony.mail.domain import MessageFlag
+from pony.mail.imap_client import (
     DEFAULT_CONNECT_ATTEMPTS,
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
@@ -144,7 +144,9 @@ class ImapSessionMockedTest(unittest.TestCase):
 
     def _make_session(self) -> tuple[ImapSession, MagicMock]:
         mock_client = _make_mock_imap_client()
-        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
+        with patch(
+            "pony.mail.imap_client._TimeoutIMAPClient", return_value=mock_client
+        ):
             session = ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -164,7 +166,7 @@ class ImapSessionMockedTest(unittest.TestCase):
         mock_client = _make_mock_imap_client()
         mock_client.login.side_effect = LoginError("bad password")
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", return_value=mock_client),
             self.assertRaises(ImapAuthError) as ctx,
         ):
             ImapSession(
@@ -179,7 +181,9 @@ class ImapSessionMockedTest(unittest.TestCase):
     def test_compress_enabled_when_supported(self) -> None:
         mock_client = _make_mock_imap_client()
         mock_client.capabilities.return_value = [b"COMPRESS=DEFLATE"]
-        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
+        with patch(
+            "pony.mail.imap_client._TimeoutIMAPClient", return_value=mock_client
+        ):
             ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -249,7 +253,9 @@ class ImapSessionMockedTest(unittest.TestCase):
         mock_client = _make_mock_imap_client()
         mock_client.capabilities.return_value = [b"COMPRESS=DEFLATE"]
         mock_client.compress.side_effect = Exception("compress failed")
-        with patch("pony.imap_client._TimeoutIMAPClient", return_value=mock_client):
+        with patch(
+            "pony.mail.imap_client._TimeoutIMAPClient", return_value=mock_client
+        ):
             session = ImapSession(
                 host="imap.example.com",
                 port=993,
@@ -486,7 +492,7 @@ class ImapSessionMockedTest(unittest.TestCase):
                 return [(b"", b".", "INBOX")]
 
             mock_client.list_folders = _flaky_list
-            with patch("pony.imap_client.time.sleep"):
+            with patch("pony.mail.imap_client.time.sleep"):
                 folders = session.list_folders()
 
         self.assertIn("INBOX", folders)
@@ -591,7 +597,7 @@ class ImapSessionTimeoutTest(unittest.TestCase):
     ) -> MagicMock:
         mock_client = _make_mock_imap_client()
         with patch(
-            "pony.imap_client._TimeoutIMAPClient", return_value=mock_client
+            "pony.mail.imap_client._TimeoutIMAPClient", return_value=mock_client
         ) as factory:
             ImapSession(
                 host="imap.example.com",
@@ -659,7 +665,7 @@ class TlsConnectTimeoutTest(unittest.TestCase):
             connect=11.0, read=12.0
         )
 
-        with patch("pony.imap_client._TimeoutIMAP4TLS") as tls_cls:
+        with patch("pony.mail.imap_client._TimeoutIMAP4TLS") as tls_cls:
             client._create_IMAP4()
 
         self.assertEqual(tls_cls.call_args.args[-1], 11.0)
@@ -693,8 +699,8 @@ class ConnectRetryTest(unittest.TestCase):
     def _connect(self, side_effect: object) -> MagicMock:
         factory = MagicMock(side_effect=side_effect)
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", factory),
-            patch("pony.imap_client.time.sleep"),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.mail.imap_client.time.sleep"),
         ):
             ImapSession(host="imap.example.com", username="bob", password="pw")
         return factory
@@ -712,8 +718,8 @@ class ConnectRetryTest(unittest.TestCase):
     def test_connect_gives_up_after_the_attempt_limit(self) -> None:
         factory = MagicMock(side_effect=TimeoutError("timed out"))
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", factory),
-            patch("pony.imap_client.time.sleep"),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.mail.imap_client.time.sleep"),
             self.assertRaises(TimeoutError),
         ):
             ImapSession(
@@ -729,8 +735,8 @@ class ConnectRetryTest(unittest.TestCase):
         self.assertGreater(DEFAULT_CONNECT_ATTEMPTS, 1)
         factory = MagicMock(side_effect=TimeoutError("timed out"))
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", factory),
-            patch("pony.imap_client.time.sleep"),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.mail.imap_client.time.sleep"),
             self.assertRaises(TimeoutError),
         ):
             ImapSession(host="imap.example.com", username="bob", password="pw")
@@ -744,8 +750,8 @@ class ConnectRetryTest(unittest.TestCase):
         mock_client.login.side_effect = LoginError("bad credentials")
         factory = MagicMock(return_value=mock_client)
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", factory),
-            patch("pony.imap_client.time.sleep"),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.mail.imap_client.time.sleep"),
             self.assertRaises(ImapAuthError),
         ):
             ImapSession(host="imap.example.com", username="bob", password="pw")
@@ -762,8 +768,8 @@ class ConnectRetryTest(unittest.TestCase):
             ]
         )
         with (
-            patch("pony.imap_client._TimeoutIMAPClient", factory),
-            patch("pony.imap_client.time.sleep"),
+            patch("pony.mail.imap_client._TimeoutIMAPClient", factory),
+            patch("pony.mail.imap_client.time.sleep"),
         ):
             session = ImapSession(
                 host="imap.example.com", username="bob", password="pw"

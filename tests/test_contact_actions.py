@@ -3,8 +3,8 @@
 Harvesting an address, merging marked records, filing a sent copy: all of
 this used to live inside the composer, the reader and the contact
 browser, which is why an address was normalised one way in one and
-another way in the next.  It lives in :mod:`pony.contact_actions` and
-:mod:`pony.delivery` now, and these tests reach it directly.
+another way in the next.  It lives in :mod:`pony.mail.contact_actions` and
+:mod:`pony.mail.delivery` now, and these tests reach it directly.
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ from tui_helpers import (
     make_tmp_paths,
 )
 
-from pony import contact_actions, delivery
-from pony.compose_utils import build_email_message
-from pony.contact_actions import MergePlan
-from pony.domain import AccountConfig, Contact, FolderRef
-from pony.mailbox_actions import Mailboxes
+from pony.mail import contact_actions, delivery
+from pony.mail.compose_utils import build_email_message
+from pony.mail.contact_actions import MergePlan
+from pony.mail.domain import AccountConfig, Contact, FolderRef
+from pony.mail.mailbox_actions import Mailboxes
 
 if TYPE_CHECKING:
-    from pony.index_store import SqliteIndexRepository
+    from pony.mail.index_store import SqliteIndexRepository
 
 INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 
@@ -46,7 +46,7 @@ def _contact_store(mailboxes: Mailboxes) -> SqliteIndexRepository:
     application.  Asserted rather than cast, so the narrowing is also a
     check.
     """
-    from pony.index_store import SqliteIndexRepository as _Repo
+    from pony.mail.index_store import SqliteIndexRepository as _Repo
 
     store = mailboxes.index
     assert isinstance(store, _Repo)
@@ -436,7 +436,7 @@ def test_one_function_answers_what_an_account_sends_with() -> None:
     The invitation path and the app use that one now, so there is one
     sentence for "no password" and one for a backend that failed.
     """
-    from pony import accounts
+    from pony.mail import accounts
 
     assert not hasattr(accounts, "resolve_smtp_password")
 
@@ -625,7 +625,7 @@ def test_deliver_message_drafts_then_sends_then_files_the_sent_copy() -> None:
 
 
 def test_deliver_message_leaves_a_failed_send_in_drafts() -> None:
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     mailboxes, account = _sendable("deliver-smtp-fails")
 
@@ -703,7 +703,7 @@ def test_deliver_message_retires_the_draft_it_was_composed_from() -> None:
 
 def test_deliver_message_marks_what_it_answered() -> None:
     """A sent reply flags the original, whichever front end sent it."""
-    from pony.domain import MessageFlag
+    from pony.mail.domain import MessageFlag
 
     mailboxes, account = _sendable("deliver-answering")
     original = delivery.file_message(
@@ -734,8 +734,8 @@ def test_deliver_message_marks_what_it_answered() -> None:
 
 
 def test_a_failed_send_does_not_mark_anything_answered() -> None:
-    from pony.domain import MessageFlag
-    from pony.smtp_sender import SMTPError
+    from pony.mail.domain import MessageFlag
+    from pony.mail.smtp_sender import SMTPError
 
     mailboxes, account = _sendable("deliver-answering-fails")
     original = delivery.file_message(
@@ -769,7 +769,7 @@ def test_a_failed_send_does_not_mark_anything_answered() -> None:
 
 def test_file_draft_replaces_the_draft_it_was_resumed_from() -> None:
     """Saving an edited draft must leave one copy, not two."""
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     mailboxes, account = _sendable("file-draft-replaces")
     first = delivery.file_message(
@@ -960,7 +960,7 @@ def test_file_draft_refuses_to_retire_a_message_that_is_not_a_draft() -> None:
     received message and had it trashed, then expunged server-side on
     the next sync.
     """
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     mailboxes, account = _with_drafts_folder("file-draft-not-a-draft")
     received = delivery.file_message(
@@ -993,7 +993,7 @@ def test_file_draft_refuses_to_retire_a_message_that_is_not_a_draft() -> None:
 
 def test_deliver_message_leaves_a_non_draft_source_alone() -> None:
     """The send still happens; what must not happen is the deletion."""
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     mailboxes, account = _with_drafts_folder("deliver-not-a-draft")
     received = delivery.file_message(
@@ -1026,7 +1026,7 @@ def test_deliver_message_leaves_a_non_draft_source_alone() -> None:
 
 def test_file_draft_retires_a_draft_from_a_localised_drafts_folder() -> None:
     """`Borradores` is a Drafts folder, so resuming from it still works."""
-    from pony.domain import MessageStatus
+    from pony.mail.domain import MessageStatus
 
     paths = make_tmp_paths("file-draft-localised")
     account = make_test_account(paths)
@@ -1115,7 +1115,7 @@ class ImportContactsTest(unittest.TestCase):
     """
 
     def test_a_record_whose_address_a_third_contact_holds_is_a_notice(self) -> None:
-        from pony.contact_actions import import_contacts
+        from pony.mail.contact_actions import import_contacts
 
         repo = _contacts("import-conflict")
         repo.upsert_contact(
@@ -1154,7 +1154,7 @@ class ImportContactsTest(unittest.TestCase):
         self.assertIn("Skipped", outcome.notices[0].text)
 
     def test_an_address_less_record_merges_on_re_import(self) -> None:
-        from pony.contact_actions import import_contacts
+        from pony.mail.contact_actions import import_contacts
 
         repo = _contacts("import-addressless")
         record = Contact(id=None, first_name="Phone", last_name="Only", emails=())

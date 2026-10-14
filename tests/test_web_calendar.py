@@ -922,7 +922,7 @@ def test_a_calendar_attachment_offers_to_be_imported() -> None:
     """Downloading an .ics to paste it back is the long way round."""
     from tui_helpers import seed_message
 
-    from pony.domain import FolderRef
+    from pony.mail.domain import FolderRef
 
     services, _runtime = _services("cal-attachment-offer")
     folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -950,7 +950,7 @@ def test_a_calendar_attachment_offers_to_be_imported() -> None:
 def test_importing_a_calendar_attachment_files_its_events() -> None:
     from tui_helpers import seed_message
 
-    from pony.domain import FolderRef
+    from pony.mail.domain import FolderRef
 
     services, runtime = _services("cal-attachment-import")
     folder = FolderRef(account_name="acct", folder_name="INBOX")

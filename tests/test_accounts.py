@@ -1,4 +1,4 @@
-"""Tests for pony.accounts.
+"""Tests for pony.mail.accounts.
 
 These behaviours previously lived in four separate copies (``cli``,
 ``mcp_server``, ``sync`` and ``main_screen``); the point of the module is
@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.accounts import (
+from pony.mail.accounts import (
     build_mirror,
     build_mirrors,
     find_account,
@@ -22,7 +22,7 @@ from pony.accounts import (
     imap_accounts,
     select_imap_accounts,
 )
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     AnyAccount,
     AppConfig,
@@ -30,7 +30,7 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.storage import MaildirMirrorRepository, MboxMirrorRepository
+from pony.mail.storage import MaildirMirrorRepository, MboxMirrorRepository
 
 
 def _mirror_dir() -> MirrorConfig:

@@ -10,7 +10,7 @@ from uuid import uuid4
 from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
-from pony.domain import FolderConfig, LocalAccountConfig, ViewerRule
+from pony.mail.domain import FolderConfig, LocalAccountConfig, ViewerRule
 from pony.paths import is_half_qualified
 
 
@@ -57,7 +57,7 @@ class ConfigParsingTestCase(unittest.TestCase):
             parse_config(data, base_dir=base_dir)
 
     def test_folders_defaults_to_empty_policy(self) -> None:
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ class ConfigParsingTestCase(unittest.TestCase):
         self.assertEqual(acc.folders, FolderConfig())
 
     def test_folders_parsed_from_dict(self) -> None:
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         data = sample_config()
         account = data["accounts"][0]  # type: ignore[index]
@@ -178,7 +178,7 @@ class ConfigParsingTestCase(unittest.TestCase):
     def test_local_account_with_smtp_can_send(self) -> None:
         """A local account that carries an [smtp] block plus credentials
         reports ``can_send`` as True and ends up in the composer."""
-        from pony.domain import LocalAccountConfig
+        from pony.mail.domain import LocalAccountConfig
 
         data: dict[str, object] = {
             "config_version": 3,
@@ -205,7 +205,7 @@ class ConfigParsingTestCase(unittest.TestCase):
         self.assertTrue(acc.can_send)
 
     def test_local_account_without_smtp_cannot_send(self) -> None:
-        from pony.domain import LocalAccountConfig
+        from pony.mail.domain import LocalAccountConfig
 
         data: dict[str, object] = {
             "config_version": 3,
@@ -250,7 +250,7 @@ class ConfigParsingTestCase(unittest.TestCase):
             parse_config(data, base_dir=base_dir)
 
     def test_imap_account_can_send(self) -> None:
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +280,7 @@ class ConfigParsingTestCase(unittest.TestCase):
 
     def test_imap_account_default_when_type_absent(self) -> None:
         """Existing configs without account_type should still parse as IMAP accounts."""
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -413,7 +413,7 @@ class ConfigParsingTestCase(unittest.TestCase):
             parse_config(data, base_dir=base_dir)
 
     def test_archive_folder_parsed(self) -> None:
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         data = sample_config()
         account_raw = data["accounts"][0]  # type: ignore[index]
@@ -426,7 +426,7 @@ class ConfigParsingTestCase(unittest.TestCase):
         self.assertEqual(account.archive_folder, "Archive")
 
     def test_archive_folder_defaults_to_none(self) -> None:
-        from pony.domain import AccountConfig
+        from pony.mail.domain import AccountConfig
 
         base_dir = TMP_ROOT / "config-base"
         base_dir.mkdir(parents=True, exist_ok=True)

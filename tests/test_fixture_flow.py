@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
-from pony.fixture_flow import count_fixture_hits, run_fixture_ingest
+from pony.mail.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
+from pony.mail.fixture_flow import count_fixture_hits, run_fixture_ingest
 from pony.paths import AppPaths
 
 

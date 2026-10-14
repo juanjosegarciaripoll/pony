@@ -1653,7 +1653,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
         Field-level: the surviving record gains everything the sources
         knew rather than only their emails and aliases.  See
-        :func:`pony.contact_merge.merged_contact` for the policy and for
+        :func:`pony.mail.contact_merge.merged_contact` for the policy and for
         what used to be silently destroyed here.
 
         A source that is the target, or that no longer exists, is

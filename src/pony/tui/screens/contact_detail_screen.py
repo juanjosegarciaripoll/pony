@@ -9,8 +9,8 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
-from ...domain import Contact
-from ...protocols import ContactRepository
+from ...mail.domain import Contact
+from ...mail.protocols import ContactRepository
 
 
 class ContactDetailScreen(Screen[bool]):

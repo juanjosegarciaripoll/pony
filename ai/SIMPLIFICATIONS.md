@@ -29,7 +29,7 @@ may need new tests). Do Tier 1 first.
 ### cli.py
 
 **1. Account-lookup-by-name helper (6 copies → 1, ~60 lines). — DONE.**
-Lives in `pony.accounts` (`find_account` / `find_imap_account` /
+Lives in `pony.mail.accounts` (`find_account` / `find_imap_account` /
 `imap_accounts` / `select_imap_accounts`), shared with `sync.py`,
 `mcp_server.py` and `main_screen.py`, which each had their own copy.
 `cli.py` keeps the `_require_*` wrappers on top, since raising
@@ -70,7 +70,7 @@ confirm before unifying, or `test_cli.py` assertions on the message may break.
 </details>
 
 **2. `_make_mirror` duplication (~10 lines). — DONE.**
-`build_mirror` / `build_mirrors` in `pony.accounts`. `cli.py` and
+`build_mirror` / `build_mirrors` in `pony.mail.accounts`. `cli.py` and
 `mcp_server.py` had byte-identical factories under different names.
 
 **3. Shared TUI setup block (~20 lines).**

@@ -27,9 +27,9 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from pony.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
-from pony.imap_client import ImapSession
-from pony.protocols import ImapClientSession
+from pony.mail.domain import AccountConfig, AppConfig, MirrorConfig, SmtpConfig
+from pony.mail.imap_client import ImapSession
+from pony.mail.protocols import ImapClientSession
 
 ENV_FLAG = "PONY_LIVE_IMAP"
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "dovecot_userspace.sh"

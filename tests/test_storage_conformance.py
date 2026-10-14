@@ -10,9 +10,9 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import FolderRef, MessageFlag
-from pony.protocols import MirrorRepository
-from pony.storage import (
+from pony.mail.domain import FolderRef, MessageFlag
+from pony.mail.protocols import MirrorRepository
+from pony.mail.storage import (
     MaildirMirrorRepository,
     MboxMirrorRepository,
     _build_mbox_toc,
@@ -378,8 +378,8 @@ class MboxMessageByIdTest(unittest.TestCase):
         """Providing message_id triggers the mmap fast path when mbox is not open."""
         from uuid import uuid4
 
-        from pony.domain import FolderRef
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.storage import MboxMirrorRepository
 
         root = TMP_ROOT / "mbox-mid" / uuid4().hex
         root.mkdir(parents=True, exist_ok=True)
@@ -411,8 +411,8 @@ class MboxMessageByIdTest(unittest.TestCase):
         """When message_id is not found via mmap, fallback returns correct bytes."""
         from uuid import uuid4
 
-        from pony.domain import FolderRef
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.storage import MboxMirrorRepository
 
         root = TMP_ROOT / "mbox-mid-fb" / uuid4().hex
         root.mkdir(parents=True, exist_ok=True)
@@ -449,8 +449,8 @@ class MboxMessageByIdTest(unittest.TestCase):
         """
         from uuid import uuid4
 
-        from pony.domain import FolderRef
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.domain import FolderRef
+        from pony.mail.storage import MboxMirrorRepository
 
         root = TMP_ROOT / "mbox-gc" / uuid4().hex
         root.mkdir(parents=True, exist_ok=True)
@@ -481,7 +481,7 @@ class MboxMessageByIdTest(unittest.TestCase):
         import weakref
         from uuid import uuid4
 
-        from pony.storage import MboxMirrorRepository
+        from pony.mail.storage import MboxMirrorRepository
 
         root = TMP_ROOT / "mbox-finalizer" / uuid4().hex
         mirror = MboxMirrorRepository(account_name="acct", root_dir=root)
@@ -507,19 +507,19 @@ class MboxDirectLookupTestCase(unittest.TestCase):
     def test_missing_file_returns_none(self) -> None:
         from pathlib import Path
 
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         missing = Path(TMP_ROOT / "mbox-lookup" / uuid4().hex / "absent.mbox")
         self.assertIsNone(_mbox_find_message_by_id(missing, "<a@example.com>"))
 
     def test_empty_file_returns_none(self) -> None:
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         path = self._mbox_path(b"")
         self.assertIsNone(_mbox_find_message_by_id(path, "<a@example.com>"))  # type: ignore[arg-type]
 
     def test_absent_message_id_returns_none(self) -> None:
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         path = self._mbox_path(
             b"From sender@example.com\nMessage-ID: <other@example.com>\n\nbody\n\n"
@@ -527,7 +527,7 @@ class MboxDirectLookupTestCase(unittest.TestCase):
         self.assertIsNone(_mbox_find_message_by_id(path, "<a@example.com>"))  # type: ignore[arg-type]
 
     def test_last_message_without_trailing_blank_line(self) -> None:
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         path = self._mbox_path(
             b"From sender@example.com\nMessage-ID: <last@example.com>\n\nbody\n"
@@ -538,7 +538,7 @@ class MboxDirectLookupTestCase(unittest.TestCase):
         self.assertNotIn(b"From sender@example.com", found)
 
     def test_message_followed_by_another_is_bounded(self) -> None:
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         path = self._mbox_path(
             b"From a@example.com\nMessage-ID: <first@example.com>\n\nfirst body\n\n"
@@ -550,7 +550,7 @@ class MboxDirectLookupTestCase(unittest.TestCase):
         self.assertNotIn(b"second body", found)
 
     def test_envelope_line_without_newline_returns_none(self) -> None:
-        from pony.storage import _mbox_find_message_by_id
+        from pony.mail.storage import _mbox_find_message_by_id
 
         # A hit with no newline terminating the "From " envelope line.
         path = self._mbox_path(b"From x\rMessage-ID: <trunc@example.com>")
@@ -1332,7 +1332,7 @@ class PendingWriteBoundTestCase(unittest.TestCase):
     """
 
     def test_a_caller_waits_once_the_queue_is_full(self) -> None:
-        from pony.storage import _MAX_PENDING_WRITES
+        from pony.mail.storage import _MAX_PENDING_WRITES
 
         root = TMP_ROOT / "pending-bound" / uuid4().hex
         mirror = MaildirMirrorRepository(account_name="acct", root_dir=root)

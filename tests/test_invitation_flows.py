@@ -16,7 +16,7 @@ from tui_helpers import (
 
 from pony.calendar.domain import CalendarRef
 from pony.calendar.storage_indexing import index_calendar
-from pony.domain import FolderRef
+from pony.mail.domain import FolderRef
 from pony.tui.screens.invitation_screen import InvitationChoice, InvitationScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
@@ -316,7 +316,7 @@ async def test_accepting_files_it_and_replies_to_the_organizer() -> None:
         label="inv-accept", seed=((folder, _invitation_mail()),), calendar=runtime
     )
     async with app.run_test() as pilot:
-        import pony.smtp_sender as smtp_module
+        import pony.mail.smtp_sender as smtp_module
 
         original = smtp_module.send_message
         smtp_module.send_message = sent  # type: ignore[assignment]

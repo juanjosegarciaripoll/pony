@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import (
+from pony.mail.domain import (
     AccountConfig,
     FolderSyncState,
     IndexedMessage,
@@ -18,7 +18,7 @@ from pony.domain import (
     MirrorConfig,
     SmtpConfig,
 )
-from pony.index_store import SqliteIndexRepository
+from pony.mail.index_store import SqliteIndexRepository
 from pony.services import CheckStatus, check_mirror_integrity
 
 

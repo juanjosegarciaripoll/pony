@@ -164,7 +164,7 @@ def test_replying_mails_the_organizer_an_itip_reply() -> None:
     config = _config()
     sent = Mock()
 
-    with patch("pony.smtp_sender.send_message", sent):
+    with patch("pony.mail.smtp_sender.send_message", sent):
         outcome = invitation_actions.reply_to_invitation(
             _invitation(),
             partstat="ACCEPTED",
@@ -187,14 +187,14 @@ def test_replying_mails_the_organizer_an_itip_reply() -> None:
 
 
 def test_a_reply_that_cannot_be_sent_says_the_event_was_still_filed() -> None:
-    from pony.smtp_sender import SMTPError
+    from pony.mail.smtp_sender import SMTPError
 
     config = _config()
 
     def _refuse(**_kwargs: object) -> None:
         raise SMTPError("the server hung up")
 
-    with patch("pony.smtp_sender.send_message", _refuse):
+    with patch("pony.mail.smtp_sender.send_message", _refuse):
         outcome = invitation_actions.reply_to_invitation(
             _invitation(),
             partstat="DECLINED",
@@ -234,7 +234,7 @@ def test_responding_files_the_event_and_then_answers() -> None:
     config = _config()
     sent = Mock()
 
-    with patch("pony.smtp_sender.send_message", sent):
+    with patch("pony.mail.smtp_sender.send_message", sent):
         outcome = invitation_actions.respond_to_invitation(
             _invitation(),
             InvitationChoice(calendar=TARGET, partstat="ACCEPTED"),
@@ -257,7 +257,7 @@ def test_responding_without_a_partstat_tells_nobody() -> None:
     config = _config()
     sent = Mock()
 
-    with patch("pony.smtp_sender.send_message", sent):
+    with patch("pony.mail.smtp_sender.send_message", sent):
         outcome = invitation_actions.respond_to_invitation(
             _invitation(),
             InvitationChoice(calendar=TARGET, partstat=None),
@@ -280,7 +280,7 @@ def test_responding_does_not_answer_when_filing_failed() -> None:
     sent = Mock()
     broken = dataclasses.replace(_invitation(), raw_ics=b"BEGIN:VCALENDAR\r\nnope")
 
-    with patch("pony.smtp_sender.send_message", sent):
+    with patch("pony.mail.smtp_sender.send_message", sent):
         outcome = invitation_actions.respond_to_invitation(
             broken,
             InvitationChoice(calendar=TARGET, partstat="ACCEPTED"),

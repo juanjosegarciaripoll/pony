@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from conftest import TMP_ROOT
 
-from pony.domain import (
+from pony.mail.domain import (
     Contact,
     FolderRef,
     FolderSyncState,
@@ -24,8 +24,8 @@ from pony.domain import (
     MessageStatus,
     SearchQuery,
 )
-from pony.index_store import _BATCH_COMMIT_ROWS, SqliteIndexRepository
-from pony.search_parser import parse_query
+from pony.mail.index_store import _BATCH_COMMIT_ROWS, SqliteIndexRepository
+from pony.mail.search_parser import parse_query
 
 
 class UpsertAndListTestCase(unittest.TestCase):
@@ -379,7 +379,7 @@ class SchemaVersionGateTestCase(unittest.TestCase):
     def test_initialize_refuses_legacy_db(self) -> None:
         import sqlite3
 
-        from pony.index_store import SchemaMismatchError
+        from pony.mail.index_store import SchemaMismatchError
 
         path = TMP_ROOT / "legacy" / f"{uuid4().hex}.sqlite3"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -622,7 +622,7 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
         """The emergency loader must work on a DB initialize() refuses."""
         import sqlite3
 
-        from pony.index_store import load_contacts_for_backup
+        from pony.mail.index_store import load_contacts_for_backup
 
         path = TMP_ROOT / "legacy-contacts" / f"{uuid4().hex}.sqlite3"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -674,7 +674,7 @@ class V2ToV3MigrationTestCase(unittest.TestCase):
         self.assertEqual(contacts[0].aliases, ("Mari",))
 
     def test_load_contacts_for_backup_tolerates_missing_file(self) -> None:
-        from pony.index_store import load_contacts_for_backup
+        from pony.mail.index_store import load_contacts_for_backup
 
         path = TMP_ROOT / "missing" / f"{uuid4().hex}.sqlite3"
         self.assertEqual(load_contacts_for_backup(database_path=path), [])
@@ -835,7 +835,7 @@ class V3ToV4MigrationTestCase(unittest.TestCase):
         be told to catch up or every search comes back empty and no
         ordinary sync ever repairs it.
         """
-        from pony.domain import SearchQuery
+        from pony.mail.domain import SearchQuery
 
         path = TMP_ROOT / "v3-migration-fts" / f"{uuid4().hex}.sqlite3"
         self._build_v3_db(path)
@@ -867,7 +867,7 @@ class V3ToV4MigrationTestCase(unittest.TestCase):
         """Only 2, 3 and the current version are recognised."""
         import sqlite3
 
-        from pony.index_store import SchemaMismatchError
+        from pony.mail.index_store import SchemaMismatchError
 
         path = TMP_ROOT / "v5-db" / f"{uuid4().hex}.sqlite3"
         self._build_v3_db(path)
@@ -1110,13 +1110,13 @@ class MarkFolderReadTestCase(unittest.TestCase):
     def test_marks_all_active_messages_as_seen(self) -> None:
         from datetime import UTC, datetime
 
-        from pony.domain import FolderRef, MessageRef, MessageStatus
+        from pony.mail.domain import FolderRef, MessageRef, MessageStatus
 
         repo = _fresh_repo()
         folder = FolderRef(account_name="acct", folder_name="INBOX")
 
         # Insert two messages without SEEN flag
-        from pony.domain import IndexedMessage
+        from pony.mail.domain import IndexedMessage
 
         for i in range(2):
             row = IndexedMessage(
@@ -1145,7 +1145,12 @@ class MarkFolderReadTestCase(unittest.TestCase):
     def test_mark_folder_read_already_seen_returns_zero(self) -> None:
         from datetime import UTC, datetime
 
-        from pony.domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
+        from pony.mail.domain import (
+            FolderRef,
+            IndexedMessage,
+            MessageRef,
+            MessageStatus,
+        )
 
         repo = _fresh_repo()
         folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -1187,7 +1192,12 @@ class MarkFolderReadTestCase(unittest.TestCase):
         """Whatever a row already carries, the result reads back sorted."""
         from datetime import UTC, datetime
 
-        from pony.domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
+        from pony.mail.domain import (
+            FolderRef,
+            IndexedMessage,
+            MessageRef,
+            MessageStatus,
+        )
 
         repo = _fresh_repo()
         folder = FolderRef(account_name="acct", folder_name="INBOX")
@@ -1455,7 +1465,7 @@ class AddressSpellingTest(unittest.TestCase):
 
         repo = _fresh_repo()
         with unittest.mock.patch(
-            "pony.contact_actions.normalize_address", lambda value: value.upper()
+            "pony.mail.contact_actions.normalize_address", lambda value: value.upper()
         ):
             with repo.connection():
                 repo.upsert_contact(

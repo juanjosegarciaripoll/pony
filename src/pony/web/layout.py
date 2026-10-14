@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from pony.calendar.keymap import CALENDAR_KEYMAP, CalendarSurface
 from pony.keys import KeyBinding, for_surface, web_key
 
-from ..keymap import MAIL_KEYMAP, Surface
+from ..mail.keymap import MAIL_KEYMAP, Surface
 from .html import Raw, document, element, join
 
 if TYPE_CHECKING:

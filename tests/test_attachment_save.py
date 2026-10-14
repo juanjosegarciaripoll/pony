@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import corpus
 
-from pony.message_renderer import (
+from pony.mail.message_renderer import (
     render_message,
     safe_attachment_filename,
     unique_destination,
@@ -103,7 +103,7 @@ class SaveAttachmentTest(unittest.TestCase):
         mock_path.write_bytes.side_effect = OSError("disk full")
         with (
             patch(
-                "pony.message_renderer.unique_destination",
+                "pony.mail.message_renderer.unique_destination",
                 return_value=mock_path,
             ),
             self.assertRaises(OSError, msg="disk full"),
@@ -292,7 +292,7 @@ class OneSanitiserForEveryRouteTest(unittest.TestCase):
 
     def test_every_route_produces_the_same_name(self) -> None:
         """The regression this consolidation exists to prevent."""
-        from pony.message_renderer import proposed_attachment_filename
+        from pony.mail.message_renderer import proposed_attachment_filename
 
         hostile = "../../re<port>.pdf"
         expected = safe_attachment_filename(hostile)

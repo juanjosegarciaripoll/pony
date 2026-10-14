@@ -30,7 +30,7 @@ import secrets
 import shutil
 from pathlib import Path
 
-from .paths import default_data_dir
+from ..paths import default_data_dir
 
 __all__ = ["activate", "handoff_path"]
 

@@ -1,8 +1,8 @@
-"""Unit tests for pony.search_parser."""
+"""Unit tests for pony.mail.search_parser."""
 
 from __future__ import annotations
 
-from pony.search_parser import parse_query
+from pony.mail.search_parser import parse_query
 
 
 def test_bare_words_search_subject_and_body() -> None:

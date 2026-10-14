@@ -10,7 +10,7 @@ from pony.keys import for_surface
 from pony.outcome import Notice, Outcome
 from pony.tui.reporting import report
 
-from ...contact_actions import (
+from ...mail.contact_actions import (
     MergePlan,
     delete_contacts,
     list_contacts,
@@ -18,10 +18,10 @@ from ...contact_actions import (
     plan_merge,
     summarize,
 )
-from ...domain import Contact
-from ...keymap import MAIL_KEYMAP, Surface
-from ...protocols import ContactRepository
-from ...views import contact_row
+from ...mail.domain import Contact
+from ...mail.keymap import MAIL_KEYMAP, Surface
+from ...mail.protocols import ContactRepository
+from ...mail.views import contact_row
 from ..bindings import MARK_BINDINGS, to_textual
 
 _BLANK_CONTACT = Contact(id=None, first_name="", last_name="", emails=())

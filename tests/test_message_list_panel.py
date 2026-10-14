@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from corpus import plain_text
 from tui_helpers import build_pony_app, seed_message
 
-from pony.domain import FolderRef, MessageFlag, MessageStatus
+from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.message_list import MessageListPanel
 from pony.tui.widgets.message_view import MessageViewPanel
@@ -670,7 +670,7 @@ def _restore_target(
     """
     from unittest.mock import Mock
 
-    from pony.domain import FolderMessageSummary, MessageRef
+    from pony.mail.domain import FolderMessageSummary, MessageRef
 
     summaries = [
         FolderMessageSummary(
@@ -967,7 +967,7 @@ async def test_flagging_a_message_repaints_its_row() -> None:
     ``test_trashing_leaves_the_cursor_where_it_was`` above is the
     template this follows.
     """
-    from pony.views import ANSWERED_MARK, FLAGGED_MARK
+    from pony.mail.views import ANSWERED_MARK, FLAGGED_MARK
 
     app, _cfg, _paths, index, _mirrors = build_pony_app(
         label="mlist-flag-repaint",

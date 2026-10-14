@@ -29,28 +29,28 @@ from pony.keys import for_surface
 from pony.outcome import Outcome
 from pony.tui.reporting import report
 
-from ...compose_utils import (
+from ...mail.compose_utils import (
     build_email_message,
     split_address_list,
 )
-from ...composer import DraftSpec, from_header
-from ...contact_actions import contact_for_address
-from ...delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
-from ...domain import (
+from ...mail.composer import DraftSpec, from_header
+from ...mail.contact_actions import contact_for_address
+from ...mail.delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
+from ...mail.domain import (
     AnyAccount,
     AppConfig,
     IndexedMessage,
 )
-from ...handoff import handoff_path
-from ...keymap import MAIL_KEYMAP, Surface
-from ...mailbox_actions import Mailboxes
-from ...protocols import (
+from ...mail.handoff import handoff_path
+from ...mail.keymap import MAIL_KEYMAP, Surface
+from ...mail.mailbox_actions import Mailboxes
+from ...mail.protocols import (
     ContactRepository,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from ...smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
+from ...mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
 from ..bindings import to_textual
 from ..widgets.address_input import AddressInput
 
@@ -602,7 +602,7 @@ class ComposeScreen(Screen[bool]):
         to: str,
         cc: str,
     ) -> None:
-        """Hand the send to :func:`pony.delivery.deliver_message`.
+        """Hand the send to :func:`pony.mail.delivery.deliver_message`.
 
         What is left here is the part that is a user interface: saying
         which server is being dialled, saying that it did not answer the

@@ -2,7 +2,7 @@
 
 This module holds two things: the vocabulary both halves of the program
 describe a keyboard with, and the calendar's own table written in it.
-The mail reader's table is :mod:`pony.keymap`, which imports the
+The mail reader's table is :mod:`pony.mail.keymap`, which imports the
 vocabulary from here — the same arrangement as :mod:`pony.outcome`,
 and for the same reason: the dependency arrow runs from ``pony`` to
 the calendar, so the vocabulary both halves share lives here.

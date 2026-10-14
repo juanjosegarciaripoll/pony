@@ -1282,7 +1282,7 @@ def _ics_payload(context: ActionContext) -> bytes | None:
     messages = context.messages
     if index is None or not messages:
         return None
-    from ..message_renderer import extract_attachment
+    from ..mail.message_renderer import extract_attachment
     from .mail import raw_bytes
 
     raw = raw_bytes(context.services, messages[0])
