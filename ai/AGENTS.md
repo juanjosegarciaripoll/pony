@@ -300,8 +300,8 @@ defensive, so re-deriving it is wasted effort:
 move, copy, trash, flags, folder creation, sending a message, saving a
 message or one of its parts, the contact operations, answering an
 invitation and the calendar's event operations each live over the
-stores (`pony/mailbox_actions.py`, `pony/delivery.py`,
-`pony/message_export.py`, `pony/contact_actions.py`,
+stores (`pony/mail/mailbox_actions.py`, `pony/mail/delivery.py`,
+`pony/mail/message_export.py`, `pony/mail/contact_actions.py`,
 `pony/invitation_actions.py`, `pony/calendar/event_actions.py`) and return a
 `pony.outcome.Outcome` — a count of what changed, and the notices to
 show. An operation that returns something as well returns it beside the
@@ -324,13 +324,13 @@ implement, or serves a key no press could produce.
 
 **A message's parts are numbered in one place.** `0` is the message as
 it arrived, `T` is its body as text with no HTML in it, and `1..N` are
-its attachments — `pony/message_export.py` defines that, and the `s`
+its attachments — `pony/mail/message_export.py` defines that, and the `s`
 key, the `S` prompt, the digit accelerators, the parts list in both
 front ends and `/message/attachment?n=` all read it from there. A front
 end that invents its own numbering is how `s` came to save
 body-as-Markdown in the terminal and the raw `.eml` in the browser.
 
-**A projection goes in `views.py`, not under `tui/`.** `pony/views.py`
+**A projection goes in `views.py`, not under `tui/`.** `pony/mail/views.py`
 and `pony/calendar/views.py` decide what a row is *of* — and, for the
 calendar, which cell or column a span occupies and how tall the hour
 axis is; padding it to a column width or wrapping it in a Rich `Text` is

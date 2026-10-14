@@ -406,7 +406,7 @@ with dots.
 
 ## Implementation reference
 
-This section is the authoritative contract for `src/pony/sync.py`. Update it
+This section is the authoritative contract for `src/pony/mail/sync.py`. Update it
 before changing the algorithm.
 
 ### Principles

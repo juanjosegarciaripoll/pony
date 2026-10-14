@@ -725,11 +725,11 @@ would be a second truth.
 ### Periodic sync
 
 Both halves sync themselves on a timetable, and neither timetable belongs to
-a screen. `pony/calendar/scheduler.py` holds one small, subsystem-agnostic class,
+a screen. `pony/scheduler.py` holds one small, subsystem-agnostic class,
 `PeriodicSync`: a daemon thread that runs a sync runner every *interval*
 seconds, hands it a cancel event, and reports each run through callbacks. It
 is shared rather than either half's — the mail half runs its own sync on it, over its own result type (`MailSyncScheduler`
-in `pony/sync.py`, `CalendarSyncScheduler` in `pony/calendar/protocols.py`).
+in `pony/mail/sync.py`, `CalendarSyncScheduler` in `pony/calendar/protocols.py`).
 
 The applications own the instances: `PonyApp` starts one per half on mount
 and stops both on unmount, and `ChronosApp` starts the calendar's when the
