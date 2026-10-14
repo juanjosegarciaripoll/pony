@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from pony.calendar.config import ConfigDocument, file_document, mirror_roots
+from pony.calendar.config import ConfigDocument, mirror_roots
 from pony.calendar.credentials import DefaultCredentialsProvider
 from pony.calendar.domain import (
     AccountConfig,
@@ -29,7 +29,7 @@ from pony.calendar.oauth import (
     has_local_graphical_browser,
 )
 from pony.calendar.paths import CalendarPaths
-from pony.calendar.services import build_sync_runner, default_session_factory
+from pony.calendar.services import default_session_factory
 from pony.calendar.storage import VdirMirrorRepository
 from pony.cli import calendar as cli
 from tests_calendar import corpus
@@ -676,40 +676,6 @@ class SyncLockReleaseTest(CliTestCase):
             etag="etag-a",
         )
 
-    def test_keyboard_interrupt_during_runner_releases_lock(self) -> None:
-        from pony.calendar.authorization import Authorization
-
-        self._seed()
-        # Make discover_principal raise KeyboardInterrupt to simulate
-        # a Ctrl-C landing mid-flight.
-        flaky_session = FakeCalDAVSession()
-        flaky_session.add_calendar(url="https://cal.example.com/work/", name="work")
-
-        def boom() -> str:
-            raise KeyboardInterrupt
-
-        flaky_session.discover_principal = boom  # type: ignore[method-assign]
-
-        def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
-            return flaky_session
-
-        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        under_tmp = CalendarPaths(root=tmp)
-        ctx = self._ctx(session_factory=factory, paths=under_tmp)
-
-        runner = build_sync_runner(ctx.services())
-        with self.assertRaises(KeyboardInterrupt):
-            runner()
-
-        # Lock must be released — a fresh runner must be able to
-        # acquire it without blocking or raising SyncLockError.
-        ctx2 = self._ctx(session_factory=lambda *_: self.session, paths=under_tmp)
-        self._seed()  # idempotent
-        runner2 = build_sync_runner(ctx2.services())
-        results = runner2()
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].errors, ())
-
     def test_concurrent_cmd_sync_invocations_rejected(self) -> None:
         # Hold the lockfile via a separate `acquire_sync_lock` and
         # verify `cmd_sync` exits non-zero with a "another calendar
@@ -728,140 +694,6 @@ class SyncLockReleaseTest(CliTestCase):
         self.assertIn(
             "another calendar sync is already running", self.stderr.getvalue()
         )
-
-
-class BuildSyncRunnerTest(CliTestCase):
-    """`build_sync_runner` is the closure handed to the TUI's `_run_sync`.
-
-    It mirrors `cmd_sync`'s flow but returns per-account `SyncResult`s
-    instead of writing to stdout, with errors folded into the result's
-    `errors` tuple so a single bad account doesn't take the whole sync
-    down.
-    """
-
-    def _seed_server(self) -> None:
-        self.session.add_calendar(url="https://cal.example.com/work/", name="work")
-        self.session.put_resource(
-            calendar_url="https://cal.example.com/work/",
-            href="https://cal.example.com/work/a.ics",
-            ics=corpus.simple_event(),
-            etag="etag-a",
-        )
-
-    def test_happy_path_returns_one_result_per_account(self) -> None:
-        self._seed_server()
-        from pony.calendar.authorization import Authorization
-
-        def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
-            return self.session
-
-        ctx = self._ctx(session_factory=factory)
-        runner = build_sync_runner(ctx.services())
-        results = runner()
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].account_name, "personal")
-        self.assertEqual(results[0].errors, ())
-        self.assertEqual(results[0].components_added, 1)
-
-    def test_credential_failure_lands_in_errors(self) -> None:
-        bad_config = _config(
-            _account(credential=EnvCredential(variable="UNSET_FOR_TEST"))
-        )
-        ctx = self._ctx(config=bad_config, creds_env={})
-        runner = build_sync_runner(ctx.services())
-        results = runner()
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].errors[0].count("UNSET_FOR_TEST"), 1)
-        self.assertEqual(results[0].components_added, 0)
-
-    def test_caldav_error_lands_in_errors(self) -> None:
-        from pony.calendar.authorization import Authorization
-        from pony.calendar.caldav import CalDAVError
-
-        def broken_factory(
-            _account: AccountConfig, _auth: Authorization
-        ) -> FakeCalDAVSession:
-            session = FakeCalDAVSession()
-
-            def _raise_principal() -> str:
-                raise CalDAVError("simulated network failure")
-
-            session.discover_principal = _raise_principal  # type: ignore[method-assign]
-            return session
-
-        ctx = self._ctx(session_factory=broken_factory)
-        runner = build_sync_runner(ctx.services())
-        results = runner()
-        self.assertEqual(len(results), 1)
-        self.assertIn("simulated network failure", results[0].errors[0])
-
-    def test_session_factory_not_implemented_lands_in_errors(self) -> None:
-        from pony.calendar.authorization import Authorization
-
-        def unimplemented_factory(
-            _account: AccountConfig, _auth: Authorization
-        ) -> FakeCalDAVSession:
-            raise NotImplementedError("session factory not configured")
-
-        ctx = self._ctx(session_factory=unimplemented_factory)
-        runner = build_sync_runner(ctx.services())
-        results = runner()
-        self.assertEqual(len(results), 1)
-        self.assertIn("session factory not configured", results[0].errors[0])
-
-    def test_session_factory_caldav_error_lands_in_errors(self) -> None:
-        """The default session factory may raise CalDAVError when
-        constructing the session (e.g. Google email-discovery failing).
-        That must land in the per-account errors tuple, not crash."""
-        from pony.calendar.authorization import Authorization
-        from pony.calendar.caldav import CalDAVError
-
-        def broken_factory(
-            _account: AccountConfig, _auth: Authorization
-        ) -> FakeCalDAVSession:
-            raise CalDAVError("session construction blew up")
-
-        ctx = self._ctx(session_factory=broken_factory)
-        runner = build_sync_runner(ctx.services())
-        results = runner()
-        self.assertEqual(len(results), 1)
-        self.assertIn("session construction blew up", results[0].errors[0])
-
-    def test_oauth_on_commit_called_on_success(self) -> None:
-        self._seed_server()
-
-        from pony.calendar.authorization import Authorization
-        from pony.calendar.credentials import CredentialResolutionError
-
-        committed: list[int] = []
-
-        class StubCreds:
-            def build_auth(self, account: AccountConfig) -> Authorization:
-                _ = account
-                return Authorization(
-                    basic=("user@example.com", "pw"),
-                    on_commit=lambda: committed.append(1),
-                )
-
-        def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
-            return self.session
-
-        ctx = cli.CliContext(
-            config=_config(),
-            mirror=self.mirror,
-            index=self.index,
-            creds=StubCreds(),
-            paths=self.calendar_paths,
-            stdout=self.stdout,
-            stderr=self.stderr,
-            now=NOW,
-            session_factory=factory,
-        )
-        runner = build_sync_runner(ctx.services())
-        runner()
-        self.assertEqual(committed, [1])
-        # Silence unused-import lint for the type-only import above.
-        _ = CredentialResolutionError
 
 
 class ListCommandTest(CliTestCase):
@@ -1489,18 +1321,39 @@ class ConfigLoadErrorTest(CliTestCase):
         self.assertIn("pony calendar init", self.stderr.getvalue())
 
 
+_HOST_CONFIG = """\
+config_version = 3
+data_dir = "{data_dir}"
+profile = "calendar-cli-tests"
+accounts = []
+"""
+
+
 class ConfigEditingCliTestCase(CalendarRootMixin, unittest.TestCase):
     """Harness for the config-editing subcommands.
 
-    These commands don't need a mirror/index/session — just a config path
-    and captured streams.
+    These commands don't need a mirror/index/session -- just a config
+    path and captured streams.  The path holds Pony's own configuration,
+    because the document they edit is the `[calendar]` table of it:
+    there is no standalone calendar file, and the tests used to be given
+    one, which is how a branch nothing could reach kept its coverage.
     """
 
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.config_path = self.tmp / "config.toml"
+        self.config_path.write_text(self._host_config(), encoding="utf-8")
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
+
+    def _host_config(self) -> str:
+        """Pony's own configuration, which the `[calendar]` table lives in."""
+        return _HOST_CONFIG.format(data_dir=(self.tmp / "data").as_posix())
+
+    def _document(self) -> ConfigDocument:
+        from pony.calendar_runtime import hosted_calendar_document
+
+        return hosted_calendar_document(self.config_path)
 
     def _run(
         self,
@@ -1511,7 +1364,7 @@ class ConfigEditingCliTestCase(CalendarRootMixin, unittest.TestCase):
         return cli.run(
             _parse(argv),
             paths=self.calendar_paths,
-            document=file_document(self.config_path),
+            document=self._document(),
             context_factory=_no_context,
             open_editor=open_editor,
             stdout=self.stdout,
@@ -1520,41 +1373,56 @@ class ConfigEditingCliTestCase(CalendarRootMixin, unittest.TestCase):
 
 
 class InitCommandTest(ConfigEditingCliTestCase):
-    def test_init_writes_template(self) -> None:
+    def test_init_adds_the_table_to_the_hosts_file(self) -> None:
         code = self._run(["init"])
-        self.assertEqual(code, 0)
-        self.assertTrue(self.config_path.exists())
-        self.assertIn("Wrote template", self.stdout.getvalue())
-        # The template parses to zero accounts (every example is commented).
-        from pony.calendar.config import load
 
-        config = load(self.config_path)
+        self.assertEqual(code, 0)
+        self.assertIn("Initialised", self.stdout.getvalue())
+        config = self._document().load()
         self.assertEqual(config.config_version, 1)
         self.assertEqual(config.accounts, ())
-        # And it carries the inline help so a curious user sees it.
+        # The host's own keys survive: it is one file, and `init` writes
+        # one table of it. `init` used to be able to write a commented
+        # template *over* a file instead, which over Pony's own
+        # `config.toml` could only ever refuse.
         body = self.config_path.read_text(encoding="utf-8")
-        self.assertIn("# # Basic auth", body)
-        self.assertIn("# # Google Calendar via OAuth", body)
-        self.assertIn("# # Generic OAuth 2.0", body)
+        self.assertIn("profile = ", body)
+        self.assertIn("[calendar]", body)
 
-    def test_init_refuses_when_file_exists(self) -> None:
-        self.config_path.write_text("config_version = 1\n", encoding="utf-8")
+    def test_init_refuses_when_the_table_already_has_accounts(self) -> None:
+        self._run(["init"])
+        self._run(
+            [
+                "account",
+                "add",
+                "--name",
+                "personal",
+                "--url",
+                "https://cal.example.com/",
+                "--username",
+                "u@example.com",
+                "--credential-backend",
+                "plaintext",
+                "--credential-value",
+                "s3cret",
+            ]
+        )
+        self.stderr.truncate(0)
+        self.stderr.seek(0)
+
         code = self._run(["init"])
+
         self.assertEqual(code, 1)
-        self.assertIn("already exists", self.stderr.getvalue())
+        self.assertIn("already has calendar accounts", self.stderr.getvalue())
 
 
-class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
-    """Running a data command without a config offers to bootstrap one.
+class FirstLaunchBootstrapTest(ConfigEditingCliTestCase):
+    """A data command with no `[calendar]` table offers to add one.
 
     In a non-TTY environment we exit with a helpful message instead.
+    The file itself exists -- it is Pony's -- so what is missing is the
+    table, which is what the offer writes.
     """
-
-    def setUp(self) -> None:
-        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.config_path = self.tmp / "config.toml"
-        self.stdout = io.StringIO()
-        self.stderr = io.StringIO()
 
     def _scripted_prompt(self, answers: list[str]) -> Any:
         iterator = iter(answers)
@@ -1568,7 +1436,7 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
         code = cli.run(
             _parse(["sync"]),
             paths=self.calendar_paths,
-            document=file_document(self.config_path),
+            document=self._document(),
             context_factory=_unconfigured,
             is_interactive=lambda: False,
             stdout=self.stdout,
@@ -1577,16 +1445,15 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no calendar configured", self.stderr.getvalue())
         self.assertIn("pony calendar init", self.stderr.getvalue())
-        self.assertIn("pony calendar init", self.stderr.getvalue())
-        self.assertFalse(self.config_path.exists())
+        self.assertNotIn("[calendar]", self.config_path.read_text(encoding="utf-8"))
 
-    def test_interactive_user_creates_template_and_skips_editor(self) -> None:
+    def test_interactive_user_adds_the_table_and_skips_the_editor(self) -> None:
         edits: list[Path] = []
 
         code = cli.run(
             _parse(["sync"]),
             paths=self.calendar_paths,
-            document=file_document(self.config_path),
+            document=self._document(),
             context_factory=_unconfigured,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["y", "n"]),  # create yes, edit no
@@ -1595,15 +1462,15 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
             stderr=self.stderr,
         )
         self.assertEqual(code, 0)
-        self.assertTrue(self.config_path.exists())
+        self.assertIn("[calendar]", self.config_path.read_text(encoding="utf-8"))
         self.assertEqual(edits, [])
-        self.assertIn("Wrote template", self.stdout.getvalue())
+        self.assertIn("Initialised", self.stdout.getvalue())
 
     def test_interactive_user_declines(self) -> None:
         code = cli.run(
             _parse(["list"]),
             paths=self.calendar_paths,
-            document=file_document(self.config_path),
+            document=self._document(),
             context_factory=_unconfigured,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["n"]),
@@ -1611,7 +1478,7 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
             stderr=self.stderr,
         )
         self.assertEqual(code, 1)
-        self.assertFalse(self.config_path.exists())
+        self.assertNotIn("[calendar]", self.config_path.read_text(encoding="utf-8"))
         self.assertIn("Skipped", self.stdout.getvalue())
 
     def test_init_command_works_without_prompt_in_missing_config_path(self) -> None:
@@ -1622,13 +1489,13 @@ class FirstLaunchBootstrapTest(CalendarRootMixin, unittest.TestCase):
         code = cli.run(
             _parse(["init"]),
             paths=self.calendar_paths,
-            document=file_document(self.config_path),
+            document=self._document(),
             context_factory=_unconfigured,
             stdout=self.stdout,
             stderr=self.stderr,
         )
         self.assertEqual(code, 0)
-        self.assertTrue(self.config_path.exists())
+        self.assertIn("[calendar]", self.config_path.read_text(encoding="utf-8"))
 
 
 class AccountAddCommandTest(ConfigEditingCliTestCase):
@@ -1658,9 +1525,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
-
-        config = load(self.config_path)
+        config = self._document().load()
         self.assertEqual(len(config.accounts), 1)
         from pony.calendar.domain import PlaintextCredential
 
@@ -1687,9 +1552,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
-
-        config = load(self.config_path)
+        config = self._document().load()
         # An account that declared nothing keeps nothing: the default
         # belongs to whichever root the calendar runs under, and
         # `mirror_roots` is where it is applied. Writing the resolved
@@ -1724,10 +1587,9 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
         from pony.calendar.domain import EnvCredential
 
-        config = load(self.config_path)
+        config = self._document().load()
         cred = config.accounts[0].credential
         assert isinstance(cred, EnvCredential)
         self.assertEqual(cred.variable, "CHRONOS_PW")
@@ -1752,10 +1614,9 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
         from pony.calendar.domain import CommandCredential
 
-        config = load(self.config_path)
+        config = self._document().load()
         cred = config.accounts[0].credential
         assert isinstance(cred, CommandCredential)
         self.assertEqual(cred.command, ("pass", "show", "chronos"))
@@ -1870,9 +1731,7 @@ class AccountRmCommandTest(ConfigEditingCliTestCase):
         self.stdout.seek(0)
         code = self._run(["account", "rm", "gone"])
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
-
-        config = load(self.config_path)
+        config = self._document().load()
         self.assertEqual(config.accounts, ())
 
     def test_rm_missing_account(self) -> None:
@@ -1908,10 +1767,9 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
         from pony.calendar.domain import OAuthCredential
 
-        config = load(self.config_path)
+        config = self._document().load()
         cred = config.accounts[0].credential
         assert isinstance(cred, OAuthCredential)
         self.assertEqual(cred.client_id, "1234.apps.googleusercontent.com")
@@ -1938,10 +1796,9 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
         from pony.calendar.domain import GOOGLE_CALDAV_URL, GoogleCredential
 
-        config = load(self.config_path)
+        config = self._document().load()
         account = config.accounts[0]
         cred = account.credential
         assert isinstance(cred, GoogleCredential)
@@ -2065,9 +1922,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
         # Override the token store location by editing the saved config
         # to point at our tmp path.
-        from pony.calendar.config import load, save
-
-        config = load(self.config_path)
+        config = self._document().load()
         account = config.accounts[0]
         credential = account.credential
         from pony.calendar.domain import AccountConfig, AppConfig
@@ -2089,14 +1944,16 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             exclude=account.exclude,
             read_only=account.read_only,
         )
-        save(
+        # Through the document: the file is Pony's, and writing a
+        # calendar configuration *over* it would take the mail keys with
+        # it.
+        self._document().save(
             AppConfig(
                 config_version=config.config_version,
                 use_utf8=config.use_utf8,
                 editor=config.editor,
                 accounts=(updated_account,),
-            ),
-            self.config_path,
+            )
         )
 
         # cmd_oauth_authorize supports an injected auth_flow; call
@@ -2106,7 +1963,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         code = cli.cmd_oauth_authorize(
             self.stdout,
             self.stderr,
-            document=file_document(self.config_path),
+            document=self._document(),
             paths=CalendarPaths(root=self.tmp),
             account_name="google",
             auth_flow=fake_flow,
@@ -2190,7 +2047,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         code = cli.cmd_oauth_authorize(
             self.stdout,
             self.stderr,
-            document=file_document(self.config_path),
+            document=self._document(),
             paths=CalendarPaths(root=self.tmp),
             account_name="google",
             auth_flow=fake_flow,
@@ -2224,7 +2081,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                document=file_document(self.config_path),
+                document=self._document(),
                 paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
@@ -2253,7 +2110,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
-                document=file_document(self.config_path),
+                document=self._document(),
                 paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
@@ -2363,13 +2220,31 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
         self._run(["init"])
 
         def editor(path: Path) -> None:
-            path.write_text("config_version = 1\nuse_utf8 = true\n", encoding="utf-8")
+            path.write_text(self._host_config() + "\n[calendar]\nuse_utf8 = true\n")
 
         code = self._run(["config", "edit"], open_editor=editor)
         self.assertEqual(code, 0)
-        from pony.calendar.config import load
+        self.assertTrue(self._document().load().use_utf8)
 
-        self.assertTrue(load(self.config_path).use_utf8)
+    def test_edit_rejects_a_file_that_breaks_the_mail_half(self) -> None:
+        """The whole file has to parse, and the refusal has to be caught.
+
+        The document validates with Pony's own loader, which raises
+        Pony's `ConfigError` -- a different class from the one this
+        command catches, so an edit that broke the mail keys left a
+        traceback instead of "parse error, original kept".
+        """
+        self._run(["init"])
+        original = self.config_path.read_bytes()
+
+        def editor(path: Path) -> None:
+            path.write_text("config_version = 1\n", encoding="utf-8")
+
+        code = self._run(["config", "edit"], open_editor=editor)
+
+        self.assertEqual(code, 1)
+        self.assertIn("config parse error", self.stderr.getvalue())
+        self.assertEqual(self.config_path.read_bytes(), original)
 
     def test_edit_rejects_invalid_toml_keeps_original(self) -> None:
         self._run(["init"])
@@ -2385,6 +2260,7 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
         self.assertEqual(self.config_path.read_bytes(), original_bytes)
 
     def test_edit_handles_missing_config(self) -> None:
+        self.config_path.unlink()
         code = self._run(["config", "edit"], open_editor=lambda _: None)
         self.assertEqual(code, 1)
         self.assertIn("not found", self.stderr.getvalue())
@@ -2393,7 +2269,7 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
         self._run(["init"])
 
         def editor(path: Path) -> None:
-            path.write_text("config_version = 1\n", encoding="utf-8")
+            path.write_text(self._host_config())
 
         self._run(["config", "edit"], open_editor=editor)
         leftovers = [
@@ -2402,76 +2278,3 @@ class ConfigEditCommandTest(ConfigEditingCliTestCase):
             if p.name.startswith("chronos-edit-")
         ]
         self.assertEqual(leftovers, [])
-
-
-class PickEditorTest(CalendarRootMixin, unittest.TestCase):
-    """`pick_editor` resolves an editor command without ever raising.
-
-    Order of precedence (POSIX): VISUAL, then EDITOR, then a
-    platform-appropriate default. Tests inject env / platform / which
-    so they don't depend on the host OS or PATH.
-    """
-
-    def test_visual_takes_precedence_over_editor(self) -> None:
-        cmd = cli.pick_editor(
-            env={"VISUAL": "vim", "EDITOR": "ed"},
-            platform="linux",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["vim"])
-
-    def test_editor_used_when_visual_unset(self) -> None:
-        cmd = cli.pick_editor(
-            env={"EDITOR": "ed"},
-            platform="linux",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["ed"])
-
-    def test_visual_with_arguments_is_shlex_split(self) -> None:
-        cmd = cli.pick_editor(
-            env={"VISUAL": "code --wait"},
-            platform="darwin",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["code", "--wait"])
-
-    def test_windows_default_is_notepad(self) -> None:
-        cmd = cli.pick_editor(
-            env={},
-            platform="win32",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["notepad"])
-
-    def test_posix_prefers_nano_when_available(self) -> None:
-        cmd = cli.pick_editor(
-            env={},
-            platform="linux",
-            which=lambda name: "/usr/bin/nano" if name == "nano" else None,
-        )
-        self.assertEqual(cmd, ["nano"])
-
-    def test_posix_falls_back_to_vi_without_nano(self) -> None:
-        cmd = cli.pick_editor(
-            env={},
-            platform="linux",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["vi"])
-
-    def test_macos_uses_same_posix_fallback(self) -> None:
-        cmd = cli.pick_editor(
-            env={},
-            platform="darwin",
-            which=lambda _: None,
-        )
-        self.assertEqual(cmd, ["vi"])
-
-    def test_uses_real_environment_when_unspecified(self) -> None:
-        # Smoke test the no-injection path: just verify it returns a
-        # non-empty list without raising. The exact contents depend on
-        # the test runner's environment.
-        cmd = cli.pick_editor()
-        self.assertTrue(cmd)
-        self.assertIsInstance(cmd[0], str)

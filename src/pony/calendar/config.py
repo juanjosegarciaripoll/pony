@@ -506,14 +506,13 @@ def _dump_credential(spec: CredentialSpec) -> dict[str, object]:
 class ConfigDocument:
     """Where the configuration lives, and how to read and write it.
 
-    Standalone, it is a file of this program's own: the whole file is
-    the configuration.  Hosted by Pony, the configuration is one table
-    inside a larger file that the mail client also owns, so reading and
-    writing it are the host's to define and arrive here as this.
+    The configuration is one table inside a larger file that the mail
+    client owns too, so reading and writing it are the host's to define
+    and arrive here as this -- see
+    `pony.calendar_runtime.hosted_calendar_document`.
 
-    `label` is how to name it to a user -- the path on its own when the
-    file is the configuration, and the table and the path when it is
-    not.
+    `label` is how to name it to a user: the table and the path, since
+    the file is not the configuration.
     """
 
     path: Path
@@ -524,20 +523,8 @@ class ConfigDocument:
     # Hosted, the whole file has to parse, not just the calendar's
     # table: an edit that breaks the mail half breaks the program.
     validate: Callable[[Path], None]
-    editable_in_place: bool = True
 
 
 def _parses_or_raises(path: Path) -> None:
     """Raise `ConfigError` unless *path* is a loadable configuration."""
     load(path)
-
-
-def file_document(path: Path) -> ConfigDocument:
-    """The standalone document: this file is the configuration."""
-    return ConfigDocument(
-        path=path,
-        label=str(path),
-        load=lambda: load(path),
-        save=lambda config: save(config, path),
-        validate=_parses_or_raises,
-    )

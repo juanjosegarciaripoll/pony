@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 import unittest
 
-from pony.shell import CommandSecretError, secret_from_command
+from pony.shell import CommandSecretError, pick_editor, secret_from_command
 
 
 def _prints(text: str) -> list[str]:
@@ -69,3 +69,82 @@ class SecretFromCommandTest(unittest.TestCase):
         with self.assertRaises(CommandSecretError) as caught:
             secret_from_command(command, what="password_command", timeout=0.3)
         self.assertIn("timed out after 0.3s", str(caught.exception))
+
+
+class PickEditorTest(unittest.TestCase):
+    """`pick_editor` resolves an editor command without ever raising.
+
+    Order of precedence (POSIX): VISUAL, then EDITOR, then a
+    platform-appropriate default. Tests inject env / platform / which
+    so they don't depend on the host OS or PATH.
+
+    Both `config edit` commands ask this one function now. The mail
+    half had its own, which preferred EDITOR over VISUAL and passed the
+    variable as a single argv element -- so the two commands could open
+    different editors on one machine, and `code --wait` was looked up as
+    a file by that name.
+    """
+
+    def test_visual_takes_precedence_over_editor(self) -> None:
+        cmd = pick_editor(
+            env={"VISUAL": "vim", "EDITOR": "ed"},
+            platform="linux",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["vim"])
+
+    def test_editor_used_when_visual_unset(self) -> None:
+        cmd = pick_editor(
+            env={"EDITOR": "ed"},
+            platform="linux",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["ed"])
+
+    def test_visual_with_arguments_is_shlex_split(self) -> None:
+        cmd = pick_editor(
+            env={"VISUAL": "code --wait"},
+            platform="darwin",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["code", "--wait"])
+
+    def test_windows_default_is_notepad(self) -> None:
+        cmd = pick_editor(
+            env={},
+            platform="win32",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["notepad"])
+
+    def test_posix_prefers_nano_when_available(self) -> None:
+        cmd = pick_editor(
+            env={},
+            platform="linux",
+            which=lambda name: "/usr/bin/nano" if name == "nano" else None,
+        )
+        self.assertEqual(cmd, ["nano"])
+
+    def test_posix_falls_back_to_vi_without_nano(self) -> None:
+        cmd = pick_editor(
+            env={},
+            platform="linux",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["vi"])
+
+    def test_macos_uses_same_posix_fallback(self) -> None:
+        cmd = pick_editor(
+            env={},
+            platform="darwin",
+            which=lambda _: None,
+        )
+        self.assertEqual(cmd, ["vi"])
+
+    def test_uses_real_environment_when_unspecified(self) -> None:
+        # Smoke test the no-injection path: just verify it returns a
+        # non-empty list without raising. The exact contents depend on
+        # the test runner's environment.
+        cmd = pick_editor()
+        self.assertTrue(cmd)
+        self.assertIsInstance(cmd[0], str)

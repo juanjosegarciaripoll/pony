@@ -305,9 +305,11 @@ class ConfigEditTestCase(unittest.TestCase):
                 )
         self.assertEqual(rc, 0)
         fake_run.assert_called_once()
-        # vi (or notepad on Windows) is the platform default.
+        # `pony.shell.pick_editor` decides: nano where it is installed,
+        # else vi, else notepad on Windows. Both `config edit` commands
+        # ask it the same question now.
         called_argv = fake_run.call_args.args[0]
-        self.assertIn(called_argv[0], ("vi", "notepad"))
+        self.assertIn(called_argv[0], ("nano", "vi", "notepad"))
 
 
 class ConfigShowTestCase(unittest.TestCase):

@@ -246,6 +246,7 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
     standalone file nothing here reads, and reported success.
     """
     from pony.calendar.config import ConfigDocument as _Document
+    from pony.calendar.config import ConfigError as CalendarConfigError
 
     def _load() -> CalendarConfig:
         config = parse_calendar_config(read_raw_config(path))
@@ -263,7 +264,16 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
     def _validate(candidate: Path) -> None:
         # The whole file, not just the table: an edit that breaks the
         # mail half breaks the program just as thoroughly.
-        load_config(candidate)
+        #
+        # Raised as the calendar's `ConfigError`, which is what the
+        # document's contract says and what `config edit` catches to
+        # keep the original file and report a parse error. Pony's own
+        # `ConfigError` is a different class, so it went straight past
+        # that handler and out as a traceback.
+        try:
+            load_config(candidate)
+        except ConfigError as exc:
+            raise CalendarConfigError(str(exc)) from exc
 
     return _Document(
         path=path,
@@ -271,7 +281,6 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
         load=_load,
         save=lambda config: save_calendar_config(config, path),
         validate=_validate,
-        editable_in_place=False,
     )
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import shutil
 import sqlite3
 import subprocess
@@ -69,6 +68,7 @@ from ..paths import (
     AppPaths,
     sample_config_path,
 )
+from ..shell import pick_editor
 from .program import (
     _prompt,
     _resolve_theme,
@@ -2128,17 +2128,17 @@ def run_config_edit(*, paths: AppPaths, config_path: Path | None) -> int:
             )
             print(f"Created {config_file}.")
 
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
-    if not editor:
-        # Platform defaults.
-        if sys.platform == "win32":
-            editor = "notepad"
-        else:
-            editor = "vi"
+    # `pony.shell.pick_editor` is the one answer to "which editor": this
+    # had its own, which preferred $EDITOR over $VISUAL where the
+    # calendar's preferred $VISUAL (the POSIX convention), so the two
+    # `config edit` commands could open different editors on one
+    # machine. It also passed the variable as a single argv element, so
+    # EDITOR="code --wait" tried to run a file by that name.
+    editor = pick_editor()
 
-    print(f"Opening {config_file} in {editor}…")
+    print(f"Opening {config_file} in {' '.join(editor)}…")
     return subprocess.run(
-        [editor, str(config_file)],
+        [*editor, str(config_file)],
         check=False,  # noqa: S603
     ).returncode
 

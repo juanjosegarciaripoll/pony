@@ -666,7 +666,6 @@ src/pony/calendar/
   keymap.py            # the keyboard vocabulary, and the calendar's keys
   views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
-  bootstrap.py         # the [calendar] template a first run writes
 
 src/pony/tui/calendar/
   app.py               # TuiServices, CalendarHost, CALENDAR_CSS

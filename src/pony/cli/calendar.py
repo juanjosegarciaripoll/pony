@@ -21,25 +21,17 @@ import argparse
 import contextlib
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TextIO
 
-from pony.calendar.bootstrap import (
-    IsInteractiveFn,
-    PromptFn,
-    default_is_interactive,
-    default_prompt,
-    write_template,
-)
 from pony.calendar.caldav import CalDAVError
 from pony.calendar.config import ConfigDocument, ConfigError
 from pony.calendar.credentials import CredentialResolutionError
@@ -88,11 +80,11 @@ from pony.calendar.services import (
     run_doctor,
 )
 from pony.calendar.sync import describe_account_sync, sync_account
+from pony.shell import pick_editor, split_command
 
 from ..calendar_runtime import CalendarNotConfiguredError
 
 ContextFactory = Callable[[], "CliContext"]
-EditorFn = Callable[[Path], None]
 InputFn = Callable[[str], str]
 
 
@@ -130,6 +122,20 @@ class CliContext:
             now=self.now,
             session_factory=self.session_factory,
         )
+
+
+PromptFn = Callable[[str], str]
+EditorFn = Callable[[Path], None]
+IsInteractiveFn = Callable[[], bool]
+
+
+def default_is_interactive() -> bool:
+    """Both stdin and stdout must be a TTY for a prompt to be useful."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def default_prompt(message: str) -> str:
+    return input(message)
 
 
 def run(
@@ -1494,23 +1500,16 @@ def _resolve_import_calendar(
 
 
 def cmd_init(stdout: TextIO, stderr: TextIO, *, document: ConfigDocument) -> int:
-    """Put an empty configuration where this run reads one."""
-    if document.editable_in_place:
-        if document.path.exists():
-            stderr.write(
-                f"config already exists at {document.label}. "
-                "Use `config edit` to modify it.\n"
-            )
-            return 1
-        write_template(document.path)
-        stdout.write(
-            f"Wrote template to {document.label}\n"
-            "Edit it directly, or run `account add ...` to populate.\n"
-        )
-        return 0
-    # The file is the host's and already holds its own settings, so this
-    # writes an empty configuration into the document rather than a
-    # template over the file.
+    """Put an empty configuration where this run reads one.
+
+    The document is a table in the host's file, which already holds the
+    host's own settings, so this writes an empty configuration *into*
+    the document rather than a template over the file.  It used to be
+    able to do either, and the template branch could not be reached:
+    the only document a run ever has is the hosted one, and over Pony's
+    own `config.toml` the template branch refused with "config already
+    exists".  `config-sample.toml` is where the commented examples live.
+    """
     try:
         existing = document.load()
     except ConfigError:
@@ -1773,47 +1772,6 @@ def _default_open_editor(path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
-def _split_command(value: str, *, platform: str | None = None) -> list[str]:
-    """Split a command line the way the running platform quotes them.
-
-    ``shlex`` defaults to POSIX rules, where a backslash is an escape:
-    ``shlex.split(r"C:\\Windows\\notepad.exe")`` is
-    ``["C:Windowsnotepad.exe"]``, so every real Windows editor path
-    failed to launch.
-    """
-    real_platform = platform if platform is not None else sys.platform
-    return shlex.split(value, posix=not real_platform.startswith("win"))
-
-
-def pick_editor(
-    *,
-    env: Mapping[str, str] | None = None,
-    platform: str | None = None,
-    which: Callable[[str], str | None] | None = None,
-) -> list[str]:
-    """Resolve a command list for an interactive editor.
-
-    Priority follows POSIX convention plus a platform-default fallback:
-
-    1. `$VISUAL` (full-screen / GUI editors).
-    2. `$EDITOR` (line editors).
-    3. Platform default — `notepad` on Windows, `nano` if installed,
-       else `vi` (POSIX-required, present on every Unix).
-    """
-    real_env = env if env is not None else os.environ
-    real_platform = platform if platform is not None else sys.platform
-    real_which = which if which is not None else shutil.which
-    for var in ("VISUAL", "EDITOR"):
-        value = real_env.get(var)
-        if value:
-            return _split_command(value, platform=real_platform)
-    if real_platform.startswith("win"):
-        return ["notepad"]
-    if real_which("nano") is not None:
-        return ["nano"]
-    return ["vi"]
-
-
 def _build_credential(
     backend: str,
     *,
@@ -1841,7 +1799,7 @@ def _build_credential(
     if backend == "env":
         return EnvCredential(variable=value)
     if backend == "command":
-        return CommandCredential(command=tuple(_split_command(value)))
+        return CommandCredential(command=tuple(split_command(value)))
     raise ValueError(f"unknown credential backend: {backend}")
 
 
@@ -2000,6 +1958,5 @@ __all__ = [
     "cmd_rm",
     "cmd_show",
     "cmd_sync",
-    "pick_editor",
     "run",
 ]

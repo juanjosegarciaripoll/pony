@@ -1,17 +1,24 @@
-"""Running a command line, and splitting one the way the platform quotes it.
+"""Command lines: splitting one, picking an editor, running one for a secret.
 
 Both halves of the program let a configuration name a command instead of
 a secret -- the mail side as ``password_command``, the calendar as a
 ``[credential] command`` -- so that a password can live in `pass`, `gpg`
-or the system keychain rather than in `config.toml`.
+or the system keychain rather than in `config.toml`.  Both also open a
+configuration in an editor, and both reach for `$VISUAL` and `$EDITOR`
+to find one.
+
+None of it is either half's, and each piece was written twice before it
+landed here.
 """
 
 from __future__ import annotations
 
+import os
 import shlex
+import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 
 def split_command(value: str, *, platform: str | None = None) -> list[str]:
@@ -22,13 +29,43 @@ def split_command(value: str, *, platform: str | None = None) -> list[str]:
     ``["C:Windowsnotepad.exe"]``, so every real Windows editor path
     failed to launch.
 
-    Two callers want it -- the editor a configuration is edited in, and
-    the ``$BROWSER`` an OAuth flow decides whether it can open a window
-    on -- and they sit on opposite sides of the model/view line, which
-    is why it is neither's.
+    Three callers want it: the editor a configuration is edited in
+    (:func:`pick_editor`), the ``$BROWSER`` an OAuth flow decides whether
+    it can open a window on, and a credential command written as one
+    string.  They sit on three sides of the model/view line, which is why
+    it is nobody's.
     """
     real_platform = platform if platform is not None else sys.platform
     return shlex.split(value, posix=not real_platform.startswith("win"))
+
+
+def pick_editor(
+    *,
+    env: Mapping[str, str] | None = None,
+    platform: str | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> list[str]:
+    """Resolve a command list for an interactive editor.
+
+    Priority follows POSIX convention plus a platform-default fallback:
+
+    1. `$VISUAL` (full-screen / GUI editors).
+    2. `$EDITOR` (line editors).
+    3. Platform default — `notepad` on Windows, `nano` if installed,
+       else `vi` (POSIX-required, present on every Unix).
+    """
+    real_env = env if env is not None else os.environ
+    real_platform = platform if platform is not None else sys.platform
+    real_which = which if which is not None else shutil.which
+    for var in ("VISUAL", "EDITOR"):
+        value = real_env.get(var)
+        if value:
+            return split_command(value, platform=real_platform)
+    if real_platform.startswith("win"):
+        return ["notepad"]
+    if real_which("nano") is not None:
+        return ["nano"]
+    return ["vi"]
 
 
 #: How long a command that is to print a secret may take. The usual ones
@@ -85,6 +122,7 @@ def secret_from_command(
 
 __all__ = [
     "COMMAND_TIMEOUT_SECONDS",
+    "pick_editor",
     "CommandSecretError",
     "secret_from_command",
     "split_command",
