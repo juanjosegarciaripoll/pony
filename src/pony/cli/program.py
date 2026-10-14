@@ -922,14 +922,14 @@ def run_docs() -> int:
 
 
 def run_mcp_server_command(*, config_path: Path | None, paths: AppPaths) -> int:
-    """Start the MCP server.
+    """Start the program's MCP server: both halves' tools.
 
-    Bridges to the TUI's TCP server when one is running; otherwise opens
-    local connections and serves via stdio.
+    Bridges to a running application when one is serving; otherwise
+    opens its own connections and serves over stdio.
     """
-    from ..mcp.mail import run_mcp_server
+    from ..mcp.server import run_server
 
-    run_mcp_server(config_path=config_path, state_file=paths.mcp_state_file)
+    run_server(config_path=config_path, state_file=paths.mcp_state_file)
     return 0
 
 
@@ -1344,6 +1344,10 @@ def run_calendar(
                 config_path or resolve(config_path).config_file
             ),
             context_factory=_context,
+            # Where a running application publishes its MCP endpoint:
+            # `pony calendar reset` asks it whether one is holding the
+            # index it is about to delete.
+            mcp_endpoint_file=paths.mcp_state_file,
         )
     except ConfigError as error:
         print(f"error: {error}", file=sys.stderr)

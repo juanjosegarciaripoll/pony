@@ -138,6 +138,7 @@ def run(
     paths: CalendarPaths,
     document: ConfigDocument,
     context_factory: ContextFactory,
+    mcp_endpoint_file: Path | None = None,
     open_editor: EditorFn | None = None,
     prompt: PromptFn | None = None,
     is_interactive: IsInteractiveFn | None = None,
@@ -209,6 +210,7 @@ def run(
         ctx,
         prompt=prompt or default_prompt,
         is_interactive=is_interactive or default_is_interactive,
+        mcp_endpoint_file=mcp_endpoint_file,
     )
 
 
@@ -765,6 +767,7 @@ def _dispatch(
     *,
     prompt: PromptFn,
     is_interactive: IsInteractiveFn,
+    mcp_endpoint_file: Path | None = None,
 ) -> int:
     command = str(args.calendar_command)
     if command == "sync":
@@ -778,6 +781,7 @@ def _dispatch(
             ctx,
             yes=bool(getattr(args, "yes", False)),
             force=bool(getattr(args, "force", False)),
+            endpoint_file=mcp_endpoint_file,
         )
     if command == "list":
         return cmd_list(
@@ -1002,7 +1006,7 @@ def cmd_reset(
     force: bool = False,
     index_path: Path | None = None,
     mirror_dir: Path | None = None,
-    mcp_state_file: Path | None = None,
+    endpoint_file: Path | None = None,
     lock_path: Path | None = None,
 ) -> int:
     """Wipe the local index + mirror.
@@ -1016,6 +1020,14 @@ def cmd_reset(
 
     `index_path` and `mirror_dir` default to the context's layout;
     tests inject tmpdir-rooted overrides.
+
+    *endpoint_file* is where the program publishes the MCP endpoint of a
+    running application -- the host's answer, because it is the host that
+    publishes it.  With none given there is nothing to ask, and the
+    refusal below cannot happen: the guard used to read the calendar's
+    own endpoint file, which nothing has written since the calendar
+    stopped being a program of its own, so a running application holding
+    this index went undetected and the index was deleted under it.
     """
     target_index = index_path or ctx.paths.index_file
     target_mirror = mirror_dir or ctx.paths.mirror_dir
@@ -1034,14 +1046,14 @@ def cmd_reset(
         ctx.stdout.write("Nothing to reset (no local index or mirror found).\n")
         return 0
 
-    if not force:
+    if not force and endpoint_file is not None:
         from pony.mcp import state as mcp_state
 
-        live = mcp_state.live(mcp_state_file or ctx.paths.mcp_state_file)
+        live = mcp_state.live(endpoint_file)
         if live is not None:
             ctx.stderr.write(
-                f"refusing to reset: the calendar TUI / MCP server is running "
-                f"(port {live.port}).\n"
+                f"refusing to reset: Pony Express is running and holds this "
+                f"index (MCP port {live.port}).\n"
                 "Close it and re-run `pony calendar reset`.\n"
             )
             return 2
@@ -1284,24 +1296,19 @@ def _doctor_progress(stderr: TextIO) -> ProgressFn:
 
 
 def cmd_mcp(ctx: CliContext) -> int:
-    """Run the MCP server.
+    """Serve the calendar's tools, and only those, over stdio.
 
-    Bridges to a running instance when one is detected via the
-    state file; otherwise runs self-contained over stdio.  Nothing may
-    print to stdout while the server runs (stdin/stdout carry the
-    JSON-RPC stream).
+    `pony mcp` is the program's server and carries both halves; this
+    command exists to hand an agent the calendar without the mail index
+    beside it, so it does not bridge to a running application and does
+    not grow mail tools.  Nothing may print to stdout while it runs
+    (stdin/stdout carry the JSON-RPC stream).
     """
     import asyncio
 
     from pony.mcp.calendar import run_mcp_stdio
 
-    asyncio.run(
-        run_mcp_stdio(
-            index=ctx.index,
-            mirror=ctx.mirror,
-            state_file=ctx.paths.mcp_state_file,
-        )
-    )
+    asyncio.run(run_mcp_stdio(index=ctx.index, mirror=ctx.mirror))
     return 0
 
 

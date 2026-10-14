@@ -55,7 +55,6 @@ class CalendarPathsTest(unittest.TestCase):
             self.paths.index_file,
             self.paths.mirror_dir,
             self.paths.token_dir,
-            self.paths.mcp_state_file,
             self.paths.lock_file,
             self.paths.tui_state_file,
             self.paths.log_file,

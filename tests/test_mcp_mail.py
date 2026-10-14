@@ -1,23 +1,19 @@
-"""Tests for ``pony.mcp.mail`` helpers.
+"""Tests for the mail tools (``pony.mcp.mail``).
 
 Covers the serialisation helpers (_attachment_to_dict, _msg_to_dict,
 _contact_to_dict, _sync_state_to_dict) and the full tool call round-trips
-for build_mcp_server tools (search_messages, list_folders, list_messages,
+for the tools (search_messages, list_folders, list_messages,
 get_message, get_message_body, get_attachment, search_contacts,
 get_sync_status).
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import dataclasses
-import socket
-import tempfile
 import unittest
 from datetime import UTC
 from email.message import EmailMessage
-from pathlib import Path
 from uuid import uuid4
 
 import corpus
@@ -41,9 +37,8 @@ from pony.mcp.mail import (
     _contact_to_dict,
     _msg_to_dict,
     _sync_state_to_dict,
-    build_mcp_server,
 )
-from pony.mcp.state import Endpoint, publish
+from pony.mcp.server import build_server
 from pony.paths import AppPaths
 
 
@@ -194,22 +189,20 @@ def _seed_mcp_message(
 
 
 def _build_mcp_from_env(paths: AppPaths, config: AppConfig) -> object:
-    """Build an McpServer from an in-memory config (bypassing disk config load)."""
+    """The program's server over an in-memory config, mail tools only.
+
+    `pony.mcp.server` is what opens the stores and decides which halves
+    go on; the calendar is left out here so these stay tests of the mail
+    tools. `tests/test_mcp_server.py` covers the deciding.
+    """
     from unittest.mock import patch
 
-    from pony.mail.accounts import build_mirrors
-
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
-    # mirrors is built by build_mcp_server internally; local var unused here
-    _ = build_mirrors(config)
-
     with (
-        patch("pony.mcp.mail.load_config", return_value=config),
-        patch("pony.mcp.mail.resolve", return_value=paths),
+        patch("pony.mcp.server.load_config", return_value=config),
+        patch("pony.mcp.server.resolve", return_value=paths),
+        patch("pony.mcp.server.open_calendar_runtime", return_value=None),
     ):
-        mcp = build_mcp_server(config_path=None)
-    return mcp
+        return build_server(config_path=None)
 
 
 class McpToolSearchMessagesTest(unittest.TestCase):
@@ -558,51 +551,3 @@ class McpHelperSerializersTest(unittest.TestCase):
         result = _sync_state_to_dict(state)
         for key in ("account", "folder", "uid_validity", "highest_uid", "synced_at"):
             self.assertIn(key, result)
-
-
-class BridgeOrStdioTest(unittest.TestCase):
-    """`pony mcp` bridges to a running application, or serves the tools itself.
-
-    The decision used to be made on the state file *existing*: an
-    application that was killed rather than closed leaves its file
-    behind, and the bridge then connected to a port nobody is listening
-    on instead of falling back. The endpoint is probed now, and a stale
-    file is cleared on the way past.
-    """
-
-    def setUp(self) -> None:
-        self._tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.state_file = self._tmp / "mcp.json"
-
-    def _remote_for(self) -> object:
-        from unittest.mock import AsyncMock, patch
-
-        import pony.mcp.mail as mail_mcp
-
-        with (
-            patch.object(mail_mcp, "build_mcp_server", return_value=object()),
-            patch.object(mail_mcp, "run_mcp", new_callable=AsyncMock) as served,
-        ):
-            asyncio.run(mail_mcp._run_mcp_server_async(None, self.state_file))  # pyright: ignore[reportPrivateUsage]
-        return served.await_args.kwargs["remote"] if served.await_args else None
-
-    def test_no_endpoint_serves_the_tools_here(self) -> None:
-        self.assertIsNone(self._remote_for())
-
-    def test_a_live_endpoint_is_bridged_to(self) -> None:
-        with socket.socket() as server:
-            server.bind(("127.0.0.1", 0))
-            server.listen(1)
-            port = server.getsockname()[1]
-            publish(self.state_file, Endpoint(port=port, token="tok"))
-
-            self.assertEqual(self._remote_for(), ("127.0.0.1", port, "tok"))
-
-    def test_an_endpoint_nobody_answers_is_not_bridged_to(self) -> None:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            dead_port = probe.getsockname()[1]
-        publish(self.state_file, Endpoint(port=dead_port, token="tok"))
-
-        self.assertIsNone(self._remote_for())
-        self.assertFalse(self.state_file.exists())

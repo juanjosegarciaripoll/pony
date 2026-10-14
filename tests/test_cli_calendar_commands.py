@@ -274,6 +274,50 @@ class SyncCommandTest(CliTestCase):
         self.assertEqual(code, 0)
         self.assertIn("Nothing to reset", self.stdout.getvalue())
 
+    def test_the_host_says_where_a_running_application_publishes_itself(self) -> None:
+        """`pony calendar reset` asks the program's endpoint, not its own.
+
+        The guard used to read the calendar's own endpoint file, which
+        nothing has written since the calendar stopped being a program
+        of its own: a running application holding this index went
+        undetected and the index was deleted under it.
+        """
+        import socket
+
+        from pony.mcp.state import Endpoint, publish
+
+        ctx = self._ctx()
+        index_file = self.calendar_paths.index_file
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        index_file.touch()
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        try:
+            endpoint_file = (
+                Path(self.enterContext(tempfile.TemporaryDirectory())) / "mcp.json"
+            )
+            publish(endpoint_file, Endpoint(port=port, token="tok"))
+
+            code = cli.run(
+                _parse(["reset", "--yes"]),
+                paths=self.calendar_paths,
+                document=_nowhere_document(self.calendar_paths.config_file),
+                context_factory=lambda: ctx,
+                mcp_endpoint_file=endpoint_file,
+                stdout=self.stdout,
+                stderr=self.stderr,
+            )
+        finally:
+            srv.close()
+
+        self.assertEqual(code, 2)
+        self.assertIn("Pony Express is running", self.stderr.getvalue())
+        self.assertIn(str(port), self.stderr.getvalue())
+        self.assertTrue(index_file.exists())
+
     def test_reset_refuses_when_mcp_server_reachable(self) -> None:
         import socket
 
@@ -293,8 +337,7 @@ class SyncCommandTest(CliTestCase):
         port = srv.getsockname()[1]
         try:
             state_file = (
-                Path(self.enterContext(tempfile.TemporaryDirectory()))
-                / "mcp_server.json"
+                Path(self.enterContext(tempfile.TemporaryDirectory())) / "mcp.json"
             )
             publish(state_file, Endpoint(port=port, token="tok"))
             index_path = self.index._path  # type: ignore[attr-defined]
@@ -304,13 +347,13 @@ class SyncCommandTest(CliTestCase):
                 yes=True,
                 index_path=index_path,
                 mirror_dir=mirror_dir,
-                mcp_state_file=state_file,
+                endpoint_file=state_file,
             )
         finally:
             srv.close()
 
         self.assertEqual(code, 2)
-        self.assertIn("TUI", self.stderr.getvalue())
+        self.assertIn("Pony Express is running", self.stderr.getvalue())
         self.assertIn(str(port), self.stderr.getvalue())
         self.assertTrue(index_path.exists())
 
@@ -340,7 +383,7 @@ class SyncCommandTest(CliTestCase):
                 yes=True,
                 index_path=index_path,
                 mirror_dir=mirror_dir,
-                mcp_state_file=tmp / "mcp_server.json",  # doesn't exist → no TUI
+                endpoint_file=tmp / "mcp.json",  # nothing published → nothing running
             )
 
         self.assertEqual(code, 2)
@@ -367,8 +410,7 @@ class SyncCommandTest(CliTestCase):
         port = srv.getsockname()[1]
         try:
             state_file = (
-                Path(self.enterContext(tempfile.TemporaryDirectory()))
-                / "mcp_server.json"
+                Path(self.enterContext(tempfile.TemporaryDirectory())) / "mcp.json"
             )
             publish(state_file, Endpoint(port=port, token="tok"))
             index_path = self.index._path  # type: ignore[attr-defined]
@@ -379,7 +421,7 @@ class SyncCommandTest(CliTestCase):
                 force=True,
                 index_path=index_path,
                 mirror_dir=mirror_dir,
-                mcp_state_file=state_file,
+                endpoint_file=state_file,
             )
         finally:
             srv.close()
@@ -408,7 +450,7 @@ class SyncCommandTest(CliTestCase):
         sock.close()
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        state_file = tmp / "mcp_server.json"
+        state_file = tmp / "mcp.json"
         publish(state_file, Endpoint(port=port, token="tok"))
 
         index_path = self.index._path  # type: ignore[attr-defined]
@@ -418,7 +460,7 @@ class SyncCommandTest(CliTestCase):
             yes=True,
             index_path=index_path,
             mirror_dir=mirror_dir,
-            mcp_state_file=state_file,
+            endpoint_file=state_file,
             lock_path=tmp / "sync.lock",
         )
 

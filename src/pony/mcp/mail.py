@@ -12,17 +12,12 @@ connections and serves tools directly via stdio.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
-import secrets
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from tinymcp import McpServer, run_mcp, serve_tcp
+from tinymcp import McpServer
 
-from ..config import load_config
-from ..mail.accounts import build_mirrors
 from ..mail.domain import AccountConfig, SearchQuery
 from ..mail.index_store import SqliteIndexRepository
 from ..mail.message_renderer import (
@@ -31,8 +26,11 @@ from ..mail.message_renderer import (
     render_message,
 )
 from ..mail.protocols import MirrorRepository
-from ..paths import resolve
-from . import state as endpoint_state
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from ..mail.domain import AppConfig
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -121,24 +119,20 @@ def _sync_state_to_dict(s: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_mcp_server(config_path: Path | None = None) -> McpServer:
-    """Build and return a configured :class:`McpServer` instance.
+def register_tools(
+    mcp: McpServer,
+    *,
+    index: SqliteIndexRepository,
+    mirrors: Mapping[str, MirrorRepository],
+    config: AppConfig,
+) -> None:
+    """Register the mail tools on *mcp*.
 
-    All tools are registered as closures that capture the index and mirror
-    objects built at startup — no per-call reconnection overhead.
+    The stores arrive rather than being opened here, because the server
+    they go on is the program's and carries the calendar's tools too:
+    see `pony.mcp.server`.  Each tool is a closure over them, so no
+    call reconnects.
     """
-    config_file = config_path if config_path is not None else resolve().config_file
-    config = load_config(config_file)
-    # The config decides where the index is, so the paths come from it
-    # rather than from the platform default -- otherwise a server
-    # started with --config would read a different index than the TUI.
-    paths = resolve(config_file, data_dir=config.data_dir)
-    paths.ensure_runtime_dirs()
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
-    mirrors: dict[str, MirrorRepository] = build_mirrors(config)
-
-    mcp = McpServer("Pony Express")
 
     # ------------------------------------------------------------------
     # Tool: search_messages
@@ -433,53 +427,3 @@ def build_mcp_server(config_path: Path | None = None) -> McpServer:
             states = index.list_folder_sync_states(account_name=acc.name)
             results.extend(_sync_state_to_dict(s) for s in states)
         return results
-
-    return mcp
-
-
-# ---------------------------------------------------------------------------
-# TCP embedded server (TUI) and stdio entry point
-# ---------------------------------------------------------------------------
-
-
-async def start_tcp_mcp_server(
-    config_path: Path | None,
-    state_file: Path,
-) -> tuple[asyncio.Task[None], endpoint_state.Endpoint]:
-    """Start the embedded TCP MCP server for the TUI.
-
-    Binds to a random loopback port, writes the port and a fresh auth token
-    to *state_file*, and returns a running background task and the bound state.
-    Cancel the task to stop the server.
-    """
-    token = secrets.token_hex(32)
-    mcp = build_mcp_server(config_path)
-    port, task = await serve_tcp(mcp, port=0, token=token)
-    endpoint = endpoint_state.Endpoint(port=port, token=token)
-    endpoint_state.publish(state_file, endpoint)
-    return task, endpoint
-
-
-def run_mcp_server(
-    config_path: Path | None = None,
-    state_file: Path | None = None,
-) -> None:
-    """Start the MCP server.
-
-    When *state_file* exists and points to a reachable TUI TCP server, act as
-    a bridge (stdin/stdout ↔ TCP).  Otherwise serve via stdio directly.
-    """
-    asyncio.run(_run_mcp_server_async(config_path, state_file))
-
-
-async def _run_mcp_server_async(
-    config_path: Path | None,
-    state_file: Path | None,
-) -> None:
-    endpoint = endpoint_state.live(state_file) if state_file is not None else None
-    remote = (
-        (endpoint_state.LOOPBACK_HOST, endpoint.port, endpoint.token)
-        if endpoint is not None
-        else None
-    )
-    await run_mcp(build_mcp_server(config_path), remote=remote)

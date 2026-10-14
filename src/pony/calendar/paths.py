@@ -63,15 +63,6 @@ class CalendarPaths:
         return self.token_dir / f"{account_name}.json"
 
     @property
-    def mcp_state_file(self) -> Path:
-        """Port and auth token written by a running MCP TCP server.
-
-        The stdio bridge reads this to find and delegate to the
-        long-running instance.
-        """
-        return self.root / "mcp_server.json"
-
-    @property
     def lock_file(self) -> Path:
         """Gates concurrent syncs; kept across reboots, scoped per-user."""
         return self.root / "sync.lock"

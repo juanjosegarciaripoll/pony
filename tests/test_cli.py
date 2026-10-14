@@ -3386,7 +3386,7 @@ class AppLaunchingCommandTests(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            patch("pony.mcp.mail.run_mcp_server") as serve,
+            patch("pony.mcp.server.run_server") as serve,
         ):
             rc = run_cli_ret("--config", str(config_path), "mcp")
 

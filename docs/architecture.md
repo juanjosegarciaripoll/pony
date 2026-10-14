@@ -139,9 +139,10 @@ src/pony/tui/          # the terminal front end
       edge_drag.py           # mouse-draggable pane borders
 
 src/pony/mcp/          # the MCP front end
+  server.py            # the program's server: both halves' tools, one endpoint
   state.py             # the endpoint a running application publishes
   mail.py              # the mail tools
-  calendar.py          # the calendar's tools
+  calendar.py          # the calendar's tools, and `pony calendar mcp`
 
 src/pony/web/          # the browser front end (extra: pony[web])
   app.py               # Starlette routes over the same actions
@@ -570,16 +571,30 @@ models, built on `tinymcp` rather than the MCP SDK's HTTP stack.
 calendar's; neither lives in the model it reads, which is where the
 calendar's used to be.
 
-When the terminal application is running it serves on `127.0.0.1` over
-TCP behind a per-session token, and publishes the port and token through
+**One server.** `pony.mcp.server.build_server` puts both halves' tools
+on one `McpServer` — the calendar's only when a `[calendar]` table is
+configured — and that is what `pony mcp` serves and what the terminal
+application serves over TCP. One program, one tool set: an agent talking
+to a running Pony can read the mail *and* the agenda it has open.
+
+When the terminal application is running it serves on `127.0.0.1` behind
+a per-session token and publishes the port and token through
 `pony.mcp.state`; `pony mcp` finds that endpoint and proxies stdio↔TCP,
 so the consumer never opens a competing SQLite handle. With nothing
 running, `pony mcp` opens its own connections and serves stdio directly.
 
-`pony.mcp.state` is one record for both halves. It probes the published
-port before handing it to a bridge, because an application that was
-killed rather than closed leaves its file behind, and a bridge that
-trusts the file connects to a port nobody is listening on.
+`pony.mcp.state` is one record, in one file (`<data_dir>/mcp.json`). It
+probes the published port before handing it to a bridge, because an
+application that was killed rather than closed leaves its file behind,
+and a bridge that trusts the file connects to a port nobody is listening
+on. `pony calendar reset` asks the same question before deleting an
+index: the host hands it the file, because the host is what publishes
+it.
+
+`pony calendar mcp` is deliberately *not* the program's server. It
+serves the calendar's tools alone and does not bridge, so an agent given
+the calendar is not handed the mail index with it. Two readers of one
+SQLite index is what WAL is for.
 
 ### Message rendering (`pony.mail.message_renderer`, `pony.tui.mail.pdf_export`)
 
@@ -813,17 +828,6 @@ migrate. Only the configuration moved.
 The calendar's commands are declared in Pony's own parser, so `pony --help`
 lists both halves, `pony calendar --help` lists the calendar's, and there is
 one `--config`, Pony's, in front of the subcommand.
-
-### Known limitation
-
-The MCP server a running application exposes is still the mail one, and
-it publishes to the program's endpoint file; the calendar's tools are
-reachable through `pony calendar mcp`, which reads the calendar's own.
-Two endpoint files, two tool sets, one program: what this wants is one
-server registering both halves' tools, and one published endpoint. Until
-then `pony calendar reset` cannot tell that a running application is
-holding the calendar's index, because that application publishes the
-other file.
 
 ## Data flow
 

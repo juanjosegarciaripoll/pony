@@ -266,7 +266,7 @@ class ListToolsTest(McpServerTestCase):
             {
                 "list_calendars",
                 "query_range",
-                "search",
+                "search_events",
                 "get_event",
                 "get_todo",
                 "import_ics",
@@ -414,7 +414,7 @@ class SearchToolTest(McpServerTestCase):
     async def test_matches_summary(self) -> None:
         self._seed()
         async with _connected_session(self.index, self.mirror) as session:
-            result = await session.call_tool("search", {"query": "planning"})
+            result = await session.call_tool("search_events", {"query": "planning"})
         rows = json.loads(_text(result.content))
         self.assertEqual([r["uid"] for r in rows], ["planning@example.com"])
 
@@ -422,10 +422,18 @@ class SearchToolTest(McpServerTestCase):
         self._seed()
         async with _connected_session(self.index, self.mirror) as session:
             sync_hits = json.loads(
-                _text((await session.call_tool("search", {"query": "sync"})).content)
+                _text(
+                    (
+                        await session.call_tool("search_events", {"query": "sync"})
+                    ).content
+                )
             )
             cafe_hits = json.loads(
-                _text((await session.call_tool("search", {"query": "Aroma"})).content)
+                _text(
+                    (
+                        await session.call_tool("search_events", {"query": "Aroma"})
+                    ).content
+                )
             )
         self.assertEqual([r["uid"] for r in sync_hits], ["standup@example.com"])
         self.assertEqual([r["uid"] for r in cafe_hits], ["lunch@example.com"])
@@ -436,7 +444,9 @@ class SearchToolTest(McpServerTestCase):
                 _vevent(uid=f"meeting-{i}@example.com", summary=f"Meeting {i}")
             )
         async with _connected_session(self.index, self.mirror) as session:
-            result = await session.call_tool("search", {"query": "Meeting", "limit": 2})
+            result = await session.call_tool(
+                "search_events", {"query": "Meeting", "limit": 2}
+            )
         rows = json.loads(_text(result.content))
         self.assertEqual(len(rows), 2)
 

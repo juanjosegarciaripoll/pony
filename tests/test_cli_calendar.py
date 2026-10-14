@@ -66,6 +66,22 @@ class RunCalendarTest(unittest.TestCase):
             )
         self.assertEqual(0, code)
 
+    def test_the_host_hands_over_where_it_publishes_its_mcp_endpoint(self) -> None:
+        """`pony calendar reset` has to ask the *program's* endpoint.
+
+        The calendar resolves no endpoint of its own -- it had one, and
+        nothing has published it since the calendar stopped being a
+        program of its own, so a running application holding the
+        calendar's index went undetected by `reset`.
+        """
+        path = self._config()
+        with mock.patch("pony.cli.calendar.run", return_value=0) as ran:
+            run_calendar(paths=self.paths, args=_parse(["reset"]), config_path=path)
+
+        self.assertEqual(
+            ran.call_args.kwargs["mcp_endpoint_file"], self.paths.mcp_state_file
+        )
+
     def test_an_unconfigured_calendar_says_how_to_configure_one(self) -> None:
         """A mail-only config is not an error; it is a calendar to add.
 

@@ -4,15 +4,22 @@ Current MCP architecture.
 
 ## Modes
 
-- `pony calendar mcp` in self-contained stdio mode when no running app instance is detected.
-- `pony calendar mcp` in stdio-to-TCP bridge mode when a running TUI instance has published MCP server state.
-- TCP server started by the TUI on `127.0.0.1` with a per-session auth token stored in the MCP state file.
+- `pony mcp` serves **the program's** tools: the mail half's and, when a
+  `[calendar]` table is configured, the calendar's, on one server
+  (`pony.mcp.server`).
+- `pony mcp` in stdio-to-TCP bridge mode when a running application has
+  published its endpoint and its port answers.
+- TCP server started by the terminal application on `127.0.0.1` with a
+  per-session auth token, published in `<data_dir>/mcp.json`.
+- `pony calendar mcp` serves the calendar's tools **alone**, over stdio,
+  and never bridges: an agent given the calendar is not handed the mail
+  index with it.
 
 ## Current tools
 
 - `list_calendars`
 - `query_range`
-- `search`
+- `search_events`
 - `get_event`
 - `get_todo`
 - `import_ics`
@@ -25,6 +32,10 @@ Current MCP architecture.
 
 ## Transport notes
 
-- State file carries TCP port and auth token.
-- Bridge mode exists to avoid opening the same local state from competing processes.
-- Implementation uses standard `asyncio` plus the MCP SDK; no web server stack is involved.
+- The endpoint file carries the TCP port and the auth token, and is
+  written owner-only through `pony.atomic`.
+- Bridge mode exists to avoid opening the same local state from
+  competing processes. The port is probed before bridging, because an
+  application that was killed leaves its file behind.
+- Implementation uses standard `asyncio` plus `tinymcp`; no web server
+  stack is involved.

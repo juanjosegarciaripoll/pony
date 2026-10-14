@@ -548,12 +548,12 @@ class PonyApp(QuitAsksTheScreen):
 
     async def _start_mcp_tcp_server(self) -> None:
         from ..config import ConfigError
-        from ..mcp.mail import start_tcp_mcp_server
+        from ..mcp.server import start_tcp_server
 
         paths = resolve(self._config_path, data_dir=self._config.data_dir)
         state_file = paths.mcp_state_file
         try:
-            task, _ = await start_tcp_mcp_server(self._config_path, state_file)
+            task, _ = await start_tcp_server(self._config_path, state_file)
         except (ConfigError, OSError):
             return
         self._mcp_tcp_task = task

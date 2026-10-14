@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any, cast
 
 from tinymcp import McpServer
@@ -46,8 +45,6 @@ from pony.calendar.domain import (
 )
 from pony.calendar.protocols import IndexRepository, MirrorRepository
 
-from . import state as endpoint_state
-
 SERVER_NAME = "Pony Express Calendar"
 
 
@@ -57,8 +54,21 @@ SERVER_NAME = "Pony Express Calendar"
 
 
 def build_mcp_server(*, index: IndexRepository, mirror: MirrorRepository) -> McpServer:
-    """Build a `McpServer` with all the calendar's tools registered."""
+    """A server with the calendar's tools and nothing else.
+
+    What `pony calendar mcp` serves: an agent handed the calendar is not
+    handed the mail index with it.  The program's own server carries both
+    halves -- see `pony.mcp.server`.
+    """
     mcp = McpServer(SERVER_NAME)
+    register_tools(mcp, index=index, mirror=mirror)
+    return mcp
+
+
+def register_tools(
+    mcp: McpServer, *, index: IndexRepository, mirror: MirrorRepository
+) -> None:
+    """Register the calendar's tools on *mcp*."""
 
     @mcp.tool()
     def list_calendars() -> str:  # pyright: ignore[reportUnusedFunction]
@@ -74,7 +84,7 @@ def build_mcp_server(*, index: IndexRepository, mirror: MirrorRepository) -> Mcp
         return json.dumps(_tool_query_range(index, start=start, end=end), indent=2)
 
     @mcp.tool()
-    def search(query: str, limit: int = 50) -> str:  # pyright: ignore[reportUnusedFunction]
+    def search_events(query: str, limit: int = 50) -> str:  # pyright: ignore[reportUnusedFunction]
         """Full-text search (FTS5) over summary / description / location of
         every event and todo across all calendars."""
         return json.dumps(_tool_search(index, query=query, limit=limit), indent=2)
@@ -137,8 +147,6 @@ def build_mcp_server(*, index: IndexRepository, mirror: MirrorRepository) -> Mcp
             indent=2,
         )
 
-    return mcp
-
 
 # ---------------------------------------------------------------------------
 # Entry points
@@ -149,63 +157,17 @@ async def run_mcp_stdio(
     *,
     index: IndexRepository,
     mirror: MirrorRepository,
-    state_file: Path,
 ) -> None:
-    """Entry point for `pony calendar mcp`.
+    """Serve the calendar's tools over stdin/stdout, for `pony calendar mcp`.
 
-    If a running TCP server is detected via the state file, acts as a
-    transparent stdio↔TCP bridge.  If the state file is missing or the
-    port is not reachable, runs a self-contained MCP session directly
-    over stdin/stdout.
-
-    *state_file* is the caller's to name -- it used to fall back to a
-    process-wide global, so which server this bridged to depended on
-    which calendar root had been activated last.
+    It does not bridge to a running application: that application serves
+    the program's whole tool set, and this command exists to hand over
+    the calendar's alone.  Two readers of one SQLite index is what WAL
+    is for.
     """
     from tinymcp import run_mcp
 
-    endpoint = endpoint_state.live(state_file)
-    remote = (
-        (endpoint_state.LOOPBACK_HOST, endpoint.port, endpoint.token)
-        if endpoint is not None
-        else None
-    )
-    await run_mcp(
-        build_mcp_server(index=index, mirror=mirror),
-        remote=remote,
-        on_unreachable=lambda: endpoint_state.clear(state_file),
-    )
-
-
-async def start_tcp_server(
-    *,
-    index: IndexRepository,
-    mirror: MirrorRepository,
-    port: int = 0,
-    state_file: Path,
-) -> None:
-    """Start the MCP TCP server, write the state file, and run until cancelled.
-
-    Port 0 lets the OS assign an ephemeral port; the actual port is
-    read back from the server socket and written to the state file.
-    The state file is removed on exit.  Intended for the TUI and
-    future daemon mode — not called from the CLI.
-    """
-    import secrets
-
-    from tinymcp import serve_tcp
-
-    token = secrets.token_hex(32)
-    server = build_mcp_server(index=index, mirror=mirror)
-
-    try:
-        actual_port, serve_task = await serve_tcp(server, port=port, token=token)
-        endpoint_state.publish(
-            state_file, endpoint_state.Endpoint(port=actual_port, token=token)
-        )
-        await serve_task
-    finally:
-        endpoint_state.clear(state_file)
+    await run_mcp(build_mcp_server(index=index, mirror=mirror))
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +347,6 @@ def _parse_datetime(value: str, *, label: str) -> datetime:
 __all__ = [
     "SERVER_NAME",
     "build_mcp_server",
+    "register_tools",
     "run_mcp_stdio",
-    "start_tcp_server",
 ]
