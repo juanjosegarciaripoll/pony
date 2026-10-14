@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pony.calendar.domain import (
@@ -384,7 +384,10 @@ class RenderCostTest(unittest.TestCase):
         return seen
 
     def test_one_day_render_reads_one_component(self) -> None:
-        from pony.calendar.views import CalendarSelection, gather_occurrences
+        from pony.calendar.views import (
+            CalendarSelection,
+            gather_occurrences,
+        )
 
         seen = self._count_component_reads()
         rows = gather_occurrences(
@@ -402,19 +405,20 @@ class RenderCostTest(unittest.TestCase):
         # Twenty events in the calendar; the window names one.
         self.assertEqual(sum(seen), 1, f"component rows read: {seen}")
 
-    def test_a_render_still_injects_the_window_s_todos(self) -> None:
-        """The same rows as before the narrow queries, duplicate included.
+    def test_a_render_injects_the_window_s_todos_once(self) -> None:
+        """A task is one row: the full-day one every view means to show.
 
-        A VTODO with an anchor in the window arrives twice: once from
-        the occurrence cache, which `populate_occurrences` fills for
-        every master including tasks, and once from the full-day
-        injection.  That is pre-existing -- `gather_occurrences`
-        double-counted it when it read the whole calendar too -- and
-        this test pins it so the narrow queries can be shown not to
-        have changed what a render shows.  The duplicate itself is a
-        separate bug.
+        It used to be two. `populate_occurrences` fills the cache for
+        every master, tasks included, so a VTODO with an anchor in the
+        window arrived from the occurrence join as well as from the
+        full-day injection -- and the join's copy carried the task's
+        clock time, which no view means to display.
         """
-        from pony.calendar.views import CalendarSelection, gather_occurrences
+        from pony.calendar.views import (
+            CalendarSelection,
+            format_event_row,
+            gather_occurrences,
+        )
 
         rows = gather_occurrences(
             index=self.index,
@@ -427,11 +431,13 @@ class RenderCostTest(unittest.TestCase):
         )
         self.assertEqual(
             sorted(r.component.ref.uid for r in rows),
-            [
-                "render-cost-2@example.com",
-                "render-cost-todo-2@example.com",
-                "render-cost-todo-2@example.com",
-            ],
+            ["render-cost-2@example.com", "render-cost-todo-2@example.com"],
+        )
+        (todo_row,) = [
+            r for r in rows if r.component.ref.uid == "render-cost-todo-2@example.com"
+        ]
+        self.assertEqual(
+            format_event_row(todo_row, date(2026, 5, 2)).cells[1], "all day"
         )
 
     def test_listing_todos_does_not_read_the_events(self) -> None:

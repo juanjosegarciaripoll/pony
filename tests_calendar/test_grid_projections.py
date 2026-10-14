@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pony.calendar.domain import ComponentRef, LocalStatus, Occurrence, VEvent
 from pony.calendar.views import (
     OccurrenceRow,
+    all_day_lanes,
     compute_hour_range,
     day_column_label,
     day_columns,
@@ -26,6 +27,7 @@ from pony.calendar.views import (
     local_days,
     month_buckets,
     relative_day_name,
+    slot_cell,
     timed_day_minutes,
 )
 
@@ -268,3 +270,160 @@ class OneDayLabelTest(unittest.TestCase):
             format_friendly_start(self._moment(day), self.TODAY),
             "Tue 30 Sep 2014 09:00",
         )
+
+
+class SlotCellTest(unittest.TestCase):
+    """Which occurrence a timeline slot is of.
+
+    This was `_cell_for_slot` inside the timeline widget, returning a
+    four-tuple whose first element was already a rendered string ("+2"
+    appended, "(no summary)" substituted) -- so what a grid *is* could
+    only be asked of a widget, and the one thing the renderer needed
+    back, which occurrence it was, was not in it.
+    """
+
+    DAY = date(2026, 5, 1)
+
+    def test_an_empty_slot_is_nothing(self) -> None:
+        self.assertIsNone(slot_cell(self.DAY, 9 * 60, ()))
+
+    def test_the_slot_an_event_starts_in_carries_it(self) -> None:
+        row = _timed(self.DAY, 9, minutes=30, uid="standup")
+
+        cell = slot_cell(self.DAY, 9 * 60, [row])
+
+        assert cell is not None
+        self.assertEqual(cell.summary, "Event")
+        self.assertEqual(cell.key, (row.component.ref, row.occurrence.start))
+        self.assertTrue(cell.is_start)
+        self.assertFalse(cell.is_end)
+        self.assertEqual(cell.hidden, 0)
+        self.assertIsNone(slot_cell(self.DAY, 10 * 60, [row]))
+
+    def test_a_summary_nobody_wrote_is_reported_as_none(self) -> None:
+        """The stand-in wording is the renderer's, not the projection's."""
+        row = _row(
+            "nameless",
+            datetime.combine(self.DAY, time(hour=9)).astimezone(),
+            datetime.combine(self.DAY, time(hour=10)).astimezone(),
+            summary="",
+        )
+
+        cell = slot_cell(self.DAY, 9 * 60, [row])
+
+        assert cell is not None
+        self.assertIsNone(cell.summary)
+
+    def test_what_did_not_fit_is_counted_not_spelled(self) -> None:
+        rows = [
+            _timed(self.DAY, 9, uid="first"),
+            _timed(self.DAY, 9, uid="second"),
+            _timed(self.DAY, 9, uid="third"),
+        ]
+
+        cell = slot_cell(self.DAY, 9 * 60, rows)
+
+        assert cell is not None
+        self.assertEqual(cell.key[0].uid, "first")
+        self.assertEqual(cell.hidden, 2)
+
+    def test_a_long_event_fills_every_slot_it_touches(self) -> None:
+        row = _timed(self.DAY, 9, minutes=120, uid="workshop")
+
+        cells = {
+            slot: slot_cell(self.DAY, slot, [row])
+            for slot in (9 * 60, 9 * 60 + 30, 10 * 60, 10 * 60 + 30, 11 * 60)
+        }
+
+        self.assertTrue(cells[9 * 60] is not None and cells[9 * 60].is_start)
+        for slot in (9 * 60 + 30, 10 * 60, 10 * 60 + 30):
+            cell = cells[slot]
+            with self.subTest(slot=slot):
+                assert cell is not None
+                self.assertFalse(cell.is_start)
+                self.assertEqual(cell.is_end, slot == 10 * 60 + 30)
+        # `[start, end)`: the slot the event ends on is not its.
+        self.assertIsNone(cells[11 * 60])
+
+    def test_an_event_running_past_midnight_fills_the_rest_of_the_day(self) -> None:
+        start = datetime.combine(self.DAY, time(hour=23)).astimezone()
+        row = _row("overnight", start, start + timedelta(hours=3))
+
+        for slot in (23 * 60, 23 * 60 + 30):
+            cell = slot_cell(self.DAY, slot, [row])
+            with self.subTest(slot=slot):
+                assert cell is not None
+                self.assertEqual(cell.is_start, slot == 23 * 60)
+                # The day's last slot is capped even though the event
+                # runs on: the column ends at midnight, and the next
+                # day's column opens with a continuation.
+                self.assertEqual(cell.is_end, slot == 23 * 60 + 30)
+
+    def test_an_event_starting_here_wins_over_one_already_running(self) -> None:
+        """Otherwise a new meeting is invisible under a long one."""
+        running = _timed(self.DAY, 8, minutes=180, uid="running")
+        starting = _timed(self.DAY, 9, minutes=30, uid="starting")
+
+        cell = slot_cell(self.DAY, 9 * 60, [running, starting])
+
+        assert cell is not None
+        self.assertEqual(cell.key[0].uid, "starting")
+        self.assertTrue(cell.is_start)
+        self.assertEqual(cell.hidden, 1)
+
+    def test_the_middle_day_of_a_multi_day_event_is_filled(self) -> None:
+        start = datetime.combine(date(2026, 5, 16), time(hour=13)).astimezone()
+        row = _row("trip", start, start + timedelta(days=9))
+
+        middle = slot_cell(date(2026, 5, 20), 13 * 60, [row])
+
+        assert middle is not None
+        self.assertFalse(middle.is_start)
+        self.assertFalse(middle.is_end)
+
+    def test_an_all_day_occurrence_is_the_banners_not_the_grids(self) -> None:
+        local_midnight = datetime.combine(self.DAY, time.min).astimezone()
+        row = _row("local-allday", local_midnight, local_midnight + timedelta(days=1))
+
+        self.assertIsNone(slot_cell(self.DAY, 9 * 60, [row]))
+
+
+class BannerLaneTest(unittest.TestCase):
+    """Which line of the all-day banner an occurrence runs on."""
+
+    def _days(
+        self, first: date, count: int, rows: list[OccurrenceRow]
+    ) -> list[tuple[date, list[OccurrenceRow]]]:
+        return [(first + timedelta(days=offset), rows) for offset in range(count)]
+
+    def test_one_event_takes_one_line_across_the_days_it_covers(self) -> None:
+        row = _all_day(date(2026, 5, 4), days=3, uid="conference")
+
+        lanes = all_day_lanes(self._days(date(2026, 5, 4), 5, [row]))
+
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(sorted(lanes[0]), [1, 2, 3])
+        self.assertTrue(lanes[0][1].starts_here)
+        self.assertFalse(lanes[0][2].starts_here)
+        self.assertFalse(lanes[0][3].starts_here)
+
+    def test_two_events_on_the_same_day_take_a_line_each(self) -> None:
+        rows = [
+            _all_day(date(2026, 5, 4), uid="holiday"),
+            _all_day(date(2026, 5, 4), uid="birthday"),
+        ]
+
+        lanes = all_day_lanes(self._days(date(2026, 5, 4), 2, rows))
+
+        self.assertEqual(len(lanes), 2)
+        self.assertEqual({lanes[0][1].order, lanes[1][1].order}, {0, 1})
+
+    def test_a_short_event_shares_a_line_with_one_it_does_not_touch(self) -> None:
+        """One line each would waste the banner's height."""
+        long_one = _all_day(date(2026, 5, 4), days=2, uid="conference")
+        later = _all_day(date(2026, 5, 7), uid="dentist")
+
+        lanes = all_day_lanes(self._days(date(2026, 5, 4), 5, [long_one, later]))
+
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(sorted(lanes[0]), [1, 2, 4])

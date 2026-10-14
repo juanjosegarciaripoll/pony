@@ -6,7 +6,7 @@ import re
 import tempfile
 import unittest
 from collections.abc import Callable, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TypeVar
 from zoneinfo import ZoneInfo
@@ -3389,266 +3389,6 @@ class TimelineGridHelpersTest(unittest.TestCase):
         self.assertEqual(start, 4)
         self.assertEqual(end, 24)  # 23:45 ends → 24
 
-    def test_cell_for_slot_picks_matching_event(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "standup")
-        event = VEvent(
-            ref=ref,
-            href=None,
-            etag=None,
-            raw_ics=b"",
-            summary="Standup",
-            description=None,
-            location=None,
-            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
-            dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
-            status=None,
-            local_flags=frozenset(),
-            server_flags=frozenset(),
-            local_status=LocalStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-        )
-        rows = (
-            OccurrenceRow(
-                occurrence=Occurrence(
-                    ref=ref,
-                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
-                    end=datetime(2026, 5, 1, 9, 30).astimezone(),
-                    recurrence_id=None,
-                    is_override=False,
-                ),
-                component=event,
-            ),
-        )
-        # Slot 09:00 → event starts here.
-        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
-        self.assertEqual(cell, "Standup")
-        self.assertEqual(hit, ref)
-        self.assertTrue(is_start)
-        self.assertFalse(is_end)
-        # Slot 09:30 → empty (event already ended; nothing starts here).
-        cell_empty, hit_empty, is_start_empty, is_end_empty = _cell_for_slot(
-            date(2026, 5, 1), 9 * 60 + 30, rows
-        )
-        self.assertEqual(cell_empty, "")
-        self.assertIsNone(hit_empty)
-        self.assertFalse(is_start_empty)
-        self.assertFalse(is_end_empty)
-
-    def test_cell_for_slot_appends_plus_when_overlapping(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        ref_a = ComponentRef(ACCOUNT_NAME, WORK_CAL, "a")
-        ref_b = ComponentRef(ACCOUNT_NAME, WORK_CAL, "b")
-        rows = tuple(
-            OccurrenceRow(
-                occurrence=Occurrence(
-                    ref=ref,
-                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
-                    end=datetime(2026, 5, 1, 9, 30).astimezone(),
-                    recurrence_id=None,
-                    is_override=False,
-                ),
-                component=VEvent(
-                    ref=ref,
-                    href=None,
-                    etag=None,
-                    raw_ics=b"",
-                    summary=label,
-                    description=None,
-                    location=None,
-                    dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
-                    dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
-                    status=None,
-                    local_flags=frozenset(),
-                    server_flags=frozenset(),
-                    local_status=LocalStatus.ACTIVE,
-                    trashed_at=None,
-                    synced_at=None,
-                ),
-            )
-            for ref, label in ((ref_a, "Meeting A"), (ref_b, "Meeting B"))
-        )
-        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
-        # First event wins the visible spot; the `+1` indicates one
-        # other event is active in the same slot.
-        self.assertEqual(cell, "Meeting A +1")
-        self.assertEqual(hit, ref_a)
-        self.assertTrue(is_start)  # both events start in this slot
-        self.assertFalse(is_end)
-
-    def test_cell_for_slot_multi_hour_event_fills_all_covered_slots(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "long")
-        event = VEvent(
-            ref=ref,
-            href=None,
-            etag=None,
-            raw_ics=b"",
-            summary="Workshop",
-            description=None,
-            location=None,
-            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
-            dtend=datetime(2026, 5, 1, 11, 0).astimezone(),
-            status=None,
-            local_flags=frozenset(),
-            server_flags=frozenset(),
-            local_status=LocalStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-        )
-        rows = (
-            OccurrenceRow(
-                occurrence=Occurrence(
-                    ref=ref,
-                    start=datetime(2026, 5, 1, 9, 0).astimezone(),
-                    end=datetime(2026, 5, 1, 11, 0).astimezone(),
-                    recurrence_id=None,
-                    is_override=False,
-                ),
-                component=event,
-            ),
-        )
-        # Event starts at 09:00 and ends at 11:00, covering four 30-min slots.
-        # The start slot carries is_start=True; continuation slots carry False.
-        cell_0900, hit_0900, is_start_0900, is_end_0900 = _cell_for_slot(
-            date(2026, 5, 1), 9 * 60, rows
-        )
-        self.assertEqual(cell_0900, "Workshop")
-        self.assertEqual(hit_0900, ref)
-        self.assertTrue(is_start_0900)
-        self.assertFalse(is_end_0900)
-        for slot in (9 * 60 + 30, 10 * 60, 10 * 60 + 30):
-            cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), slot, rows)
-            self.assertEqual(cell, "Workshop", msg=f"slot {slot}")
-            self.assertEqual(hit, ref, msg=f"slot {slot}")
-            self.assertFalse(is_start, msg=f"slot {slot} should be continuation")
-            self.assertEqual(is_end, slot == (10 * 60 + 30))
-        # Slot at 11:00 is outside the event's half-open [start, end) interval.
-        cell_after, hit_after, _, is_end_after = _cell_for_slot(
-            date(2026, 5, 1), 11 * 60, rows
-        )
-        self.assertEqual(cell_after, "")
-        self.assertIsNone(hit_after)
-        self.assertFalse(is_end_after)
-
-    def test_cell_for_slot_midnight_crossing_event_fills_remaining_day_slots(
-        self,
-    ) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "late")
-        event = VEvent(
-            ref=ref,
-            href=None,
-            etag=None,
-            raw_ics=b"",
-            summary="Late Call",
-            description=None,
-            location=None,
-            dtstart=datetime(2026, 5, 1, 23, 0).astimezone(),
-            dtend=datetime(2026, 5, 2, 1, 0).astimezone(),
-            status=None,
-            local_flags=frozenset(),
-            server_flags=frozenset(),
-            local_status=LocalStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-        )
-        rows = (
-            OccurrenceRow(
-                occurrence=Occurrence(
-                    ref=ref,
-                    start=datetime(2026, 5, 1, 23, 0).astimezone(),
-                    end=datetime(2026, 5, 2, 1, 0).astimezone(),
-                    recurrence_id=None,
-                    is_override=False,
-                ),
-                component=event,
-            ),
-        )
-        # Event starts on 2026-05-01 at 23:00 and crosses midnight; both
-        # remaining slots on that day must show the event.
-        cell_2300, hit_2300, is_start_2300, is_end_2300 = _cell_for_slot(
-            date(2026, 5, 1), 23 * 60, rows
-        )
-        self.assertEqual(cell_2300, "Late Call")
-        self.assertEqual(hit_2300, ref)
-        self.assertTrue(is_start_2300)
-        self.assertFalse(is_end_2300)
-        cell_2330, hit_2330, is_start_2330, is_end_2330 = _cell_for_slot(
-            date(2026, 5, 1), 23 * 60 + 30, rows
-        )
-        self.assertEqual(cell_2330, "Late Call")
-        self.assertEqual(hit_2330, ref)
-        self.assertFalse(is_start_2330)
-        self.assertTrue(is_end_2330)
-
-    def test_cell_for_slot_newly_starting_event_takes_priority_over_running(
-        self,
-    ) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        ref_running = ComponentRef(ACCOUNT_NAME, WORK_CAL, "running")
-        ref_new = ComponentRef(ACCOUNT_NAME, WORK_CAL, "new")
-        running = VEvent(
-            ref=ref_running,
-            href=None,
-            etag=None,
-            raw_ics=b"",
-            summary="All-Morning Meeting",
-            description=None,
-            location=None,
-            dtstart=datetime(2026, 5, 1, 8, 0).astimezone(),
-            dtend=datetime(2026, 5, 1, 11, 0).astimezone(),
-            status=None,
-            local_flags=frozenset(),
-            server_flags=frozenset(),
-            local_status=LocalStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-        )
-        new_event = VEvent(
-            ref=ref_new,
-            href=None,
-            etag=None,
-            raw_ics=b"",
-            summary="Standup",
-            description=None,
-            location=None,
-            dtstart=datetime(2026, 5, 1, 9, 0).astimezone(),
-            dtend=datetime(2026, 5, 1, 9, 30).astimezone(),
-            status=None,
-            local_flags=frozenset(),
-            server_flags=frozenset(),
-            local_status=LocalStatus.ACTIVE,
-            trashed_at=None,
-            synced_at=None,
-        )
-        rows = tuple(
-            OccurrenceRow(
-                occurrence=Occurrence(
-                    ref=ev.ref,
-                    start=ev.dtstart,  # type: ignore[arg-type]
-                    end=ev.dtend,
-                    recurrence_id=None,
-                    is_override=False,
-                ),
-                component=ev,
-            )
-            for ev in (running, new_event)
-        )
-        # In the 09:00 slot, "Standup" starts here and must be listed first,
-        # demoting "All-Morning Meeting" to the "+1" overflow count.
-        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
-        self.assertEqual(cell, "Standup +1")
-        self.assertEqual(hit, ref_new)
-        self.assertTrue(is_start)  # Standup starts here
-        self.assertFalse(is_end)
-
     @staticmethod
     def _multi_day_timed_row() -> OccurrenceRow:
         """A trip leaving the 17th and back the 25th, local and timed.
@@ -3699,32 +3439,64 @@ class TimelineGridHelpersTest(unittest.TestCase):
             [date(2026, 5, 20)],
         )
 
-    def test_cell_for_slot_fills_a_continuation_day(self) -> None:
-        """Middle days of a timed span are covered end to end."""
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
+    def test_now_names_the_running_instance_not_the_series(self) -> None:
+        """A recurring event is marked where it is running, nowhere else.
 
-        rows = (self._multi_day_timed_row(),)
-        ref = rows[0].component.ref
-        # A day entirely inside the span: covered, and never capped as an
-        # end since the span runs on past midnight.
-        _, hit, _, is_end = _cell_for_slot(date(2026, 5, 22), 13 * 60, rows)
-        self.assertEqual(hit, ref)
-        self.assertFalse(is_end)
-        # The final day is covered up to 17:20 and no further: the 17:00
-        # slot takes the end cap, the next one is empty.
-        _, mid_hit, _, mid_is_end = _cell_for_slot(
-            date(2026, 5, 25), 16 * 60 + 30, rows
+        `_locate_now` asks `in_progress_keys`, which answers by
+        occurrence -- `(ref, start)` -- precisely so the daily standup
+        is not highlighted on all seven columns of the week. The marker
+        used to drop the start and keep the ref, so it was.
+        """
+        from pony.tui.calendar.widgets.timeline_grid import _locate_now
+
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "standup")
+        today = date(2026, 5, 4)
+        instances = [
+            self._timed_row(ref, datetime.combine(day, time(9, 0)).astimezone())
+            for day in (today, today + timedelta(days=1))
+        ]
+        now = datetime.combine(today, time(9, 15)).astimezone()
+        days = [
+            (today, instances),
+            (today + timedelta(days=1), instances),
+        ]
+
+        marker = _locate_now(days, now)
+
+        assert marker is not None
+        self.assertEqual(marker.col, 1)
+        self.assertEqual(marker.active, {(ref, instances[0].occurrence.start)})
+        self.assertNotIn((ref, instances[1].occurrence.start), marker.active)
+
+    @staticmethod
+    def _timed_row(ref: ComponentRef, start: datetime) -> OccurrenceRow:
+        """One hour from *start*, for a component that recurs."""
+        return OccurrenceRow(
+            occurrence=Occurrence(
+                ref=ref,
+                start=start,
+                end=start + timedelta(hours=1),
+                recurrence_id=None,
+                is_override=False,
+            ),
+            component=VEvent(
+                ref=ref,
+                href=None,
+                etag=None,
+                raw_ics=b"",
+                summary="Standup",
+                description=None,
+                location=None,
+                dtstart=start,
+                dtend=start + timedelta(hours=1),
+                status=None,
+                local_flags=frozenset(),
+                server_flags=frozenset(),
+                local_status=LocalStatus.ACTIVE,
+                trashed_at=None,
+                synced_at=None,
+            ),
         )
-        self.assertEqual(mid_hit, ref)
-        self.assertFalse(mid_is_end)
-        _, last_hit, _, last_is_end = _cell_for_slot(date(2026, 5, 25), 17 * 60, rows)
-        self.assertEqual(last_hit, ref)
-        self.assertTrue(last_is_end)
-        _, after_hit, _, _ = _cell_for_slot(date(2026, 5, 25), 17 * 60 + 30, rows)
-        self.assertIsNone(after_hit)
-        # The day before it starts is untouched.
-        _, before_hit, _, _ = _cell_for_slot(date(2026, 5, 16), 13 * 60, rows)
-        self.assertIsNone(before_hit)
 
     @staticmethod
     def _all_day_row(
@@ -3810,76 +3582,6 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
         with local_zone("Europe/Madrid"):
             self.assertFalse(is_full_day(day_long_offset.occurrence))
-
-    def test_cell_for_slot_skips_local_midnight_all_day_event(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
-
-        rows = (
-            self._all_day_row(
-                "local-allday",
-                "Local all day",
-                datetime(2026, 5, 1, 0, 0).astimezone(),
-                datetime(2026, 5, 2, 0, 0).astimezone(),
-            ),
-        )
-        # A local-midnight all-day event must not paint any hour slot.
-        cell, hit, is_start, is_end = _cell_for_slot(date(2026, 5, 1), 9 * 60, rows)
-        self.assertEqual(cell, "")
-        self.assertIsNone(hit)
-        self.assertFalse(is_start)
-        self.assertFalse(is_end)
-
-    def test_full_day_rows_cover_every_day_of_a_multi_day_span(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _full_day_rows
-
-        # Three-day all-day span: May 1, 2, 3 (end May 4 is exclusive).
-        rows = (
-            self._all_day_row(
-                "trip",
-                "Conference",
-                datetime(2026, 5, 1, tzinfo=UTC),
-                datetime(2026, 5, 4, tzinfo=UTC),
-            ),
-        )
-        for day in (date(2026, 5, 1), date(2026, 5, 2), date(2026, 5, 3)):
-            covering = _full_day_rows(day, rows)
-            self.assertEqual(len(covering), 1, msg=f"day {day}")
-            self.assertEqual(
-                covering[0].component.summary, "Conference", msg=f"day {day}"
-            )
-        # The exclusive end day shows nothing.
-        self.assertEqual(_full_day_rows(date(2026, 5, 4), rows), [])
-
-    def test_full_day_rows_returns_each_event_for_a_busy_day(self) -> None:
-        from pony.tui.calendar.widgets.timeline_grid import _full_day_rows
-
-        # Two all-day events on the same day plus a multi-day span that
-        # also covers it → three stacked banner lines, in event order.
-        rows = (
-            self._all_day_row(
-                "vacation",
-                "Vacation",
-                datetime(2026, 5, 1, tzinfo=UTC),
-                datetime(2026, 5, 3, tzinfo=UTC),
-            ),
-            self._all_day_row(
-                "holiday",
-                "Public holiday",
-                datetime(2026, 5, 2, tzinfo=UTC),
-                datetime(2026, 5, 3, tzinfo=UTC),
-            ),
-            self._all_day_row(
-                "birthday",
-                "Birthday",
-                datetime(2026, 5, 2, tzinfo=UTC),
-                datetime(2026, 5, 3, tzinfo=UTC),
-            ),
-        )
-        covering = _full_day_rows(date(2026, 5, 2), rows)
-        self.assertEqual(
-            [r.component.summary for r in covering],
-            ["Vacation", "Public holiday", "Birthday"],
-        )
 
 
 class TimelineGridFlowTest(TuiFlowTestCase):

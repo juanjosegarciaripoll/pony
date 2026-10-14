@@ -18,6 +18,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
+from typing import NamedTuple
 
 from pony.calendar.domain import (
     AppConfig,
@@ -276,19 +277,18 @@ def gather_occurrences(
                 continue
             if component.local_status == LocalStatus.TRASHED:
                 continue
+            if isinstance(component, VTodo):
+                # A task's row is the full-day one injected below, which
+                # is how every view shows tasks: "all day", no duration,
+                # 📋 on the summary.  The occurrence cache holds tasks
+                # too -- `populate_occurrences` expands every master --
+                # so taking them here as well showed each one twice, one
+                # of the two at a clock time no view means to display.
+                continue
             rows.append(OccurrenceRow(occurrence=occ, component=component))
         # Inject VTodos as full-day rows.  The window and the active
         # filter are the query's, so this does not read the calendar's
         # events again.
-        #
-        # This double-counts a task that also has an occurrence row:
-        # `populate_occurrences` expands every master, tasks included,
-        # so one with an anchor inside the window arrives from the join
-        # above as well as from here.  Pre-existing -- the version that
-        # read the whole calendar did the same -- and pinned by
-        # `tests_calendar/test_occurrences_cache.py`; the comment that
-        # used to sit here claimed the cache held only events, which is
-        # what hid it.
         for component in index.list_todos(calendar, window=window):
             if not isinstance(component, VTodo):
                 continue
@@ -469,18 +469,30 @@ def is_in_progress(occurrence: Occurrence, now: datetime) -> bool:
     return occurrence.start <= now < occurrence.end
 
 
+type OccurrenceKey = tuple[ComponentRef, datetime]
+"""What identifies one occurrence: the component, and when it starts.
+
+A recurring event is one component with many occurrences, so a ref on
+its own names the series. Anything that is true of *this* instance --
+it is running now, it is the cell the cursor is on -- is keyed by both.
+"""
+
+
+def occurrence_key(row: OccurrenceRow) -> OccurrenceKey:
+    """The key of *row*'s occurrence."""
+    return (row.component.ref, row.occurrence.start)
+
+
 def in_progress_keys(
     rows: Sequence[OccurrenceRow], now: datetime
-) -> frozenset[tuple[ComponentRef, datetime]]:
-    """`(ref, start)` of every row in progress at `now`.
+) -> frozenset[OccurrenceKey]:
+    """Every row in progress at `now`, by occurrence.
 
     Keyed by start as well as ref so only the running instance of a
     recurring event counts, not its siblings on other days.
     """
     return frozenset(
-        (row.component.ref, row.occurrence.start)
-        for row in rows
-        if is_in_progress(row.occurrence, now)
+        occurrence_key(row) for row in rows if is_in_progress(row.occurrence, now)
     )
 
 
@@ -810,6 +822,133 @@ def full_day_rows(
     return out
 
 
+#: Minutes one timeline slot covers.  The grid draws two per hour, and
+#: the projection has to agree with it about where a slot begins.
+SLOT_MINUTES = 30
+
+
+@dataclass(frozen=True, slots=True)
+class SlotCell:
+    """Which occurrence a timeline slot is of, and how it sits in it.
+
+    `key` is the occurrence, not the series, so a caller can ask
+    whether *this* instance is the one running now.  `summary` is what
+    the component calls itself, `None` when it calls itself nothing: a
+    stand-in belongs to whoever draws it.  `hidden` counts the further
+    occurrences active in the same slot, which a renderer shows as a
+    `+N` and a wider grid could show side by side.
+    """
+
+    key: OccurrenceKey
+    summary: str | None
+    #: The occurrence begins in this slot, rather than running through it.
+    is_start: bool
+    #: Its last slot, which a renderer can cap off.
+    is_end: bool
+    hidden: int
+
+
+def slot_cell(
+    day: date,
+    slot_minutes_in_day: int,
+    events: Sequence[OccurrenceRow],
+) -> SlotCell | None:
+    """What the `(day, slot)` cell of a timeline is of, or `None` if nothing.
+
+    A slot spans `[slot_minutes_in_day, slot_minutes_in_day +
+    SLOT_MINUTES)`, and any occurrence whose `[start, end)` overlaps it
+    is in it -- so a multi-hour event covers every slot it touches.
+    Occurrences that *begin* in the slot come before those already
+    running, so a new event wins the cell it starts in.
+
+    All-day occurrences are left out: they are the banner's, not the
+    grid's.
+    """
+    slot_start = slot_minutes_in_day
+    slot_end = slot_minutes_in_day + SLOT_MINUTES
+    # Each entry carries the row with the minutes it occupies on `day`,
+    # so the primary occurrence's extent is already known below.
+    starting: list[tuple[OccurrenceRow, int, int]] = []
+    continuing: list[tuple[OccurrenceRow, int, int]] = []
+    for row in events:
+        if is_full_day(row.occurrence):
+            continue
+        span = timed_day_minutes(row.occurrence, day)
+        if span is None:
+            continue
+        start_min, end_min = span
+        if start_min < slot_end and end_min > slot_start:
+            if start_min >= slot_start:
+                starting.append((row, start_min, end_min))
+            else:
+                continuing.append((row, start_min, end_min))
+    active = starting + continuing
+    if not active:
+        return None
+    first, first_start_min, first_end_min = active[0]
+    is_start = first_start_min >= slot_start
+    return SlotCell(
+        key=occurrence_key(first),
+        summary=first.component.summary or None,
+        is_start=is_start,
+        is_end=(not is_start) and first_end_min <= slot_end,
+        hidden=len(active) - 1,
+    )
+
+
+class BannerCell(NamedTuple):
+    """One day column of a full-day occurrence's banner."""
+
+    row: OccurrenceRow
+    #: The first of the shown days this occurrence covers, which is
+    #: where its summary goes; the rest of the run is bar.
+    starts_here: bool
+    #: Placement order over the whole banner, for a renderer that wants
+    #: neighbouring bars to differ.
+    order: int
+
+
+def all_day_lanes(
+    days: Sequence[tuple[date, Sequence[OccurrenceRow]]],
+) -> list[dict[int, BannerCell]]:
+    """Assign each full-day occurrence to a banner line across *days*.
+
+    One dict per line, mapping a 1-based day column to what sits in it.
+    An occurrence keeps its line over every day it covers, so a
+    multi-day span reads as one bar; occurrences are placed
+    longest-first within their start date, each on the lowest line free
+    on all of its days.
+    """
+    columns: dict[OccurrenceKey, list[int]] = {}
+    rows_by_key: dict[OccurrenceKey, OccurrenceRow] = {}
+    for col_idx, (day_date, events) in enumerate(days, start=1):
+        for row in full_day_rows(day_date, events):
+            key = occurrence_key(row)
+            if col_idx not in columns.setdefault(key, []):
+                columns[key].append(col_idx)
+            rows_by_key[key] = row
+    order = sorted(
+        columns,
+        key=lambda k: (
+            min(columns[k]),
+            -len(columns[k]),
+            rows_by_key[k].occurrence.start,
+        ),
+    )
+    lanes: list[dict[int, BannerCell]] = []
+    for index, key in enumerate(order):
+        cols = sorted(columns[key])
+        lane = next((lane for lane in lanes if not any(c in lane for c in cols)), None)
+        if lane is None:
+            lane = {}
+            lanes.append(lane)
+        for col in cols:
+            lane[col] = BannerCell(
+                row=rows_by_key[key], starts_here=col == cols[0], order=index
+            )
+    return lanes
+
+
 def month_buckets(
     rows: Sequence[OccurrenceRow],
     start: date,
@@ -1020,6 +1159,13 @@ __all__ = [
     "grid_title",
     "grid_window",
     "in_progress_keys",
+    "occurrence_key",
+    "slot_cell",
+    "all_day_lanes",
+    "SlotCell",
+    "BannerCell",
+    "OccurrenceKey",
+    "SLOT_MINUTES",
     "is_full_day",
     "is_in_progress",
     "local_days",

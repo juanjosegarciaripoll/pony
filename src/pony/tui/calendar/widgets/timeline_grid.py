@@ -28,19 +28,21 @@ from pony.calendar.domain import ComponentRef
 from pony.calendar.mutations import all_day_bounds
 from pony.calendar.views import (
     IN_PROGRESS_MARK,
+    OccurrenceKey,
     OccurrenceRow,
+    SlotCell,
+    all_day_lanes,
     day_column_label,
     in_progress_keys,
-    is_full_day,
+    slot_cell,
 )
 from pony.calendar.views import (
     SLOT_MINUTES as _SLOT_MINUTES,
 )
 from pony.calendar.views import compute_hour_range as _compute_hour_range
 from pony.calendar.views import day_columns as bucket_by_day
-from pony.calendar.views import full_day_rows as _full_day_rows
-from pony.calendar.views import timed_day_minutes as _timed_day_minutes
 
+_NO_SUMMARY = "(no summary)"
 _TIME_COL_WIDTH = 6
 _DAY_COL_WIDTH = 20
 _ALL_DAY_LABEL = "all day"
@@ -76,7 +78,10 @@ class _Now(NamedTuple):
 
     col: int  # column of today's date
     slot_minutes: int  # start of the current 30-min slot, minutes from midnight
-    active: frozenset[ComponentRef]  # events in progress in that column
+    #: The occurrences in progress in that column -- keyed by start as
+    #: well as ref, so a recurring event is marked on the instance that
+    #: is running and not on its siblings.
+    active: frozenset[OccurrenceKey]
 
 
 def _contrast_fg(background: str) -> str:
@@ -442,7 +447,7 @@ class TimelineGrid(DataTable[str | Text]):
         # plus one, so every day has an empty cell to click (or drag
         # across) to create an all-day event. The "all day" label sits on
         # the first line only so the rows read as one group.
-        lanes = _all_day_lanes(days)
+        lanes = all_day_lanes(days)
         palette = self._palette()
         w = self._day_col_width
         for line in range(len(lanes) + 1):
@@ -456,10 +461,13 @@ class TimelineGrid(DataTable[str | Text]):
                 if placed is None:
                     cells.append("")
                     continue
-                row, is_first, alt = placed
+                # Neighbouring bars differ: the shade alternates with
+                # the order the projection placed them in.
+                alt = placed.order % 2 == 1
                 fill = palette.fill_b if alt else palette.fill_a
                 fg = palette.fg_b if alt else palette.fg_a
-                title = (row.component.summary or "(no summary)") if is_first else ""
+                row = placed.row
+                title = _summary_of(row) if placed.starts_here else ""
                 cells.append(Text(title[:w].ljust(w), style=f"{fg} on {fill}"))
                 self._cells[(row_index, col_idx)] = row.component.ref
             self.add_row(*cells)
@@ -492,10 +500,10 @@ class TimelineGrid(DataTable[str | Text]):
             self._slot_starts[(row_index, col_idx)] = datetime.combine(
                 day_date, time(slot_hour, slot_minute)
             ).astimezone()
-            content, ref, is_start, is_end = _cell_for_slot(
-                day_date, slot_minutes_in_day, events
-            )
-            if ref is not None:
+            cell = slot_cell(day_date, slot_minutes_in_day, events)
+            if cell is not None:
+                is_start, is_end = cell.is_start, cell.is_end
+                content = _summary_text(cell)
                 # Flip the alternation flag each time a new event starts so
                 # back-to-back events always render in different shades.
                 if is_start:
@@ -506,7 +514,7 @@ class TimelineGrid(DataTable[str | Text]):
                 if (
                     current is not None
                     and col_idx == current.col
-                    and ref in current.active
+                    and cell.key in current.active
                 ):
                     fill, fg = palette.now, palette.now_fg
                 w = self._day_col_width
@@ -520,7 +528,7 @@ class TimelineGrid(DataTable[str | Text]):
                     style = f"on {fill}"
                     text = " " * w
                 cells.append(Text(text, style=style))
-                self._cells[(row_index, col_idx)] = ref
+                self._cells[(row_index, col_idx)] = cell.key[0]
             elif is_now_row and current is not None and col_idx == current.col:
                 cells.append(
                     Text(_NOW_LINE_CHAR * self._day_col_width, style=palette.now)
@@ -600,108 +608,29 @@ def _locate_now(
         return _Now(
             col=col_idx,
             slot_minutes=minutes - minutes % _SLOT_MINUTES,
-            active=frozenset(ref for ref, _ in in_progress_keys(events, now)),
+            active=in_progress_keys(events, now),
         )
     return None
+
+
+def _summary_of(row: OccurrenceRow) -> str:
+    """What to write on a bar: the summary, or a stand-in for none.
+
+    The stand-in is the renderer's: `pony.calendar.views` reports that
+    the component calls itself nothing and leaves the wording here.
+    """
+    return row.component.summary or _NO_SUMMARY
+
+
+def _summary_text(cell: SlotCell) -> str:
+    """A slot's label, with the count of what did not fit beside it."""
+    summary = cell.summary or _NO_SUMMARY
+    return f"{summary} +{cell.hidden}" if cell.hidden else summary
 
 
 def _format_slot_time(minutes_from_midnight: int) -> str:
     h, m = divmod(minutes_from_midnight, 60)
     return f"{h:02d}:{m:02d}"
-
-
-def _cell_for_slot(
-    day: date,
-    slot_minutes_in_day: int,
-    events: Sequence[OccurrenceRow],
-) -> tuple[str, ComponentRef | None, bool, bool]:
-    """Figure out what data belongs in the (day, slot) cell.
-
-    A slot spans `[slot_minutes_in_day, slot_minutes_in_day + 30)`.
-    Any event whose `[start, end)` interval overlaps is included, so a
-    multi-hour event covers every slot it touches. Events that START in
-    this slot are listed before those already running from an earlier
-    slot; when several are active the first wins and a `+N` suffix
-    indicates hidden extras.
-
-    Returns `(summary, ref, is_start, is_end)`:
-    - `summary`: the primary event title (always set when `ref` is not None).
-    - `ref`: the event to open on Enter; `None` when the slot is empty.
-    - `is_start`: True when the primary event begins in this slot,
-      False for a continuation slot.  The renderer uses this to decide
-      whether to display the title or just the coloured bar.
-    - `is_end`: True when this continuation slot is the event's final
-      slot. The renderer draws a low-profile end cap for visual
-      separation from whatever follows.
-    """
-    slot_start = slot_minutes_in_day
-    slot_end = slot_minutes_in_day + _SLOT_MINUTES
-    # Each entry carries the row with the minutes it occupies on `day`,
-    # so the primary event's extent is already known below.
-    starting: list[tuple[OccurrenceRow, int, int]] = []
-    continuing: list[tuple[OccurrenceRow, int, int]] = []
-    for row in events:
-        if is_full_day(row.occurrence):
-            continue
-        span = _timed_day_minutes(row.occurrence, day)
-        if span is None:
-            continue
-        start_min, end_min = span
-        if start_min < slot_end and end_min > slot_start:
-            if start_min >= slot_start:
-                starting.append((row, start_min, end_min))
-            else:
-                continuing.append((row, start_min, end_min))
-    active = starting + continuing
-    if not active:
-        return "", None, False, False
-    first, first_start_min, first_end_min = active[0]
-    summary = first.component.summary or "(no summary)"
-    if len(active) > 1:
-        summary = f"{summary} +{len(active) - 1}"
-    is_start = first_start_min >= slot_start
-    is_end = (not is_start) and first_end_min <= slot_end
-    return summary, first.component.ref, is_start, is_end
-
-
-def _all_day_lanes(
-    days: Sequence[tuple[date, Sequence[OccurrenceRow]]],
-) -> list[dict[int, tuple[OccurrenceRow, bool, bool]]]:
-    """Assign each full-day event to a banner line across the shown days.
-
-    Returns one dict per line mapping a column index (1-based, matching
-    the day columns) to `(row, is_first_visible_day, alt_shade)`. An
-    event keeps the same line over all the days it covers, so a
-    multi-day event reads as one bar; events are placed longest-first
-    within their start date on the lowest line that is free on all
-    their days. The shade alternates per event so neighbours differ.
-    """
-    columns: dict[tuple[ComponentRef, datetime], list[int]] = {}
-    rows_by_key: dict[tuple[ComponentRef, datetime], OccurrenceRow] = {}
-    for col_idx, (day_date, events) in enumerate(days, start=1):
-        for row in _full_day_rows(day_date, events):
-            key = (row.component.ref, row.occurrence.start)
-            if col_idx not in columns.setdefault(key, []):
-                columns[key].append(col_idx)
-            rows_by_key[key] = row
-    order = sorted(
-        columns,
-        key=lambda k: (
-            min(columns[k]),
-            -len(columns[k]),
-            rows_by_key[k].occurrence.start,
-        ),
-    )
-    lanes: list[dict[int, tuple[OccurrenceRow, bool, bool]]] = []
-    for index, key in enumerate(order):
-        cols = sorted(columns[key])
-        lane = next((lane for lane in lanes if not any(c in lane for c in cols)), None)
-        if lane is None:
-            lane = {}
-            lanes.append(lane)
-        for c in cols:
-            lane[c] = (rows_by_key[key], c == cols[0], index % 2 == 1)
-    return lanes
 
 
 __all__ = ["TimelineGrid", "bucket_by_day"]

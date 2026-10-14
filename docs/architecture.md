@@ -321,7 +321,9 @@ message into the four fields and the one state a list row shows, or a
 contact into its five columns, and `pony.calendar.views` holds the calendar's
 window arithmetic, the index query each view needs, the strings its rows
 are made of, and the grid geometry — which month cell a span covers,
-which day columns a trip occupies, how wide the hour axis has to be.
+which day columns a trip occupies, which occurrence a half-hour slot is
+of (`slot_cell`), which banner line a multi-day span runs on
+(`all_day_lanes`), how wide the hour axis has to be.
 Neither knows how a row will be drawn. Where a row needs emphasis — unread mail, an event
 in progress, one already over — it says so as data (`MessageRow.unread`,
 `RowEmphasis`) and leaves bold, dim or a CSS class to the renderer.

@@ -159,13 +159,12 @@ class IngestBytesTest(unittest.TestCase):
         """An 11:00-12:00 invitation sent as DTSTART + DURATION.
 
         Without the end the occurrence is an instant: the agenda shows a
-        start and a blank duration, and `_cell_for_slot` paints nothing
-        at all, because a span that ends where it begins overlaps no
+        start and a blank duration, and the timeline paints nothing at
+        all, because a span that ends where it begins overlaps no
         half-hour slot. So the event the user was invited to simply was
         not on the timeline.
         """
-        from pony.calendar.views import OccurrenceRow
-        from pony.tui.calendar.widgets.timeline_grid import _cell_for_slot
+        from pony.calendar.views import OccurrenceRow, slot_cell
 
         self._ingest(corpus.event_with_duration())
         occ = self.index.query_occurrences(
@@ -181,11 +180,10 @@ class IngestBytesTest(unittest.TestCase):
         row = OccurrenceRow(occurrence=occ[0], component=component)
         local_start = occ[0].start.astimezone()
         slot = local_start.hour * 60 + local_start.minute
-        _summary, ref, is_start, _is_end = _cell_for_slot(
-            local_start.date(), slot, (row,)
-        )
-        self.assertIsNotNone(ref, "the event should occupy its own starting slot")
-        self.assertTrue(is_start)
+        cell = slot_cell(local_start.date(), slot, (row,))
+        self.assertIsNotNone(cell, "the event should occupy its own starting slot")
+        assert cell is not None
+        self.assertTrue(cell.is_start)
 
     def test_update_refreshes_occurrence_cache(self) -> None:
         # A newer-SEQUENCE update moves the start; the cache must reflect
