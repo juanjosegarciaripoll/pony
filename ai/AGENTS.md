@@ -137,7 +137,7 @@ with no mail code in the way.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.16 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.26 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -230,7 +230,7 @@ Largest remaining gaps, by absolute missing statements+branches:
 
 | Missing | File | % |
 |---:|---|---:|
-| 225 | `pony/cli/calendar.py` | 79.56 |
+| 212 | `pony/cli/calendar.py` | 80.21 |
 | 80 | `pony/calendar/sync.py` | 89.16 |
 | 76 | `pony/tui/calendar/screens/main_screen.py` | 86.67 |
 | 65 | `pony/calendar/oauth.py` | 80.71 |
