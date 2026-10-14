@@ -31,6 +31,7 @@ from pony.tui.screens.compose_screen import ComposeScreen
 from pony.tui.screens.main_screen import MainScreen
 from pony.tui.widgets.folder_panel import FolderPanel
 from pony.tui.widgets.message_list import MessageListPanel
+from pony.tui.widgets.message_view import MessageViewPanel
 
 
 def _main(app: object) -> MainScreen:
@@ -563,6 +564,103 @@ async def test_a_key_pressed_while_the_list_loads_says_it_is_loading() -> None:
         assert [
             row.local_status for row in index.list_folder_messages(folder=folder)
         ] == [MessageStatus.ACTIVE]
+
+
+async def test_a_stale_rows_ready_does_not_spend_the_pending_sync() -> None:
+    """The reader syncs from the load that is current, not the one before.
+
+    ``RowsReady`` is a message, so one can be in the queue from a load
+    that a newer load has already replaced. Acting on it synced the
+    reader to a panel that had just been emptied -- clearing the pane --
+    and consumed the request, so the rows that did arrive never synced
+    anything.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-stale-rows-ready",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
+
+        panel.load_folder(folder)
+        assert panel.awaiting_rows is True
+        screen._sync_view_with_rows = True
+        screen.on_message_list_panel_rows_ready(MessageListPanel.RowsReady())
+
+        # Still owed a sync: the rows this is waiting for have not
+        # arrived yet.
+        assert screen._sync_view_with_rows is True
+
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+        assert screen._sync_view_with_rows is False
+
+
+async def test_a_repaint_with_nothing_to_reload_leaves_no_sync_owing() -> None:
+    """A request to sync the reader belongs to a load that happened.
+
+    With no folder open and no search to re-run there is nothing to
+    reload, and the request used to stay set -- so the *next* load,
+    which is somebody opening a folder, opened its first message in the
+    reader without being asked.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-repaint-nothing",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
+        view = screen.query_one(MessageViewPanel)
+        screen._close_reader()
+        screen._current_folder_ref = None
+
+        screen._refresh_after_list_action()
+
+        assert screen._sync_view_with_rows is False
+
+        # Opening a folder now leaves the reader closed.
+        screen._current_folder_ref = folder
+        panel.load_folder(folder)
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert view.display is False
+
+
+async def test_a_message_key_while_the_list_loads_says_it_is_loading() -> None:
+    """The keys that act on one message, not on the marks.
+
+    ``_act_on_targets`` says so; reply, forward, save, print and edit
+    resolve their message through ``get_current_message``, which was
+    simply ``None`` while the rows were in flight -- five keys that
+    looked dropped.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-message-key-loading",
+        seed=[(folder, plain_text())],
+    )
+
+    async with app.run_test() as pilot:
+        await _select_inbox(pilot)
+        screen = _main(app)
+        panel = screen.query_one(MessageListPanel)
+        messages = _notifications(app)
+
+        panel.load_folder(folder)
+        assert panel.awaiting_rows is True
+        screen.compose_reply()
+
+        assert "The list is still loading." in messages
+        assert not isinstance(app.screen, ComposeScreen)
 
 
 async def test_search_without_a_folder_or_account_selected_warns() -> None:

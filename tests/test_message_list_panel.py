@@ -603,6 +603,55 @@ async def test_the_reader_follows_the_cursor_once_the_rows_land() -> None:
         assert view._rendered.subject != opened.subject
 
 
+async def test_a_read_that_fails_leaves_the_list_usable() -> None:
+    """A load that raises still ends the awaiting state.
+
+    It did not: ``_rows_known`` was set after the read, so a query that
+    raised left the panel waiting for rows that were never coming --
+    the border saying it was loading and every action answering "the
+    list is still loading" for the rest of the session. A failure is
+    now an empty list, a border that says so, one notice, and a panel
+    the next load can use.
+    """
+    app, _cfg, _paths, index, _mirrors = _app_with_rows("mlist-read-fails", count=3)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        notices: list[str] = []
+
+        # Recorded rather than forwarded: a toast on screen is not what
+        # this is about, and the real one outlives the test.
+        def capture(message: str, **_kwargs: object) -> None:
+            notices.append(message)
+
+        app.notify = capture  # type: ignore[method-assign]
+        real = index.list_folder_message_summaries
+
+        def exploding(**_kwargs: object) -> list[object]:
+            raise OSError("the index went away")
+
+        index.list_folder_message_summaries = exploding  # type: ignore[method-assign]
+        panel.load_folder(_INBOX)
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert panel.awaiting_rows is False
+        assert panel.border_title == "Messages  (could not load)"
+        assert panel.summaries_to_act_on() == []
+        assert "Could not load the message list." in notices
+
+        # And the panel recovers: the next load is an ordinary one.
+        index.list_folder_message_summaries = real  # type: ignore[method-assign]
+        panel.load_folder(_INBOX)
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
+        assert panel.awaiting_rows is False
+        assert panel.border_title == "Messages"
+        assert panel.row_count == 3
+
+
 # ---------------------------------------------------------------------------
 # Cursor restore across a reload
 # ---------------------------------------------------------------------------

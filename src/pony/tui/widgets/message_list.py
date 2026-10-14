@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,9 +25,27 @@ from ...views import ROW_BATCH, correspondent_label, message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 
+_log = logging.getLogger(__name__)
+
 # Width of the date cell. Widest format produced by ``views.format_received``
 # is ``YYYY-MM-DD`` (10 chars).
 _DATE_WIDTH = 10
+
+
+@dataclass(frozen=True, slots=True)
+class _Titles:
+    """What the panel's border says at each stage of one load.
+
+    Four, because a load has four outcomes a reader can tell apart:
+    running, done, done with nothing in it, and failed.  The last one
+    is why they travel together -- a load that raised used to leave the
+    border saying it was still running, forever.
+    """
+
+    loading: str
+    ready: str
+    failed: str
+    empty: str | None = None
 
 
 class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
@@ -245,14 +264,19 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         column; the screen sets it for a Sent folder, where the sender
         is the user on every row.
         """
+        titles = _Titles(
+            loading="Messages  (loading…)",
+            ready="Messages",
+            failed="Messages  (could not load)",
+        )
         self._in_search = False
-        self._begin_load("Messages  (loading…)")
+        self._begin_load(titles.loading)
         self._set_correspondent_column(show_recipients)
         self._load_worker = self._load_rows(
             lambda: list(self._index.list_folder_message_summaries(folder=folder_ref)),
+            titles=titles,
             restore_row=restore_row,
             restore_key=restore_key,
-            title="Messages",
         )
 
     def _restore_target(
@@ -322,18 +346,23 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         the ``ORDER BY m.received_at DESC`` the search already runs, and
         one that would quietly undo any other order a caller asked for.
         """
+        titles = _Titles(
+            loading=f"Search: {query_raw}  (searching…)",
+            ready=f"Search: {query_raw}  [q=exit]",
+            failed=f"Search: {query_raw}  (search failed)  [q=exit]",
+            empty=f"Search: {query_raw}  (no results)  [q=exit]",
+        )
         self._in_search = True
-        self._begin_load(f"Search: {query_raw}  (searching…)")
+        self._begin_load(titles.loading)
         # Results span folders, so there is no single answer to whether
         # the user is the sender; From is the column that always means
         # something.
         self._set_correspondent_column(False)
         self._load_worker = self._load_rows(
             lambda: [summary_of(message) for message in fetch()],
+            titles=titles,
             restore_row=restore_row,
             restore_key=restore_key,
-            title=f"Search: {query_raw}  [q=exit]",
-            empty_title=f"Search: {query_raw}  (no results)  [q=exit]",
         )
 
     def _begin_load(self, awaiting_title: str) -> None:
@@ -367,10 +396,9 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self,
         fetch: Callable[[], list[FolderMessageSummary]],
         *,
+        titles: _Titles,
         restore_row: int | None,
         restore_key: str | None,
-        title: str,
-        empty_title: str | None = None,
     ) -> None:
         """Find the rows off the event loop, then stream them in.
 
@@ -381,21 +409,60 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         screen's blocking work uses; the index opens one connection per
         thread for exactly this.
 
+        A read that raises has to end the awaiting state too, or the
+        panel waits for rows that are never coming: the border goes on
+        saying it is loading and every action answers "the list is
+        still loading" for the rest of the session.  A failed load is
+        an empty list, a border that says so, and one notice.
+
         ``exclusive=True`` ensures a second ``load_folder`` call cancels
         the in-flight load -- query included -- before this one starts
-        adding rows for the previous folder.
+        adding rows for the previous folder.  Cancellation is not a
+        failure: asyncio raises it into this coroutine rather than
+        resuming it, so nothing below runs and the load that cancelled
+        it owns the panel.
         """
-        summaries = await asyncio.to_thread(fetch)
+        try:
+            summaries = await asyncio.to_thread(fetch)
+        except Exception:
+            _log.exception("loading the message list failed")
+            self._finish_load([], titles=titles, failed=True)
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                "Could not load the message list.", severity="error"
+            )
+            return
+        self._finish_load(
+            summaries,
+            titles=titles,
+            restore_row=restore_row,
+            restore_key=restore_key,
+        )
+        await self._stream_rows(summaries)
+
+    def _finish_load(
+        self,
+        summaries: list[FolderMessageSummary],
+        *,
+        titles: _Titles,
+        restore_row: int | None = None,
+        restore_key: str | None = None,
+        failed: bool = False,
+    ) -> None:
+        """Adopt what the read found and stop awaiting rows.
+
+        Before the rows are inserted: what reads the panel back wants
+        the selection, and the selection is decided by now.
+        """
         self._summaries = summaries
         self._pending_cursor = self._restore_target(summaries, restore_row, restore_key)
-        self.border_title = (
-            empty_title if not summaries and empty_title is not None else title
-        )
-        # Before the rows: what reads the panel back is after a
-        # selection, and the selection is decided by now.
+        if failed:
+            self.border_title = titles.failed
+        elif not summaries and titles.empty is not None:
+            self.border_title = titles.empty
+        else:
+            self.border_title = titles.ready
         self._rows_known.set()
         self.post_message(self.RowsReady())
-        await self._stream_rows(summaries)
 
     async def _stream_rows(self, summaries: list[FolderMessageSummary]) -> None:
         """Insert rows in batches, yielding to the event loop between them."""

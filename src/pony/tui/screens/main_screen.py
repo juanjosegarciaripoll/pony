@@ -947,8 +947,10 @@ class MainScreen(Screen[None]):
         self._show_search_results(keep_cursor=False)
         self.query_one(MessageListPanel).focus()
 
-    def _show_search_results(self, *, keep_cursor: bool = True) -> None:
+    def _show_search_results(self, *, keep_cursor: bool = True) -> bool:
         """Run :attr:`_search` again and put its hits in the list.
+
+        Returns whether there was a search to run.
 
         Called both by the search dialog and by every action that
         changes a row, which is what keeps the result set on screen
@@ -968,7 +970,7 @@ class MainScreen(Screen[None]):
 
         search = self._search
         if search is None:
-            return
+            return False
         query = parse_query(search.raw)
         msg_list = self.query_one(MessageListPanel)
         summary = msg_list.get_selected_summary() if keep_cursor else None
@@ -990,6 +992,7 @@ class MainScreen(Screen[None]):
             restore_row=msg_list.effective_cursor_row if keep_cursor else None,
             restore_key=None if summary is None else str(summary.message_ref.id),
         )
+        return True
 
     # ------------------------------------------------------------------
     # Goto folder
@@ -1126,8 +1129,13 @@ class MainScreen(Screen[None]):
             show_recipients=self._in_sent_folder(folder_ref),
         )
 
-    def _repaint_list(self) -> None:
+    def _repaint_list(self) -> bool:
         """Reload whatever the list is showing, keeping the cursor.
+
+        Returns whether a load was actually started: with no folder
+        open and no search to re-run there is nothing to reload, and a
+        caller waiting for the rows would otherwise wait for a load
+        that never happened and spend its wait on the next one.
 
         The list shows either one folder or a set of search results, and
         an action has to leave it showing the same one.  Reloading the
@@ -1142,9 +1150,11 @@ class MainScreen(Screen[None]):
         wrong one.
         """
         if self.query_one(MessageListPanel).in_search:
-            self._show_search_results()
-        elif self._current_folder_ref is not None:
+            return self._show_search_results()
+        if self._current_folder_ref is not None:
             self._reload_keeping_cursor(self._current_folder_ref)
+            return True
+        return False
 
     def _refresh_after_list_action(self) -> None:
         """Repaint the list, the open message and the folder counts.
@@ -1154,8 +1164,7 @@ class MainScreen(Screen[None]):
         fetches its rows in a thread, so on this line it has none and
         the reader pane would be cleared for every action.
         """
-        self._sync_view_with_rows = True
-        self._repaint_list()
+        self._sync_view_with_rows = self._repaint_list()
         self._refresh_folder_indicators()
 
     def on_message_list_panel_rows_ready(
@@ -1169,6 +1178,12 @@ class MainScreen(Screen[None]):
         """
         event.stop()
         if not self._sync_view_with_rows:
+            return
+        if self.query_one(MessageListPanel).awaiting_rows:
+            # A newer load is already in flight -- this message is from
+            # the one it replaced. Its own `RowsReady` is the one to
+            # sync from, so the request stands rather than being spent
+            # on rows that are already gone.
             return
         self._sync_view_with_rows = False
         self._refresh_view_after_reload()
@@ -1554,6 +1569,7 @@ class MainScreen(Screen[None]):
         """
         msg = self.get_current_message()
         if msg is None:
+            self._nothing_to_act_on()
             return None
         raw = self._load_current_raw_or_notify(msg, noun=noun)
         if raw is None:
@@ -1630,6 +1646,7 @@ class MainScreen(Screen[None]):
         """
         msg = self.get_current_message()
         if msg is None:
+            self._nothing_to_act_on()
             return None
         accounts = self._sendable_or_notify(verb)
         if accounts is None:
@@ -1725,6 +1742,7 @@ class MainScreen(Screen[None]):
         """
         msg = self.get_current_message()
         if msg is None:
+            self._nothing_to_act_on()
             return
         accounts = self._sendable_or_notify("Composing")
         if accounts is None:
@@ -1810,6 +1828,7 @@ class MainScreen(Screen[None]):
 
         msg = self.get_current_message()
         if msg is None:
+            self._nothing_to_act_on()
             return
         mirror = self._mirrors[msg.message_ref.account_name]
         try:

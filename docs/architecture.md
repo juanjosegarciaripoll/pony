@@ -377,8 +377,11 @@ selected, nothing to act on, and a border that says so — and it posts
 Anything that has to read the panel back after reloading it waits for that
 message: the reader pane follows the cursor onto whatever took a trashed
 message's place, and an action pressed in the gap is told the list is still
-loading rather than silently doing nothing. A search is the same worker and
-the same state; the screen owns the query and hands the panel the read
+loading rather than silently doing nothing. A read that *fails* ends the
+state too — an empty list, a border saying so, and one notice — because a
+panel still awaiting rows that are not coming answers every key that way
+for the rest of the session. A search is the same worker and the same
+state; the screen owns the query and hands the panel the read
 (`load_search(..., fetch=…)`) rather than its result.
 
 The correspondent column shows the sender, except in a Sent folder, where it

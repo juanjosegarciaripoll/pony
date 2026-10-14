@@ -184,7 +184,9 @@ without that a kept mirror came back indexed by nothing.
   ask for. While a load is in flight the list says so in its border, has
   nothing selected and nothing to act on; a key pressed in that moment is
   told the list is still loading instead of quietly doing nothing, and the
-  reader pane follows the cursor once the rows land.
+  reader pane follows the cursor once the rows land. A read that fails says
+  so and leaves the list usable, rather than waiting for rows that are not
+  coming.
 
 - **One request repaints the browser's page after an action**: the list and
   the unread counts beside the folders were two fetches, the second not
