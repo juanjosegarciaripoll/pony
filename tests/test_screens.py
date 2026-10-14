@@ -21,18 +21,18 @@ import pytest
 from conftest import TMP_ROOT
 from tui_helpers import DeterministicDirOnlyTree
 
-import pony.tui.screens.save_folder_picker_screen as save_picker_module
+import pony.tui.mail.screens.save_folder_picker_screen as save_picker_module
 from pony.mail.domain import FolderRef
 from pony.mail.message_export import downloads_dir
 from pony.tui.app import ContactsApp, EmlViewerApp
-from pony.tui.screens.confirm_screen import ConfirmScreen
-from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
-from pony.tui.screens.floating_input_screen import SimpleInputScreen
-from pony.tui.screens.goto_folder_screen import GotoFolderScreen, _fuzzy_filter
-from pony.tui.screens.link_action_screen import LinkActionScreen
-from pony.tui.screens.new_folder_screen import NewFolderScreen
-from pony.tui.screens.save_draft_screen import SaveDraftScreen
-from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
+from pony.tui.mail.screens.confirm_screen import ConfirmScreen
+from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
+from pony.tui.mail.screens.floating_input_screen import SimpleInputScreen
+from pony.tui.mail.screens.goto_folder_screen import GotoFolderScreen, _fuzzy_filter
+from pony.tui.mail.screens.link_action_screen import LinkActionScreen
+from pony.tui.mail.screens.new_folder_screen import NewFolderScreen
+from pony.tui.mail.screens.save_draft_screen import SaveDraftScreen
+from pony.tui.mail.screens.sync_confirm_screen import SyncConfirmScreen
 
 #: The production class, captured before the fixture below replaces it.
 _REAL_DIR_ONLY_TREE = save_picker_module.DirOnlyTree
@@ -228,7 +228,7 @@ async def test_link_action_cancel_button_dismisses(
 ) -> None:
     open_mock = MagicMock()
     monkeypatch.setattr(
-        "pony.tui.screens.link_action_screen.webbrowser.open", open_mock
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open", open_mock
     )
     app = _make_host(LinkActionScreen, "https://example.com")
     async with app.run_test() as pilot:
@@ -244,7 +244,7 @@ async def test_link_action_open_button_calls_webbrowser(
 ) -> None:
     open_mock = MagicMock()
     monkeypatch.setattr(
-        "pony.tui.screens.link_action_screen.webbrowser.open", open_mock
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open", open_mock
     )
     app = _make_host(LinkActionScreen, "https://example.com")
     async with app.run_test() as pilot:
@@ -258,7 +258,7 @@ async def test_link_action_open_oserror_notifies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "pony.tui.screens.link_action_screen.webbrowser.open",
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open",
         MagicMock(side_effect=OSError("no browser")),
     )
     app = _make_host(LinkActionScreen, "https://example.com")
@@ -272,7 +272,7 @@ async def test_link_action_open_oserror_notifies(
 
 async def test_link_action_escape_dismisses(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "pony.tui.screens.link_action_screen.webbrowser.open",
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open",
         MagicMock(),
     )
     app = _make_host(LinkActionScreen, "https://example.com")
@@ -509,7 +509,7 @@ async def test_eml_viewer_app_multipart_attachment() -> None:
     app = EmlViewerApp(raw_bytes=raw)
     async with app.run_test() as pilot:
         await pilot.pause()
-        from pony.tui.widgets.message_view import MessageViewPanel
+        from pony.tui.mail.widgets.message_view import MessageViewPanel
 
         panel = app.screen.query_one(MessageViewPanel)
         assert panel.display is True
@@ -517,7 +517,7 @@ async def test_eml_viewer_app_multipart_attachment() -> None:
 
 async def test_eml_viewer_panel_close_request_dismisses() -> None:
     """The panel's CloseRequested message tears the viewer down."""
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -532,11 +532,11 @@ async def test_eml_viewer_print_pdf_cancelled_picker_is_a_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Dismissing the folder picker without a path exports nothing."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     export = MagicMock()
-    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export)
+    monkeypatch.setattr("pony.tui.mail.pdf_export.export_pdf_in_thread", export)
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -557,11 +557,11 @@ async def test_eml_viewer_print_pdf_exports_to_chosen_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """Choosing a folder starts the export worker for a PDF inside it."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     export = MagicMock()
-    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export)
+    monkeypatch.setattr("pony.tui.mail.pdf_export.export_pdf_in_thread", export)
 
     def run_worker_now(_screen, work, **_kwargs):  # type: ignore[no-untyped-def]
         """Exercise the dispatch without leaving an executor thread behind."""
@@ -596,7 +596,7 @@ async def test_eml_viewer_print_pdf_exports_to_chosen_folder(
 
 async def test_eml_viewer_screen_action_compose_link_notifies() -> None:
     """action_compose_link notifies that compose is unavailable."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
     app = EmlViewerApp(raw_bytes=raw)
@@ -611,7 +611,7 @@ async def test_eml_viewer_screen_action_compose_link_notifies() -> None:
 
 async def test_eml_viewer_screen_action_compose_address_notifies() -> None:
     """action_compose_address notifies that compose is unavailable."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
     app = EmlViewerApp(raw_bytes=raw)
@@ -625,7 +625,7 @@ async def test_eml_viewer_screen_action_compose_address_notifies() -> None:
 
 async def test_eml_viewer_screen_action_harvest_contact_noop() -> None:
     """action_harvest_contact is a no-op (pass)."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
     app = EmlViewerApp(raw_bytes=raw)
@@ -639,7 +639,7 @@ async def test_eml_viewer_screen_action_harvest_contact_noop() -> None:
 
 async def test_eml_viewer_screen_action_open_attachment_out_of_range() -> None:
     """action_open_attachment with out-of-range index notifies."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
     app = EmlViewerApp(raw_bytes=raw)
@@ -658,7 +658,7 @@ async def test_eml_viewer_screen_action_save_attachment_out_of_range(
     """action_save_attachment with out-of-range index does nothing."""
     from textual.app import App, ComposeResult
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
 
@@ -684,7 +684,7 @@ async def test_eml_viewer_screen_save_attachment_index_0_all(
     """action_save_attachment(0) saves ALL attachments."""
     from textual.app import App, ComposeResult
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.multipart_mixed_attachment()
 
@@ -709,7 +709,7 @@ async def test_eml_viewer_screen_save_attachment_index_0_all(
 
 async def test_eml_viewer_app_saves_where_it_was_told(tmp_path) -> None:
     """`pony view`'s app hands its downloads directory to the screen."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     app = EmlViewerApp(
         raw_bytes=corpus.multipart_mixed_attachment(),
@@ -733,10 +733,10 @@ async def test_eml_viewer_asks_message_export_where_downloads_go(tmp_path) -> No
     """
     from unittest.mock import patch
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     with patch(
-        "pony.tui.screens.eml_viewer_screen.resolve_downloads_dir",
+        "pony.tui.mail.screens.eml_viewer_screen.resolve_downloads_dir",
         return_value=tmp_path,
     ) as resolve:
         app = EmlViewerApp(raw_bytes=corpus.multipart_mixed_attachment())
@@ -755,10 +755,12 @@ async def test_eml_viewer_screen_open_attachment_0_opens_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """action_open_attachment(0) opens ALL attachments."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     launch_mock = MagicMock()
-    monkeypatch.setattr("pony.tui.screens.eml_viewer_screen.launch_file", launch_mock)
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.eml_viewer_screen.launch_file", launch_mock
+    )
 
     raw = corpus.multipart_mixed_attachment()
     app = EmlViewerApp(raw_bytes=raw)
@@ -773,7 +775,7 @@ async def test_eml_viewer_screen_open_attachment_0_opens_all(
 
 async def test_eml_viewer_screen_quit_action() -> None:
     """action_quit_viewer dismisses the screen."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = corpus.plain_text()
     app = EmlViewerApp(raw_bytes=raw)
@@ -787,8 +789,8 @@ async def test_eml_viewer_screen_quit_action() -> None:
 
 async def test_eml_viewer_screen_activates_only_web_links() -> None:
     """Web links open the action dialog; non-web links are ignored."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -808,8 +810,8 @@ async def test_eml_viewer_screen_activates_only_web_links() -> None:
 
 
 async def test_eml_viewer_screen_open_browser_delegates() -> None:
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -824,7 +826,7 @@ async def test_eml_viewer_screen_open_browser_delegates() -> None:
 
 async def test_eml_viewer_screen_opens_nested_message() -> None:
     """An RFC 822 attachment opens as another viewer on the screen stack."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     app = EmlViewerApp(raw_bytes=corpus.nested_forward())
     async with app.run_test() as pilot:
@@ -846,8 +848,8 @@ async def test_the_reader_states_who_vouched_for_the_message() -> None:
     """
     from textual.widgets import Static
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = _make_host(EmlViewerScreen, corpus.authenticated_message())
     async with app.run_test() as pilot:
@@ -868,8 +870,8 @@ async def test_an_unchecked_message_gets_an_open_padlock() -> None:
     """Absent is not the same as unchecked, so the lock is always there."""
     from textual.widgets import Static
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = _make_host(EmlViewerScreen, corpus.plain_text())
     async with app.run_test() as pilot:
@@ -885,8 +887,8 @@ async def test_the_padlock_opens_a_panel_that_says_what_it_means() -> None:
     """A shut lock reads as "safe"; this is the only place that can deny it."""
     from textual.widgets import Static
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.screens.sender_check_screen import SenderCheckScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.sender_check_screen import SenderCheckScreen
 
     app = _make_host(EmlViewerScreen, corpus.authenticated_message())
     async with app.run_test() as pilot:
@@ -912,8 +914,8 @@ async def test_the_padlock_opens_a_panel_that_says_what_it_means() -> None:
 async def test_the_panel_explains_an_unchecked_message_too() -> None:
     from textual.widgets import Static
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.screens.sender_check_screen import SenderCheckScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.sender_check_screen import SenderCheckScreen
 
     app = _make_host(EmlViewerScreen, corpus.plain_text())
     async with app.run_test() as pilot:
@@ -933,11 +935,11 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """Opening and saving filesystem failures are reported without escaping."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     monkeypatch.setattr(
-        "pony.tui.screens.eml_viewer_screen.handoff_path",
+        "pony.tui.mail.screens.eml_viewer_screen.handoff_path",
         MagicMock(side_effect=OSError("fictional open failure")),
     )
     app = _make_host(
@@ -986,7 +988,7 @@ async def test_pick_folder_screen_escape_returns_none() -> None:
     )
 
     from pony.mail.domain import FolderRef
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     paths = make_tmp_paths("pick-folder-escape")
     account = make_test_account(paths)
@@ -1025,7 +1027,7 @@ async def test_pick_folder_screen_mounts_without_error() -> None:
     )
 
     from pony.mail.domain import FolderRef
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     paths = make_tmp_paths("pick-folder-mount")
     account = make_test_account(paths)
@@ -1106,7 +1108,7 @@ async def test_contacts_app_search_bar() -> None:
     """Pressing slash opens the search bar in ContactBrowserScreen."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     paths = make_tmp_paths("contacts-search")
     index = make_index(paths)
@@ -1134,7 +1136,7 @@ async def test_contacts_app_search_bar() -> None:
 
 
 async def test_attachment_picker_screen_submit_returns_indices() -> None:
-    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+    from pony.tui.mail.screens.attachment_picker_screen import AttachmentPickerScreen
 
     app = _make_host(AttachmentPickerScreen, action_label="Save", attachment_count=3)
     async with app.run_test() as pilot:
@@ -1146,7 +1148,7 @@ async def test_attachment_picker_screen_submit_returns_indices() -> None:
 
 
 async def test_attachment_picker_screen_escape_returns_none() -> None:
-    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+    from pony.tui.mail.screens.attachment_picker_screen import AttachmentPickerScreen
 
     app = _make_host(AttachmentPickerScreen, action_label="Open", attachment_count=2)
     async with app.run_test() as pilot:
@@ -1287,7 +1289,7 @@ async def test_contact_detail_screen_mounts() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+    from pony.tui.mail.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail")
     index = make_index(paths)
@@ -1309,7 +1311,7 @@ async def test_contact_detail_screen_escape_dismisses() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+    from pony.tui.mail.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-esc")
     index = make_index(paths)
@@ -1336,7 +1338,7 @@ async def test_contact_edit_screen_mounts() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit")
     index = make_index(paths)
@@ -1358,7 +1360,7 @@ async def test_contact_edit_screen_escape_dismisses_none() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit-esc")
     index = make_index(paths)
@@ -1379,7 +1381,7 @@ async def test_contact_edit_screen_save_ctrl_s() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("contact-edit-save")
     index = make_index(paths)
@@ -1483,7 +1485,7 @@ async def test_contact_browser_mark_contact() -> None:
         # shift+up unmarks (action_mark_up)
         await pilot.press("shift+up")
         await pilot.pause()
-        from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+        from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
         screen = app.screen
         assert isinstance(screen, ContactBrowserScreen)
@@ -1500,7 +1502,7 @@ async def test_contact_suggester_get_suggestion_no_comma() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import ContactSuggester
+    from pony.tui.mail.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-1")
     index = make_index(paths)
@@ -1521,7 +1523,7 @@ async def test_contact_suggester_with_comma_completes_last_token() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import ContactSuggester
+    from pony.tui.mail.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-2")
     index = make_index(paths)
@@ -1542,7 +1544,7 @@ async def test_contact_suggester_short_prefix_returns_none() -> None:
 
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.tui.widgets.contact_suggester import ContactSuggester
+    from pony.tui.mail.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-3")
     index = make_index(paths)
@@ -1557,7 +1559,7 @@ async def test_contact_suggester_no_email_returns_none() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import ContactSuggester
+    from pony.tui.mail.widgets.contact_suggester import ContactSuggester
 
     paths = make_tmp_paths("suggester-4")
     index = make_index(paths)
@@ -1576,7 +1578,7 @@ async def test_recipient_input_lists_and_selects_multiple_matches() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-options"))
     index.upsert_contact(
@@ -1625,7 +1627,7 @@ async def test_recipient_input_replaces_only_current_token() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-token"))
     index.upsert_contact(
@@ -1662,7 +1664,7 @@ async def test_recipient_input_hides_short_empty_and_escaped_results() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-hide"))
     index.upsert_contact(
@@ -1711,7 +1713,7 @@ async def test_recipient_input_caps_addresses_and_ignores_invalid_selection() ->
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-cap"))
     for number in range(6):
@@ -1758,7 +1760,7 @@ async def test_recipient_input_caps_addresses_and_ignores_invalid_selection() ->
 
 async def test_save_folder_picker_cancel_returns_none(tmp_path) -> None:
     """Clicking Cancel dismisses SaveFolderPickerScreen with None."""
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -1796,8 +1798,8 @@ def test_the_pickers_never_browse_the_real_home() -> None:
     network share that was down, whose ``is_dir()`` raises rather than
     answering, and the screens went down with it on open.
     """
-    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     home = pathlib.Path.home()
 
@@ -1853,7 +1855,7 @@ def test_a_directory_entry_that_cannot_be_looked_at_is_left_out() -> None:
 
 async def test_save_folder_picker_select_returns_path(tmp_path) -> None:
     """Clicking Select dismisses SaveFolderPickerScreen with a Path."""
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -1866,7 +1868,7 @@ async def test_save_folder_picker_select_returns_path(tmp_path) -> None:
 
 async def test_save_folder_picker_escape_returns_none(tmp_path) -> None:
     """Pressing Escape dismisses SaveFolderPickerScreen with None."""
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -1880,8 +1882,8 @@ async def test_save_folder_picker_directory_selection_updates_result(tmp_path) -
     """Selecting a tree directory updates the label and selected result."""
     from textual.widgets import Label
 
-    import pony.tui.screens.save_folder_picker_screen as picker_module
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    import pony.tui.mail.screens.save_folder_picker_screen as picker_module
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     picker_module._session_dir = None
     selected = tmp_path / "selected"
@@ -1908,7 +1910,7 @@ async def test_save_folder_picker_creates_and_selects_new_folder(tmp_path) -> No
     """The New Folder prompt creates a directory and makes it current."""
     from textual.widgets import Input, Label
 
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -1934,7 +1936,7 @@ async def test_save_folder_picker_empty_new_folder_is_noop(tmp_path) -> None:
     """Submitting an empty folder name leaves the selected path unchanged."""
     from textual.widgets import Input, Label
 
-    from pony.tui.screens.save_folder_picker_screen import SaveFolderPickerScreen
+    from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     app = _make_host(SaveFolderPickerScreen, start_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -1965,7 +1967,7 @@ async def test_contact_detail_screen_with_all_fields() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+    from pony.tui.mail.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-full")
     index = make_index(paths)
@@ -1989,7 +1991,7 @@ async def test_contact_detail_screen_with_all_fields() -> None:
         # Press e to edit (action_edit)
         await pilot.press("e")
         await pilot.pause()
-        from pony.tui.screens.contact_edit_screen import ContactEditScreen
+        from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
         assert any(isinstance(s, ContactEditScreen) for s in app.screen_stack)
         await pilot.press("escape")
@@ -2001,7 +2003,7 @@ async def test_contact_detail_screen_no_emails() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+    from pony.tui.mail.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("contact-detail-no-email")
     index = make_index(paths)
@@ -2025,7 +2027,7 @@ async def test_contact_browser_enter_row_opens_detail() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_detail_screen import ContactDetailScreen
+    from pony.tui.mail.screens.contact_detail_screen import ContactDetailScreen
 
     paths = make_tmp_paths("cb-enter")
     index = make_index(paths)
@@ -2058,7 +2060,7 @@ async def test_contact_browser_new_contact_key() -> None:
     """Pressing c opens ContactEditScreen for a new contact."""
     from tui_helpers import make_index, make_tmp_paths
 
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("cb-new")
     index = make_index(paths)
@@ -2078,7 +2080,7 @@ async def test_contact_browser_edit_key() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("cb-edit")
     index = make_index(paths)
@@ -2108,7 +2110,7 @@ async def test_contact_browser_delete_shows_confirm() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.confirm_screen import ConfirmScreen
+    from pony.tui.mail.screens.confirm_screen import ConfirmScreen
 
     paths = make_tmp_paths("cb-delete")
     index = make_index(paths)
@@ -2165,7 +2167,7 @@ async def test_contact_browser_delete_unmarked_deletes_the_cursor_row() -> None:
     """With no marks, D deletes the contact under the cursor."""
     from textual.widgets import DataTable
 
-    from pony.tui.screens.confirm_screen import ConfirmScreen
+    from pony.tui.mail.screens.confirm_screen import ConfirmScreen
 
     index = _contacts_index("cb-del-single", "Solo User")
     app = ContactsApp(contacts=index)
@@ -2364,7 +2366,7 @@ async def test_contact_browser_search_submitted() -> None:
 
 async def test_message_view_accessors_empty_before_any_message() -> None:
     """With nothing rendered the accessors return empty, not exceptions."""
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -2379,7 +2381,7 @@ async def test_message_view_accessors_empty_before_any_message() -> None:
 
 async def test_message_view_out_of_range_lookups_return_none() -> None:
     """Header and link lookups past the end are None rather than IndexError."""
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     app = EmlViewerApp(raw_bytes=corpus.plain_text())
     async with app.run_test() as pilot:
@@ -2394,7 +2396,7 @@ async def test_message_view_save_all_attachments_writes_every_part() -> None:
     """Every attachment in a multipart message lands on disk."""
     from uuid import uuid4
 
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     dest = TMP_ROOT / "save-all" / uuid4().hex
     dest.mkdir(parents=True, exist_ok=True)
@@ -2415,7 +2417,7 @@ async def test_message_view_out_of_range_attachment_index_is_none() -> None:
     """Saving an attachment index that does not exist returns None."""
     from uuid import uuid4
 
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     dest = TMP_ROOT / "save-oob" / uuid4().hex
     dest.mkdir(parents=True, exist_ok=True)
@@ -2455,7 +2457,7 @@ def _contact(first: str, emails: tuple[str, ...]) -> object:
 
 async def test_contact_actions_on_an_empty_list_are_noops() -> None:
     """Every action keyed off the cursor must tolerate having no rows."""
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     app, _index = _contacts_app("contacts-empty-actions")
 
@@ -2478,7 +2480,7 @@ async def test_a_contact_with_many_addresses_shows_an_overflow_count() -> None:
     """Only the first three addresses fit; the rest become ``(+N)``."""
     from textual.widgets import DataTable
 
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     app, _index = _contacts_app(
         "contacts-overflow",
@@ -2513,7 +2515,7 @@ async def test_a_contact_with_many_addresses_shows_an_overflow_count() -> None:
 
 async def test_declining_the_delete_confirmation_keeps_the_contacts() -> None:
     """Bulk delete is destructive, so a declined prompt must change nothing."""
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     app, index = _contacts_app(
         "contacts-delete-declined",
@@ -2549,7 +2551,7 @@ async def test_saving_a_new_or_edited_contact_refreshes_the_table() -> None:
     from textual.widgets import DataTable
 
     from pony.mail.domain import Contact
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     app, index = _contacts_app(
         "contacts-refresh",
@@ -2603,7 +2605,7 @@ async def test_recipient_completion_preserves_a_quoted_name_before_it() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-quoted"))
     index.upsert_contact(
@@ -2639,10 +2641,12 @@ async def test_eml_viewer_screen_uses_configured_viewer(
 ) -> None:
     """The standalone viewer honours the same [viewers] table."""
     from pony.mail.domain import ViewerRule
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     launch_mock = MagicMock()
-    monkeypatch.setattr("pony.tui.screens.eml_viewer_screen.launch_file", launch_mock)
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.eml_viewer_screen.launch_file", launch_mock
+    )
 
     raw = corpus.calendar_invite()
     app = EmlViewerApp(
@@ -2672,7 +2676,7 @@ async def test_recipient_options_keep_their_geometry_when_focused() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-geometry"))
     for first, last, email in (
@@ -2712,7 +2716,7 @@ async def test_clicking_a_recipient_option_selects_that_row() -> None:
     from tui_helpers import make_index, make_tmp_paths
 
     from pony.mail.domain import Contact
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     index = make_index(make_tmp_paths("recipient-click"))
     for first, last, email in (
@@ -2756,8 +2760,8 @@ async def test_q_in_the_eml_viewer_closes_the_viewer_not_pony() -> None:
     from corpus import plain_text
     from tui_helpers import build_pony_app
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.screens.main_screen import MainScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.main_screen import MainScreen
 
     app, *_ = build_pony_app(label="screens-eml-quit")
 
@@ -2779,7 +2783,7 @@ async def test_q_with_a_button_focused_in_compose_offers_to_save() -> None:
     from textual.widgets import Button
     from tui_helpers import build_compose_app
 
-    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+    from pony.tui.mail.screens.save_draft_screen import SaveDraftScreen
 
     app, *_ = build_compose_app(
         label="screens-compose-quit",

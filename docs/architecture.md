@@ -95,43 +95,46 @@ src/pony/mail/         # the mail model
   fixture_flow.py      # deterministic fixture ingest flow
 
 src/pony/tui/          # the terminal front end
-  app.py             # PonyApp, ComposeApp, ContactsApp, EmlViewerApp
-  calendar/          # the calendar's screens (below)
+  app.py             # PonyApp (the host), ComposeApp, ContactsApp, EmlViewerApp
+  calendar_host.py   # where the host meets the calendar's screens
+  bindings.py        # one keymap-to-Textual converter, for both halves
   reporting.py       # an Outcome as toasts, and the hop onto the UI thread
-  bindings.py        # shared mark/motion Binding tuples
-  calendar_host.py   # where the mail app meets the calendar's screens
-  pdf_export.py      # thread-worker wrapper around pony.mail.pdf_export
-  terminal.py        # OSC sequences for window-title push/pop/set
+  terminal.py        # OSC sequences: window title, desktop notification
   ui_state.py        # persisted pane sizes (ui_state.json)
-  screens/
-    main_screen.py             # three-pane mail reader
-    compose_screen.py          # email composer
-    sync_confirm_screen.py     # sync plan confirmation
-    search_dialog_screen.py    # search query input
-    contact_browser_screen.py  # contacts list
-    contact_detail_screen.py   # contact detail view
-    contact_edit_screen.py     # contact editor
-    confirm_screen.py          # generic yes/no dialog
-    dialog_screen.py           # base class for modal yes/no dialogs
-    link_action_screen.py      # Open / Copy / Cancel dialog for body links
-    floating_input_screen.py   # base class for bottom floating-input bars
-    save_draft_screen.py       # draft save confirmation
-    save_folder_picker_screen.py # directory picker for saving files
-    add_attachment_screen.py   # file picker
-    attachment_picker_screen.py# pick parts by number (0 = message, T = text)
-    eml_viewer_screen.py       # standalone .eml viewer
-    invitation_screen.py       # i — accept / decline / file an invitation
-    goto_folder_screen.py      # G — fuzzy jump to folder
-    new_folder_screen.py       # N — create new folder
-    pick_folder_screen.py      # modal (account, folder) target picker
-    help_screen.py             # F1 — keybinding cheatsheet
-  widgets/
-    folder_panel.py        # collapsible folder tree
-    message_list.py        # async-streamed message table
-    message_view.py        # scrollable message reader
-    contact_suggester.py   # autocomplete dropdown
-    address_input.py       # address field that keeps pasted lists whole
-    edge_drag.py           # mouse-draggable pane borders
+  dir_tree.py        # a directory tree that survives an unreadable entry
+  calendar/          # the calendar's screens (below)
+  mail/              # the mail reader's screens and widgets
+    bindings.py          # the groups its widgets assign into BINDINGS
+    pdf_export.py        # thread-worker wrapper around pony.mail.pdf_export
+    screens/
+      main_screen.py             # three-pane mail reader
+      compose_screen.py          # email composer
+      sync_confirm_screen.py     # sync plan confirmation
+      search_dialog_screen.py    # search query input
+      contact_browser_screen.py  # contacts list
+      contact_detail_screen.py   # contact detail view
+      contact_edit_screen.py     # contact editor
+      confirm_screen.py          # generic yes/no dialog
+      dialog_screen.py           # base class for modal yes/no dialogs
+      link_action_screen.py      # Open / Copy / Cancel dialog for body links
+      floating_input_screen.py   # base class for bottom floating-input bars
+      save_draft_screen.py       # draft save confirmation
+      save_folder_picker_screen.py # directory picker for saving files
+      add_attachment_screen.py   # file picker
+      attachment_picker_screen.py# pick parts by number (0 = message, T = text)
+      eml_viewer_screen.py       # standalone .eml viewer
+      invitation_screen.py       # i — accept / decline / file an invitation
+      goto_folder_screen.py      # G — fuzzy jump to folder
+      new_folder_screen.py       # N — create new folder
+      pick_folder_screen.py      # modal (account, folder) target picker
+      help_screen.py             # F1 — keybinding cheatsheet
+    widgets/
+      folder_panel.py        # collapsible folder tree
+      message_list.py        # async-streamed message table
+      message_view.py        # scrollable message reader
+      contact_suggester.py   # autocomplete dropdown
+      address_input.py       # address field that keeps pasted lists whole
+      edge_drag.py           # mouse-draggable pane borders
 
 src/pony/web/          # the browser front end (extra: pony[web])
   app.py               # Starlette routes over the same actions
@@ -416,8 +419,8 @@ exit, and opens attachments: `resolve_viewer_command` looks the part's content
 type up in the `[viewers]` config table and `launch_file` runs the match with
 the saved path appended, falling back to the OS handler (`xdg-open` / `open` /
 `ShellExecute`) when nothing matches.  The association therefore travels with
-`config.toml` instead of depending on the desktop MIME database. `tui/bindings.py` holds the mark/motion `Binding` tuples shared by the
-message list and the contact browser. `tui/ui_state.py` persists pane sizes to
+`config.toml` instead of depending on the desktop MIME database. `tui/mail/bindings.py` holds the mark/motion `Binding` tuples shared by
+the message list and the contact browser. `tui/ui_state.py` persists pane sizes to
 `ui_state.json`. Theme selection comes from `theme` in `config.toml`, the
 `--theme NAME` flag, or `--list-themes`.
 
@@ -560,7 +563,7 @@ held in a state file; `pony mcp` finds that file and proxies stdio↔TCP, so the
 consumer never opens a competing SQLite handle. With no TUI running, `pony mcp`
 opens its own connections and serves stdio directly.
 
-### Message rendering (`pony.mail.message_renderer`, `pony.tui.pdf_export`)
+### Message rendering (`pony.mail.message_renderer`, `pony.tui.mail.pdf_export`)
 
 `render_message()` produces plain text, stripping `<style>` and `<script>`
 first. `build_browser_html()` produces self-contained HTML with CID-resolved

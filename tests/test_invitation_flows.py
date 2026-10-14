@@ -17,10 +17,10 @@ from tui_helpers import (
 from pony.calendar.domain import CalendarRef
 from pony.calendar.storage_indexing import index_calendar
 from pony.mail.domain import FolderRef
-from pony.tui.screens.invitation_screen import InvitationChoice, InvitationScreen
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.invitation_screen import InvitationChoice, InvitationScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 _ACCOUNT = "personal"
 _CALENDAR = "work"

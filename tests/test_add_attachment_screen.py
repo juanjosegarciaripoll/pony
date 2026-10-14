@@ -23,8 +23,8 @@ from textual.pilot import Pilot
 from textual.widgets import Input
 from tui_helpers import DeterministicDirectoryTree
 
-import pony.tui.screens.add_attachment_screen as aas_module
-from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+import pony.tui.mail.screens.add_attachment_screen as aas_module
+from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
 
 aas_module.ReadableDirectoryTree = DeterministicDirectoryTree  # type: ignore[attr-defined]
 

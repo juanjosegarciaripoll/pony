@@ -1,7 +1,7 @@
 """Tests for the external HTML-to-PDF converter.
 
 The conversion itself lives in ``pony.mail.pdf_export`` and runs headless, for
-`pony view --pdf` as much as for the TUI; ``pony.tui.pdf_export`` adds only
+`pony view --pdf` as much as for the TUI; ``pony.tui.mail.pdf_export`` adds only
 the worker wrapper that reports through a running app.
 """
 
@@ -21,7 +21,7 @@ from pony.mail.pdf_export import (
     find_converter,
     html_to_pdf,
 )
-from pony.tui import pdf_export
+from pony.tui.mail import pdf_export
 
 
 def _which_for(available: set[str]) -> Callable[[str], str | None]:

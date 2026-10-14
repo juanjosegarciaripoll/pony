@@ -10,8 +10,8 @@ from textual.widgets import Label
 from tui_helpers import build_pony_app
 
 from pony.mail.domain import FolderRef
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 
 def _main(app: object) -> MainScreen:
@@ -65,7 +65,7 @@ async def test_a_message_with_no_attachments_still_has_a_part_to_offer() -> None
     was true and unhelpful: the message itself is part 0, so ``S`` has
     something to save on every message.
     """
-    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+    from pony.tui.mail.screens.attachment_picker_screen import AttachmentPickerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
@@ -202,7 +202,7 @@ async def test_open_indices_reports_missing_save_and_launch_errors(
     )
     messages = _notifications(app)
     monkeypatch.setattr(
-        "pony.tui.screens.main_screen.launch_file",
+        "pony.tui.mail.screens.main_screen.launch_file",
         Mock(side_effect=OSError("fictional launch failure")),
     )
 
@@ -221,7 +221,7 @@ async def test_open_indices_reports_missing_save_and_launch_errors(
 
 async def test_part_zero_opens_in_the_reader_rather_than_a_viewer() -> None:
     """The message itself goes to the EML viewer, not to the desktop."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, *_ = build_pony_app(
@@ -393,7 +393,7 @@ def _attachment_message(subject: str, attachment: str) -> bytes:
 
 async def _open_first_then_move_cursor(pilot: object, app: object):  # type: ignore[no-untyped-def]
     """Open the first message, then move the cursor to the second."""
-    from pony.tui.widgets.message_list import MessageListPanel
+    from pony.tui.mail.widgets.message_list import MessageListPanel
 
     await pilot.pause()  # type: ignore[attr-defined]
     await pilot.press("enter")  # type: ignore[attr-defined]

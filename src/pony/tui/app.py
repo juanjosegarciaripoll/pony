@@ -40,7 +40,7 @@ from ..notifications import Notification, NotificationCenter, NotificationSource
 from ..paths import resolve
 from .bindings import to_textual
 from .calendar_host import AlarmPoller, build_calendar_services
-from .screens.main_screen import MainScreen
+from .mail.screens.main_screen import MainScreen
 from .terminal import (
     format_terminal_title,
     notify_terminal,
@@ -130,7 +130,7 @@ class PonyApp(QuitAsksTheScreen):
 
     def action_show_help(self) -> None:
         """Push the centered help dialog (keybinding reference)."""
-        from .screens.help_screen import HelpScreen
+        from .mail.screens.help_screen import HelpScreen
 
         # If the help screen is already on top, F1 from the screen
         # itself dismisses it — this path is only for app-level F1.
@@ -623,7 +623,7 @@ class ComposeApp(QuitAsksTheScreen):
     def on_mount(self) -> None:
         push_terminal_title()
         set_terminal_title("Pony Express — Compose")
-        from .screens.compose_screen import ComposeScreen
+        from .mail.screens.compose_screen import ComposeScreen
 
         def _on_done(sent: bool | None) -> None:
             if sent:
@@ -680,7 +680,7 @@ class EmlViewerApp(QuitAsksTheScreen):
 
     def action_show_help(self) -> None:
         """What the reader's keys do here, from the one table."""
-        from .screens.help_screen import HelpScreen
+        from .mail.screens.help_screen import HelpScreen
 
         self.push_screen(HelpScreen(Surface.READER))
 
@@ -705,7 +705,7 @@ class EmlViewerApp(QuitAsksTheScreen):
     def on_mount(self) -> None:
         push_terminal_title()
         set_terminal_title("Pony Express — Viewer")
-        from .screens.eml_viewer_screen import EmlViewerScreen
+        from .mail.screens.eml_viewer_screen import EmlViewerScreen
 
         self.push_screen(
             EmlViewerScreen(
@@ -747,7 +747,7 @@ class ContactsApp(QuitAsksTheScreen):
 
     def action_show_help(self) -> None:
         """The contacts browser's keys, from the one table."""
-        from .screens.help_screen import HelpScreen
+        from .mail.screens.help_screen import HelpScreen
 
         self.push_screen(HelpScreen(Surface.CONTACTS))
 
@@ -762,7 +762,7 @@ class ContactsApp(QuitAsksTheScreen):
     def on_mount(self) -> None:
         push_terminal_title()
         set_terminal_title("Pony Express — Contacts")
-        from .screens.contact_browser_screen import ContactBrowserScreen
+        from .mail.screens.contact_browser_screen import ContactBrowserScreen
 
         self.push_screen(ContactBrowserScreen(self._contacts))
 

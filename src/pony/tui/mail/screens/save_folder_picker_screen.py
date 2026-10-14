@@ -15,8 +15,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label
 
-from ...paths import contain
-from ..dir_tree import DirOnlyTree
+from ....paths import contain
+from ...dir_tree import DirOnlyTree
 from .floating_input_screen import SimpleInputScreen
 
 # Persists the last-used directory across invocations within a session.

@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Input, Label
 
-from ...mail.message_export import PartKey, parse_part_selection
+from ....mail.message_export import PartKey, parse_part_selection
 from .floating_input_screen import FloatingInputScreen
 
 

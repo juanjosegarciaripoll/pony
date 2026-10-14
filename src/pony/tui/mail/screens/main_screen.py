@@ -21,14 +21,14 @@ from pony.keys import for_surface
 from pony.outcome import Notice, Outcome
 from pony.tui.reporting import report
 
-from ...mail import mailbox_actions
-from ...invitation import Invitation
-from ...invitation_actions import (
+from ....invitation import Invitation
+from ....invitation_actions import (
     InvitationChoice,
     replying_account,
     respond_to_invitation,
 )
-from ...mail.composer import (
+from ....mail import mailbox_actions
+from ....mail.composer import (
     DraftSpec,
     forward_attachment_name,
     forward_draft,
@@ -36,8 +36,8 @@ from ...mail.composer import (
     reply_draft,
     resumed_draft,
 )
-from ...mail.contact_actions import contact_for_address, harvest_folder
-from ...mail.domain import (
+from ....mail.contact_actions import contact_for_address, harvest_folder
+from ....mail.domain import (
     AnyAccount,
     AppConfig,
     FolderMessageSummary,
@@ -45,10 +45,10 @@ from ...mail.domain import (
     IndexedMessage,
     MessageFlag,
 )
-from ...mail.folder_utils import holds_drafts, shows_recipient
-from ...mail.keymap import MAIL_KEYMAP, Surface
-from ...mail.mailbox_actions import Mailboxes
-from ...mail.message_export import (
+from ....mail.folder_utils import holds_drafts, shows_recipient
+from ....mail.keymap import MAIL_KEYMAP, Surface
+from ....mail.mailbox_actions import Mailboxes
+from ....mail.message_export import (
     WHOLE_MESSAGE,
     PartKey,
     downloads_dir,
@@ -56,19 +56,19 @@ from ...mail.message_export import (
     parts_to_open,
     save_parts,
 )
-from ...mail.message_renderer import (
+from ....mail.message_renderer import (
     RenderedMessage,
     render_message,
     save_every_attachment,
     save_one_attachment,
 )
-from ...mail.protocols import (
+from ....mail.protocols import (
     ContactRepository,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from ...mail.sync import (
+from ....mail.sync import (
     ImapSyncService,
     MailSyncOutcome,
     MailSyncScheduler,
@@ -78,24 +78,24 @@ from ...mail.sync import (
     build_sync_service,
     describe_sync_result,
 )
-from ...mail.views import has_inbox_mail
-from ...notifications import NotificationCenter
-from ..bindings import to_textual
-from ..terminal import (
+from ....mail.views import has_inbox_mail
+from ....notifications import NotificationCenter
+from ...bindings import to_textual
+from ...terminal import (
     format_terminal_title,
     launch_file,
     set_terminal_title,
     suspend_for_external_program,
 )
-from ..ui_state import RESIZE_STEP, load_pane_sizes, save_pane_sizes
+from ...ui_state import RESIZE_STEP, load_pane_sizes, save_pane_sizes
 from ..widgets.edge_drag import PaneDragged
 from ..widgets.folder_panel import FolderPanel
 from ..widgets.message_list import MessageListPanel
 from ..widgets.message_view import MessageViewPanel
 
 if TYPE_CHECKING:
-    from ...calendar_runtime import CalendarRuntime
-    from ..app import MailSyncHost
+    from ....calendar_runtime import CalendarRuntime
+    from ...app import MailSyncHost
     from .sync_confirm_screen import SyncConfirmScreen
 
 
@@ -726,7 +726,7 @@ class MainScreen(Screen[None]):
         """
         if self._notifications is None or result is None:
             return
-        from ..calendar_host import mail_arrival_notification
+        from ...calendar_host import mail_arrival_notification
 
         fetched = [
             (ar.account_name, sum(f.fetched for f in ar.folders))
@@ -967,7 +967,7 @@ class MainScreen(Screen[None]):
         loop.  Running it here froze the terminal for as long as the
         query took.
         """
-        from ...mail.search_parser import parse_query
+        from ....mail.search_parser import parse_query
 
         search = self._search
         if search is None:
@@ -1800,8 +1800,8 @@ class MainScreen(Screen[None]):
     def open_current_in_browser(self) -> None:
         import webbrowser
 
-        from ...mail.browser_preview import serve_html
-        from ...mail.message_renderer import build_browser_html
+        from ....mail.browser_preview import serve_html
+        from ....mail.message_renderer import build_browser_html
 
         current = self._current_message_bytes(noun="browser view")
         if current is None:
@@ -1823,7 +1823,7 @@ class MainScreen(Screen[None]):
 
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
-        from ...mail.message_renderer import build_browser_html, proposed_filename
+        from ....mail.message_renderer import build_browser_html, proposed_filename
         from ..pdf_export import export_pdf_in_thread
         from .save_folder_picker_screen import SaveFolderPickerScreen
 

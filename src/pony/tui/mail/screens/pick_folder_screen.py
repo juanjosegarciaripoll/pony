@@ -14,8 +14,8 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Footer, Label, Tree
 
-from ...mail.domain import AppConfig, FolderRef
-from ...mail.protocols import MirrorRepository
+from ....mail.domain import AppConfig, FolderRef
+from ....mail.protocols import MirrorRepository
 from .dialog_screen import DialogScreen
 
 

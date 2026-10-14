@@ -23,7 +23,8 @@ from pony.mail.keymap import (
     READER_KEYS,
     Surface,
 )
-from pony.tui.bindings import MARK_BINDINGS, MOTION_BINDINGS, to_textual
+from pony.tui.bindings import to_textual
+from pony.tui.mail.bindings import MARK_BINDINGS, MOTION_BINDINGS
 
 
 def test_the_keymap_is_free_of_textual() -> None:
@@ -59,7 +60,7 @@ def test_the_shared_list_bindings_come_from_the_keymap() -> None:
 
 def test_the_reader_screen_binds_exactly_the_reader_and_list_keys() -> None:
     """What the screen declares is the table, not a second copy of it."""
-    from pony.tui.screens.main_screen import MainScreen
+    from pony.tui.mail.screens.main_screen import MainScreen
 
     expected = to_textual(for_surface(MAIL_KEYMAP, Surface.READER, Surface.LIST))
     assert list(MainScreen.BINDINGS) == expected
@@ -107,8 +108,8 @@ def test_every_binding_has_a_web_spelling() -> None:
 
 def test_the_contacts_browser_binds_the_contacts_surface() -> None:
     """The browser's keys are in the table, not in the screen."""
-    from pony.tui.bindings import MARK_BINDINGS
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.bindings import MARK_BINDINGS
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     expected = [
         *to_textual(for_surface(MAIL_KEYMAP, Surface.CONTACTS)),
@@ -118,7 +119,7 @@ def test_the_contacts_browser_binds_the_contacts_surface() -> None:
 
 
 def test_the_composer_binds_the_compose_surface() -> None:
-    from pony.tui.screens.compose_screen import ComposeScreen
+    from pony.tui.mail.screens.compose_screen import ComposeScreen
 
     assert list(ComposeScreen.BINDINGS) == to_textual(
         for_surface(MAIL_KEYMAP, Surface.COMPOSE),
@@ -171,8 +172,8 @@ def test_the_folder_tree_binds_the_folders_surface() -> None:
     written into the tree, where it shadowed the reader's "New folder"
     and took it out of the footer as well.
     """
-    from pony.tui.bindings import FOLDER_BINDINGS
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.bindings import FOLDER_BINDINGS
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     expected = to_textual(for_surface(MAIL_KEYMAP, Surface.FOLDERS))
     assert list(FolderPanel.BINDINGS) == expected
@@ -190,7 +191,7 @@ def test_the_open_message_binds_its_own_surface() -> None:
     action lives on the screen.
     """
     from pony.mail.keymap import MESSAGE_KEYS
-    from pony.tui.widgets.message_view import MessageViewPanel
+    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     from_table = to_textual(for_surface(MAIL_KEYMAP, Surface.MESSAGE))
     assert from_table == to_textual(MESSAGE_KEYS)
@@ -241,7 +242,7 @@ def test_the_panes_that_read_one_key_two_ways_say_which() -> None:
 
 def test_the_invitation_dialog_binds_the_invitation_surface() -> None:
     """Its three answers are a surface, not four lines in the screen."""
-    from pony.tui.screens.invitation_screen import InvitationScreen
+    from pony.tui.mail.screens.invitation_screen import InvitationScreen
 
     expected = to_textual(for_surface(MAIL_KEYMAP, Surface.INVITATION))
     assert list(InvitationScreen.BINDINGS) == expected
@@ -256,7 +257,7 @@ def test_the_invitation_dialog_binds_the_invitation_surface() -> None:
 
 
 def test_the_message_list_binds_the_list_surface() -> None:
-    from pony.tui.widgets.message_list import MessageListPanel
+    from pony.tui.mail.widgets.message_list import MessageListPanel
 
     assert list(MessageListPanel.BINDINGS) == to_textual(
         for_surface(MAIL_KEYMAP, Surface.LIST),
@@ -413,7 +414,7 @@ def test_every_key_bound_in_a_screen_is_in_the_table_or_named_here() -> None:
 
 def test_the_help_screen_is_rendered_from_the_table() -> None:
     """It was a third hand-typed copy, and it contradicted itself on `N`."""
-    from pony.tui.screens.help_screen import HelpScreen
+    from pony.tui.mail.screens.help_screen import HelpScreen
 
     shown = HelpScreen().bindings_shown()
 
@@ -444,7 +445,7 @@ def test_the_help_screen_is_rendered_from_the_table() -> None:
 
 
 def test_the_help_screen_can_describe_another_surface() -> None:
-    from pony.tui.screens.help_screen import HelpScreen
+    from pony.tui.mail.screens.help_screen import HelpScreen
 
     shown = HelpScreen(Surface.CONTACTS).bindings_shown()
 
@@ -456,7 +457,7 @@ def test_the_compose_footer_is_rendered_from_the_table() -> None:
     import re
 
     from pony.mail.keymap import COMPOSE_KEYS
-    from pony.tui.screens.compose_screen import _compose_cheatsheet
+    from pony.tui.mail.screens.compose_screen import _compose_cheatsheet
 
     plain = re.sub(r"\[[^]]*\]", "", _compose_cheatsheet())
 

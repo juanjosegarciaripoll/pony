@@ -19,7 +19,7 @@ from textual.widgets import Button, Input
 from textual.widgets.input import Selection
 from tui_helpers import build_compose_app, make_tmp_paths
 
-from pony.tui.screens.compose_screen import (
+from pony.tui.mail.screens.compose_screen import (
     BCC_CONTAINER,
     CC_CONTAINER,
     TO_CONTAINER,
@@ -54,7 +54,7 @@ def _notifications(app: object) -> list[str]:
 
 
 async def test_the_attachment_plus_button_opens_the_picker() -> None:
-    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="attach-plus")
 
@@ -901,8 +901,8 @@ async def test_escape_in_compose_puts_the_suggestions_away_first() -> None:
     from pony.mail.composer import DraftSpec
     from pony.mail.domain import Contact
     from pony.mail.mailbox_actions import Mailboxes
-    from pony.tui.screens.save_draft_screen import SaveDraftScreen
-    from pony.tui.widgets.contact_suggester import RecipientInput
+    from pony.tui.mail.screens.save_draft_screen import SaveDraftScreen
+    from pony.tui.mail.widgets.contact_suggester import RecipientInput
 
     paths = make_tmp_paths("compose-escape-suggestions")
     # With a display name on the account, nothing pushes the contact

@@ -41,8 +41,8 @@ from tui_helpers import (
     seed_message,
 )
 
-import pony.tui.screens.add_attachment_screen as add_attachment_module
-import pony.tui.screens.save_folder_picker_screen as save_folder_module
+import pony.tui.mail.screens.add_attachment_screen as add_attachment_module
+import pony.tui.mail.screens.save_folder_picker_screen as save_folder_module
 from pony.mail.browser_preview import close_preview
 from pony.mail.credentials import PlaintextCredentialsProvider
 from pony.mail.domain import (
@@ -62,12 +62,12 @@ from pony.mail.sync import (
     SyncResult,
 )
 from pony.scheduler import SyncOutcome
-from pony.tui.screens.compose_screen import ComposeScreen
-from pony.tui.screens.help_screen import HelpScreen
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.folder_panel import SCHEDULED_SYNC_MARK, FolderPanel
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.compose_screen import ComposeScreen
+from pony.tui.mail.screens.help_screen import HelpScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.folder_panel import SCHEDULED_SYNC_MARK, FolderPanel
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 PonyApp = TestPonyApp
 
@@ -234,7 +234,7 @@ async def test_compose_dynamic_recipient_rows() -> None:
         from textual.containers import Vertical
         from textual.widgets import Button, Input
 
-        from pony.tui.screens.compose_screen import _AddrRow
+        from pony.tui.mail.screens.compose_screen import _AddrRow
 
         screen = app.screen
         assert isinstance(screen, ComposeScreen)
@@ -372,7 +372,7 @@ async def test_open_in_browser_serves_the_page_and_writes_no_file(
     )
     open_mock = Mock()
     monkeypatch.setattr(
-        "pony.tui.widgets.message_view.webbrowser.open",
+        "pony.tui.mail.widgets.message_view.webbrowser.open",
         open_mock,
     )
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
@@ -411,10 +411,10 @@ async def test_print_pdf_picks_folder_and_exports(
         seed=[(folder, html_only())],
     )
     export_mock = Mock()
-    monkeypatch.setattr("pony.tui.pdf_export.export_pdf_in_thread", export_mock)
+    monkeypatch.setattr("pony.tui.mail.pdf_export.export_pdf_in_thread", export_mock)
     # Make the folder picker default to (and confirm) the temp directory.
     monkeypatch.setattr(
-        "pony.tui.screens.save_folder_picker_screen._session_dir", tmp_path
+        "pony.tui.mail.screens.save_folder_picker_screen._session_dir", tmp_path
     )
 
     async with app.run_test() as pilot:
@@ -748,7 +748,7 @@ async def test_folder_tree_next_inbox() -> None:
         # And "New folder" reaches the reader from this pane, which is
         # the one that needs it -- both as the press and as the footer
         # entry that advertises it.
-        from pony.tui.screens.new_folder_screen import NewFolderScreen
+        from pony.tui.mail.screens.new_folder_screen import NewFolderScreen
 
         advertised = app.screen.active_bindings
         assert advertised["F"].binding.action == "new_folder"
@@ -1241,7 +1241,7 @@ async def test_background_sync_blocked_while_confirm_modal_open(
     same account.  ``_sync_in_progress`` must treat an open
     ``SyncConfirmScreen`` as in-progress.
     """
-    from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
+    from pony.tui.mail.screens.sync_confirm_screen import SyncConfirmScreen
 
     sync_calls: list[int] = []
 
@@ -1370,7 +1370,7 @@ async def test_mark_unread_takes_the_seen_flag_back_off() -> None:
 
 async def test_goto_folder_shortcut_opens_dialog() -> None:
     """Pressing G opens the GotoFolderScreen."""
-    from pony.tui.screens.goto_folder_screen import GotoFolderScreen
+    from pony.tui.mail.screens.goto_folder_screen import GotoFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -1389,7 +1389,7 @@ async def test_goto_folder_shortcut_opens_dialog() -> None:
 
 async def test_new_folder_shortcut_opens_input() -> None:
     """Pressing F opens the NewFolderScreen input bar."""
-    from pony.tui.screens.new_folder_screen import NewFolderScreen
+    from pony.tui.mail.screens.new_folder_screen import NewFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -1427,7 +1427,7 @@ async def test_compose_new_opens_compose_screen(
 async def test_compose_cancel_empty_dismisses_without_prompt() -> None:
     """Pressing Escape on an empty composer dismisses without showing a save prompt."""
 
-    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+    from pony.tui.mail.screens.save_draft_screen import SaveDraftScreen
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="cancel-empty")
     async with app.run_test() as pilot:
@@ -1446,7 +1446,7 @@ async def test_compose_cancel_empty_dismisses_without_prompt() -> None:
 
 async def test_compose_cancel_with_content_shows_draft_prompt() -> None:
     """Cancelling a compose with content shows the SaveDraftScreen."""
-    from pony.tui.screens.save_draft_screen import SaveDraftScreen
+    from pony.tui.mail.screens.save_draft_screen import SaveDraftScreen
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="cancel-content")
     async with app.run_test() as pilot:
@@ -1749,7 +1749,7 @@ async def test_compose_paste_file_path_attaches_it(tmp_path: Path) -> None:
     """Pasting a path into the attachments bar attaches that file."""
     from textual.events import Paste
 
-    from pony.tui.screens.compose_screen import AttachmentsBar
+    from pony.tui.mail.screens.compose_screen import AttachmentsBar
 
     attachment = tmp_path / "report.pdf"
     attachment.write_bytes(b"%PDF-1.4 fictional")
@@ -1770,7 +1770,7 @@ async def test_compose_paste_file_url_is_unquoted(tmp_path: Path) -> None:
     """A file:// URL with percent-escapes resolves to the real path."""
     from textual.events import Paste
 
-    from pony.tui.screens.compose_screen import AttachmentsBar
+    from pony.tui.mail.screens.compose_screen import AttachmentsBar
 
     attachment = tmp_path / "quarterly report.pdf"
     attachment.write_bytes(b"%PDF-1.4 fictional")
@@ -1791,7 +1791,7 @@ async def test_compose_paste_non_path_attaches_nothing() -> None:
     """Pasting ordinary text warns and leaves the attachment list untouched."""
     from textual.events import Paste
 
-    from pony.tui.screens.compose_screen import AttachmentsBar
+    from pony.tui.mail.screens.compose_screen import AttachmentsBar
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-text")
     notifications = _capture_notifications(app)
@@ -1985,7 +1985,7 @@ async def test_search_q_from_list_closes_the_reader_before_exiting() -> None:
 
 async def test_main_screen_address_and_link_actions() -> None:
     """Message metadata actions validate targets before composing or opening."""
-    from pony.tui.screens.link_action_screen import LinkActionScreen
+    from pony.tui.mail.screens.link_action_screen import LinkActionScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -2030,7 +2030,7 @@ async def test_main_screen_attachment_dispatch_and_open_error(
     from corpus import nested_forward
 
     from pony.mail.message_renderer import extract_attachment
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -2038,7 +2038,7 @@ async def test_main_screen_attachment_dispatch_and_open_error(
         seed=[(folder, nested_forward())],
     )
     launch_mock = Mock(side_effect=OSError("fictional viewer failure"))
-    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.mail.screens.main_screen.launch_file", launch_mock)
 
     async with app.run_test() as pilot:
         await _select_first_inbox(pilot)
@@ -2071,7 +2071,7 @@ async def test_main_screen_attachment_dispatch_and_open_error(
 
 async def test_browse_contacts_opens_contact_browser() -> None:
     """Pressing B opens the contact browser screen (when contacts is set)."""
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     paths = make_tmp_paths("browse-contacts")
@@ -2211,7 +2211,7 @@ async def test_compose_send_with_contacts_harvests_recipients(
 
 async def test_move_shortcut_opens_folder_picker() -> None:
     """Pressing M opens the PickFolderScreen to select a move target."""
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -2230,7 +2230,7 @@ async def test_move_shortcut_opens_folder_picker() -> None:
 
 async def test_folder_picker_enter_on_account_row_does_nothing() -> None:
     """Enter on an account node (no folder data) leaves the picker open."""
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -2259,7 +2259,7 @@ async def test_folder_picker_enter_on_account_row_does_nothing() -> None:
 
 async def test_folder_picker_selecting_a_folder_dismisses_with_it() -> None:
     """Selecting a folder leaf dismisses the picker with that FolderRef."""
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, mirrors = build_pony_app(
@@ -2356,7 +2356,7 @@ async def test_message_view_save_attachment_from_viewer(tmp_path) -> None:
     """Pressing ctrl+1 in the EML viewer saves attachment 1."""
     from textual.app import App, ComposeResult
 
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     raw = multipart_mixed_attachment()
 
@@ -2381,7 +2381,7 @@ async def test_message_view_save_attachment_from_viewer(tmp_path) -> None:
 
 async def test_copy_key_shows_pick_folder() -> None:
     """Pressing Y (copy) shows the PickFolderScreen."""
-    from pony.tui.screens.pick_folder_screen import PickFolderScreen
+    from pony.tui.mail.screens.pick_folder_screen import PickFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, index, mirrors = build_pony_app(
@@ -2595,7 +2595,7 @@ async def test_compose_toggle_markdown() -> None:
 
 async def test_compose_add_attachment_key_opens_picker() -> None:
     """Pressing alt+a opens the AddAttachmentScreen."""
-    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="add-att")
     async with app.run_test() as pilot:
@@ -2610,7 +2610,7 @@ async def test_compose_add_attachment_key_opens_picker() -> None:
 async def test_compose_screen_prompts_for_name_when_no_display_name() -> None:
     """ComposeApp pushes ContactEditScreen when account has no display name."""
     from pony.tui.app import ComposeApp
-    from pony.tui.screens.contact_edit_screen import ContactEditScreen
+    from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
 
     paths = make_tmp_paths("prompt-name")
     account = make_test_account(paths)  # no full_name set
@@ -2707,7 +2707,7 @@ async def test_browse_contacts_no_store_notifies() -> None:
         await _select_first_inbox(pilot)
         await pilot.press("B")
         await pilot.pause()
-        from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+        from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
         opened = [s for s in app.screen_stack if isinstance(s, ContactBrowserScreen)]
 
@@ -2807,7 +2807,7 @@ async def test_compose_new_no_smtp_notifies() -> None:
 
 async def test_open_attachments_key_shows_picker() -> None:
     """Pressing O on a message with attachments shows AttachmentPickerScreen."""
-    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+    from pony.tui.mail.screens.attachment_picker_screen import AttachmentPickerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -2827,7 +2827,7 @@ async def test_open_attachments_key_shows_picker() -> None:
 
 async def test_save_attachments_key_shows_picker() -> None:
     """Pressing S on a message with attachments shows AttachmentPickerScreen."""
-    from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+    from pony.tui.mail.screens.attachment_picker_screen import AttachmentPickerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -3078,7 +3078,7 @@ async def test_new_folder_creates_in_mirror() -> None:
         await _select_first_inbox(pilot)
         await pilot.press("F")
         await pilot.pause()
-        from pony.tui.screens.new_folder_screen import NewFolderScreen
+        from pony.tui.mail.screens.new_folder_screen import NewFolderScreen
 
         assert any(isinstance(s, NewFolderScreen) for s in app.screen_stack)
         for ch in "Archive":
@@ -3097,7 +3097,7 @@ async def test_open_attachment_submits_index(
 ) -> None:
     """Pressing O then submitting '1' opens the first attachment."""
     launch_mock = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.mail.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-att-index",
@@ -3112,7 +3112,9 @@ async def test_open_attachment_submits_index(
         await pilot.pause()
         from textual.widgets import Input
 
-        from pony.tui.screens.attachment_picker_screen import AttachmentPickerScreen
+        from pony.tui.mail.screens.attachment_picker_screen import (
+            AttachmentPickerScreen,
+        )
 
         picker = next(
             screen
@@ -3131,7 +3133,7 @@ async def test_open_attachment_numeric_key(
 ) -> None:
     """Pressing '1' in the message view opens attachment 1 directly."""
     launch_mock = Mock()
-    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.mail.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, config, _paths, _index, _mirrors = build_pony_app(
         label="open-att-numeric",
@@ -3602,7 +3604,9 @@ async def test_external_editor_round_trips_the_body(
         target.write_text("Rewritten by the editor.", encoding="utf-8")
         return None
 
-    monkeypatch.setattr("pony.tui.screens.compose_screen.subprocess.run", _fake_run)
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.compose_screen.subprocess.run", _fake_run
+    )
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="editor-ok")
 
@@ -3627,7 +3631,7 @@ async def test_external_editor_round_trips_the_body(
 
 async def test_attachment_picker_rejects_a_non_file(tmp_path: Path) -> None:
     """Choosing a directory in the picker warns and attaches nothing."""
-    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
 
     app, _cfg, _paths, _index, _mirrors = build_compose_app(label="picker-not-file")
     notifications = _capture_notifications(app)
@@ -3650,7 +3654,7 @@ async def test_attachment_picker_rejects_a_non_file(tmp_path: Path) -> None:
 
 async def test_attachment_picker_accepts_a_file(tmp_path: Path) -> None:
     """A real file chosen in the picker lands in the attachment list."""
-    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+    from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
 
     chosen = tmp_path / "notes.txt"
     chosen.write_text("hello", encoding="utf-8")
@@ -3865,7 +3869,7 @@ async def test_part_zero_saves_the_message_not_the_attachments() -> None:
 
 async def test_part_zero_on_a_plain_message_opens_the_message() -> None:
     """``0`` has something to open on every message, viewer or not."""
-    from pony.tui.screens.eml_viewer_screen import EmlViewerScreen
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
@@ -3922,7 +3926,7 @@ async def test_open_attachment_uses_configured_viewer(
     from pony.mail.domain import ViewerRule
 
     launch_mock = MagicMock()
-    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.mail.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-att-viewer",
@@ -3956,7 +3960,7 @@ async def test_open_attachment_without_matching_viewer_uses_os_default(
     from pony.mail.domain import ViewerRule
 
     launch_mock = MagicMock()
-    monkeypatch.setattr("pony.tui.screens.main_screen.launch_file", launch_mock)
+    monkeypatch.setattr("pony.tui.mail.screens.main_screen.launch_file", launch_mock)
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="open-att-no-viewer",

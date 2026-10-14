@@ -29,29 +29,29 @@ from pony.keys import for_surface
 from pony.outcome import Outcome
 from pony.tui.reporting import report
 
-from ...mail.compose_utils import (
+from ....mail.compose_utils import (
     build_email_message,
     split_address_list,
 )
-from ...mail.composer import DraftSpec, from_header
-from ...mail.contact_actions import contact_for_address
-from ...mail.delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
-from ...mail.domain import (
+from ....mail.composer import DraftSpec, from_header
+from ....mail.contact_actions import contact_for_address
+from ....mail.delivery import NEEDS_A_RECIPIENT, deliver_message, file_draft
+from ....mail.domain import (
     AnyAccount,
     AppConfig,
     IndexedMessage,
 )
-from ...mail.handoff import handoff_path
-from ...mail.keymap import MAIL_KEYMAP, Surface
-from ...mail.mailbox_actions import Mailboxes
-from ...mail.protocols import (
+from ....mail.handoff import handoff_path
+from ....mail.keymap import MAIL_KEYMAP, Surface
+from ....mail.mailbox_actions import Mailboxes
+from ....mail.protocols import (
     ContactRepository,
     CredentialsProvider,
     IndexRepository,
     MirrorRepository,
 )
-from ...mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
-from ..bindings import to_textual
+from ....mail.smtp_sender import DEFAULT_CONNECT_ATTEMPTS as SMTP_CONNECT_ATTEMPTS
+from ...bindings import to_textual
 from ..widgets.address_input import AddressInput
 
 _log = logging.getLogger(__name__)

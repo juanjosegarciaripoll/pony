@@ -27,11 +27,11 @@ from pony.mail.domain import (
 from pony.mail.index_store import SqliteIndexRepository
 from pony.mail.protocols import MirrorRepository
 from pony.mail.storage import MaildirMirrorRepository, MboxMirrorRepository
-from pony.tui.screens.compose_screen import ComposeScreen
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.folder_panel import FolderPanel
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.compose_screen import ComposeScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.folder_panel import FolderPanel
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 
 def _main(app: object) -> MainScreen:
@@ -285,7 +285,7 @@ async def test_cross_account_move_from_a_local_source_deletes_the_original() -> 
 
 async def test_new_folder_falls_back_to_the_only_configured_account() -> None:
     """With exactly one account there is no ambiguity to resolve."""
-    from pony.tui.screens.new_folder_screen import NewFolderScreen
+    from pony.tui.mail.screens.new_folder_screen import NewFolderScreen
 
     app, *_ = build_pony_app(label="main-new-folder-single")
 
@@ -665,7 +665,7 @@ async def test_a_message_key_while_the_list_loads_says_it_is_loading() -> None:
 
 async def test_search_without_a_folder_or_account_selected_warns() -> None:
     """With the tree cursor on the root there is nothing to scope to."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = build_pony_app(label="main-search-unscoped")
     messages = _notifications(app)
@@ -804,7 +804,7 @@ async def test_creating_a_folder_refreshes_the_tree() -> None:
         await _select_inbox(pilot)
         screen = _main(app)
 
-        from pony.tui.widgets.folder_panel import FolderPanel
+        from pony.tui.mail.widgets.folder_panel import FolderPanel
 
         panel = screen.query_one(FolderPanel)
         before = _tree_folder_names(panel)
@@ -827,7 +827,7 @@ async def test_creating_a_folder_refreshes_the_tree() -> None:
 
 async def test_goto_folder_moves_the_tree_cursor() -> None:
     """The goto dialog's callback selects the chosen folder."""
-    from pony.tui.screens.goto_folder_screen import GotoFolderScreen
+    from pony.tui.mail.screens.goto_folder_screen import GotoFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, _index, mirrors = build_pony_app(
@@ -860,7 +860,7 @@ async def test_goto_offers_a_folder_that_has_no_directory_yet() -> None:
     dialog asked the mirror and offered neither.
     """
     from pony.mail.domain import FolderSyncState
-    from pony.tui.screens.goto_folder_screen import GotoFolderScreen
+    from pony.tui.mail.screens.goto_folder_screen import GotoFolderScreen
 
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     app, _cfg, _paths, index, _mirrors = build_pony_app(

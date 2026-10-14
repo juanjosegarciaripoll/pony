@@ -1,12 +1,14 @@
-"""Turning the shared keymap into Textual bindings.
+"""Turning a keymap into Textual bindings.
 
-The keymap itself is data in :mod:`pony.mail.keymap`, because the browser
-front end needs the same table and a ``textual.binding.Binding`` means
-nothing to it.  This module is the terminal's half of it: a converter,
-plus the two groups several list widgets assign straight into their
-``BINDINGS``.  Both are derived from the keymap now rather than written
-out a second time, so a key cannot be live in one front end and absent
-from the other.
+A keymap is data (:mod:`pony.keys` for the vocabulary, `pony.mail.keymap`
+and `pony.calendar.keymap` for the two tables), because the browser front
+end needs the same tables and a ``textual.binding.Binding`` means nothing
+to it.  This is the terminal's half of that: one converter, used by both
+halves, so a key cannot be live in one front end and absent from the
+other.
+
+The groups each half assigns into a ``BINDINGS`` list are beside its own
+screens -- `pony.tui.mail.bindings`, `pony.tui.calendar.bindings`.
 """
 
 from __future__ import annotations
@@ -15,18 +17,8 @@ from typing import TYPE_CHECKING
 
 from textual.binding import Binding
 
-from pony.keys import KeyBinding
-
-from ..mail.keymap import (
-    FOLDER_KEYS,
-    INVITATION_KEYS,
-    MARK_KEYS,
-    MESSAGE_KEYS,
-    MOTION_KEYS,
-)
-
 if TYPE_CHECKING:
-    pass
+    from pony.keys import KeyBinding
 
 
 # `Screen.BINDINGS` is an invariant list typed as
@@ -50,21 +42,7 @@ def to_textual(bindings: tuple[KeyBinding, ...]) -> list[BindingType]:
     )
 
 
-# Kept as tuples because several widgets splat them into a `BINDINGS`
-# list of their own.
-MARK_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MARK_KEYS))
-MOTION_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MOTION_KEYS))
-FOLDER_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(FOLDER_KEYS))
-MESSAGE_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(MESSAGE_KEYS))
-INVITATION_BINDINGS: tuple[BindingType, ...] = tuple(to_textual(INVITATION_KEYS))
-
-
 __all__ = [
-    "FOLDER_BINDINGS",
-    "INVITATION_BINDINGS",
-    "MARK_BINDINGS",
-    "MESSAGE_BINDINGS",
-    "MOTION_BINDINGS",
     "BindingType",
     "to_textual",
 ]

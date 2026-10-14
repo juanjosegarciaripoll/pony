@@ -16,13 +16,13 @@ from textual.widgets import Static
 
 from pony.keys import key_for
 
-from ...invitation import Invitation, extract_invitation
-from ...mail.authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
-from ...mail.browser_preview import serve_html
-from ...mail.domain import FolderMessageSummary, FolderRef
-from ...mail.keymap import MAIL_KEYMAP
-from ...mail.message_export import listed_parts
-from ...mail.message_renderer import (
+from ....invitation import Invitation, extract_invitation
+from ....mail.authentication import UNKNOWN_AUTHENTICATION, MessageAuthentication
+from ....mail.browser_preview import serve_html
+from ....mail.domain import FolderMessageSummary, FolderRef
+from ....mail.keymap import MAIL_KEYMAP
+from ....mail.message_export import listed_parts
+from ....mail.message_renderer import (
     RenderedMessage,
     build_browser_html,
     fmt_size,
@@ -30,9 +30,9 @@ from ...mail.message_renderer import (
     save_every_attachment,
     save_one_attachment,
 )
-from ...mail.protocols import MirrorRepository
+from ....mail.protocols import MirrorRepository
+from ...terminal import suspend_for_external_program
 from ..bindings import MESSAGE_BINDINGS
-from ..terminal import suspend_for_external_program
 
 _log = logging.getLogger(__name__)
 

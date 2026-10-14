@@ -32,7 +32,7 @@ from pony.tui.calendar_host import (
     mail_status,
     next_event_status,
 )
-from pony.tui.screens.main_screen import MainScreen
+from pony.tui.mail.screens.main_screen import MainScreen
 
 _NOW = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
 
@@ -426,7 +426,7 @@ async def test_b_reaches_the_same_contact_browser_from_either_half() -> None:
     so the host hands the calendar an opener. Both keys must land on the
     very same screen class.
     """
-    from pony.tui.screens.contact_browser_screen import ContactBrowserScreen
+    from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
 
     runtime = make_calendar_runtime(make_tmp_paths("contacts-both"))
     app, *_ = build_pony_app(

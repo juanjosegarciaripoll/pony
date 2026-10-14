@@ -1,4 +1,4 @@
-"""Focused sync orchestration tests for :mod:`pony.tui.screens.main_screen`."""
+"""Focused sync orchestration tests for :mod:`pony.tui.mail.screens.main_screen`."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from pony.mail.sync import (
     SyncResult,
     describe_sync_result,
 )
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.screens.sync_confirm_screen import SyncConfirmScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.screens.sync_confirm_screen import SyncConfirmScreen
 
 
 def _main(app: object) -> MainScreen:
@@ -443,7 +443,7 @@ async def test_the_plan_still_reaches_the_dialog_under_the_help_screen() -> None
     the plan never arrived, nothing dismissed anything, and the
     scheduler's slot stayed claimed for the rest of the session.
     """
-    from pony.tui.screens.help_screen import HelpScreen
+    from pony.tui.mail.screens.help_screen import HelpScreen
 
     app, *_ = build_pony_app(label="main-sync-plan-under-help")
     plan = SyncPlan(
@@ -482,7 +482,7 @@ async def test_a_sync_that_fails_under_the_help_screen_still_closes() -> None:
     dialog with help in front would close the help screen and fire the
     dialog's callback — leaving the modal behind and the slot claimed.
     """
-    from pony.tui.screens.help_screen import HelpScreen
+    from pony.tui.mail.screens.help_screen import HelpScreen
 
     app, *_ = build_pony_app(label="main-sync-fail-under-help")
     messages = _notifications(app)

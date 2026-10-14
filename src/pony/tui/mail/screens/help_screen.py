@@ -36,7 +36,7 @@ from textual.widgets import Footer, Label, Static
 
 from pony.keys import KeyBinding, for_surface
 
-from ...mail.keymap import MAIL_KEYMAP, Surface
+from ....mail.keymap import MAIL_KEYMAP, Surface
 
 # Which section each action belongs under.  Keyed on the action name, so
 # renaming a key never moves it and adding one only has to be mentioned

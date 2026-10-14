@@ -7,7 +7,7 @@ self-contained document used for the ``w`` browser view.
 
 Nothing here knows about the terminal: ``pony view --pdf`` converts files
 from the command line with no UI at all, and the Textual side lives in
-:mod:`pony.tui.pdf_export`, which wraps :func:`html_to_pdf` in a worker.
+:mod:`pony.tui.mail.pdf_export`, which wraps :func:`html_to_pdf` in a worker.
 
 **A converter that is a browser is given a URL, not a file.**  Chromium
 printing a ``file://`` document applies no headers to it, so the

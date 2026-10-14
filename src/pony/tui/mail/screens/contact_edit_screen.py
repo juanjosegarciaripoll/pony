@@ -10,9 +10,9 @@ from textual.widgets import Footer, Header, Input, Label, TextArea
 
 from pony.tui.reporting import report
 
-from ...mail.contact_actions import ContactEdit, save_contact
-from ...mail.domain import Contact
-from ...mail.protocols import ContactRepository
+from ....mail.contact_actions import ContactEdit, save_contact
+from ....mail.domain import Contact
+from ....mail.protocols import ContactRepository
 
 
 class ContactEditScreen(Screen[Contact | None]):

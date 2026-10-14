@@ -11,13 +11,13 @@ from textual.widgets import Button, Label, Select
 
 from pony.calendar.domain import CalendarRef
 
-from ...invitation import (
+from ....invitation import (
     PARTSTAT_ACCEPTED,
     PARTSTAT_DECLINED,
     PARTSTAT_TENTATIVE,
     Invitation,
 )
-from ...invitation_actions import InvitationChoice
+from ....invitation_actions import InvitationChoice
 from ..bindings import INVITATION_BINDINGS
 from .dialog_screen import DialogScreen
 

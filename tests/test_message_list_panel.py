@@ -17,9 +17,9 @@ from corpus import plain_text
 from tui_helpers import build_pony_app, seed_message
 
 from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 _INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 
@@ -829,7 +829,7 @@ def _header_text(panel: MessageListPanel) -> str:
 
 async def test_selecting_a_sent_folder_lists_recipients() -> None:
     """A localised Sent folder shows To, and the rows follow the header."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="mlist-sent",
@@ -859,7 +859,7 @@ async def test_selecting_a_sent_folder_lists_recipients() -> None:
 
 async def test_leaving_a_sent_folder_restores_the_from_column() -> None:
     """The column follows the folder, both on the way in and on the way out."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, _cfg, _paths, _index, _mirrors = build_pony_app(
         label="mlist-sent-back",
@@ -894,7 +894,7 @@ async def test_a_configured_sent_folder_overrides_the_name_match() -> None:
     """``sent_folder`` decides it when set, whatever the folder is called."""
     import dataclasses
 
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     archive = FolderRef(account_name="acct", folder_name="Outgoing")
     app, cfg, _paths, _index, _mirrors = build_pony_app(
@@ -932,7 +932,7 @@ async def test_a_configured_sent_folder_overrides_the_name_match() -> None:
 
 async def test_search_results_show_senders_even_from_a_sent_folder() -> None:
     """Results span folders, so From is the column that always means something."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, _cfg, _paths, index, _mirrors = build_pony_app(
         label="mlist-sent-search",

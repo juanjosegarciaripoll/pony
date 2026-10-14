@@ -14,14 +14,14 @@ from textual.widgets import DataTable
 from textual.widgets._data_table import ColumnKey
 from textual.worker import Worker
 
-from ...mail.domain import (
+from ....mail.domain import (
     FolderMessageSummary,
     FolderRef,
     IndexedMessage,
     MessageFlag,
 )
-from ...mail.protocols import IndexRepository
-from ...mail.views import ROW_BATCH, correspondent_label, message_row, summary_of
+from ....mail.protocols import IndexRepository
+from ....mail.views import ROW_BATCH, correspondent_label, message_row, summary_of
 from ..bindings import MARK_BINDINGS, MOTION_BINDINGS
 from .edge_drag import DraggableEdgeMixin
 

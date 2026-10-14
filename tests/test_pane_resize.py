@@ -23,7 +23,10 @@ from corpus import plain_text
 from tui_helpers import build_pony_app
 
 from pony.mail.domain import FolderRef
-from pony.tui.screens.main_screen import MainScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.folder_panel import FolderPanel
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 from pony.tui.ui_state import (
     DEFAULT_FOLDER_WIDTH_PCT,
     DEFAULT_LIST_SHARE,
@@ -33,9 +36,6 @@ from pony.tui.ui_state import (
     load_pane_sizes,
     save_pane_sizes,
 )
-from pony.tui.widgets.folder_panel import FolderPanel
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
 
 _INBOX = FolderRef(account_name="acct", folder_name="INBOX")
 

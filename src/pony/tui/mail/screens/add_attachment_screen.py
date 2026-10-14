@@ -12,8 +12,8 @@ from textual.widgets import DirectoryTree, Footer, Input, Label, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 
-from ...paths import contain
-from ..dir_tree import ReadableDirectoryTree, is_directory
+from ....paths import contain
+from ...dir_tree import ReadableDirectoryTree, is_directory
 
 # Persists the last-used directory across picker invocations within a session.
 # None means "not yet used"; the picker then falls back to cwd at launch time.

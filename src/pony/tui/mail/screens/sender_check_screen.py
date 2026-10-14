@@ -19,7 +19,7 @@ from textual.widgets import Button, Label, Static
 from .dialog_screen import DialogScreen
 
 if TYPE_CHECKING:
-    from ...mail.authentication import MessageAuthentication
+    from ....mail.authentication import MessageAuthentication
 
 
 class SenderCheckScreen(DialogScreen):

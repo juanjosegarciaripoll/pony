@@ -9,10 +9,10 @@ from corpus import mid_thread_message, plain_text, unthreaded_message
 from tui_helpers import build_pony_app
 
 from pony.mail.domain import Contact, FolderRef, MessageFlag
-from pony.tui.screens.contact_edit_screen import ContactEditScreen
-from pony.tui.screens.main_screen import MainScreen
-from pony.tui.widgets.message_list import MessageListPanel
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.screens.contact_edit_screen import ContactEditScreen
+from pony.tui.mail.screens.main_screen import MainScreen
+from pony.tui.mail.widgets.message_list import MessageListPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 
 def _main(app: object) -> MainScreen:

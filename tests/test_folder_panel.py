@@ -19,7 +19,7 @@ from pony.mail.views import (
     build_folder_tree,
     has_inbox_mail,
 )
-from pony.tui.widgets.folder_panel import (
+from pony.tui.mail.widgets.folder_panel import (
     COUNTDOWN_STEP_SECONDS,
     format_account_label,
     format_countdown,
@@ -224,7 +224,7 @@ def _two_account_app(label: str):  # type: ignore[no-untyped-def]
 
 async def test_search_scope_follows_the_cursor() -> None:
     """A folder node scopes to that folder; an account node to the account."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-scope")
 
@@ -246,7 +246,7 @@ async def test_search_scope_follows_the_cursor() -> None:
 
 
 async def test_search_scope_at_the_root_is_unscoped() -> None:
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-scope-root")
 
@@ -261,7 +261,7 @@ async def test_search_scope_at_the_root_is_unscoped() -> None:
 
 async def test_inbox_jumps_walk_between_accounts_and_stop_at_the_ends() -> None:
     """``N``/``P`` step across each account's INBOX without wrapping."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-jump")
 
@@ -294,7 +294,7 @@ async def test_inbox_jumps_walk_between_accounts_and_stop_at_the_ends() -> None:
 
 async def test_a_jump_from_a_non_inbox_node_lands_on_an_inbox() -> None:
     """From a node that is not in the INBOX list, the jump still works."""
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-jump-elsewhere")
 
@@ -313,8 +313,8 @@ async def test_a_jump_from_a_non_inbox_node_lands_on_an_inbox() -> None:
 async def test_selecting_a_folder_node_posts_the_selection() -> None:
     """Activating a folder row is what loads it into the message list."""
     from pony.mail.domain import FolderRef as _FolderRef
-    from pony.tui.screens.main_screen import MainScreen
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.screens.main_screen import MainScreen
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-select")
 
@@ -334,8 +334,8 @@ async def test_selecting_a_folder_node_posts_the_selection() -> None:
 async def test_selecting_an_unknown_folder_still_posts_it() -> None:
     """A ref with no node — e.g. a folder created this session — still loads."""
     from pony.mail.domain import FolderRef as _FolderRef
-    from pony.tui.screens.main_screen import MainScreen
-    from pony.tui.widgets.folder_panel import FolderPanel
+    from pony.tui.mail.screens.main_screen import MainScreen
+    from pony.tui.mail.widgets.folder_panel import FolderPanel
 
     app, *_ = _two_account_app("fp-select-unknown")
 

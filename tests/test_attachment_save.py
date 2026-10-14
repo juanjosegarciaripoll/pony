@@ -15,7 +15,7 @@ from pony.mail.message_renderer import (
     safe_attachment_filename,
     unique_destination,
 )
-from pony.tui.widgets.message_view import MessageViewPanel
+from pony.tui.mail.widgets.message_view import MessageViewPanel
 
 
 class _FakePanel:

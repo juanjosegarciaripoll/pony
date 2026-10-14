@@ -230,7 +230,7 @@ both packages:
 | 61 | `pony/calendar/locking.py` | 46.02 |
 | 59 | `pony/tui/app.py` | 85.29 |
 | 50 | `pony/storage.py` | 92.78 |
-| 49 | `pony/tui/screens/main_screen.py` | 95.71 |
+| 49 | `pony/tui/mail/screens/main_screen.py` | 95.71 |
 
 The calendar's files dominate this list because its suite was written to
 its own 85 % floor, not Pony's habits — that is where the headroom is.

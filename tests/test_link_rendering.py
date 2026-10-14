@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from textual.markup import _to_content
 
 from pony.mail.message_renderer import _inject_plaintext_links, render_message
-from pony.tui.widgets.message_view import _render_body
+from pony.tui.mail.widgets.message_view import _render_body
 
 
 def _plain_msg(body: str) -> bytes:

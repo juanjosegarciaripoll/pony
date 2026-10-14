@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING
 
 from pony.outcome import Notice, Outcome, failure, info, warn
 
-from ..mail import mailbox_actions
 from ..invitation import CALENDAR_CONTENT_TYPES
+from ..mail import mailbox_actions
 from ..mail.authentication import MessageAuthentication
 from ..mail.domain import FolderRef, MessageFlag
 from ..mail.folder_utils import shows_recipient

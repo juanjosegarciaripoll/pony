@@ -4,7 +4,7 @@ Trash, archive, copy, move, flag changes and folder creation are the
 operations a reader offers on the messages in front of it.  Each one is
 the same small recipe — check the account's folder policy, rewrite the
 mirror, rewrite the index row, say what happened — and each one had been
-written out again inside :class:`~pony.tui.screens.main_screen.MainScreen`,
+written out again inside :class:`~pony.tui.mail.screens.main_screen.MainScreen`,
 interleaved with ``app.notify`` calls and table refreshes.  Archive was a
 move with its own copy of the policy checks; a cross-account move was a
 copy with its own copy of the byte handling.

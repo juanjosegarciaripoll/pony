@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..mail.pdf_export import (
+from ...mail.pdf_export import (
     Converter,
     NoPdfConverterError,
     find_converter,

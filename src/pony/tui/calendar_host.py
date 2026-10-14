@@ -302,7 +302,7 @@ def contact_browser_opener(
     """
 
     def open_browser() -> None:
-        from .screens.contact_browser_screen import ContactBrowserScreen
+        from .mail.screens.contact_browser_screen import ContactBrowserScreen
 
         host.push_screen(ContactBrowserScreen(contacts))  # pyright: ignore[reportUnknownMemberType]
 

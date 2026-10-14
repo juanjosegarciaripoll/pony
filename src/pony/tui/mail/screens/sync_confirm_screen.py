@@ -10,7 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Label, ProgressBar, Static
 
-from ...mail.sync import (
+from ....mail.sync import (
     ProgressInfo,
     SyncPlan,
     describe_halt,
