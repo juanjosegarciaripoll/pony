@@ -63,6 +63,7 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
     An unconfigured calendar is not a problem to report: plenty of
     people only want the mail client.
     """
+    from chronos import config as calendar_config
     from chronos import services as calendar_services
     from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
     from chronos.paths import CalendarPaths
@@ -117,7 +118,7 @@ def _calendar_checks(config_path: Path, *, root: Path) -> list[DoctorCheck]:
 
     mirror = VdirMirrorRepository(
         mirror_root,
-        account_roots={a.name: a.mirror_path for a in config.accounts},
+        account_roots=calendar_config.mirror_roots(config, calendar_paths),
     )
     calendars = sum(len(mirror.list_calendars(a.name)) for a in config.accounts)
     checks.append(

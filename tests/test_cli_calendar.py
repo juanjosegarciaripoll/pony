@@ -9,8 +9,8 @@ from unittest import mock
 
 from conftest import TMP_ROOT, resolve_fixture
 
-from chronos.paths import activate, active
 from pony.cli import _split_calendar_argv, main, run_calendar
+from pony.paths import resolve
 
 _CONFIG = """
 config_version = 3
@@ -96,11 +96,11 @@ class RunCalendarTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = TMP_ROOT / "cli-calendar" / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(parents=True, exist_ok=True)
-        # Keep the calendar's files inside this test's tree: the host
-        # says where they live, so activating a root is all it takes.
-        previous = active()
-        activate(self.root / "data" / "calendar")
-        self.addCleanup(activate, previous.root)
+        # Keep the calendar's files inside this test's tree. The host
+        # resolves them from the paths it is running on, so pointing
+        # `PONY_ROOT`-style `AppPaths` at this directory is enough:
+        # `run_calendar` hands the calendar `AppPaths.calendar_dir`.
+        self.paths = resolve(data_dir=self.root / "data")
 
     def _config(self, text: str = _CONFIG) -> Path:
         text = resolve_fixture(text)
@@ -112,14 +112,14 @@ class RunCalendarTest(unittest.TestCase):
         path = self._config()
         captured = io.StringIO()
         with mock.patch("sys.stdout", captured):
-            code = run_calendar(config_path=path, argv=["list"])
+            code = run_calendar(paths=self.paths, config_path=path, argv=["list"])
         self.assertEqual(0, code)
 
     def test_an_unconfigured_calendar_is_reported(self) -> None:
         path = self._config(_MAIL_ONLY)
         err = io.StringIO()
         with mock.patch("sys.stderr", err):
-            code = run_calendar(config_path=path, argv=["list"])
+            code = run_calendar(paths=self.paths, config_path=path, argv=["list"])
         self.assertEqual(1, code)
         self.assertIn("no calendar configured", err.getvalue())
 
@@ -127,7 +127,9 @@ class RunCalendarTest(unittest.TestCase):
         path = self._config()
         captured = io.StringIO()
         with mock.patch("sys.stdout", captured):
-            code = run_calendar(config_path=None, argv=["--config", str(path), "list"])
+            code = run_calendar(
+                paths=self.paths, config_path=None, argv=["--config", str(path), "list"]
+            )
         self.assertEqual(0, code)
 
     def test_account_add_writes_the_calendar_table_in_ponys_config(self) -> None:
@@ -141,6 +143,7 @@ class RunCalendarTest(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
             code = run_calendar(
+                paths=self.paths,
                 config_path=path,
                 argv=[
                     "account",
@@ -178,13 +181,18 @@ class RunCalendarTest(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
             self.assertEqual(
-                0, run_calendar(config_path=path, argv=["account", "list"])
+                0,
+                run_calendar(
+                    paths=self.paths, config_path=path, argv=["account", "list"]
+                ),
             )
         listed = out.getvalue()
 
         err = io.StringIO()
         with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", err):
-            code = run_calendar(config_path=path, argv=["account", "rm", "work"])
+            code = run_calendar(
+                paths=self.paths, config_path=path, argv=["account", "rm", "work"]
+            )
 
         self.assertIn("work", listed)
         self.assertEqual(0, code, err.getvalue())
@@ -200,7 +208,9 @@ class RunCalendarTest(unittest.TestCase):
             "# keep me\n" + path.read_text(encoding="utf-8"), encoding="utf-8"
         )
         with mock.patch("sys.stdout", io.StringIO()):
-            run_calendar(config_path=path, argv=["account", "rm", "work"])
+            run_calendar(
+                paths=self.paths, config_path=path, argv=["account", "rm", "work"]
+            )
 
         self.assertIn("# keep me", path.read_text(encoding="utf-8"))
 

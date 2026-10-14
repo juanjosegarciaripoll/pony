@@ -88,13 +88,14 @@ def build_calendar_services(
     on its own.
     """
     credentials = DefaultCredentialsProvider(
-        interactive_authorizer=_in_app_authorizer(host)
+        interactive_authorizer=_in_app_authorizer(host), paths=runtime.paths
     )
     context = CliContext(
         config=runtime.config,
         mirror=runtime.mirror,
         index=runtime.index,
         creds=credentials,
+        paths=runtime.paths,
         # `build_sync_runner` returns its results rather than printing
         # them, but `CliContext` requires both streams and a running TUI
         # owns the terminal, so they go nowhere.
@@ -107,6 +108,7 @@ def build_calendar_services(
         mirror=runtime.mirror,
         index=runtime.index,
         creds=credentials,
+        paths=runtime.paths,
         now=now if now is not None else (lambda: datetime.now(UTC)),
         sync_runner=build_sync_runner(context),
         startup_ics_path=startup_ics_path,

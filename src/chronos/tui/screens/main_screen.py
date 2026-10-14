@@ -28,7 +28,7 @@ from chronos.event_actions import (
 )
 from chronos.mutations import all_day_bounds
 from chronos.outcome import Outcome
-from chronos.paths import active
+from chronos.paths import CalendarPaths
 from chronos.protocols import CalendarSyncOutcome, CalendarSyncScheduler
 from chronos.sync import describe_sync_result
 from chronos.tui.bindings import main_bindings
@@ -153,7 +153,7 @@ class MainScreen(Screen[None]):
         # Now switch to the persisted view (if different from AGENDA).
         # Hiding the now-focused EventList causes Textual to auto-redirect
         # focus to the next focusable widget — the timeline.
-        saved = _load_last_view()
+        saved = _load_last_view(self._services().paths)
         if saved != ViewKind.AGENDA:
             self._set_view(saved)
         self._maybe_offer_startup_ics_import()
@@ -179,7 +179,7 @@ class MainScreen(Screen[None]):
 
     def _set_view(self, kind: ViewKind) -> None:
         self._view = kind
-        _save_last_view(kind)
+        _save_last_view(kind, self._services().paths)
         self.refresh_view()
         # Give focus to the primary interactive widget of the new view so
         # keyboard navigation works immediately without a manual Tab.
@@ -916,16 +916,15 @@ class MainScreen(Screen[None]):
             self.app.notify(describe_sync_result(results))  # pyright: ignore[reportUnknownMemberType]
 
 
-def _save_last_view(view: ViewKind) -> None:
-    paths = active()
+def _save_last_view(view: ViewKind, paths: CalendarPaths) -> None:
     with contextlib.suppress(OSError):
         paths.root.mkdir(parents=True, exist_ok=True)
         paths.tui_state_file.write_text(view.value, encoding="utf-8")
 
 
-def _load_last_view() -> ViewKind:
+def _load_last_view(paths: CalendarPaths) -> ViewKind:
     try:
-        text = active().tui_state_file.read_text(encoding="utf-8").strip()
+        text = paths.tui_state_file.read_text(encoding="utf-8").strip()
         return ViewKind(text)
     except (OSError, ValueError):
         return ViewKind.AGENDA

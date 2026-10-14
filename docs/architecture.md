@@ -652,6 +652,19 @@ collaborators on `TuiServices`: `invitation_sender` and
 `attendee_completer`. Both are optional, and without them the calendar
 behaves exactly as it does standalone.
 
+**Where the calendar's files are is one of those injected things.** The
+calendar resolves no platform directory of its own: a `CalendarPaths`
+(`chronos.paths`) is built from `AppPaths.calendar_dir` by
+`pony.calendar.calendar_paths` and travels as an argument — on
+`CalendarRuntime`, on `CliContext`, on `TuiServices`, into the credentials
+provider. Nothing asks a global where the calendar is, which is why two
+roots can exist in one process (the two test suites do exactly that) and
+why a configuration file means the same thing under either: an account's
+`mirror_path` is kept as the file declared it, and
+`chronos.config.mirror_roots` resolves it against whichever root it is
+given. `python -m chronos` therefore has no root to run under, and says
+so rather than failing later.
+
 ### One notification space
 
 `pony.notifications.NotificationCenter` takes every announcement from either

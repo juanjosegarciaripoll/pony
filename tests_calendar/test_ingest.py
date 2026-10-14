@@ -649,6 +649,7 @@ class IngestCliTest(unittest.TestCase):
             mirror=self.mirror,
             index=self.index,
             creds=DefaultCredentialsProvider(),
+            paths=self.calendar_paths,
             stdout=self.stdout,
             stderr=self.stderr,
             now=datetime(2026, 4, 22, 12, 0, tzinfo=UTC),

@@ -157,6 +157,7 @@ class SyncGate:
                 mirror=runtime.mirror,
                 index=runtime.index,
                 creds=runtime.credentials,
+                paths=runtime.paths,
                 # The runner returns its results rather than printing
                 # them, but a context needs both streams.
                 stdout=io.StringIO(),

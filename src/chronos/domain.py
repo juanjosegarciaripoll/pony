@@ -59,7 +59,7 @@ class OAuthCredential:
 
     `client_id` and `client_secret` are inlined in `config.toml` (per
     project decision); `token_path` is None when the default location
-    under `paths.active().token_dir` should be used, or an absolute
+    under the calendar's `token_dir` should be used, or an absolute
     path to override it.
 
     Access/refresh tokens live in a separate JSON file at `token_path`
@@ -107,7 +107,13 @@ class AccountConfig:
     url: str
     username: str
     credential: CredentialSpec
-    mirror_path: Path
+    #: What the configuration declared, or None for the layout's
+    #: default.  A declaration is kept as written -- relative to the
+    #: calendar's root, or absolute -- and resolved against a
+    #: `CalendarPaths` where one is at hand
+    #: (`chronos.config.mirror_roots`), because the root is the host's
+    #: to decide and not this file's to remember.
+    mirror_path: Path | None
     trash_retention_days: int
     include: tuple[re.Pattern[str], ...]
     exclude: tuple[re.Pattern[str], ...]

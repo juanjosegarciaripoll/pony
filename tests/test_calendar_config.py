@@ -8,7 +8,7 @@ from pathlib import Path
 
 from conftest import isolated_data_dir, resolve_fixture
 
-from chronos.paths import activate, active
+from chronos.paths import CalendarPaths
 from pony.calendar import (
     load_calendar_config,
     open_calendar_runtime,
@@ -222,10 +222,8 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         # Keep the calendar's files inside this test's tree: the host
-        # says where they live, so activating a root is all it takes.
-        previous = active()
-        activate(self.root / "data" / "calendar")
-        self.addCleanup(activate, previous.root)
+        # says where they live, and says it in the call.
+        self.paths = CalendarPaths(root=self.root / "data" / "calendar")
 
     def _write(self, text: str) -> Path:
         path = self.root / "config.toml"
@@ -239,7 +237,7 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
             'profile = "test"\n'
             "accounts = []\n"
         )
-        self.assertIsNone(open_calendar_runtime(path))
+        self.assertIsNone(open_calendar_runtime(self.paths, path))
 
     def test_opens_the_mirror_and_index(self) -> None:
         path = self._write(
@@ -258,7 +256,7 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
             credential = { backend = "env", variable = "CAL_PASSWORD" }
             """
         )
-        runtime = open_calendar_runtime(path)
+        runtime = open_calendar_runtime(self.paths, path)
         assert runtime is not None
         self.addCleanup(runtime.close)
         self.assertEqual(("work",), tuple(a.name for a in runtime.config.accounts))

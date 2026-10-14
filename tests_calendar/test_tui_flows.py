@@ -37,6 +37,7 @@ from chronos.domain import (
 )
 from chronos.event_actions import EditDraft
 from chronos.index_store import SqliteIndexRepository
+from chronos.paths import CalendarPaths
 from chronos.protocols import CalendarSyncOutcome
 from chronos.recurrence import populate_occurrences
 from chronos.scheduler import SyncOutcome
@@ -156,6 +157,7 @@ def _services(
     tmp: Path,
     *,
     sync_runner: object | None = None,
+    paths: CalendarPaths | None = None,
 ) -> TuiServices:
     mirror, index = _seed_workspace(tmp)
     return TuiServices(
@@ -163,6 +165,10 @@ def _services(
         mirror=mirror,
         index=index,
         creds=DefaultCredentialsProvider(env={}),
+        # The view this screen persists goes under the test's own root,
+        # which is what keeps one Pilot test from opening in the view
+        # another left behind.
+        paths=paths if paths is not None else CalendarPaths(root=tmp / "calendar"),
         now=lambda: NOW,
         sync_runner=sync_runner,  # type: ignore[arg-type]
     )

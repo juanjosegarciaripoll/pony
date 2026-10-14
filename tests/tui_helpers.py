@@ -35,7 +35,7 @@ from chronos.domain import AppConfig as CalendarAppConfig
 from chronos.domain import CalendarRef, ResourceRef
 from chronos.domain import PlaintextCredential as CalendarPlaintextCredential
 from chronos.index_store import SqliteIndexRepository as CalendarIndex
-from chronos.paths import activate as activate_calendar
+from chronos.paths import CalendarPaths
 from chronos.recurrence import rebuild_caches
 from chronos.storage import VdirMirrorRepository
 from chronos.storage_indexing import index_calendar
@@ -328,7 +328,7 @@ def make_calendar_runtime(
     expanded into the occurrence cache, which is what the agenda renders
     from — an event only in the mirror is invisible to the views.
     """
-    calendar_paths = activate_calendar(paths.calendar_dir)
+    calendar_paths = CalendarPaths(root=paths.calendar_dir)
     mirror = VdirMirrorRepository(calendar_paths.mirror_dir)
     index = CalendarIndex(calendar_paths.index_file)
     account = CalendarAccountConfig(
@@ -360,7 +360,8 @@ def make_calendar_runtime(
         ),
         mirror=mirror,
         index=index,
-        credentials=CalendarCredentialsProvider(env={}),
+        credentials=CalendarCredentialsProvider(env={}, paths=calendar_paths),
+        paths=calendar_paths,
     )
 
 

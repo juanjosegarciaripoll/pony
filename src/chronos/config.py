@@ -19,7 +19,7 @@ from chronos.domain import (
     OAuthCredential,
     PlaintextCredential,
 )
-from chronos.paths import active, expand_path, is_half_qualified
+from chronos.paths import CalendarPaths, expand_path, is_half_qualified
 
 _DEFAULT_TRASH_RETENTION_DAYS = 30
 _DEFAULT_INCLUDE = (".*",)
@@ -204,18 +204,20 @@ def _parse_credential(data: object, key: str) -> CredentialSpec:
 
 def _parse_mirror_path(
     account: dict[str, object], account_name: str, account_key: str
-) -> Path:
-    """Resolve `mirror_path` if present, else fall back to the default.
+) -> Path | None:
+    """What `mirror_path` declared, or None for the layout's default.
 
-    The default is the active layout's `mirror_path(account_name)` — a
-    subdirectory of the calendar's root named after the account. Users
-    who want a custom location override the field; users who don't can
-    omit it entirely.
+    Kept as written -- expanded, but not joined against anything.  The
+    calendar's root belongs to the host that hands it over, so a
+    parser is the wrong place to bake it in: `mirror_roots` resolves
+    these where a `CalendarPaths` is at hand.  It used to read a
+    process-wide global to answer, which meant parsing a configuration
+    file depended on which root had been activated last.
     """
-    paths = active()
+    del account_name
     raw = account.get("mirror_path")
     if raw is None:
-        return paths.mirror_path(account_name)
+        return None
     if not isinstance(raw, str):
         raise ConfigError(
             f"'mirror_path' must be a string, got {type(raw).__name__}",
@@ -236,11 +238,32 @@ def _parse_mirror_path(
             "plain relative path, or a complete one.",
             account_key,
         )
-    # A relative path belongs to the calendar's root, not to whatever
-    # directory the command was run from.  Resolved, because every later
-    # comparison is a spelling comparison -- including the one in
-    # `_dump_account` that decides whether to write the key back out.
-    return (paths.root / expanded).resolve()
+    # A relative path belongs to the calendar's root rather than to
+    # whatever directory the command was run from, and `mirror_roots`
+    # is where that join happens -- with the root it was given.
+    return expanded
+
+
+def mirror_roots(config: AppConfig, paths: CalendarPaths) -> dict[str, Path]:
+    """Each account's mirror root, under *paths*.
+
+    What the account declared, resolved against the calendar's root
+    when it is relative; the layout's `<root>/mirror/<account>` when it
+    declared nothing.  One function because all three callers -- the
+    CLI, the host's runtime and `pony doctor` -- were building the same
+    mapping with the same comment above it.
+    """
+    return {account.name: mirror_root(account, paths) for account in config.accounts}
+
+
+def mirror_root(account: AccountConfig, paths: CalendarPaths) -> Path:
+    """One account's mirror root under *paths*."""
+    declared = account.mirror_path
+    if declared is None:
+        return paths.mirror_path(account.name)
+    if declared.is_absolute():
+        return declared
+    return (paths.root / declared).resolve()
 
 
 def _parse_regex_list(data: object, key: str) -> tuple[re.Pattern[str], ...]:
@@ -441,10 +464,12 @@ def _dump_account(account: AccountConfig) -> dict[str, object]:
     out["include"] = [p.pattern for p in account.include]
     out["exclude"] = [p.pattern for p in account.exclude]
     out["read_only"] = [p.pattern for p in account.read_only]
-    # Only emit mirror_path when the user picked a non-default location;
-    # accounts that took the default stay clean on round-trip through
-    # `chronos account add` / `config edit`.
-    if account.mirror_path != active().mirror_path(account.name):
+    # Only what the account declared; one that took the default
+    # declared nothing and stays clean on round-trip through
+    # `chronos account add` / `config edit`.  This used to compare the
+    # resolved path against a default read from a global, so a dump
+    # under one root could write a path belonging to another.
+    if account.mirror_path is not None:
         out["mirror_path"] = str(account.mirror_path)
     return out
 

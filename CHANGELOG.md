@@ -176,6 +176,18 @@ without that a kept mirror came back indexed by nothing.
 
 ### Fixed
 
+- **The calendar is told where its files are instead of looking it up**: a
+  `CalendarPaths` now travels as an argument — on the runtime, the CLI
+  context, the TUI's services and the credentials provider — where a
+  module global set by `chronos.paths.activate()` used to answer for
+  twenty call sites across eleven modules. One consequence is visible in
+  a configuration file: an account's `mirror_path` is kept as declared and
+  resolved against the root the calendar is actually running under, so
+  `pony calendar account add` no longer writes the resolved default into
+  the file (which pinned the account to that run's data directory), and
+  moving a data directory moves the mirrors with it. Files that already
+  carry an explicit `mirror_path` are unaffected.
+
 - **The message list reads its folder off the event loop**: the SQL that
   finds a folder's rows ran on the terminal's event loop with no limit on
   it, so opening a large folder froze the interface for as long as SQLite

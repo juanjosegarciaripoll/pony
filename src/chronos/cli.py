@@ -28,7 +28,7 @@ from chronos.bootstrap import (
     write_template,
 )
 from chronos.caldav import CalDAVError, CalDAVHttpSession
-from chronos.config import ConfigError
+from chronos.config import ConfigError, mirror_roots
 from chronos.config import load as load_config
 from chronos.config import save as save_config
 from chronos.credentials import CredentialResolutionError, DefaultCredentialsProvider
@@ -63,7 +63,7 @@ from chronos.oauth import (
     run_paste_redirect_flow,
     save_tokens,
 )
-from chronos.paths import active
+from chronos.paths import CalendarPaths
 from chronos.protocols import (
     CalDAVSession,
     CredentialsProvider,
@@ -86,6 +86,11 @@ class CliContext:
     mirror: MirrorRepository
     index: IndexRepository
     creds: CredentialsProvider
+    #: Where the calendar's files are, handed over by the host. Every
+    #: command that resolves a file -- the lock, the index, a token, the
+    #: MCP state -- reads it from here; it used to read a module global
+    #: that whoever started last had set.
+    paths: CalendarPaths
     stdout: TextIO
     stderr: TextIO
     now: datetime
@@ -95,6 +100,7 @@ class CliContext:
 def main(
     argv: Sequence[str] | None = None,
     *,
+    paths: CalendarPaths,
     context_factory: ContextFactory | None = None,
     open_editor: EditorFn | None = None,
     prompt: PromptFn | None = None,
@@ -109,6 +115,12 @@ def main(
     `prog` names the program in usage and error messages. Pony Express
     passes "pony calendar", which is how the user reached this parser
     when the calendar runs as part of it.
+
+    `paths` is where the calendar's files are. The calendar is hosted
+    and resolves no platform directory of its own, so the host says --
+    Pony passes `AppPaths.calendar_dir`. It was a module global set by
+    `chronos.paths.activate`, which meant every command read whichever
+    root had been activated last in the process.
 
     `config_document` says where the configuration lives and how to
     read and write it.  Standalone that is a file of this program's
@@ -131,7 +143,7 @@ def main(
         err,
         default_level=logging.INFO if args.command == "sync" else logging.WARNING,
     )
-    config_path: Path = args.config or active().config_file
+    config_path: Path = args.config or paths.config_file
     document = config_document or _file_document(config_path)
 
     # Config-editing commands work on the document without needing the
@@ -145,7 +157,7 @@ def main(
             args, out, err, document=document, open_editor=open_editor
         )
     if args.command == "oauth":
-        return _dispatch_oauth(args, out, err, document=document)
+        return _dispatch_oauth(args, out, err, document=document, paths=paths)
 
     # `tui --list-themes` just enumerates Textual's bundled themes; it
     # needs no config, mirror, or index, so handle it before the data-path
@@ -171,7 +183,9 @@ def main(
 
     # Data commands need a full context.
     owns_context = context_factory is None
-    factory = context_factory or _default_context_factory
+    factory = context_factory or (
+        lambda chosen: _default_context_factory(chosen, paths)
+    )
     try:
         ctx = factory(args.config)
     except ConfigError as exc:
@@ -215,21 +229,24 @@ def _handle_missing_config(
     )
 
 
-def _default_context_factory(config_path: Path | None) -> CliContext:
-    path = config_path or active().config_file
+def _default_context_factory(
+    config_path: Path | None, paths: CalendarPaths
+) -> CliContext:
+    path = config_path or paths.config_file
     config = load_config(path)
     mirror = VdirMirrorRepository(
-        active().mirror_dir,
-        # Each account's configured `mirror_path`, whose default is the
-        # `<root>/<account>` this layout would have used anyway.
-        account_roots={a.name: a.mirror_path for a in config.accounts},
+        paths.mirror_dir,
+        account_roots=mirror_roots(config, paths),
     )
-    index = SqliteIndexRepository(active().index_file)
+    index = SqliteIndexRepository(paths.index_file)
     return CliContext(
         config=config,
         mirror=mirror,
         index=index,
-        creds=DefaultCredentialsProvider(interactive_authorizer=default_cli_authorizer),
+        creds=DefaultCredentialsProvider(
+            interactive_authorizer=default_cli_authorizer, paths=paths
+        ),
+        paths=paths,
         stdout=sys.stdout,
         stderr=sys.stderr,
         now=datetime.now(UTC),
@@ -916,6 +933,7 @@ def _dispatch_oauth(
     stderr: TextIO,
     *,
     document: ConfigDocument,
+    paths: CalendarPaths,
 ) -> int:
     sub = str(args.oauth_cmd)
     if sub == "authorize":
@@ -923,6 +941,7 @@ def _dispatch_oauth(
             stdout,
             stderr,
             document=document,
+            paths=paths,
             account_name=args.account,
             remote_browser=bool(getattr(args, "remote_browser", False)),
         )
@@ -946,7 +965,7 @@ def cmd_sync(
             )
             return 2
     try:
-        with acquire_sync_lock(active().lock_file):
+        with acquire_sync_lock(ctx.paths.lock_file):
             if force:
                 if account is not None:
                     cleared = ctx.index.clear_account_sync_state(account)
@@ -1034,11 +1053,11 @@ def cmd_reset(
     next `chronos sync` knows where to fetch from but starts with a
     blank slate.
 
-    `index_path` and `mirror_dir` default to the active layout; tests
-    inject tmpdir-rooted overrides.
+    `index_path` and `mirror_dir` default to the context's layout;
+    tests inject tmpdir-rooted overrides.
     """
-    target_index = index_path or active().index_file
-    target_mirror = mirror_dir or active().mirror_dir
+    target_index = index_path or ctx.paths.index_file
+    target_mirror = mirror_dir or ctx.paths.mirror_dir
 
     targets: list[Path] = []
     if target_index.exists():
@@ -1057,7 +1076,7 @@ def cmd_reset(
     if not force:
         from chronos.mcp_server import is_server_reachable
 
-        live = is_server_reachable(mcp_state_file or active().mcp_state_file)
+        live = is_server_reachable(mcp_state_file or ctx.paths.mcp_state_file)
         if live is not None:
             ctx.stderr.write(
                 f"refusing to reset: the calendar TUI / MCP server is running "
@@ -1088,7 +1107,7 @@ def cmd_reset(
             ctx.stdout.write("Cancelled.\n")
             return 1
 
-    effective_lock = lock_path or active().lock_file
+    effective_lock = lock_path or ctx.paths.lock_file
     lock_cm = (
         acquire_sync_lock(effective_lock) if not force else contextlib.nullcontext()
     )
@@ -1315,7 +1334,13 @@ def cmd_mcp(ctx: CliContext) -> int:
 
     from chronos.mcp_server import run_mcp_stdio
 
-    asyncio.run(run_mcp_stdio(index=ctx.index, mirror=ctx.mirror))
+    asyncio.run(
+        run_mcp_stdio(
+            index=ctx.index,
+            mirror=ctx.mirror,
+            state_file=ctx.paths.mcp_state_file,
+        )
+    )
     return 0
 
 
@@ -1574,25 +1599,28 @@ def cmd_tui(
 
     tui_ctx = dataclasses.replace(
         ctx,
-        creds=DefaultCredentialsProvider(interactive_authorizer=tui_authorizer),
+        creds=DefaultCredentialsProvider(
+            interactive_authorizer=tui_authorizer, paths=ctx.paths
+        ),
     )
     services = TuiServices(
         config=tui_ctx.config,
         mirror=tui_ctx.mirror,
         index=tui_ctx.index,
         creds=tui_ctx.creds,
+        paths=tui_ctx.paths,
         now=lambda: datetime.now(UTC),
         sync_runner=build_sync_runner(tui_ctx),
         startup_ics_path=startup_ics_path,
     )
     app = ChronosApp(services, theme_name=theme)
     app_box.append(app)
-    with _redirect_logs_to_file():
+    with _redirect_logs_to_file(tui_ctx.paths.log_file):
         app.run()
     return 0
 
 
-def _redirect_logs_to_file() -> _LogRedirector:
+def _redirect_logs_to_file(log_path: Path) -> _LogRedirector:
     """Route the root logger to `tui.log` for the duration of the TUI.
 
     Sync emits per-calendar / per-batch progress at INFO; with the
@@ -1601,7 +1629,6 @@ def _redirect_logs_to_file() -> _LogRedirector:
     keeps the user's logs available (`tail -f $XDG_DATA_HOME/chronos/
     tui.log`) without touching stderr while the app owns the terminal.
     """
-    log_path = active().log_file
     log_path.parent.mkdir(parents=True, exist_ok=True)
     return _LogRedirector(log_path)
 
@@ -1656,7 +1683,7 @@ def build_sync_runner(
 
     def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
         try:
-            with acquire_sync_lock(active().lock_file):
+            with acquire_sync_lock(ctx.paths.lock_file):
                 return _run_locked(cancel_event)
         except SyncLockError as exc:
             # Surface the lock contention as a SyncResult so the TUI's
@@ -1813,13 +1840,18 @@ def cmd_account_add(
         resolved_username = username
     import re  # local import: avoid module-level coupling for one-shot CLI
 
-    resolved_mirror_path = mirror_path or active().mirror_path(name)
     new_account = AccountConfig(
         name=name,
         url=resolved_url,
         username=resolved_username,
         credential=credential,
-        mirror_path=resolved_mirror_path,
+        # What `--mirror-path` said, or nothing: an account that takes
+        # the default declares no path, and the default belongs to
+        # whichever root the calendar is running under rather than to
+        # the file. It used to write the resolved default into the
+        # file, read from a global, so moving the data directory left
+        # every account pointing at the old one.
+        mirror_path=mirror_path,
         trash_retention_days=trash_retention_days,
         include=(re.compile(".*"),),
         exclude=(),
@@ -1937,6 +1969,7 @@ def cmd_oauth_authorize(
     stderr: TextIO,
     *,
     document: ConfigDocument,
+    paths: CalendarPaths,
     account_name: str,
     auth_flow: Callable[[OAuthCredential, TextIO], StoredTokens] | None = None,
     remote_browser: bool = False,
@@ -1981,7 +2014,7 @@ def cmd_oauth_authorize(
     except OAuthError as exc:
         stderr.write(f"{exc}\n")
         return 1
-    token_path = oauth_credential.token_path or active().token_path(account_name)
+    token_path = oauth_credential.token_path or paths.token_path(account_name)
     save_tokens(token_path, tokens)
     stdout.write(f"Tokens saved to {token_path}\n")
     return 0

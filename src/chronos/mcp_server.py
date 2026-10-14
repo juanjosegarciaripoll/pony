@@ -197,7 +197,7 @@ async def run_mcp_stdio(
     *,
     index: IndexRepository,
     mirror: MirrorRepository,
-    state_file: Path | None = None,
+    state_file: Path,
 ) -> None:
     """Entry point for `chronos mcp`.
 
@@ -205,13 +205,12 @@ async def run_mcp_stdio(
     transparent stdio↔TCP bridge.  If the state file is missing or the
     port is not reachable, runs a self-contained MCP session directly
     over stdin/stdout.
+
+    *state_file* is the caller's to name -- it used to fall back to a
+    process-wide global, so which server this bridged to depended on
+    which calendar root had been activated last.
     """
     from tinymcp import LOOPBACK_HOST, run_mcp
-
-    if state_file is None:
-        from chronos.paths import active
-
-        state_file = active().mcp_state_file
 
     state = read_state(state_file)
     remote = (LOOPBACK_HOST, state.port, state.token) if state is not None else None
@@ -227,7 +226,7 @@ async def start_tcp_server(
     index: IndexRepository,
     mirror: MirrorRepository,
     port: int = 0,
-    state_file: Path | None = None,
+    state_file: Path,
 ) -> None:
     """Start the MCP TCP server, write the state file, and run until cancelled.
 
@@ -239,11 +238,6 @@ async def start_tcp_server(
     import secrets
 
     from tinymcp import serve_tcp
-
-    if state_file is None:
-        from chronos.paths import active
-
-        state_file = active().mcp_state_file
 
     token = secrets.token_hex(32)
     server = build_mcp_server(index=index, mirror=mirror)

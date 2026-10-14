@@ -121,6 +121,30 @@ class BuildAuthTest(unittest.TestCase):
         self.assertIsNone(auth.on_commit)
 
 
+class TokenPathTest(unittest.TestCase):
+    """Where OAuth tokens go when the account names no file."""
+
+    def test_an_oauth_account_without_a_root_is_refused(self) -> None:
+        """Rather than guessing a directory the host never asked for.
+
+        The provider used to read the calendar's root from a module
+        global, so it always had an answer -- whichever root was
+        activated last, which in a process hosting two was a coin
+        toss. Now it is handed one, and says so when it is not.
+        """
+        from chronos.domain import OAuthCredential
+
+        provider = DefaultCredentialsProvider(env={})
+        account = _account(
+            OAuthCredential(client_id="cid", client_secret="cs"), username=""
+        )
+
+        with self.assertRaises(CredentialResolutionError) as ctx:
+            provider.build_auth(account)
+
+        self.assertIn("no calendar root", str(ctx.exception))
+
+
 class GoogleBackendTest(unittest.TestCase):
     """`GoogleCredential` is OAuth-with-defaults; verify it routes to OAuth
     and uses the fixed Google scope rather than the basic-auth code path.
@@ -138,18 +162,17 @@ class GoogleBackendTest(unittest.TestCase):
         # Presence is enough; build_bearer_auth is mocked below.
         token_path.write_text("{}", encoding="utf-8")
 
-        provider = DefaultCredentialsProvider(env={})
+        # The provider is handed the layout its tokens live under, so
+        # there is nothing to patch: it used to read a module global.
+        provider = DefaultCredentialsProvider(env={}, paths=paths)
         account = _account(
             GoogleCredential(client_id="cid", client_secret="cs"), username=""
         )
         bearer = MagicMock()
         bearer.persist = MagicMock()
-        with (
-            patch(
-                "chronos.credentials.build_bearer_auth", return_value=bearer
-            ) as mock_build,
-            patch("chronos.credentials.active", return_value=paths),
-        ):
+        with patch(
+            "chronos.credentials.build_bearer_auth", return_value=bearer
+        ) as mock_build:
             auth = provider.build_auth(account)
         mock_build.assert_called_once_with(
             client_id="cid",

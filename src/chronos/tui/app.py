@@ -12,6 +12,7 @@ from textual.app import App
 
 from chronos.alarms import ALARM_POLL_SECONDS, ALARM_TOAST_SECONDS, due_alarms
 from chronos.domain import AppConfig, SyncResult
+from chronos.paths import CalendarPaths
 from chronos.protocols import (
     CalendarSyncOutcome,
     CalendarSyncScheduler,
@@ -109,6 +110,10 @@ class TuiServices:
     mirror: MirrorRepository
     index: IndexRepository
     creds: CredentialsProvider
+    #: Where the calendar's files are. The screens that persist
+    #: something -- the last view, the MCP server's port -- read it
+    #: from here rather than from a module global.
+    paths: CalendarPaths
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     sync_runner: SyncRunner | None = None
     startup_ics_path: Path | None = None
@@ -388,6 +393,7 @@ class ChronosApp(App[None]):
             await start_tcp_server(
                 index=self.services.index,
                 mirror=self.services.mirror,
+                state_file=self.services.paths.mcp_state_file,
             )
         except Exception as exc:  # noqa: BLE001
             self.log.warning(f"MCP TCP server stopped: {exc}")

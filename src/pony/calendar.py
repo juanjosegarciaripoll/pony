@@ -43,7 +43,7 @@ from chronos.credentials import DefaultCredentialsProvider, InteractiveAuthorize
 from chronos.domain import CALENDAR_CONFIG_VERSION
 from chronos.domain import AppConfig as CalendarConfig
 from chronos.index_store import SqliteIndexRepository as CalendarIndexRepository
-from chronos.paths import active
+from chronos.paths import CalendarPaths
 from chronos.storage import VdirMirrorRepository
 
 from .config import ConfigError, load_config, read_raw_config
@@ -51,7 +51,7 @@ from .domain import CONFIG_VERSION
 
 if TYPE_CHECKING:
     from chronos.cli import ConfigDocument
-from .paths import resolve
+from .paths import AppPaths, resolve
 
 # The example above quotes the schema version the loader actually
 # accepts rather than a copy of it.  The copy it used to hold said 2
@@ -97,6 +97,10 @@ class CalendarRuntime:
     mirror: VdirMirrorRepository
     index: CalendarIndexRepository
     credentials: DefaultCredentialsProvider
+    #: Where the calendar's files are, so everything the host builds
+    #: out of this runtime -- a CLI context, the TUI's services -- is
+    #: pointed at the same root rather than at a module global.
+    paths: CalendarPaths
 
     def close(self) -> None:
         self.index.close()
@@ -271,33 +275,46 @@ def hosted_calendar_document(path: Path) -> ConfigDocument:
     )
 
 
+def calendar_paths(paths: AppPaths) -> CalendarPaths:
+    """The calendar's layout inside the host's data directory.
+
+    One function, so every entry point that opens the calendar points
+    it at the same root: ``pony tui``, ``pony web``, ``pony calendar
+    ...`` and the MCP tools all used to depend instead on
+    ``chronos.paths.activate`` having been called at startup, and on
+    nothing having called it again since.
+    """
+    return CalendarPaths(root=paths.calendar_dir)
+
+
 def open_calendar_runtime(
+    paths: CalendarPaths,
     config_path: Path | None = None,
     *,
     interactive_authorizer: InteractiveAuthorizer | None = None,
 ) -> CalendarRuntime | None:
     """Open the calendar's mirror and index, or None when unconfigured.
 
-    The files come from the root the host activated, which is
-    `AppPaths.calendar_dir` inside the shared data directory.
+    *paths* is the root the host hands over -- `AppPaths.calendar_dir`
+    inside the shared data directory -- and it travels on the runtime,
+    so nothing downstream has to ask a global where the calendar is.
     """
     config = load_calendar_config(config_path)
     if config is None:
         return None
-    paths = active()
     return CalendarRuntime(
         config=config,
         mirror=VdirMirrorRepository(
             paths.mirror_dir,
-            # Honour each account's `mirror_path`. Its default is the
-            # same `<root>/<account>` the layout would choose, so an
-            # account that sets nothing keeps its files where they are.
-            account_roots={a.name: a.mirror_path for a in config.accounts},
+            # Honour each account's declared `mirror_path`; one that
+            # declared none takes the layout's `<root>/<account>`.
+            account_roots=calendar_config.mirror_roots(config, paths),
         ),
         index=CalendarIndexRepository(paths.index_file),
         credentials=DefaultCredentialsProvider(
-            interactive_authorizer=interactive_authorizer
+            interactive_authorizer=interactive_authorizer, paths=paths
         ),
+        paths=paths,
     )
 
 
@@ -305,6 +322,7 @@ __all__ = [
     "CALENDAR_SECTION",
     "CalendarConfig",
     "CalendarRuntime",
+    "calendar_paths",
     "calendar_section",
     "hosted_calendar_document",
     "save_calendar_config",

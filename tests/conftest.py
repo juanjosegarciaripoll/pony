@@ -6,7 +6,10 @@ test process exits (atexit, LIFO after the mirror finalizers have
 flushed what they hold open).
 
 Sets ``PONY_ROOT`` for the whole session, so no test can reach a real
-user directory.
+user directory.  That covers the calendar as well: it is handed a root
+inside the sandboxed data directory wherever one is opened
+(``pony.calendar.calendar_paths``), rather than having one installed
+into a global here.
 
 Also loads a repo-root ``.env`` if present, so opt-in switches such as
 ``PONY_LIVE_IMAP=1`` can be set once per checkout instead of prefixed to
@@ -19,8 +22,6 @@ import os
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-from chronos.paths import activate as activate_calendar
 
 if TYPE_CHECKING:
     from pony.paths import AppPaths
@@ -60,9 +61,6 @@ def _sandbox_app_dirs(root: Path) -> None:
     """
     root.mkdir(parents=True, exist_ok=True)
     os.environ["PONY_ROOT"] = str(root)
-    # The calendar is hosted and has to be told where its files go; in
-    # production `pony.cli.main` does this from the resolved data dir.
-    activate_calendar(root / "data" / "calendar")
 
 
 _tmp_dir = tempfile.TemporaryDirectory(prefix="pony-tests-", ignore_cleanup_errors=True)

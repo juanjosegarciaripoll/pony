@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from chronos.config import ConfigError, dump, load, parse, save
+from chronos.config import ConfigError, dump, load, mirror_roots, parse, save
 from chronos.domain import (
     AccountConfig,
     AppConfig,
@@ -16,6 +16,7 @@ from chronos.domain import (
     EnvCredential,
     PlaintextCredential,
 )
+from chronos.paths import CalendarPaths
 
 
 def _toml(body: str) -> str:
@@ -171,34 +172,52 @@ class ParseAccountTest(unittest.TestCase):
 
     def test_a_relative_mirror_path_resolves_under_the_calendar_root(self) -> None:
         """Not under the working directory the command happened to run in."""
-        from chronos.paths import active
-
         acct_data = dict(self.BASE_ACCOUNT)
         acct_data["mirror_path"] = "mirrors/personal"
         config = parse(self._wrap(acct_data))
 
         self.assertEqual(
-            config.accounts[0].mirror_path,
-            (active().root / "mirrors" / "personal").resolve(),
+            mirror_roots(config, self.calendar_paths)["personal"],
+            (self.calendar_paths.root / "mirrors" / "personal").resolve(),
         )
 
-    def test_a_relative_mirror_path_is_resolved(self) -> None:
+    def test_a_relative_mirror_path_is_resolved_against_a_given_root(self) -> None:
         """Every later use of the path is a spelling comparison.
 
-        `_dump_account` decides whether to write the key back out by
-        comparing it with the default, and the sync engine compares it
-        with what it wrote; an unresolved ``a/../b`` is a different
-        string for the same directory.  The mail side resolves
-        `mirror.path` for this reason and the calendar did not.
+        The sync engine compares it with what it wrote, and an
+        unresolved ``a/../b`` is a different string for the same
+        directory.  The resolving happens where a root is at hand --
+        parsing only keeps what the file said, because the root is the
+        host's to name and used to come from a process-wide global.
         """
-        from chronos.paths import active
-
         acct_data = dict(self.BASE_ACCOUNT)
         acct_data["mirror_path"] = "mirrors/../elsewhere"
         config = parse(self._wrap(acct_data))
 
+        self.assertEqual(config.accounts[0].mirror_path, Path("mirrors/../elsewhere"))
+        resolved = mirror_roots(config, self.calendar_paths)["personal"]
+        self.assertEqual(resolved, (self.calendar_paths.root / "elsewhere").resolve())
+
+    def test_the_same_file_resolves_under_whichever_root_it_is_given(self) -> None:
+        """What a configuration *means* no longer depends on process state.
+
+        The parser read the calendar's root from a module global, so
+        two roots in one process -- which is what the two conftests of
+        this repository set up -- made the same file name different
+        directories depending on which had been activated last.
+        """
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["mirror_path"] = "mirrors/personal"
+        config = parse(self._wrap(acct_data))
+
+        one = CalendarPaths(root=Path("/one"))
+        two = CalendarPaths(root=Path("/two"))
+
         self.assertEqual(
-            config.accounts[0].mirror_path, (active().root / "elsewhere").resolve()
+            mirror_roots(config, one)["personal"], Path("/one/mirrors/personal")
+        )
+        self.assertEqual(
+            mirror_roots(config, two)["personal"], Path("/two/mirrors/personal")
         )
 
     def test_a_half_qualified_mirror_path_is_refused(self) -> None:
@@ -219,14 +238,27 @@ class ParseAccountTest(unittest.TestCase):
             parse(self._wrap(acct_data))
         self.assertIn("neither relative nor fully qualified", str(ctx.exception))
 
-    def test_mirror_path_defaults_to_the_active_layout_when_omitted(self) -> None:
-        from chronos.paths import active
+    def test_an_absolute_mirror_path_is_its_own_answer(self) -> None:
+        """A root is for resolving relative paths, not for overriding one."""
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["mirror_path"] = "/srv/calendars/personal"
+        config = parse(self._wrap(acct_data))
 
+        self.assertEqual(
+            mirror_roots(config, CalendarPaths(root=Path("/elsewhere")))["personal"],
+            Path("/srv/calendars/personal"),
+        )
+
+    def test_an_omitted_mirror_path_declares_nothing(self) -> None:
         acct_data = dict(self.BASE_ACCOUNT)
         del acct_data["mirror_path"]
         config = parse(self._wrap(acct_data))
+
+        self.assertIsNone(config.accounts[0].mirror_path)
+        # And takes the layout's default wherever it is resolved.
         self.assertEqual(
-            config.accounts[0].mirror_path, active().mirror_path("personal")
+            mirror_roots(config, self.calendar_paths)["personal"],
+            self.calendar_paths.mirror_path("personal"),
         )
 
     def test_mirror_path_must_be_a_string_when_present(self) -> None:
@@ -483,8 +515,6 @@ class DumpTest(unittest.TestCase):
         self.assertNotIn("editor", data)
 
     def test_dump_omits_mirror_path_when_default(self) -> None:
-        from chronos.paths import active
-
         config = _sample_config()
         config = AppConfig(
             config_version=config.config_version,
@@ -496,7 +526,7 @@ class DumpTest(unittest.TestCase):
                     url=config.accounts[0].url,
                     username=config.accounts[0].username,
                     credential=config.accounts[0].credential,
-                    mirror_path=active().mirror_path("personal"),
+                    mirror_path=None,
                     trash_retention_days=config.accounts[0].trash_retention_days,
                     include=config.accounts[0].include,
                     exclude=config.accounts[0].exclude,
@@ -508,22 +538,19 @@ class DumpTest(unittest.TestCase):
         accounts = data["accounts"]
         assert isinstance(accounts, list)
         self.assertNotIn("mirror_path", accounts[0])
-        # And the round-trip recovers the same path via the default.
+        # And the round-trip keeps it on the default.
         reparsed = parse(data)
-        self.assertEqual(
-            reparsed.accounts[0].mirror_path, active().mirror_path("personal")
-        )
+        self.assertIsNone(reparsed.accounts[0].mirror_path)
 
     def test_dump_omits_url_and_username_for_google_defaults(self) -> None:
         from chronos.domain import GoogleCredential
-        from chronos.paths import active
 
         account = AccountConfig(
             name="google",
             url="https://apidata.googleusercontent.com/caldav/v2/",
             username="",
             credential=GoogleCredential(client_id="cid", client_secret="cs"),
-            mirror_path=active().mirror_path("google"),
+            mirror_path=None,
             trash_retention_days=30,
             include=(re.compile(".*"),),
             exclude=(),

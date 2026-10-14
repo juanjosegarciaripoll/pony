@@ -247,21 +247,14 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     """`pony doctor` answers for the calendar half too."""
 
     def setUp(self) -> None:
-        from chronos.paths import activate as activate_calendar
-        from chronos.paths import active as active_calendar
-
         self.paths = _tmp_paths(f"cal-{self.id().rsplit('.', 1)[-1]}")
         self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
         # The calendar's files live under the data directory the doctor
-        # was handed, so there is nothing to redirect.
+        # was handed, so there is nothing to redirect: the doctor
+        # resolves them from those paths rather than from a global that
+        # had to be set to match.
         self.calendar_home = self.paths.calendar_dir
         self.calendar_home.mkdir(parents=True, exist_ok=True)
-        # `pony` activates the calendar's root before reading anything,
-        # and an account's `mirror_path` default comes from it, so a
-        # doctor reading this config has to see this root.
-        previous = active_calendar().root
-        activate_calendar(self.calendar_home)
-        self.addCleanup(activate_calendar, previous)
 
     def _write_config(self, text: str) -> None:
         self.paths.config_file.write_text(resolve_fixture(text), encoding="utf-8")

@@ -24,7 +24,7 @@ from chronos.oauth import (
     build_bearer_auth,
     save_tokens,
 )
-from chronos.paths import active
+from chronos.paths import CalendarPaths
 
 _COMMAND_TIMEOUT_SECONDS = 30
 
@@ -49,9 +49,14 @@ class DefaultCredentialsProvider:
       - CommandCredential: runs the command and uses stdout (stripped)
         as the basic-auth password.
       - OAuthCredential / GoogleCredential: load tokens from
-        `paths.active().token_path(account)`. If the file is missing and
-        an `interactive_authorizer` is configured, run it to obtain
-        fresh tokens and save them. Otherwise raise.
+        `paths.token_path(account)`. If the file is missing and an
+        `interactive_authorizer` is configured, run it to obtain fresh
+        tokens and save them. Otherwise raise.
+
+    *paths* says where the tokens live.  It is required for an OAuth
+    account and unused for the other three backends, so a caller that
+    has no calendar root -- a test over a plaintext credential -- may
+    leave it out and gets a clear error if an OAuth account turns up.
     """
 
     def __init__(
@@ -59,15 +64,20 @@ class DefaultCredentialsProvider:
         env: Mapping[str, str] | None = None,
         *,
         interactive_authorizer: InteractiveAuthorizer | None = None,
+        paths: CalendarPaths | None = None,
     ) -> None:
         self._env = env if env is not None else os.environ
         self._authorizer = interactive_authorizer
+        self._paths = paths
 
     def build_auth(self, account: AccountConfig) -> Authorization:
         spec = account.credential
         if isinstance(spec, OAuthCredential):
             return _build_oauth_authorization(
-                account.name, spec, interactive_authorizer=self._authorizer
+                account.name,
+                spec,
+                interactive_authorizer=self._authorizer,
+                paths=self._paths,
             )
         if isinstance(spec, GoogleCredential):
             return _build_oauth_authorization(
@@ -79,6 +89,7 @@ class DefaultCredentialsProvider:
                     token_path=None,
                 ),
                 interactive_authorizer=self._authorizer,
+                paths=self._paths,
             )
         password = self._resolve_password(account.name, spec)
         return Authorization(basic=(account.username, password))
@@ -103,13 +114,29 @@ class DefaultCredentialsProvider:
         )
 
 
+def _default_token_path(account_name: str, paths: CalendarPaths | None) -> Path:
+    """Where this account's tokens go when it names no file of its own.
+
+    Refuses rather than guessing: a calendar that resolved a directory
+    itself would write tokens somewhere the host never asked for, which
+    is what the provider is handed a `CalendarPaths` to avoid.
+    """
+    if paths is None:
+        raise CredentialResolutionError(
+            f"{account_name}: no calendar root to resolve a token path under; "
+            "the host must pass `paths` to DefaultCredentialsProvider"
+        )
+    return paths.token_path(account_name)
+
+
 def _build_oauth_authorization(
     account_name: str,
     spec: OAuthCredential,
     *,
     interactive_authorizer: InteractiveAuthorizer | None,
+    paths: CalendarPaths | None,
 ) -> Authorization:
-    token_path = spec.token_path or active().token_path(account_name)
+    token_path = spec.token_path or _default_token_path(account_name, paths)
 
     def _new_bearer() -> BearerTokenAuth:
         return build_bearer_auth(

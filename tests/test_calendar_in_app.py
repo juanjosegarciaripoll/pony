@@ -88,6 +88,7 @@ def _services_for(runtime: CalendarRuntime) -> TuiServices:
         mirror=runtime.mirror,
         index=runtime.index,
         creds=runtime.credentials,
+        paths=runtime.paths,
     )
 
 
@@ -247,6 +248,7 @@ async def test_a_calendarless_app_offers_no_switch_in_the_calendar_help() -> Non
         mirror=runtime.mirror,
         index=runtime.index,
         creds=runtime.credentials,
+        paths=runtime.paths,
     )
     assert services.host_bindings == ()
     runtime.close()

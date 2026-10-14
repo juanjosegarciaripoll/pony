@@ -12,6 +12,7 @@ from typing import Any
 from unittest import mock
 
 from chronos import cli
+from chronos.config import mirror_roots
 from chronos.credentials import DefaultCredentialsProvider
 from chronos.domain import (
     AccountConfig,
@@ -75,12 +76,16 @@ class CliTestCase(unittest.TestCase):
         config: AppConfig | None = None,
         session_factory: cli.SessionFactory | None = None,
         creds_env: dict[str, str] | None = None,
+        paths: CalendarPaths | None = None,
     ) -> cli.CliContext:
         return cli.CliContext(
             config=config or _config(),
             mirror=self.mirror,
             index=self.index,
-            creds=DefaultCredentialsProvider(env=creds_env or {}),
+            creds=DefaultCredentialsProvider(
+                env=creds_env or {}, paths=paths or self.calendar_paths
+            ),
+            paths=paths or self.calendar_paths,
             stdout=self.stdout,
             stderr=self.stderr,
             now=NOW,
@@ -94,7 +99,7 @@ class CliTestCase(unittest.TestCase):
         context: cli.CliContext | None = None,
     ) -> int:
         ctx = context or self._ctx()
-        return cli.main(argv, context_factory=lambda _: ctx)
+        return cli.main(argv, paths=self.calendar_paths, context_factory=lambda _: ctx)
 
 
 class ParserTest(CliTestCase):
@@ -103,13 +108,14 @@ class ParserTest(CliTestCase):
         # config it returns 2 (missing-config path), not a parser error.
         result = cli.main(
             ["--config", "/nowhere/does/not/exist.toml"],
+            paths=self.calendar_paths,
             is_interactive=lambda: False,
         )
         self.assertEqual(result, 2)
 
     def test_unknown_subcommand_exits_nonzero(self) -> None:
         with self.assertRaises(SystemExit):
-            cli.main(["nope"])
+            cli.main(["nope"], paths=self.calendar_paths)
 
 
 class ResolveThemeTest(unittest.TestCase):
@@ -143,7 +149,11 @@ class ResolveThemeTest(unittest.TestCase):
     def test_list_themes_prints_and_exits_zero(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            code = cli.main(["tui", "--list-themes"], is_interactive=lambda: False)
+            code = cli.main(
+                ["tui", "--list-themes"],
+                paths=self.calendar_paths,
+                is_interactive=lambda: False,
+            )
         self.assertEqual(code, 0)
         printed = stdout.getvalue().split()
         # Every printed name is a real theme; flexoki (the default) is present.
@@ -620,22 +630,22 @@ class SyncLockReleaseTest(CliTestCase):
         def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
             return flaky_session
 
-        ctx = self._ctx(session_factory=factory)
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        under_tmp = CalendarPaths(root=tmp)
+        ctx = self._ctx(session_factory=factory, paths=under_tmp)
 
-        with mock.patch("chronos.cli.active", return_value=CalendarPaths(root=tmp)):
-            runner = cli.build_sync_runner(ctx)
-            with self.assertRaises(KeyboardInterrupt):
-                runner()
+        runner = cli.build_sync_runner(ctx)
+        with self.assertRaises(KeyboardInterrupt):
+            runner()
 
-            # Lock must be released — a fresh runner must be able to
-            # acquire it without blocking or raising SyncLockError.
-            ctx2 = self._ctx(session_factory=lambda *_: self.session)
-            self._seed()  # idempotent
-            runner2 = cli.build_sync_runner(ctx2)
-            results = runner2()
-            self.assertEqual(len(results), 1)
-            self.assertEqual(results[0].errors, ())
+        # Lock must be released — a fresh runner must be able to
+        # acquire it without blocking or raising SyncLockError.
+        ctx2 = self._ctx(session_factory=lambda *_: self.session, paths=under_tmp)
+        self._seed()  # idempotent
+        runner2 = cli.build_sync_runner(ctx2)
+        results = runner2()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].errors, ())
 
     def test_concurrent_cmd_sync_invocations_rejected(self) -> None:
         # Hold the lockfile via a separate `acquire_sync_lock` and
@@ -644,14 +654,11 @@ class SyncLockReleaseTest(CliTestCase):
         from chronos.locking import acquire_sync_lock
 
         self._seed()
-        ctx = self._ctx(session_factory=lambda *_: self.session)
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        lock_path = CalendarPaths(root=tmp).lock_file
+        under_tmp = CalendarPaths(root=tmp)
+        ctx = self._ctx(session_factory=lambda *_: self.session, paths=under_tmp)
 
-        with (
-            mock.patch("chronos.cli.active", return_value=CalendarPaths(root=tmp)),
-            acquire_sync_lock(lock_path),
-        ):
+        with acquire_sync_lock(under_tmp.lock_file):
             exit_code = cli.cmd_sync(ctx)
 
         self.assertEqual(exit_code, 2)
@@ -781,6 +788,7 @@ class BuildSyncRunnerTest(CliTestCase):
             mirror=self.mirror,
             index=self.index,
             creds=StubCreds(),
+            paths=self.calendar_paths,
             stdout=self.stdout,
             stderr=self.stderr,
             now=NOW,
@@ -1401,6 +1409,7 @@ class ConfigLoadErrorTest(unittest.TestCase):
         stdout = io.StringIO()
         code = cli.main(
             ["--config", "/nowhere/does/not/exist.toml", "doctor"],
+            paths=self.calendar_paths,
             is_interactive=lambda: False,
             stdout=stdout,
             stderr=stderr,
@@ -1430,6 +1439,7 @@ class ConfigEditingCliTestCase(unittest.TestCase):
     ) -> int:
         return cli.main(
             ["--config", str(self.config_path), *argv],
+            paths=self.calendar_paths,
             open_editor=open_editor,
             stdout=self.stdout,
             stderr=self.stderr,
@@ -1484,6 +1494,7 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
     def test_non_interactive_prints_help_and_exits_2(self) -> None:
         code = cli.main(
             ["--config", str(self.config_path), "sync"],
+            paths=self.calendar_paths,
             is_interactive=lambda: False,
             stdout=self.stdout,
             stderr=self.stderr,
@@ -1498,6 +1509,7 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
 
         code = cli.main(
             ["--config", str(self.config_path), "tui"],
+            paths=self.calendar_paths,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["y", "n"]),  # create yes, edit no
             open_editor=lambda p: edits.append(p),
@@ -1512,6 +1524,7 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
     def test_interactive_user_declines(self) -> None:
         code = cli.main(
             ["--config", str(self.config_path), "list"],
+            paths=self.calendar_paths,
             is_interactive=lambda: True,
             prompt=self._scripted_prompt(["n"]),
             stdout=self.stdout,
@@ -1528,6 +1541,7 @@ class FirstLaunchBootstrapTest(unittest.TestCase):
         # one, which is silly. Verify by passing no prompt at all.
         code = cli.main(
             ["--config", str(self.config_path), "init"],
+            paths=self.calendar_paths,
             stdout=self.stdout,
             stderr=self.stderr,
         )
@@ -1573,8 +1587,6 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
         self.assertEqual(cred.password, "s3cret")
 
     def test_add_account_without_mirror_path_uses_default(self) -> None:
-        from chronos.paths import active
-
         self._run(["init"])
         code = self._run(
             [
@@ -1596,11 +1608,17 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
         from chronos.config import load
 
         config = load(self.config_path)
+        # An account that declared nothing keeps nothing: the default
+        # belongs to whichever root the calendar runs under, and
+        # `mirror_roots` is where it is applied. Writing the resolved
+        # default into the file -- which it used to do, reading a
+        # global for it -- pinned the account to that run's root.
+        self.assertIsNone(config.accounts[0].mirror_path)
         self.assertEqual(
-            config.accounts[0].mirror_path, active().mirror_path("personal")
+            mirror_roots(config, self.calendar_paths)["personal"],
+            self.calendar_paths.mirror_path("personal"),
         )
-        # The TOML on disk should NOT carry an explicit mirror_path line
-        # (it round-trips through the default).
+        # And the TOML on disk carries no explicit mirror_path line.
         body = self.config_path.read_text(encoding="utf-8")
         self.assertNotIn("mirror_path", body)
 
@@ -2007,6 +2025,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             self.stdout,
             self.stderr,
             document=cli._file_document(self.config_path),
+            paths=CalendarPaths(root=self.tmp),
             account_name="google",
             auth_flow=fake_flow,
         )
@@ -2086,16 +2105,14 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
 
         from chronos import cli
 
-        with mock.patch(
-            "chronos.cli.active", return_value=CalendarPaths(root=self.tmp)
-        ):
-            code = cli.cmd_oauth_authorize(
-                self.stdout,
-                self.stderr,
-                document=cli._file_document(self.config_path),
-                account_name="google",
-                auth_flow=fake_flow,
-            )
+        code = cli.cmd_oauth_authorize(
+            self.stdout,
+            self.stderr,
+            document=cli._file_document(self.config_path),
+            paths=CalendarPaths(root=self.tmp),
+            account_name="google",
+            auth_flow=fake_flow,
+        )
         self.assertEqual(code, 0)
         cred = captured["credential"]
         assert isinstance(cred, OAuthCredential)
@@ -2119,15 +2136,12 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         with (
             mock.patch("chronos.cli._has_local_graphical_browser", return_value=False),
             mock.patch("chronos.cli._default_remote_browser_flow", flow),
-            mock.patch(
-                "chronos.cli.active",
-                return_value=CalendarPaths(root=self.tmp),
-            ),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
                 document=cli._file_document(self.config_path),
+                paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
         self.assertEqual(code, 0)
@@ -2149,15 +2163,12 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
         with (
             mock.patch("chronos.cli._has_local_graphical_browser", return_value=True),
             mock.patch("chronos.cli._default_loopback_flow", flow),
-            mock.patch(
-                "chronos.cli.active",
-                return_value=CalendarPaths(root=self.tmp),
-            ),
         ):
             code = cli.cmd_oauth_authorize(
                 self.stdout,
                 self.stderr,
                 document=cli._file_document(self.config_path),
+                paths=CalendarPaths(root=self.tmp),
                 account_name="google",
             )
         self.assertEqual(code, 0)

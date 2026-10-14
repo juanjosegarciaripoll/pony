@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 from chronos.atomic import write_atomically
 from chronos.outcome import Outcome
-from chronos.paths import activate as activate_calendar
 from chronos.paths import expand_path
 
 from .accounts import (
@@ -586,9 +585,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     declared_data_dir, profile = _peek_profile(paths.config_file)
     if declared_data_dir is not None:
         paths = resolve(args.config, data_dir=declared_data_dir)
-    # The calendar keeps its files inside the same data directory; it is
-    # hosted, so it is told where rather than resolving one of its own.
-    activate_calendar(paths.calendar_dir)
     # Files handed to an external viewer go there too, rather than into
     # the system temporary directory where nothing removed them.
     activate_handoff(paths.data_dir)
@@ -719,7 +715,9 @@ def _dispatch(
             return run_config_show(paths=paths, config_path=args.config)
         return run_config_edit(paths=paths, config_path=args.config)
     if args.command == "calendar":
-        return run_calendar(config_path=args.config, argv=args.calendar_args)
+        return run_calendar(
+            paths=paths, config_path=args.config, argv=args.calendar_args
+        )
     if args.command == "tui":
         return run_tui(
             paths=paths,
@@ -2953,7 +2951,7 @@ def run_tui(
 
     from .tui import PonyApp
 
-    calendar = _open_calendar_or_warn(config_path)
+    calendar = _open_calendar_or_warn(paths, config_path)
 
     app = PonyApp(
         config=config,
@@ -3031,7 +3029,7 @@ def run_web(
         index=index,
         mirrors=mirrors,
     )
-    calendar = _open_calendar_or_warn(config_path)
+    calendar = _open_calendar_or_warn(paths, config_path)
     scheduler = _web_mail_scheduler(
         config=config,
         index=index,
@@ -3120,7 +3118,9 @@ def _web_mail_scheduler(
     return scheduler
 
 
-def _open_calendar_or_warn(config_path: Path | None) -> CalendarRuntime | None:
+def _open_calendar_or_warn(
+    paths: AppPaths, config_path: Path | None
+) -> CalendarRuntime | None:
     """Open the calendar for the TUI, or log why it stays closed.
 
     A mistake in `[calendar]` must not stand between the user and their
@@ -3131,16 +3131,18 @@ def _open_calendar_or_warn(config_path: Path | None) -> CalendarRuntime | None:
     """
     import logging
 
-    from .calendar import open_calendar_runtime
+    from .calendar import calendar_paths, open_calendar_runtime
 
     try:
-        return open_calendar_runtime(config_path)
+        return open_calendar_runtime(calendar_paths(paths), config_path)
     except ConfigError as error:
         logging.getLogger("pony").warning("calendar disabled: %s", error)
         return None
 
 
-def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
+def run_calendar(
+    *, paths: AppPaths, config_path: Path | None, argv: Sequence[str]
+) -> int:
     """Run a calendar command against the unified configuration.
 
     The calendar's own argument parser handles everything after
@@ -3153,11 +3155,17 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
 
     from chronos import cli as calendar_cli
 
-    from .calendar import hosted_calendar_document, open_calendar_runtime
+    from .calendar import (
+        calendar_paths,
+        hosted_calendar_document,
+        open_calendar_runtime,
+    )
+
+    layout = calendar_paths(paths)
 
     def _context(path: Path | None) -> calendar_cli.CliContext:
         runtime = open_calendar_runtime(
-            path, interactive_authorizer=calendar_cli.default_cli_authorizer
+            layout, path, interactive_authorizer=calendar_cli.default_cli_authorizer
         )
         if runtime is None:
             raise ConfigError(
@@ -3169,6 +3177,7 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
             mirror=runtime.mirror,
             index=runtime.index,
             creds=runtime.credentials,
+            paths=runtime.paths,
             stdout=sys.stdout,
             stderr=sys.stderr,
             now=datetime.now(UTC),
@@ -3180,6 +3189,7 @@ def run_calendar(*, config_path: Path | None, argv: Sequence[str]) -> int:
     try:
         return calendar_cli.main(
             forwarded,
+            paths=layout,
             context_factory=_context,
             prog="pony calendar",
             config_document=hosted_calendar_document(

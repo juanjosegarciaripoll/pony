@@ -6,12 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chronos.paths import (
-    CalendarPaths,
-    activate,
-    active,
-    expand_path,
-)
+from chronos.paths import CalendarPaths, expand_path
 
 
 class ExpandPathTest(unittest.TestCase):
@@ -86,26 +81,54 @@ class CalendarPathsTest(unittest.TestCase):
         )
 
 
-class ActivationTest(unittest.TestCase):
-    """The host says where the calendar's data lives; nothing else does."""
+class HandedOverRootTest(unittest.TestCase):
+    """The host says where the calendar's data lives; nothing else does.
 
-    def setUp(self) -> None:
-        self.previous = active()
+    There is nothing to activate: a `CalendarPaths` is a value, and two
+    of them coexist. It used to be installed into a module global, so
+    the answer to "where does the calendar keep its files" depended on
+    who had called `activate` last -- in this suite, on which conftest
+    imported second.
+    """
 
-    def tearDown(self) -> None:
-        activate(self.previous.root)
+    def test_two_layouts_coexist(self) -> None:
+        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
+            first = CalendarPaths(root=Path(one))
+            second = CalendarPaths(root=Path(two))
 
-    def test_activating_replaces_the_layout(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            activated = activate(Path(tmp))
+            self.assertEqual(first.index_file, Path(one) / "index.sqlite3")
+            self.assertEqual(second.index_file, Path(two) / "index.sqlite3")
+            self.assertNotEqual(first.root, second.root)
 
-            self.assertEqual(activated.root, Path(tmp))
-            self.assertEqual(active().root, Path(tmp))
-            self.assertEqual(active().index_file, Path(tmp) / "index.sqlite3")
+    def test_the_module_offers_no_process_wide_root(self) -> None:
+        """What the audit asked for: no `activate`, no `active`."""
+        import chronos.paths as module
 
-    def test_the_suite_runs_on_an_activated_root(self) -> None:
-        """conftest activates a temporary one, so no test writes to a real dir."""
-        self.assertTrue(active().root.is_absolute())
+        self.assertFalse(hasattr(module, "activate"))
+        self.assertFalse(hasattr(module, "active"))
+        self.assertFalse(hasattr(module, "_active"))
+
+
+class UnhostedRunTest(unittest.TestCase):
+    """``python -m chronos`` has nowhere to put anything, and says so."""
+
+    def test_it_names_the_host_instead_of_raising(self) -> None:
+        import subprocess
+
+        finished = subprocess.run(  # noqa: S603 - the interpreter running this
+            [sys.executable, "-m", "chronos"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+        self.assertEqual(finished.returncode, 2)
+        self.assertIn("pony calendar", finished.stderr)
+        # Not the traceback it used to end in: the first command that
+        # touched a file raised `RuntimeError: calendar paths are not
+        # set` out of the global that was never activated.
+        self.assertNotIn("Traceback", finished.stderr)
 
 
 class PerTestRootTest(unittest.TestCase):
@@ -116,15 +139,15 @@ class PerTestRootTest(unittest.TestCase):
     every Pilot test inherited the previous one's view, and which test
     ran first was down to the scheduler.  A test cannot prove this on
     its own -- it would pass alone and fail only after another file ran
-    -- so what is checked is the lever: the root is not the session's.
+    -- so what is checked is the lever: the root is this test's.
     """
 
-    def test_the_activated_root_is_this_test_s_own(self) -> None:
+    def test_the_root_is_this_test_s_own(self) -> None:
         from tests_calendar.conftest import TMP_ROOT
 
-        root = active().root
+        root = self.calendar_paths.root
         self.assertNotEqual(root, TMP_ROOT / "calendar")
         self.assertTrue(root.is_relative_to(TMP_ROOT))
 
     def test_no_view_is_inherited_from_another_test(self) -> None:
-        self.assertFalse(active().tui_state_file.exists())
+        self.assertFalse(self.calendar_paths.tui_state_file.exists())

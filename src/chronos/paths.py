@@ -4,6 +4,16 @@ The calendar is hosted: it does not resolve platform directories of its
 own.  Its root is handed to it by the application that embeds it --
 Pony's ``AppPaths.calendar_dir``, inside the shared ``data_dir`` -- and
 everything here is relative to that root.
+
+A :class:`CalendarPaths` travels as an argument.  It used to be set
+once into a module global and read from everywhere through
+``activate()`` / ``active()``, which is the hidden dependency
+``docs/architecture.md`` tells both halves not to have: twenty call
+sites across eleven modules depended on which root had been activated
+last, including the configuration parser, so what a file *meant*
+depended on process state.  Two test conftests set different roots at
+import time and a worker running files from both got whichever
+imported second.
 """
 
 from __future__ import annotations
@@ -111,30 +121,3 @@ class CalendarPaths:
     @property
     def log_file(self) -> Path:
         return self.root / "tui.log"
-
-
-_active: CalendarPaths | None = None
-
-
-def activate(root: Path) -> CalendarPaths:
-    """Put the calendar's files under *root* for this process.
-
-    The host calls this once, as early as it knows its data directory.
-    """
-    global _active  # noqa: PLW0603
-    _active = CalendarPaths(root=root)
-    return _active
-
-
-def active() -> CalendarPaths:
-    """The paths the host activated.
-
-    Raises rather than guessing: a calendar that resolved its own
-    directory would write somewhere the host never asked for.
-    """
-    if _active is None:
-        raise RuntimeError(
-            "calendar paths are not set: the host application must call "
-            "chronos.paths.activate(root) before using the calendar"
-        )
-    return _active
