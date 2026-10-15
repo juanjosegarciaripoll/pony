@@ -232,7 +232,7 @@ Largest remaining gaps, by absolute missing statements+branches:
 | Missing | File | % |
 |---:|---|---:|
 | 212 | `pony/cli/calendar.py` | 80.21 |
-| 80 | `pony/calendar/sync.py` | 89.16 |
+| 80 | `pony/calendar/sync.py` | 88.97 |
 | 76 | `pony/tui/calendar/screens/main_screen.py` | 86.67 |
 | 65 | `pony/calendar/oauth.py` | 80.71 |
 | 63 | `pony/calendar/ingest.py` | 82.20 |
