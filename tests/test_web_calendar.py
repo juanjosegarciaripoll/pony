@@ -655,6 +655,50 @@ def test_a_resolved_conflict_is_reported_rather_than_swallowed() -> None:
     assert notices[1]["severity"] == "warning"
 
 
+def test_the_page_can_see_the_calendar_sync_while_it_runs() -> None:
+    """The calendar reports no progress, so this is all there is to say.
+
+    What matters is that there *is* something to say while it runs:
+    ``POST /action/sync_calendar`` answers when the sync is over, and
+    until then the chrome has only ``/sync/status`` to go on.
+    """
+    from pony.web.syncing import CALENDAR_MESSAGE, SyncProgress
+
+    services, _runtime = _services("cal-sync-progress")
+    build_web_app(services)
+    seen: list[SyncProgress] = []
+
+    def _runner() -> tuple[()]:
+        seen.append(services.sync.progress())
+        return ()
+
+    with patch("pony.calendar.services.build_sync_runner", return_value=_runner):
+        services.sync.calendars()
+
+    assert seen == [SyncProgress(running=True, message=CALENDAR_MESSAGE)]
+    # And nothing is left running once it is over.
+    assert services.sync.progress() == SyncProgress()
+
+
+def test_a_failing_calendar_sync_is_reported_and_leaves_nothing_running() -> None:
+    """Any backend may fail, and the chrome must not be left spinning."""
+    from pony.web.syncing import SyncProgress
+
+    services, _runtime = _services("cal-sync-fails")
+    build_web_app(services)
+
+    def _explode() -> tuple[()]:
+        raise RuntimeError("the server hung up")
+
+    with patch("pony.calendar.services.build_sync_runner", return_value=_explode):
+        outcome = services.sync.calendars()
+
+    assert outcome.changed == 0
+    assert outcome.notices[0].text == "Calendar sync failed: the server hung up"
+    assert outcome.notices[0].severity == "error"
+    assert services.sync.progress() == SyncProgress()
+
+
 def test_syncing_a_calendar_that_is_not_configured_says_so() -> None:
     services, _runtime = _services("cal-sync-none")
     bare = dataclasses.replace(services, calendar=None)

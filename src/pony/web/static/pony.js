@@ -30,6 +30,13 @@ const state = {
   // What the page's form held when it loaded, for the Escape that
   // leaves it. Null on a page with no form.
   formAtLoad: null,
+  // How many sync requests of this page's own are out. A count, not a
+  // flag: two presses mean two requests, and the second coming back is
+  // not the first one finishing. What tells the follower below whether
+  // the sync it is watching is ours.
+  syncing: 0,
+  // Whether the follower is already running, so two presses share one.
+  following: false,
   // Which row stream is the current one. A new one makes every older
   // one stop at its next batch, which is what the reader's
   // `exclusive=True` worker does when a folder is loaded again.
@@ -415,6 +422,87 @@ function choose(question, choices) {
 
 // ── Server actions ─────────────────────────────────────────────
 
+// ── A sync in flight ───────────────────────────────────────────
+//
+// A sync is the one action that outlasts the page's patience: it is
+// measured in minutes, and the `POST` that started it says nothing
+// until it is over. So the chrome carries what the server says it is
+// doing, polled from `/sync/status` -- the same `ProgressInfo` the
+// terminal's dialog draws, which is what the browser used to throw
+// away. A notice was all there was before, and a notice expires after
+// eight seconds.
+const SYNC_POLL_MS = 1000;
+
+function pause(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function syncStatus() {
+  try {
+    const response = await fetch("/sync/status");
+    return await response.json();
+  } catch {
+    // Offline, or the server has stopped. Nothing to say, and the
+    // request that started the sync will say what became of it.
+    return null;
+  }
+}
+
+function showSyncProgress(live) {
+  const line = document.getElementById("sync-state");
+  if (line) line.textContent = live.message || "Syncing…";
+  const bar = document.getElementById("sync-bar");
+  if (!bar) return;
+  // Most of a sync is work of unknown length, and the message already
+  // carries the counts where there are any: the bar is the extra, not
+  // the thing, so it is there only while it can say something true.
+  if (live.total > 0) {
+    bar.max = live.total;
+    bar.value = live.current;
+    bar.hidden = false;
+  } else {
+    bar.hidden = true;
+  }
+}
+
+function clearSyncProgress() {
+  delete document.body.dataset.busy;
+  const line = document.getElementById("sync-state");
+  if (line) line.textContent = "";
+  const bar = document.getElementById("sync-bar");
+  if (bar) bar.hidden = true;
+}
+
+// Follow the sync to its end, whoever started it. `g` is refused while
+// the periodic thread holds the slot, and a refusal is of more use with
+// the run that caused it on screen than on its own; a sync this page
+// did not ask for also fetches mail this page is not showing, so the
+// list is redrawn when that one ends.
+//
+// It stops asking once our own request is back *and* the server says
+// nothing is running -- not on the first `running: false`, because the
+// request that starts a sync and the first poll race, and whoever lost
+// would have left the page looking idle for the whole run.
+async function followSync() {
+  let foreign = false;
+  state.following = true;
+  document.body.dataset.busy = "1";
+  showSyncProgress({ message: "Syncing…", total: 0 });
+  while (!state.quitting) {
+    const live = await syncStatus();
+    if (live && live.running) {
+      showSyncProgress(live);
+      if (!state.syncing) foreign = true;
+    } else if (!state.syncing) {
+      break;
+    }
+    await pause(SYNC_POLL_MS);
+  }
+  clearSyncProgress();
+  state.following = false;
+  if (foreign && !state.quitting) await refresh();
+}
+
 // Actions whose label says "marked". They act on the marks and on
 // nothing else, so the cursor is not offered as a fallback: it starts
 // on the first row, so "Delete marked" on a freshly loaded contacts
@@ -444,12 +532,15 @@ async function server(name, extra = {}) {
     if (value !== null && value !== undefined) body.append(key, value);
   }
 
-  // A sync can take a while, so say it started rather than leaving the
-  // page looking like nothing happened.
+  // A sync can take a while, so the chrome says it is happening for as
+  // long as it is, and says what it is doing.
   const slow = name.startsWith("sync");
   if (slow) {
-    say("Syncing…");
-    document.body.dataset.busy = "1";
+    state.syncing += 1;
+    // Deliberately not awaited: it outlives this request by design, and
+    // it reports nothing back that `server` has to wait for. One
+    // follower is enough however many presses there have been.
+    if (!state.following) void followSync();
   }
   let outcome;
   try {
@@ -463,7 +554,7 @@ async function server(name, extra = {}) {
     say(`The server did not answer: ${error}`, "error");
     return { changed: 0, notices: [] };
   } finally {
-    if (slow) delete document.body.dataset.busy;
+    if (slow) state.syncing -= 1;
   }
   notify(outcome.notices || []);
   // The server may answer with a question instead of a result: a sync
@@ -819,9 +910,12 @@ const clientActions = {
   // Mail
   close_message: () => {
     // What `q` does in the reader: the message goes, the folder and the
-    // search it was found in stay.
+    // search it was found in stay -- and so does the cursor, which
+    // `mailParams` carries as the row that was open. Without it the
+    // list came back at the top of the folder, however far down the
+    // message had been.
     if (!here().message) return;
-    go(`/mail?${folderParams()}`);
+    go(`/mail?${mailParams()}`);
   },
   // Space and PageDown, as the reader's message pane answers them:
   // down the message, and on to the next unread one once there is no

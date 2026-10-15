@@ -137,7 +137,7 @@ with no mail code in the way.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.26 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.28 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 

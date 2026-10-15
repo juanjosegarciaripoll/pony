@@ -55,6 +55,7 @@ from web_helpers import (
     row_ids,
     row_link,
     select_value,
+    selected_row,
 )
 
 from pony.mail import delivery
@@ -436,6 +437,103 @@ def test_writing_from_the_list_and_sending_files_the_sent_copy() -> None:
     # The Sent copy is filed, with no UID, for the next sync to push.
     (filed,) = index.list_folder_messages(folder=SENT)
     assert (filed.subject, filed.uid) == ("Lunch", None)
+
+
+def test_writing_a_message_comes_back_to_the_row_it_was_written_from() -> None:
+    """Where the list was is page state, so every URL has to carry it.
+
+    The cursor lives in the page and nowhere else: a folder URL names
+    the folder, and the list opens at the top of it.  So closing a
+    message and leaving the composer both came back to the first row,
+    however far down the folder the reader had been -- and a new
+    message, which names no message at all, came back to the default
+    folder.  Walked here in the four steps a user walks: open the
+    second message, close it, write from there, send.
+    """
+    services, _index, _calendar = _services(
+        "flow-back-to-the-row",
+        seed=(plain_text(), _second_message(), _third_message()),
+    )
+    sent: list[dict[str, object]] = []
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)),
+        _client(services) as client,
+    ):
+        folder = client.get(MAIL).text
+        _first, second, _third = row_ids(folder)
+
+        # Opening the second message marks it, as it always has.
+        opened = client.get(row_link(folder, second)).text
+        assert selected_row(opened) == second
+
+        # `q` closes it: the folder and the search stay, and so does the
+        # cursor -- the request `close_message` makes, out of the page's
+        # own `data-*`.
+        data = page_data(opened)
+        closed = client.get(
+            "/mail",
+            params={
+                "account": data["account"],
+                "folder": data["folder"],
+                "id": data["message"],
+            },
+        ).text
+        assert page_data(closed)["message"] == ""
+        assert selected_row(closed) == second
+
+        # Writing from there, through the page's own link.
+        form_page = client.get(link_to(closed, "Write")).text
+        fields = form_fields(form_page, "#compose-form")
+        # The row travels in the form, so the answer knows where back is.
+        assert fields["came_from"].endswith(f"id={second}")
+        _method, action = form_target(form_page, "#compose-form")
+        done = client.post(
+            action,
+            data={
+                **fields,
+                "to": "you@example.test",
+                "subject": "Lunch",
+                "body": "At one?",
+            },
+        ).text
+
+    assert sent, "the message was never sent"
+    # Back in the folder, on the row it was written from.
+    assert page_data(done)["folder"] == "INBOX"
+    assert selected_row(done) == second
+
+
+def test_a_reply_comes_back_to_the_message_it_answered() -> None:
+    """The compose URL the ``r`` key builds, and where its answer lands."""
+    services, _index, _calendar = _services(
+        "flow-reply-back",
+        seed=(plain_text(), _second_message(), _third_message()),
+    )
+    sent: list[dict[str, object]] = []
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)),
+        _client(services) as client,
+    ):
+        folder = client.get(MAIL).text
+        _first, second, _third = row_ids(folder)
+        # `composeUrl("reply")` out of the open message's page data.
+        form_page = client.get(
+            "/compose",
+            params={
+                "mode": "reply",
+                "account": "acct",
+                "folder": "INBOX",
+                "id": second,
+            },
+        ).text
+        fields = form_fields(form_page, "#compose-form")
+        _method, action = form_target(form_page, "#compose-form")
+        done = client.post(action, data={**fields, "body": "Yes."}).text
+
+    assert sent, "the reply was never sent"
+    assert selected_row(done) == second
 
 
 def test_a_refused_send_keeps_the_form_and_the_next_attempt_sends_it() -> None:

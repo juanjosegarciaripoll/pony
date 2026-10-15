@@ -134,6 +134,14 @@ def page(
                     element("span", "Pony Express", class_="brand"),
                     _tabs(tab),
                     element("span", status, id="status"),
+                    # Where a sync in flight says what it is doing, for
+                    # as long as it does. The terminal shows a dialog
+                    # with a line and a bar; this is the same two
+                    # things, filled in by `followSync` in `pony.js`
+                    # from `/sync/status`. Empty, and the bar hidden,
+                    # whenever nothing is running.
+                    element("span", "", id="sync-state", role="status"),
+                    element("progress", "", id="sync-bar", hidden=True),
                     # The `g` key, for a screen that has no keys. The
                     # dispatcher sends it to whichever half the page is
                     # showing.

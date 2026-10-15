@@ -38,6 +38,9 @@ CONTACTS = "/contacts"
 CONTACT_FORM = "/contacts/edit"
 CALENDAR = "/calendar"
 EVENT_FORM = "/calendar/event"
+#: What a sync in flight is doing.  Polled rather than pushed: the
+#: ``POST`` that started it says nothing until it is over.
+SYNC_STATUS = "/sync/status"
 
 
 def query(**params: str | int | None) -> str:
@@ -56,11 +59,19 @@ def mail_url(
     q: str = "",
     query_text: str = "",
     offset: int = 0,
+    selected: int | None = None,
 ) -> str:
     """The folder's page, optionally from *offset* rows down.
 
     *offset* is how a page with no script reaches the next batch of a
     long folder, and it is the one the script asks for too.
+
+    *selected* is the row the cursor is on.  It travels because nothing
+    else carries it: the cursor is the page's own state, so a folder URL
+    without it opens the list at the top -- which is where every return
+    to the list used to land, however far down the folder the reader
+    had been.  Spelled ``id``, as it is everywhere else a message is
+    named.
     """
     if folder is None:
         return MAIL
@@ -69,6 +80,7 @@ def mail_url(
         folder=folder.folder_name,
         q=(q or query_text) or None,
         offset=offset or None,
+        id=selected,
     )
 
 
@@ -166,6 +178,7 @@ __all__ = [
     "PARTS",
     "RAW",
     "ROWS",
+    "SYNC_STATUS",
     "part_url",
     "body_url",
     "calendar_url",

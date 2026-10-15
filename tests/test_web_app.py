@@ -40,6 +40,7 @@ from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
 from pony.mail.views import ROW_BATCH
 from pony.web import WebServices, build_web_app
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS, TOKEN_COOKIE
+from pony.web.syncing import BACKGROUND_MESSAGE, PLANNING_MESSAGE, SyncProgress
 
 if TYPE_CHECKING:
     from pony.mail.index_store import SqliteIndexRepository
@@ -1354,7 +1355,9 @@ def test_only_one_sync_runs_at_a_time_in_this_server() -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def _slow() -> object:
+    def _slow(**_kwargs: object) -> object:
+        # `**_kwargs` because the gate hands `plan` a progress callback,
+        # as the reader's worker does.
         started.set()
         release.wait(timeout=5)
         return _plan()
@@ -1473,6 +1476,148 @@ def test_an_unhalted_sync_is_never_asked_about() -> None:
             response = client.post("/action/sync", data={})
 
     assert "confirm" not in response.json()
+
+
+# ----------------------------------------------------------------------
+# What a sync in flight says about itself
+# ----------------------------------------------------------------------
+
+
+def test_nothing_is_running_until_something_is() -> None:
+    services, _index = _services("web-sync-idle")
+
+    with _client(services) as client:
+        response = client.get("/sync/status")
+
+    assert response.json() == {
+        "running": False,
+        "message": "",
+        "current": 0,
+        "total": 0,
+    }
+    # A reading of this instant: a cached one would report a sync that
+    # has finished.
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_the_page_is_told_what_the_engine_is_doing() -> None:
+    """The terminal's dialog draws these; the browser used to drop them.
+
+    `POST /action/sync` answers when the sync is over, so everything the
+    engine says while it runs reached the browser only if something kept
+    it.  The gate keeps the last one, which is what the chrome shows.
+    """
+    import threading
+
+    from pony.mail.sync import ProgressInfo
+
+    services, _index = _services("web-sync-progress")
+    reported = threading.Event()
+    release = threading.Event()
+    seen: list[dict[str, object]] = []
+
+    def _plan_slowly(*, progress: object = None, **_kwargs: object) -> object:
+        assert callable(progress)
+        progress(ProgressInfo("acct/INBOX: 3/10", current=3, total=10))
+        reported.set()
+        release.wait(timeout=5)
+        return _plan()
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.side_effect = _plan_slowly
+        service.execute.return_value = _result()
+        syncing = threading.Thread(target=services.sync.mail)
+        syncing.start()
+        try:
+            assert reported.wait(timeout=5)
+            seen.append(services.sync.progress().as_json())
+        finally:
+            release.set()
+            syncing.join(timeout=5)
+
+    assert seen == [
+        {
+            "running": True,
+            "message": "acct/INBOX: 3/10",
+            "current": 3,
+            "total": 10,
+        },
+    ]
+    # And the record is put back when the sync ends, so a page that
+    # asks later is not told a finished sync is still running.
+    assert services.sync.progress() == SyncProgress()
+
+
+def test_a_sync_says_it_is_planning_before_the_engine_says_anything() -> None:
+    """Planning an account with a large folder is a silent minute."""
+    import threading
+
+    services, _index = _services("web-sync-planning")
+    entered = threading.Event()
+    release = threading.Event()
+    seen: list[SyncProgress] = []
+
+    def _plan_slowly(**_kwargs: object) -> object:
+        entered.set()
+        release.wait(timeout=5)
+        return _plan()
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.side_effect = _plan_slowly
+        service.execute.return_value = _result()
+        syncing = threading.Thread(target=services.sync.mail)
+        syncing.start()
+        try:
+            assert entered.wait(timeout=5)
+            seen.append(services.sync.progress())
+        finally:
+            release.set()
+            syncing.join(timeout=5)
+
+    assert seen == [SyncProgress(running=True, message=PLANNING_MESSAGE)]
+
+
+def test_a_failed_sync_leaves_nothing_running_behind_it() -> None:
+    services, _index = _services("web-sync-progress-failure")
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.side_effect = RuntimeError("the server hung up")
+        services.sync.mail()
+
+    assert services.sync.progress() == SyncProgress()
+
+
+def test_a_run_this_page_did_not_start_is_still_a_run() -> None:
+    """`g` is refused while the periodic sync holds the slot.
+
+    The refusal is of more use with the run that caused it on screen:
+    that thread was started with no callback of ours, so all there is to
+    say is that it is happening.
+    """
+    from pony.mail.sync import MailSyncScheduler, SyncResult
+    from pony.scheduler import PeriodicSync
+
+    def _never_runs(**_kwargs: object) -> SyncResult:
+        raise AssertionError("the slot is claimed by hand here")
+
+    services, _index = _services("web-sync-background")
+    scheduler: MailSyncScheduler = PeriodicSync(
+        name="mail-sync",
+        runner=_never_runs,
+        interval=3600.0,
+    )
+    services.sync.scheduler = scheduler
+
+    assert services.sync.progress() == SyncProgress()
+    assert scheduler.try_claim()
+    try:
+        assert services.sync.progress() == SyncProgress(
+            running=True,
+            message=BACKGROUND_MESSAGE,
+        )
+    finally:
+        scheduler.release()
+    assert services.sync.progress() == SyncProgress()
 
 
 # ----------------------------------------------------------------------

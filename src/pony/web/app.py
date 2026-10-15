@@ -191,6 +191,7 @@ def build_web_app(services: WebServices) -> Starlette:
         Route(urls.EVENT_FORM, _handler(services, _event_form)),
         Route(urls.EVENT_FORM, _handler(services, _event_save), methods=["POST"]),
         Route("/keymap.json", _handler(services, _keymap)),
+        Route(urls.SYNC_STATUS, _handler(services, _sync_status)),
         Route("/action/{name}", _handler(services, _run_action), methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
@@ -388,9 +389,23 @@ async def _mail_page(services: WebServices, request: Request) -> Response:
                 query=query,
                 notices=notices,
                 offset=_offset_from(request),
+                selected=_selected_from(request),
             ),
         ),
     )
+
+
+def _selected_from(request: Request) -> int | None:
+    """The row the cursor is on, if the link that came here named one.
+
+    ``id`` on a folder URL selects a row; on ``/message`` the same
+    parameter opens it.  The cursor is the one piece of the reader's
+    state nothing else carries, so without this every link back to a
+    list -- closing a message, leaving the composer -- arrived at the
+    top of the folder.
+    """
+    raw = request.query_params.get("id", "")
+    return int(raw) if raw.isdigit() else None
 
 
 def _offset_from(request: Request) -> int:
@@ -1016,6 +1031,32 @@ def is_available(action: str) -> bool:
         return True
     # `select_span(3)` and friends carry their argument in the name.
     return action.partition("(")[0] in CLIENT_ACTIONS
+
+
+# ----------------------------------------------------------------------
+# A sync in flight
+# ----------------------------------------------------------------------
+
+
+async def _sync_status(services: WebServices, request: Request) -> Response:
+    """What the sync in flight is doing, for the chrome to show.
+
+    A sync is the one action that outlasts the request which started
+    it: ``POST /action/sync`` answers when it is over, which on a real
+    mailbox is minutes later, and until then the page has nothing to go
+    on.  The terminal has had this all along — its dialog draws every
+    :class:`~pony.mail.sync.ProgressInfo` the engine emits — and this is
+    the same thing, polled, because a browser has no callback to be
+    handed.
+
+    ``no-store``: it is a reading of this instant, and a cached one
+    would have the page reporting a sync that finished.
+    """
+    del request
+    return JSONResponse(
+        services.sync.progress().as_json(),
+        headers={"cache-control": "no-store"},
+    )
 
 
 # ----------------------------------------------------------------------

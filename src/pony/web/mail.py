@@ -76,16 +76,24 @@ def mail_page(
     query: str = "",
     notices: Sequence[Notice] = (),
     offset: int = 0,
+    selected: int | None = None,
 ) -> str:
-    """The reader: folders beside the list, with a message open or not."""
+    """The reader: folders beside the list, with a message open or not.
+
+    *selected* is the row the cursor is on where no message is open --
+    what a link back to a list carries so that it comes back where the
+    reader left it rather than at the top of the folder.  An open
+    message is its own answer to the same question.
+    """
     title = (
         folder.folder_name if message is None else (message.subject or "(no subject)")
     )
+    open_id = selected if message is None else message.message_ref.id
     right = [
         list_pane(
             services,
             folder,
-            open_id=None if message is None else message.message_ref.id,
+            open_id=open_id,
             query=query,
             offset=offset,
         ),
@@ -356,6 +364,9 @@ def list_pane(
                         mode="new",
                         account=folder.account_name,
                         folder=folder.folder_name,
+                        # Where the composer came from, so leaving it
+                        # comes back to this row rather than the top.
+                        message_id=open_id,
                     ),
                     class_="action",
                 ),

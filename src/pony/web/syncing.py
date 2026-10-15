@@ -13,6 +13,15 @@ second IMAP session on the same account.  Across processes it is the
 user's call — the calendar takes a lock of its own
 (:mod:`pony.calendar.locking`), the mail half has never had one, and a
 terminal left open is not a reason for the phone to refuse.
+
+The gate also keeps *what the sync in flight is doing*, because the
+engine reports it and nothing here was listening.  The terminal hands
+:meth:`ImapSyncService.plan` and ``.execute`` a progress callback and
+draws every :class:`~pony.mail.sync.ProgressInfo` into its dialog; a
+browser cannot be handed a callback, so the gate holds the last one and
+the page polls ``/sync/status`` for it.  Without that the only sign a
+browser had was a notice that expired in eight seconds while the sync
+ran for minutes.
 """
 
 from __future__ import annotations
@@ -37,7 +46,12 @@ if TYPE_CHECKING:
     from pony.outcome import Notice
 
     from ..calendar_runtime import CalendarRuntime
-    from ..mail.sync import ImapSyncService, MailSyncScheduler, SyncPlan
+    from ..mail.sync import (
+        ImapSyncService,
+        MailSyncScheduler,
+        ProgressInfo,
+        SyncPlan,
+    )
 
 _log = logging.getLogger(__name__)
 
@@ -46,6 +60,44 @@ _log = logging.getLogger(__name__)
 # short enough that it is not applied against a server that has moved
 # on since.  Past it the answer plans again and says so.
 HELD_PLAN_SECONDS = 300.0
+
+
+#: What a page is told about a sync it did not start -- the periodic
+#: thread holds the same slot, and there is no callback to read from it.
+BACKGROUND_MESSAGE = "Background sync running…"
+
+#: And while the calendar syncs, which reports no progress of its own.
+CALENDAR_MESSAGE = "Syncing calendars…"
+
+#: The first thing a mail sync says, before the engine says anything.
+PLANNING_MESSAGE = "Planning the sync…"
+
+
+@dataclass(frozen=True, slots=True)
+class SyncProgress:
+    """What a sync in flight has to say about itself.
+
+    The fields are :class:`~pony.mail.sync.ProgressInfo`'s, which is
+    what the terminal's dialog draws: *message* is the engine's own
+    sentence (it already carries the counts), and *current* / *total*
+    are there for a bar.  ``total`` is 0 wherever the work has no known
+    length -- connecting, scanning -- and then there is nothing to draw
+    but the sentence.
+    """
+
+    running: bool = False
+    message: str = ""
+    current: int = 0
+    total: int = 0
+
+    def as_json(self) -> dict[str, object]:
+        """The shape ``/sync/status`` serves and ``pony.js`` reads."""
+        return {
+            "running": self.running,
+            "message": self.message,
+            "current": self.current,
+            "total": self.total,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +123,14 @@ class SyncGate:
     calendar: CalendarRuntime | None = None
     scheduler: MailSyncScheduler | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # The last thing the sync in flight said about itself.  Written from
+    # the thread the sync runs on, read from the event loop by
+    # ``/sync/status``: one immutable value replaced by a single
+    # attribute store, so there is nothing to tear and no lock to take.
+    # The two halves share the record -- a mail sync and a calendar sync
+    # at once means the second to report wins, which costs a page a
+    # sentence and nothing else.
+    _progress: SyncProgress = field(default=SyncProgress(), repr=False)
     # The plan a halt is waiting on an answer about.  Kept because the
     # answer has to apply to the plan the question described.
     _held: _HeldPlan | None = field(default=None, repr=False)
@@ -103,6 +163,7 @@ class SyncGate:
         if not self._claim():
             return Reply(Outcome.refused(info("Sync already running.")))
         stale: Notice | None = None
+        self._progress = SyncProgress(running=True, message=PLANNING_MESSAGE)
         try:
             held = self._take_held() if confirmed else None
             if confirmed and held is None:
@@ -110,7 +171,7 @@ class SyncGate:
                     "The plan you were shown has expired, so this is a fresh one.",
                 )
             if held is None:
-                plan = self.service.plan()
+                plan = self.service.plan(progress=self._note)
                 halted = plan.folders_needing_confirmation()
             else:
                 plan, halted = held.plan, held.halted
@@ -124,16 +185,47 @@ class SyncGate:
                         fields={"confirm": "1"},
                     ),
                 )
-            result = self.service.execute(plan, confirmed_folders=halted)
+            result = self.service.execute(
+                plan,
+                confirmed_folders=halted,
+                progress=self._note,
+            )
         except Exception as exc:  # noqa: BLE001 — any backend may fail
             _log.error("web sync failed: %s", exc)
             return Reply(Outcome.refused(failure(f"Sync failed: {exc}")))
         finally:
+            self._progress = SyncProgress()
             self._release()
         notices = [info(describe_sync_result(result))]
         if stale is not None:
             notices.insert(0, stale)
         return Reply(Outcome(changed=_changed(result), notices=tuple(notices)))
+
+    def _note(self, info: ProgressInfo) -> None:
+        """Keep what the engine just said, for ``/sync/status`` to serve."""
+        self._progress = SyncProgress(
+            running=True,
+            message=info.message,
+            current=info.current,
+            total=info.total,
+        )
+
+    def progress(self) -> SyncProgress:
+        """What to tell a page that asks whether a sync is running.
+
+        Whoever started it: the periodic thread holds the same slot, so
+        a page whose ``g`` was refused sees the run it was refused for
+        rather than nothing at all.  That run reports no progress here —
+        it was started with no callback — so all there is to say is that
+        it is happening.
+        """
+        current = self._progress
+        if current.running:
+            return current
+        scheduler = self.scheduler
+        if scheduler is not None and scheduler.running:
+            return SyncProgress(running=True, message=BACKGROUND_MESSAGE)
+        return SyncProgress()
 
     def _take_held(self) -> _HeldPlan | None:
         """The plan the question described, if it is still worth applying."""
@@ -160,11 +252,14 @@ class SyncGate:
                 now=datetime.now(UTC),
             ),
         )
+        self._progress = SyncProgress(running=True, message=CALENDAR_MESSAGE)
         try:
             results = runner()
         except Exception as exc:  # noqa: BLE001 — any backend may fail
             _log.error("web calendar sync failed: %s", exc)
             return Outcome.refused(failure(f"Calendar sync failed: {exc}"))
+        finally:
+            self._progress = SyncProgress()
         return _calendar_outcome(results)
 
     def _claim(self) -> bool:
@@ -216,4 +311,11 @@ def _calendar_outcome(results: Sequence[CalendarSyncResult]) -> Outcome:
     return Outcome(changed=added + updated + removed, notices=tuple(notices))
 
 
-__all__ = ["HELD_PLAN_SECONDS", "SyncGate"]
+__all__ = [
+    "BACKGROUND_MESSAGE",
+    "CALENDAR_MESSAGE",
+    "HELD_PLAN_SECONDS",
+    "PLANNING_MESSAGE",
+    "SyncGate",
+    "SyncProgress",
+]

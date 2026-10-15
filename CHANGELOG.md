@@ -290,6 +290,29 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   downloads with the page left where it was. A message with no part of
   that name says so in a notice instead of a navigation.
 
+- **The browser says a sync is running, and what it is doing**: the
+  engine reports its progress through a callback — connecting, scanning
+  a folder, so many operations of so many — and the terminal has drawn
+  every one of those into its sync dialog all along. The browser threw
+  them away and showed a notice saying "Syncing…", which expired after
+  eight seconds while the sync ran for minutes: from then on the page
+  looked idle, and pressing the key again only got "Sync already
+  running." The server now keeps what the engine last said and serves it
+  at `/sync/status`; the chrome carries that sentence, with a bar where
+  there is a count to draw one from, for as long as a sync is running —
+  including the periodic thread's, which is the run that refuses `g`,
+  and after which the list is redrawn because what it fetched was not on
+  screen yet.
+
+- **The browser's message list keeps its place**: which row the cursor is
+  on is the page's own state and no URL carried it, so closing a message
+  with `q` and leaving the composer both came back to the *top* of the
+  folder, however far down it the reader had been — and a new message,
+  which names no message to come back to, landed on the default folder.
+  A folder URL now names the row (`id`, as on `/message`, where the same
+  parameter opens one), and the composer carries where it was opened
+  from, so Discard, Send and Save draft all return to it.
+
 - **A pasted address list keeps every line**: Textual's input pastes only the
   first line of the clipboard, so a list copied one address per line out of
   another mail client silently lost every recipient after the first. Newlines

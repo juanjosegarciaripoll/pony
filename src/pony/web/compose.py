@@ -157,6 +157,11 @@ class Form:
     forward_of: MessageRef | None = None
     # The message being replied to, marked \Answered once this is sent.
     answering: MessageRef | None = None
+    # Where the composer was opened from: the row the cursor was on, or
+    # the message that was open.  A new message names no message at
+    # all, so without this there was nothing to come back to and Send
+    # landed on the default folder.
+    came_from: MessageRef | None = None
     attachments: tuple[tuple[str, str], ...] = ()
 
     @staticmethod
@@ -166,6 +171,7 @@ class Form:
         source: MessageRef | None = None,
         forward_of: MessageRef | None = None,
         answering: MessageRef | None = None,
+        came_from: MessageRef | None = None,
     ) -> Form:
         return Form(
             account_name=spec.account_name,
@@ -180,6 +186,7 @@ class Form:
             source=source,
             forward_of=forward_of,
             answering=answering,
+            came_from=came_from,
         )
 
 
@@ -203,6 +210,7 @@ def build_form(
                 prefer_name=prefer,
                 to=to,
             ),
+            came_from=ref,
         )
 
     if ref is None:
@@ -227,6 +235,7 @@ def build_form(
                     reply_all=mode == "reply_all",
                 ),
                 answering=ref,
+                came_from=ref,
             )
         case "forward":
             rendered = render_message(raw)
@@ -241,6 +250,7 @@ def build_form(
                     prefer_name=prefer,
                 ),
                 forward_of=ref,
+                came_from=ref,
             )
         case "draft":
             # Only a draft is editable as one.  The terminal gates the
@@ -262,6 +272,7 @@ def build_form(
                     prefer_name=prefer,
                 ),
                 source=ref,
+                came_from=ref,
             )
     return warn(f"{mode!r} is not a way to compose a message.")
 
@@ -313,19 +324,28 @@ def compose_page(
 
 
 def back_to(form: Form) -> str:
-    """The folder the user was reading when they started composing.
+    """Where the user was when they started composing, row and all.
 
-    All three refs count, and leaving one out is how a sent reply came
-    to land in the default folder: a reply carries the message it
-    answers as ``answering``, a forward as ``forward_of``, and only a
-    resumed draft as ``source``.  Discard and send both come here, so
-    they cannot disagree about where "back" is.
+    ``came_from`` is that place as the page knew it.  The three refs
+    answer the same question where it is missing, and leaving one out
+    is how a sent reply came to land in the default folder: a reply
+    carries the message it answers as ``answering``, a forward as
+    ``forward_of``, and only a resumed draft as ``source``.  Discard,
+    Send and Save draft all come here, so they cannot disagree about
+    where "back" is.
+
+    The row travels as well as the folder.  A folder URL on its own
+    opens the list at the top, so the reader came back to the top of
+    the folder after every message it sent -- and a resumed draft that
+    was filed again is no longer there to come back to, which the list
+    answers by selecting nothing.
     """
-    ref = form.source or form.forward_of or form.answering
+    ref = form.came_from or form.source or form.forward_of or form.answering
     if ref is None:
         return urls.MAIL
     return urls.mail_url(
         FolderRef(account_name=ref.account_name, folder_name=ref.folder_name),
+        selected=ref.id,
     )
 
 
@@ -339,6 +359,7 @@ def _form(form: Form, sendable: Sequence[AnyAccount]) -> Raw:
                 _hidden("source", _ref_value(form.source)),
                 _hidden("forward_of", _ref_value(form.forward_of)),
                 _hidden("answering", _ref_value(form.answering)),
+                _hidden("came_from", _ref_value(form.came_from)),
                 _field(
                     "From",
                     element(
@@ -528,6 +549,7 @@ def form_from_fields(config: AppConfig, fields: Mapping[str, list[str]]) -> Form
         source=parse_ref(one("source")),
         forward_of=parse_ref(one("forward_of")),
         answering=parse_ref(one("answering")),
+        came_from=parse_ref(one("came_from")),
         attachments=tuple(
             (token, _staged_name(config, token))
             for token in tokens

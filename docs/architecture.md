@@ -539,6 +539,16 @@ URIs — under the headers in `pony.mail.html_policy`, as a top-level page
 rather than a frame inside the application. Attachments are downloaded
 with `X-Content-Type-Options: nosniff`.
 
+**The cursor travels in the URL.** Which row the cursor is on is the
+page's own state and nothing else carries it, so every link back to a
+list names it: `id` on a folder URL selects a row, as the same parameter
+on `/message` opens one. Without it a folder URL opens the list at the
+top of the folder, which is where closing a message and leaving the
+composer both used to land. The composer carries where it was opened
+from — `came_from`, beside the reply's `answering` and the forward's
+`forward_of` — because a new message names no message at all, and
+Discard, Send and Save draft all return there.
+
 **Attachments go up as bytes.** A multipart form would mean a third
 runtime dependency for the sake of one request, so the script posts the
 file's bytes to `/compose/attachment` and the server keeps them in a
@@ -556,6 +566,17 @@ takes its own lock (`pony.calendar.locking`), the mail half has never had one,
 and a terminal left open elsewhere is not a reason for the phone to
 refuse. With `background_sync_enabled` set, `pony web` runs the periodic
 thread too, so a phone sees new mail without anyone pressing a key.
+
+A sync is the one action that outlasts the request which started it, so
+it reports itself while it runs, as the terminal's dialog does. The
+engine takes a progress callback and emits a `ProgressInfo` per account,
+per folder and per batch of operations; the gate keeps the last one and
+`GET /sync/status` serves it, which the page polls for as long as the
+server says a sync is running — its own, or the periodic thread's, whose
+run is why `g` was refused. The chrome carries the sentence and, where
+there is a count to draw one from, a bar; both empty when nothing is
+running. A sync the page did not ask for ends with the list redrawn,
+because what it fetched is not on screen yet.
 
 **Access.** Bound to `127.0.0.1` by default, with an access token that
 arrives once in the URL and is then kept in an `HttpOnly` cookie, so a

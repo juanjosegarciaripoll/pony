@@ -155,6 +155,11 @@ the Markdown handling are not written twice.
 | **Attach** | ++alt+a++ | Pick files; each is uploaded as it is chosen |
 | **Markdown** | ++alt+m++ | Render the body to `multipart/alternative` |
 
+Send, Save draft and Discard all come back to the row the message was
+written from, with the cursor on it — writing from the middle of a
+folder does not lose your place in it, and neither does closing a
+message with ++q++.
+
 A send that fails leaves the form up with everything you typed still in
 it, and says why. ++escape++ on a form you have typed into asks before
 leaving it, and says to use Save draft; on a form you have only opened
@@ -301,10 +306,21 @@ On a narrow screen the layout shows one pane at a time:
 ## Syncing
 
 ++g++, or the **Sync** button, runs the engine `pony sync` runs and
-reports the sentence it reports. The page says `Syncing…` while it
-works, then shows what changed and refreshes the list and the unread
-counts in place, leaving the open message and the scroll positions where
-they were.
+reports the sentence it reports. Then it shows what changed and
+refreshes the list and the unread counts in place, leaving the open
+message and the scroll positions where they were.
+
+While it works, the title bar says so: a spinner beside the **Sync**
+button, the account and folder being fetched, and a bar once there is a
+count to draw one from — the same progress the terminal's sync dialog
+shows. It stays there for as long as the sync runs, which on a large
+mailbox is minutes, and goes when the sync is over. On a narrow screen
+it takes the status line's place, since there is not room for both.
+
+A sync you did not start shows the same way: the periodic thread below
+holds the one slot, so pressing ++g++ while it runs is refused — and
+the title bar names the run it was refused for, then refreshes the list
+when that run finishes.
 
 The server holds **one sync slot of its own**, so two tabs — or a tab
 and the periodic thread — cannot start two syncs on one account; the

@@ -225,7 +225,9 @@ function intercept(win, answer) {
       method: (options.method || "GET").toUpperCase(),
       body,
     });
-    const reply = typeof answer === "function" ? answer(body) : answer;
+    // Awaited, so a step can *hold* the answer: a sync answers minutes
+    // later, and what the page does in the meantime is the point.
+    const reply = typeof answer === "function" ? await answer(body) : answer;
     return new win.Response(JSON.stringify(reply), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -313,9 +315,31 @@ async function run() {
   report.steps.push("action");
   out();
 
-  // The same operation by tapping, for a screen with no keyboard.
+  // The same operation by tapping, for a screen with no keyboard --
+  // and what the page shows while the sync is in flight. The answer is
+  // held, because that is what a sync of a real mailbox is: minutes in
+  // which the only thing the page can say is that it is happening.
+  let releaseSync = null;
+  intercept(win, async () => {
+    await new Promise((resolve) => {
+      releaseSync = resolve;
+    });
+    return {
+      changed: 0,
+      notices: [{ text: "Sync complete.", severity: "information" }],
+    };
+  });
   doc.querySelector("[data-action='sync']").click();
-  await sleep(200);
+  await sleep(300);
+  report.syncBusy = doc.body.dataset.busy === "1";
+  report.syncLine = doc.getElementById("sync-state").textContent;
+  report.syncPolled = report.asked.filter((url) => url === "/sync/status").length;
+  releaseSync();
+  // Longer than one poll, so the follower has asked once more and seen
+  // that there is nothing running any more.
+  await sleep(1500);
+  report.syncBusyAfter = doc.body.dataset.busy === "1";
+  report.syncLineAfter = doc.getElementById("sync-state").textContent;
   report.steps.push("button");
 
   // A key typed into a field belongs to the field.
@@ -459,8 +483,11 @@ async function run() {
   out();
 
   // `q` closes the open message, as it does in the reader: back to the
-  // folder it was found in, not out of the program.
+  // folder it was found in, not out of the program -- and back to the
+  // row it was on, which the folder URL has to carry because the
+  // cursor lives nowhere else.
   await ready(frame, "#reader");
+  report.openedId = new URLSearchParams(frame.contentWindow.location.search).get("id");
   press(frame.contentDocument.body, "q");
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (frame.contentWindow.location.pathname !== "/message") break;
@@ -468,6 +495,13 @@ async function run() {
   }
   report.closedTo =
     frame.contentWindow.location.pathname + frame.contentWindow.location.search;
+  // Read without `ready`, which presses `>` and `<` to prove the page
+  // answers keys and would move the very cursor being looked at.
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (frame.contentDocument.querySelector("#rows .row[aria-selected='true']")) break;
+    await sleep(25);
+  }
+  report.closedCursor = selected(frame.contentDocument);
   report.steps.push("close");
   out();
 
@@ -953,6 +987,27 @@ def test_a_button_runs_the_action_a_key_would() -> None:
     assert any(post["url"].endswith("/action/sync") for post in report["posts"])
 
 
+def test_the_page_says_a_sync_is_happening_for_as_long_as_it_is() -> None:
+    """The one action that outlasts the page's patience.
+
+    ``POST /action/sync`` answers when the sync is over — minutes, on a
+    real mailbox — and all the browser used to show in the meantime was
+    a notice that expired after eight seconds.  The terminal has drawn
+    the engine's progress in a dialog all along.  So the chrome carries
+    it here too, filled from ``/sync/status`` for as long as the server
+    says a sync is running, and emptied when it stops.
+    """
+    report = _report()
+
+    assert report["syncBusy"] is True
+    assert "Sync" in report["syncLine"]
+    # Polled, rather than left saying one word until the answer lands.
+    assert report["syncPolled"] >= 1
+    # And it stops saying so once the sync is over.
+    assert report["syncBusyAfter"] is False
+    assert report["syncLineAfter"] == ""
+
+
 def test_a_press_into_the_search_field_is_left_to_the_field() -> None:
     """``D`` typed into a search box must not trash anything."""
     assert _report()["typedIntoField"] == 0
@@ -1046,7 +1101,13 @@ def test_q_closes_the_open_message_and_keeps_the_folder() -> None:
     """
     report = _report()
 
-    assert report["closedTo"] == "/mail?account=acct&folder=INBOX"
+    assert report["closedTo"] == (
+        f"/mail?account=acct&folder=INBOX&id={report['openedId']}"
+    )
+    # And the cursor is on the message that was open, rather than on
+    # the first row of the folder: the list is drawn from the URL, so a
+    # folder URL with no row in it opens at the top.
+    assert report["closedCursor"] == report["openedId"]
 
 
 def test_the_event_form_syncs_the_calendar_and_not_the_mail() -> None:

@@ -189,6 +189,23 @@ def row_link(page: str, row_id: str | None = None) -> str:
     return unescape(found.group(1))
 
 
+_SELECTED_ROW = re.compile(
+    r'<li\b[^>]*\bdata-id="([^"]+)"[^>]*\baria-selected="true"',
+)
+
+
+def selected_row(page: str) -> str | None:
+    """The ``data-id`` of the row the cursor is on, as the page serves it.
+
+    ``selectedRow()`` in the script asks the DOM the same question, and
+    ``start()`` falls back to the first row when the answer is nothing —
+    which is what "the list jumped back to the top" looks like from
+    here.
+    """
+    found = _SELECTED_ROW.search(page)
+    return found.group(1) if found is not None else None
+
+
 def row_ids(page: str) -> list[str]:
     """The ``data-id`` of each row, in the order the page lists them."""
     seen: list[str] = []
@@ -638,6 +655,7 @@ __all__ = [
     "page_data",
     "row_ids",
     "row_link",
+    "selected_row",
     "script",
     "select_value",
     "selected_row_id",

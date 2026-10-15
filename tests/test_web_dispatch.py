@@ -62,11 +62,12 @@ from web_helpers import (
     link_to,
     page_data,
     script,
+    selected_row,
 )
 
 from pony.keys import web_key
 from pony.mail.domain import Contact, FolderRef, MessageRef
-from pony.web import WebServices, build_web_app
+from pony.web import WebServices, build_web_app, urls
 from pony.web.actions import MARKED_ONLY_ACTIONS
 from pony.web.app import CLIENT_ACTIONS, SERVER_ACTIONS
 from pony.web.layout import PageSurface, bindings_for
@@ -612,8 +613,6 @@ def test_every_url_the_module_builds_is_answered_with_what_it_asked_for() -> Non
     query parameter, where the server happily answers 200 and shows the
     wrong thing.
     """
-    from pony.web import urls
-
     services, _runtime, seeded = _services("dispatch-urls")
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     ref = MessageRef(account_name="acct", folder_name="INBOX", id=seeded["plain"])
@@ -665,6 +664,10 @@ def test_every_url_the_module_builds_is_answered_with_what_it_asked_for() -> Non
         blank = client.get(urls.event_form_url(date="2026-05-17"))
         assert blank.status_code == 200
         assert form_fields(blank.text, "#event-form")["starts"].startswith("2026-05-17")
+        # A folder URL that names a row comes back with it selected,
+        # which is the cursor the next press works off.
+        at_a_row = client.get(urls.mail_url(folder, selected=ref.id))
+        assert selected_row(at_a_row.text) == str(ref.id)
         # The fragment the script refetches, with the open row marked.
         fragment = client.get(
             f"{urls.ROWS}{urls.query(account='acct', folder='INBOX', id=ref.id)}",
@@ -899,6 +902,80 @@ def test_the_quit_button_is_on_every_page_and_asks_first() -> None:
     assert "choose(" in wiring
     assert 'if (answer !== "go") return;' in wiring
     assert "clientActions[name]" in wiring
+
+
+def test_a_folder_url_carries_the_row_the_cursor_is_on() -> None:
+    """The cursor is page state, so every link back to a list names it.
+
+    ``close_message`` goes back to the folder, and the folder opens at
+    the top of itself unless the URL says otherwise: ``mailParams()``
+    is ``folderParams()`` plus that row, and the route has to honour
+    the parameter rather than ignore one the page sends.
+    """
+    source = script()
+    closing = re.search(
+        r"close_message: \(\) => \{(.*?)\n  \},",
+        source,
+        re.DOTALL,
+    )
+    assert closing is not None
+    assert "mailParams()" in closing.group(1)
+
+    services, _runtime, seeded = _services("dispatch-cursor")
+    opened = seeded["plain"]
+
+    with TestClient(build_web_app(services)) as client:
+        # The request `q` makes, and the one `urls.mail_url` builds for
+        # the composer's way back: the same URL from both sides.
+        closed = client.get(
+            urls.mail_url(
+                FolderRef(account_name="acct", folder_name="INBOX"),
+                selected=opened,
+            ),
+        ).text
+        listed = client.get(
+            "/mail",
+            params={"account": "acct", "folder": "INBOX", "id": opened},
+        ).text
+
+    # The row is marked, and no message is open: a cursor, not a reader.
+    for page in (closed, listed):
+        assert selected_row(page) == str(opened)
+        assert page_data(page)["message"] == ""
+
+
+def test_every_page_can_say_that_a_sync_is_running() -> None:
+    """A sync lasts minutes and the page it was asked from must show it.
+
+    The terminal draws every `ProgressInfo` the engine emits into its
+    dialog.  Here the chrome carries the same two things -- the
+    sentence and, where there is a count, a bar -- which the dispatcher
+    fills from ``/sync/status`` for as long as a sync runs.  What there
+    was before was a notice, and a notice expires after eight seconds.
+    """
+    services, _runtime, seeded = _services("dispatch-sync-state")
+
+    with TestClient(build_web_app(services)) as client:
+        pages = _pages(client, seeded)
+
+    for surface, page in pages.items():
+        assert 'id="sync-state"' in page, surface
+        assert 'id="sync-bar"' in page, surface
+        # Hidden until there is a count to draw it from.
+        assert 'id="sync-bar" hidden' in page or "<progress hidden" in page, surface
+
+    # The script writes into exactly those, and polls the route that
+    # answers what the sync is doing.
+    source = script()
+    for element_id in ("sync-state", "sync-bar"):
+        assert f'getElementById("{element_id}")' in source, element_id
+    following = _function(source, "followSync")
+    assert "syncStatus()" in following
+    assert "/sync/status" in _function(source, "syncStatus")
+    # It keeps asking until the server says nothing is running, rather
+    # than until the request that started the sync comes back.
+    assert "state.syncing" in following
+    assert "showSyncProgress(live)" in following
 
 
 def test_every_page_carries_its_own_keymap_so_no_press_is_dropped() -> None:

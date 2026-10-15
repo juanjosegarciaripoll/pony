@@ -1011,10 +1011,57 @@ kbd {
   color: var(--accent);
 }
 
-/* While a sync is in flight, the page says so. */
+/* While a sync is in flight, the page says so: the button it came from
+ * is spent, and the line beside it carries what the server says the
+ * sync is doing -- the same sentence the terminal's dialog shows. */
 body[data-busy] #sync {
   opacity: 0.6;
   pointer-events: none;
+}
+
+#sync-state {
+  min-width: 0;
+  max-width: 18rem;
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The spinner is the part that reads as "still going" at a glance, so
+ * it appears with the text and goes when the text does. */
+#sync-state:not(:empty)::before {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.4em;
+  vertical-align: middle;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sync-spin 0.8s linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* A bar only where there is a count to draw one from: most of a sync
+ * is work of unknown length, and an indeterminate bar that sits there
+ * for a minute says less than the sentence does. */
+#sync-bar {
+  width: 5rem;
+  height: 0.4rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sync-state:not(:empty)::before {
+    animation: none;
+  }
 }
 
 #notices {
@@ -1117,6 +1164,17 @@ dialog h2 {
    * the program is the one thing there that can be spared. */
   #chrome .brand {
     display: none;
+  }
+
+  /* A phone has room for one of the two. What the sync is doing is
+   * worth more while it is happening than the name of the open folder,
+   * which the list below says anyway. */
+  body[data-busy] #status {
+    display: none;
+  }
+
+  body[data-busy] #sync-state {
+    margin-left: auto;
   }
 
   /* A row puts its subject on a line of its own here, so the column
