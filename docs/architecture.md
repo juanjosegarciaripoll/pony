@@ -469,7 +469,7 @@ is the application, not a document to scroll.
 | Module | What it holds |
 |---|---|
 | `pony.web.app` | the routes, the token gate, the action table |
-| `pony.web.layout` | the chrome: tabs, pane frames, footer, overlays |
+| `pony.web.layout` | the chrome: tabs, pane frames, footer, overlays, the tab's icon |
 | `pony.web.mail` | folder tree, list, reader, the mail actions |
 | `pony.web.compose` | the compose form, sending, the attachment staging area |
 | `pony.web.contacts` | the contacts list, its form and its bulk actions |

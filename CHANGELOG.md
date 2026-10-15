@@ -339,6 +339,15 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Added
 
+- **The browser front end has Pony's own mark on the tab**: the horse of
+  the desktop icon, white on the red it is drawn in, served as an SVG
+  for anything that can scale one, a 32-pixel PNG for anything that
+  cannot, and a 180-pixel square for the iOS home screen. The outlines
+  of the mark are too thin to survive a sixteen-pixel tab, so the badge
+  is filled: what is left to recognise at that size is the colour. The
+  same red is offered as the `theme-color`, which a phone paints its own
+  bar with while the page is open.
+
 - **Attachments open in the viewer you configure**: a new `[viewers]` table
   maps a MIME type to the program that opens it, so `"application/pdf" =
   ["zathura"]` sends a document straight to the reader you want instead of

@@ -65,7 +65,7 @@ itself never scrolls.
 
 | Part | What is in it |
 |---|---|
-| **Title bar** | The three tabs — Mail, Calendar, Contacts — the status line, and the **Sync** button |
+| **Title bar** | The three tabs — Mail, Calendar, Contacts — the status line, what a sync in flight is doing, and the **Sync** button |
 | **Status line** | What is open: the folder and its unread count, the month or date range, the number of contacts, or the active search |
 | **Panes** | Folders beside the list, with the reader under the list when a message is open |
 | **Footer** | The keys that are live on *this* page, built from the same table the page dispatches on |
@@ -300,6 +300,12 @@ On a narrow screen the layout shows one pane at a time:
 - A row puts its date, correspondent and subject on three lines, with
   the mark column down the side to tap.
 - The footer of keys is hidden, and the buttons are sized for a thumb.
+
+Every page carries Pony's own mark — the horse of the desktop icon,
+white on its red — so the tab is recognisable among a dozen others, and
+**Add to Home Screen** puts that square on the home screen rather than
+a screenshot of the page. The phone paints its own bar the same red
+while the page is open.
 
 ---
 

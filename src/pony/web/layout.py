@@ -103,6 +103,38 @@ def one_per_web_key(bindings: Iterable[KeyBinding]) -> list[KeyBinding]:
     return kept
 
 
+#: The colour the mark is drawn in, which a phone paints its own bar
+#: with when the page is open.
+BRAND_COLOUR = "#d35f5f"
+
+
+def _icon_links() -> Raw:
+    """What a browser needs to show Pony's own mark on the tab.
+
+    Three files for three readers: the SVG for anything that can scale
+    one, a 32-pixel PNG for anything that cannot, and the 180-pixel
+    square iOS puts on a home screen — square because iOS rounds the
+    corners itself, and rounding them here would round them twice.
+    All three are the mark in `icons/pony-express.svg`, white on its
+    own red: a tab is sixteen pixels across and the mark is thin
+    outlines, so what survives at that size is the colour.
+    """
+    return join(
+        (
+            element(
+                "link", rel="icon", href="/static/favicon.svg", type="image/svg+xml"
+            ),
+            element(
+                "link", rel="alternate icon", href="/static/favicon.png", sizes="32x32"
+            ),
+            element(
+                "link", rel="apple-touch-icon", href="/static/apple-touch-icon.png"
+            ),
+            element("meta", name="theme-color", content=BRAND_COLOUR),
+        ),
+    )
+
+
 def page(
     *,
     title: str,
@@ -127,6 +159,7 @@ def page(
         stylesheets=("/static/pony.css",),
         scripts=("/static/pony.js",),
         data=body_data,
+        head=_icon_links(),
         body=join(
             (
                 element(

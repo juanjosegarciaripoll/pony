@@ -83,6 +83,7 @@ def document(
     stylesheets: tuple[str, ...] = (),
     scripts: tuple[str, ...] = (),
     data: Mapping[str, str] | None = None,
+    head: Raw | None = None,
 ) -> Raw:
     """A complete page.
 
@@ -90,8 +91,13 @@ def document(
     page tells its script what it is looking at — the account and folder
     an action should apply to — without the script having to parse the
     URL.
+
+    *head* is whatever else belongs in the head and is the chrome's to
+    decide: the icon the tab is recognised by, the colour a phone
+    paints its bar.  It is built where the rest of the chrome is, in
+    :mod:`pony.web.layout`, rather than here.
     """
-    head = fragment(
+    head_elements = fragment(
         element("meta", charset="utf-8"),
         element(
             "meta",
@@ -103,13 +109,15 @@ def document(
         element("title", title),
         join(element("link", rel="stylesheet", href=href) for href in stylesheets),
         join(element("script", src=src, defer=True) for src in scripts),
+        head,
     )
+
     body_attributes = {f"data_{key}": value for key, value in (data or {}).items()}
     return Raw(
         "<!doctype html>"
         + element(
             "html",
-            element("head", head),
+            element("head", head_elements),
             element("body", body, **body_attributes),
             lang="en",
         ),

@@ -1479,6 +1479,68 @@ def test_an_unhalted_sync_is_never_asked_about() -> None:
 
 
 # ----------------------------------------------------------------------
+# The mark on the tab
+# ----------------------------------------------------------------------
+
+
+def test_a_page_asks_for_ponys_own_mark_on_the_tab() -> None:
+    """A tab is sixteen pixels of whatever happens to be open.
+
+    Three files for three readers — the SVG for anything that can
+    scale one, a PNG for anything that cannot, and the square iOS puts
+    on a home screen — and the colour a phone paints its own bar with.
+    """
+    services, _index = _services("web-icon")
+
+    with _client(services) as client:
+        head = client.get("/mail?account=acct&folder=INBOX").text
+
+    assert '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">' in head
+    assert '<link rel="alternate icon" href="/static/favicon.png"' in head
+    assert '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">' in head
+    assert '<meta name="theme-color" content="#d35f5f">' in head
+
+
+def test_the_files_the_tab_asks_for_are_served() -> None:
+    """A link to an icon that is not there is a blank tab."""
+    services, _index = _services("web-icon-files")
+    wanted = {
+        "/static/favicon.svg": "image/svg+xml",
+        "/static/favicon.png": "image/png",
+        "/static/apple-touch-icon.png": "image/png",
+    }
+
+    with _client(services) as client:
+        for href, kind in wanted.items():
+            served = client.get(href)
+            assert served.status_code == 200, href
+            assert served.headers["content-type"].startswith(kind), href
+            assert served.content, href
+
+
+def test_the_tab_icon_is_the_mark_the_program_ships() -> None:
+    """Drawn once, in `icons/pony-express.svg`, and used everywhere.
+
+    The tab icon is that path on a filled badge — the outlines are too
+    thin to survive sixteen pixels, so the colour is what is left to
+    recognise — but it is the same path, and a mark that was redrawn
+    here by hand would drift from the one on the desktop icon.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    mark = (root / "icons" / "pony-express.svg").read_text()
+    tab = (root / "src" / "pony" / "web" / "static" / "favicon.svg").read_text()
+
+    def path_data(svg: str) -> str:
+        found = re.search(r'\sd="([^"]+)"', svg)
+        assert found is not None
+        return found.group(1)
+
+    assert path_data(tab) == path_data(mark)
+
+
+# ----------------------------------------------------------------------
 # What a sync in flight says about itself
 # ----------------------------------------------------------------------
 
