@@ -14,7 +14,7 @@ Provide an offline-authoritative, keyboard-first calendar client that keeps its 
 - Textual TUI for agenda/day/grid workflows, including mouse creation and
   drag-to-reschedule for non-recurring timed events, with periodic background
   sync while it is open (hourly by default; `g` syncs immediately).
-- CLI for sync, inspection, mutation, import, bootstrap, and OAuth authorization.
+- CLI for sync, inspection, mutation, import, and OAuth authorization.
 - MCP tools for search/query/detail plus iTIP-aware `.ics` import.
 - OAuth browser loopback authorization where providers require it.
 - Distribution through:
