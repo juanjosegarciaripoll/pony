@@ -191,16 +191,15 @@ class VanishedRowTestCase(unittest.TestCase):
     def test_a_restore_for_an_already_deleted_row_is_skipped(self) -> None:
         service, index, _mirror, _session = self._synced_service()
         row = index.list_folder_messages(folder=_PERSONAL_INBOX)[0]
-        from pony.mail.domain import AccountConfig, FolderConfig
+        from pony.mail.domain import AccountConfig
+        from pony.scope import SyncScope
 
         account = service._config.accounts[0]
         assert isinstance(account, AccountConfig)
         service._config = dataclasses.replace(
             service._config,
             accounts=(
-                dataclasses.replace(
-                    account, folders=FolderConfig(read_only=("INBOX",))
-                ),
+                dataclasses.replace(account, folders=SyncScope(read_only=("INBOX",))),
             ),
         )
 
@@ -371,14 +370,13 @@ class SlowPathReconciliationTestCase(unittest.TestCase):
         return service, index, mirror, session
 
     def _make_read_only(self, service) -> None:  # type: ignore[no-untyped-def]
-        from pony.mail.domain import AppConfig, FolderConfig
+        from pony.mail.domain import AppConfig
+        from pony.scope import SyncScope
 
         account = service._config.accounts[0]
         service._config = AppConfig(
             accounts=(
-                dataclasses.replace(
-                    account, folders=FolderConfig(read_only=("INBOX",))
-                ),
+                dataclasses.replace(account, folders=SyncScope(read_only=("INBOX",))),
             )
         )
 

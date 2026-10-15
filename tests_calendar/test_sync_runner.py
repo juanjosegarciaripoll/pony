@@ -13,7 +13,6 @@ one in the first place.
 
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -35,6 +34,7 @@ from pony.calendar.services import (
     build_sync_runner,
 )
 from pony.calendar.storage import VdirMirrorRepository
+from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -53,9 +53,7 @@ def _account(
         credential=credential or PlaintextCredential(password="s3cret"),
         mirror_path=None,
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 

@@ -31,7 +31,6 @@ from pony.mail import mailbox_actions
 from pony.mail.domain import (
     AnyAccount,
     AppConfig,
-    FolderConfig,
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
@@ -41,6 +40,7 @@ from pony.mail.domain import (
     MirrorConfig,
 )
 from pony.mail.mailbox_actions import Mailboxes
+from pony.scope import SyncScope
 
 if TYPE_CHECKING:
     from pony.paths import AppPaths
@@ -276,15 +276,15 @@ def test_archive_refusals_name_the_archive_folder() -> None:
     paths = make_tmp_paths("actions-archive-policy")
     cases = (
         (
-            FolderConfig(read_only=("INBOX",)),
+            SyncScope(read_only=("INBOX",)),
             "Cannot archive from read-only folder 'INBOX'.",
         ),
         (
-            FolderConfig(exclude=("Archive",)),
+            SyncScope(exclude=("Archive",)),
             "Archive folder 'Archive' is excluded from sync.",
         ),
         (
-            FolderConfig(read_only=("Archive",)),
+            SyncScope(read_only=("Archive",)),
             "Archive folder 'Archive' is read-only.",
         ),
     )
@@ -395,7 +395,7 @@ def test_move_refuses_a_missing_mirror_and_a_read_only_source() -> None:
     paths = make_tmp_paths("actions-move-refusals")
     account = dataclasses.replace(
         make_test_account(paths, archive_folder="Archive"),
-        folders=FolderConfig(read_only=("INBOX",)),
+        folders=SyncScope(read_only=("INBOX",)),
     )
     mailboxes, _config = _build("actions-move-refusals-stores", accounts=(account,))
     nowhere = FolderRef(account_name="missing", folder_name="Archive")
@@ -633,7 +633,7 @@ def test_create_folder_refuses_what_sync_would_never_push() -> None:
     paths = make_tmp_paths("actions-create-folder-refusals")
     account = dataclasses.replace(
         make_test_account(paths, archive_folder="Archive"),
-        folders=FolderConfig(exclude=("Receipts",)),
+        folders=SyncScope(exclude=("Receipts",)),
     )
     mailboxes, _config = _build(
         "actions-create-folder-refusals-stores",

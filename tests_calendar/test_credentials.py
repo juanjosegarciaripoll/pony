@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import tempfile
 import unittest
@@ -19,6 +18,7 @@ from pony.calendar.domain import (
     PlaintextCredential,
 )
 from pony.calendar.paths import CalendarPaths
+from pony.scope import SyncScope
 
 
 def _account(
@@ -31,9 +31,7 @@ def _account(
         credential=credential,
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 

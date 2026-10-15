@@ -3438,12 +3438,12 @@ async def test_move_from_read_only_folder_is_refused() -> None:
     """Move refuses to touch a read-only source folder."""
     import dataclasses as _dc
 
-    from pony.mail.domain import FolderConfig
+    from pony.scope import SyncScope
 
     paths = make_tmp_paths("cross-readonly-src")
     account1 = _dc.replace(
         make_test_account(paths, name="acct1"),
-        folders=FolderConfig(read_only=("INBOX",)),
+        folders=SyncScope(read_only=("INBOX",)),
     )
     account2 = make_test_account(paths, name="acct2")
     config = make_test_config(accounts=(account1, account2))
@@ -3678,7 +3678,7 @@ async def test_attachment_picker_accepts_a_file(tmp_path: Path) -> None:
 def _two_imap_accounts(label: str, *, folders2: object = None):  # type: ignore[no-untyped-def]
     """Two IMAP accounts with one seeded message in acct1/INBOX.
 
-    *folders2* overrides ``acct2``'s :class:`FolderConfig` so the move
+    *folders2* overrides ``acct2``'s :class:`SyncScope` so the move
     guards that consult the target account's policy can be exercised.
     """
     import dataclasses as _dc
@@ -3714,11 +3714,11 @@ def _two_imap_accounts(label: str, *, folders2: object = None):  # type: ignore[
 
 async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
     """A target folder the account never syncs would strand the message."""
-    from pony.mail.domain import FolderConfig
+    from pony.scope import SyncScope
 
     app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
         "target-excluded",
-        folders2=FolderConfig(exclude=("INBOX",)),
+        folders2=SyncScope(exclude=("INBOX",)),
     )
     folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
     notifications = _capture_notifications(app)
@@ -3737,11 +3737,11 @@ async def test_move_to_a_target_excluded_from_sync_is_refused() -> None:
 
 async def test_move_to_a_read_only_target_is_refused() -> None:
     """A read-only target could never push the new message back."""
-    from pony.mail.domain import FolderConfig
+    from pony.scope import SyncScope
 
     app, index, _mirrors, folder1, source_ref = _two_imap_accounts(
         "target-readonly",
-        folders2=FolderConfig(read_only=("INBOX",)),
+        folders2=SyncScope(read_only=("INBOX",)),
     )
     folder2 = FolderRef(account_name="acct2", folder_name="INBOX")
     notifications = _capture_notifications(app)

@@ -21,13 +21,13 @@ from pathlib import Path
 from typing import cast
 
 from pony.paths import expand_path, is_half_qualified
+from pony.scope import SyncScope, pattern_problem
 
 from .mail.domain import (
     CONFIG_VERSION,
     AccountConfig,
     AnyAccount,
     CredentialsSource,
-    FolderConfig,
     LocalAccountConfig,
     MirrorConfig,
     MirrorFormat,
@@ -266,7 +266,7 @@ def _parse_imap_account(
     folders = (
         _parse_folder_config(_require_mapping(data, "folders"))
         if folders_raw is not None
-        else FolderConfig()
+        else SyncScope()
     )
 
     imap_ssl = _require_bool(data, "imap_ssl", default=True)
@@ -384,12 +384,28 @@ def _require_config_version(data: dict[str, object]) -> None:
         )
 
 
-def _parse_folder_config(data: dict[str, object]) -> FolderConfig:
-    return FolderConfig(
+def _parse_folder_config(data: dict[str, object]) -> SyncScope:
+    scope = SyncScope(
         include=_require_string_list(data, "include"),
         exclude=_require_string_list(data, "exclude"),
         read_only=_require_string_list(data, "read_only"),
     )
+    # `read_only` used to rescue a folder from `exclude`; it only marks
+    # now (see `pony.scope`).  A configuration that leaned on the
+    # rescue would silently stop syncing those folders, so it is
+    # refused with the line to add rather than obeyed.
+    stranded = scope.unrescued_read_only()
+    if stranded:
+        listed = ", ".join(repr(pattern) for pattern in stranded)
+        raise ConfigError(
+            f"'folders.read_only' {listed} is excluded from sync by "
+            "'folders.exclude', and 'read_only' no longer rescues a folder "
+            "from 'exclude' -- it only marks what is synced as "
+            "server-to-local.  Add the same pattern(s) to 'folders.include' "
+            "to keep syncing them read-only, or drop them from "
+            "'folders.read_only' to leave them excluded."
+        )
+    return scope
 
 
 def _parse_mirror(
@@ -468,15 +484,11 @@ def _require_string_list(data: dict[str, object], key: str) -> tuple[str, ...]:
         raise ConfigError(f"{key!r} must be a list of strings")
     items = cast("list[object]", value)
     for i, item in enumerate(items):
-        if not isinstance(item, str) or not item:
+        if not isinstance(item, str):
             raise ConfigError(f"{key!r}[{i}] must be a non-empty string")
-        if item != "*":  # glob shorthand for .*, not valid regex
-            try:
-                re.compile(item)
-            except re.error as exc:
-                raise ConfigError(
-                    f"{key!r}[{i}] is not a valid regex pattern: {exc}"
-                ) from exc
+        problem = pattern_problem(item)
+        if problem is not None:
+            raise ConfigError(f"{key!r}[{i}] {problem}")
     return tuple(cast("list[str]", items))
 
 

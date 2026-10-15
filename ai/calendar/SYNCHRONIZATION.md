@@ -98,9 +98,12 @@ The `WHERE href IS NOT NULL` clause on the unique index lets local-pending rows 
 
 Per-account configuration supplies three regex lists (Python `re.fullmatch`):
 
-- `include` — calendar display names to sync. Default: all.
-- `exclude` — calendar display names to skip. Applied after `include`.
-- `read_only` — server→local only. Local changes in these calendars are restored to the server state on the next sync.
+- `exclude` — calendar display names to skip.
+- `include` — exceptions to `exclude`, not a whitelist. Default: empty, which means no exceptions and so every calendar.
+- `read_only` — server→local only. Local changes in these calendars are restored to the server state on the next sync. It does not decide scope, so it never rescues a calendar from `exclude`.
+
+The rule is `pony.scope`'s, shared with the mail half: one reading for
+the three keys wherever they appear in the file.
 
 ## 5. Account pre-phase: calendar discovery
 

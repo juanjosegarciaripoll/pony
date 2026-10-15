@@ -12,7 +12,6 @@ import pony.mail.sync as sync_module
 from pony.mail.domain import (
     AccountConfig,
     AppConfig,
-    FolderConfig,
     FolderQuickStatus,
     FolderRef,
     IndexedMessage,
@@ -32,6 +31,7 @@ from pony.mail.sync import (
     ReUploadOp,
     SyncPlan,
 )
+from pony.scope import SyncScope
 
 
 def _account(name: str = "personal") -> AccountConfig:
@@ -43,7 +43,7 @@ def _account(name: str = "personal") -> AccountConfig:
         username=name,
         credentials_source="plaintext",
         mirror=MirrorConfig(path=Path("/tmp/pony-sync-test"), format="maildir"),
-        folders=FolderConfig(),
+        folders=SyncScope(),
     )
 
 

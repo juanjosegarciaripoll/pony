@@ -43,6 +43,7 @@ src/pony/
   sqlite.py            # one connection per thread, and timestamps in UTC
   scheduler.py         # the periodic sync both halves run on
   keys.py              # the vocabulary a keyboard is described with
+  scope.py             # which names a sync covers, and which it may write to
   shell.py             # splitting a command line, and running one for a secret
   notifications.py     # the notification space mail and calendar share
 
@@ -349,9 +350,22 @@ in it knows about mail or calendars, and `pony.notifications` takes its
 `pony.atomic` (replacing a file without leaving half of one),
 `pony.sqlite` (a connection per thread, timestamps in UTC),
 `pony.scheduler` (the periodic sync), `pony.keys` (what a key binding
-is) and `pony.tui.reporting` (an `Outcome` as toasts, and the hop onto
-the UI thread) sit beside it for the same reason: both halves ask them,
-so they belong to neither.
+is), `pony.scope` (which names a sync covers) and `pony.tui.reporting`
+(an `Outcome` as toasts, and the hop onto the UI thread) sit beside it
+for the same reason: both halves ask them, so they belong to neither.
+
+`pony.scope` is the clearest case of why that matters. Both halves took
+an `include`, an `exclude` and a `read_only` list of regexes — folder
+names on one side, calendar display names on the other — and each had
+written its own rule for them. They came out opposite: `include` was an
+exception to `exclude` for mail and a mandatory whitelist for the
+calendar, `exclude` lost to `include` on one side and won on the other,
+and `read_only` rescued an excluded folder but never an excluded
+calendar. The same three lines in one configuration file meant two
+things depending on which table they sat in. `SyncScope.should_sync`
+and `.is_read_only` are now the only answer either half has, the
+calendar's `doctor` asks through the same object the sync does, and
+`tests/test_scope.py` holds both loaders against each other.
 
 ### TUI (`pony.tui`)
 

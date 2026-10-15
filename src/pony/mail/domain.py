@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
+
+from pony.scope import SyncScope
 
 MirrorFormat = Literal["maildir", "mbox"]
 CredentialsSource = Literal["plaintext", "env", "command", "encrypted"]
@@ -21,56 +22,6 @@ class MirrorConfig:
     path: Path
     format: MirrorFormat
     trash_retention_days: int = 30
-
-
-@dataclass(frozen=True, slots=True)
-class FolderConfig:
-    """Per-account folder sync policy.
-
-    ``exclude``: folders that are skipped during synchronisation.
-
-    ``include``: exceptions to ``exclude`` — folders synchronised even when
-    matched by an ``exclude`` pattern.  ``include`` is *not* a global
-    whitelist: folders matched by neither list are still synced.  To sync
-    only a chosen set of folders, exclude everything (``exclude = [".*"]``)
-    and list the wanted folders in ``include``.
-
-    ``read_only``: folders synchronised server-to-local only.  Local flag
-    changes and deletions are never pushed back to the server.  Like
-    ``include``, ``read_only`` also rescues a folder from ``exclude``.
-    """
-
-    include: tuple[str, ...] = ()
-    exclude: tuple[str, ...] = ()
-    read_only: tuple[str, ...] = ()
-
-    def should_sync(self, folder_name: str) -> bool:
-        """Return True if this folder should be synchronised at all.
-
-        ``include`` and ``read_only`` override ``exclude``: a folder
-        matched by either is synced even if also matched by an ``exclude``
-        pattern.  A folder matched by none of the three lists is synced by
-        default — ``include`` does not act as a global whitelist.
-        """
-        if self._matches(self.include, folder_name):
-            return True
-        if self._matches(self.read_only, folder_name):
-            return True
-        return not self._matches(self.exclude, folder_name)
-
-    def is_read_only(self, folder_name: str) -> bool:
-        """Return True if this folder is server-to-local only."""
-        return self._matches(self.read_only, folder_name)
-
-    @staticmethod
-    def _matches(patterns: tuple[str, ...], folder_name: str) -> bool:
-        for pat in patterns:
-            # Accept glob-style * as a convenience for .* in regex.
-            if pat == "*":
-                return True
-            if re.fullmatch(pat, folder_name):
-                return True
-        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +54,7 @@ class AccountConfig:
     imap_ssl: bool = True
     password: str | None = None
     password_command: tuple[str, ...] | None = None
-    folders: FolderConfig = field(default_factory=FolderConfig)
+    folders: SyncScope = field(default_factory=SyncScope)
     # Composer: folder name overrides (None = auto-discover by name matching)
     sent_folder: str | None = None
     drafts_folder: str | None = None

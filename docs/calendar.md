@@ -101,9 +101,13 @@ calendar's display name with `re.fullmatch`, narrow that:
 
 | Key | Effect |
 |---|---|
-| `include` | Only these calendars are synced. Default `[".*"]`. |
-| `exclude` | Dropped after `include` is applied. |
-| `read_only` | Synced server-to-local only. Nothing is ever uploaded from one of these, and a local change is undone when the server's copy is next fetched. |
+| `exclude` | These calendars are not synced. |
+| `include` | Exceptions to `exclude` — not a whitelist, so naming a calendar here narrows nothing on its own. To sync only the ones you name, write `exclude = [".*"]` beside it. |
+| `read_only` | Synced server-to-local only. Nothing is ever uploaded from one of these, and a local change is undone when the server's copy is next fetched. It only marks: it does not rescue a calendar from `exclude`. |
+
+The mail half's `[accounts.folders]` reads the same three keys the same
+way, against folder names — see
+[Folder sync policy](configuration.md#folder-sync-policy--accountsfolders).
 
 `read_only` is the right setting for a subscribed feed — a holiday
 calendar, a colleague's shared diary — that you want to see but never

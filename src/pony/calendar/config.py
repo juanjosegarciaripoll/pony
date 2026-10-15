@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,9 +22,9 @@ from pony.calendar.domain import (
 )
 from pony.calendar.paths import CalendarPaths
 from pony.paths import expand_path, is_half_qualified
+from pony.scope import CATCH_ALL, SyncScope, pattern_problem
 
 _DEFAULT_TRASH_RETENTION_DAYS = 30
-_DEFAULT_INCLUDE = (".*",)
 
 
 class ConfigError(ValueError):
@@ -123,13 +122,7 @@ def _parse_account(data: object, key: str) -> AccountConfig:
         account_key,
         default=_DEFAULT_TRASH_RETENTION_DAYS,
     )
-    include = _parse_regex_list(
-        account.get("include", list(_DEFAULT_INCLUDE)), f"{account_key}.include"
-    )
-    exclude = _parse_regex_list(account.get("exclude", []), f"{account_key}.exclude")
-    read_only = _parse_regex_list(
-        account.get("read_only", []), f"{account_key}.read_only"
-    )
+    scope = _parse_scope(account, account_key)
     return AccountConfig(
         name=name,
         url=url,
@@ -137,9 +130,7 @@ def _parse_account(data: object, key: str) -> AccountConfig:
         credential=credential,
         mirror_path=mirror_path,
         trash_retention_days=trash_retention_days,
-        include=include,
-        exclude=exclude,
-        read_only=read_only,
+        scope=scope,
     )
 
 
@@ -269,18 +260,60 @@ def mirror_root(account: AccountConfig, paths: CalendarPaths) -> Path:
     return (paths.root / declared).resolve()
 
 
-def _parse_regex_list(data: object, key: str) -> tuple[re.Pattern[str], ...]:
+def _parse_pattern_list(data: object, key: str) -> tuple[str, ...]:
     if not isinstance(data, list):
         raise ConfigError("must be an array of regex strings", key)
-    patterns: list[re.Pattern[str]] = []
+    patterns: list[str] = []
     for i, item in enumerate(cast(list[object], data)):
         if not isinstance(item, str):
             raise ConfigError("must be a string", f"{key}[{i}]")
-        try:
-            patterns.append(re.compile(item))
-        except re.error as exc:
-            raise ConfigError(f"invalid regex '{item}': {exc}", f"{key}[{i}]") from exc
+        problem = pattern_problem(item)
+        if problem is not None:
+            raise ConfigError(problem, f"{key}[{i}]")
+        patterns.append(item)
     return tuple(patterns)
+
+
+def _parse_scope(account: dict[str, object], account_key: str) -> SyncScope:
+    """The account's three lists, read under `pony.scope`'s one rule.
+
+    `include` used to be a mandatory whitelist here: an account naming
+    two calendars synced those two and nothing else.  It is an
+    exception to `exclude` now, as it always was on the mail side, so
+    the same account would start syncing every other calendar on the
+    server -- a configuration file quietly growing in scope, which is
+    the direction that matters.  The shape that changes meaning is
+    exactly "an `include` that names something, with no `exclude` to
+    make an exception to", and it is refused with both ways out rather
+    than reinterpreted.
+    """
+    scope = SyncScope(
+        include=_parse_pattern_list(
+            account.get("include", []), f"{account_key}.include"
+        ),
+        exclude=_parse_pattern_list(
+            account.get("exclude", []), f"{account_key}.exclude"
+        ),
+        read_only=_parse_pattern_list(
+            account.get("read_only", []), f"{account_key}.read_only"
+        ),
+    )
+    # An `include` that already matches everything meant "everything"
+    # under either reading, which is what the default and every
+    # round-tripped file hold, so only a genuinely narrow one is
+    # ambiguous.
+    whitelist = tuple(p for p in scope.include if p not in CATCH_ALL)
+    if whitelist and len(whitelist) == len(scope.include) and not scope.exclude:
+        listed = ", ".join(repr(pattern) for pattern in whitelist)
+        raise ConfigError(
+            f"'include' names {listed} but nothing is excluded, and "
+            "'include' is an exception to 'exclude' rather than a whitelist: "
+            "as written, every calendar on the server would be synced.  Add "
+            "'exclude = [\".*\"]' to sync only the calendars 'include' names, "
+            "or drop 'include' to sync them all on purpose.",
+            f"{account_key}.include",
+        )
+    return scope
 
 
 def _require_str(data: dict[str, object], field: str, key: str) -> str:
@@ -464,9 +497,15 @@ def _dump_account(account: AccountConfig) -> dict[str, object]:
         out["username"] = account.username
     out["credential"] = _dump_credential(account.credential)
     out["trash_retention_days"] = account.trash_retention_days
-    out["include"] = [p.pattern for p in account.include]
-    out["exclude"] = [p.pattern for p in account.exclude]
-    out["read_only"] = [p.pattern for p in account.read_only]
+    # Only the lists the account actually uses: an account that scopes
+    # nothing stays as clean on round-trip as it was hand-written.
+    for key, patterns in (
+        ("include", account.scope.include),
+        ("exclude", account.scope.exclude),
+        ("read_only", account.scope.read_only),
+    ):
+        if patterns:
+            out[key] = list(patterns)
     # Only what the account declared; one that took the default
     # declared nothing and stays clean on round-trip through
     # `pony calendar account add` / `config edit`.  This used to compare the

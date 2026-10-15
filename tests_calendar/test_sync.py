@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import tempfile
 import threading
 import unittest
@@ -25,6 +24,7 @@ from pony.calendar.domain import (
 from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.storage import VdirMirrorRepository
 from pony.calendar.sync import SyncCancelled, SyncHaltError, sync_account
+from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -53,7 +53,7 @@ def _ics_with_uid(uid: str) -> bytes:
 
 def _account(
     *,
-    include: tuple[str, ...] = (".*",),
+    include: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
     read_only: tuple[str, ...] = (),
 ) -> AccountConfig:
@@ -64,9 +64,7 @@ def _account(
         credential=EnvCredential(variable="PWD_VAR"),
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=tuple(re.compile(p) for p in include),
-        exclude=tuple(re.compile(p) for p in exclude),
-        read_only=tuple(re.compile(p) for p in read_only),
+        scope=SyncScope(include=include, exclude=exclude, read_only=read_only),
     )
 
 
@@ -1129,9 +1127,38 @@ class RegexScopingTest(SyncTestCase):
         self.assertIn(CALENDAR_URL, queried_urls)
         self.assertNotIn(OTHER_URL, queried_urls)
 
-    def test_include_regex_restricts_to_named_calendars(self) -> None:
+    def test_include_rescues_the_named_calendars_from_a_blanket_exclude(self) -> None:
+        """`include` is an exception to `exclude`, not a whitelist.
+
+        Excluding everything and naming one calendar is how a scope of
+        one calendar is written -- the same way the mail half writes a
+        scope of one folder (`pony.scope`).
+        """
+        self.session.add_calendar(url=OTHER_URL, name=OTHER_NAME)
+        account = _account(exclude=(".*",), include=("work",))
+        self._run(account=account)
+        queried_urls = [c[1] for c in self.session.calls if c[0] == "calendar_query"]
+        self.assertEqual(queried_urls, [CALENDAR_URL])
+
+    def test_include_on_its_own_narrows_nothing(self) -> None:
+        """Without an `exclude` to make an exception to, it is inert.
+
+        This is the reading that changed: `include` used to be a
+        mandatory whitelist here, so naming one calendar synced one.
+        The loader refuses to accept the ambiguous file
+        (`tests_calendar/test_config.py`), but the rule itself has to
+        be the mail half's, or the two would drift apart again.
+        """
         self.session.add_calendar(url=OTHER_URL, name=OTHER_NAME)
         account = _account(include=("work",))
+        self._run(account=account)
+        queried_urls = [c[1] for c in self.session.calls if c[0] == "calendar_query"]
+        self.assertEqual(sorted(queried_urls), sorted([CALENDAR_URL, OTHER_URL]))
+
+    def test_read_only_does_not_rescue_a_calendar_from_exclude(self) -> None:
+        """It marks what is synced; it does not decide what is synced."""
+        self.session.add_calendar(url=OTHER_URL, name=OTHER_NAME)
+        account = _account(exclude=(OTHER_NAME,), read_only=(OTHER_NAME,))
         self._run(account=account)
         queried_urls = [c[1] for c in self.session.calls if c[0] == "calendar_query"]
         self.assertEqual(queried_urls, [CALENDAR_URL])
@@ -1141,7 +1168,7 @@ class RegexScopingTest(SyncTestCase):
         # them. The result should NOT silently report 0 syncs; it
         # should explain why.
         self.session.add_calendar(url=OTHER_URL, name=OTHER_NAME)
-        account = _account(include=("nonexistent-name",))
+        account = _account(exclude=(".*",), include=("nonexistent-name",))
         result = self._run(account=account)
         self.assertEqual(result.calendars_synced, 0)
         self.assertEqual(len(result.errors), 1)

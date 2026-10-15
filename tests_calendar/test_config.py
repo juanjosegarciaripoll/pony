@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import tempfile
 import textwrap
 import tomllib
@@ -17,6 +16,7 @@ from pony.calendar.domain import (
     PlaintextCredential,
 )
 from pony.calendar.paths import CalendarPaths
+from pony.scope import SyncScope
 
 
 def _toml(body: str) -> str:
@@ -150,10 +150,10 @@ class ParseAccountTest(unittest.TestCase):
         self.assertEqual(acct.username, "user@example.com")
         self.assertIsInstance(acct.credential, EnvCredential)
         self.assertEqual(acct.trash_retention_days, 30)
-        self.assertEqual(len(acct.include), 1)
-        self.assertEqual(acct.include[0].pattern, ".*")
-        self.assertEqual(acct.exclude, ())
-        self.assertEqual(acct.read_only, ())
+        # Nothing declared is nothing scoped: every calendar the
+        # account offers is synced, and `include` is an exception to
+        # `exclude` rather than a whitelist that has to name them.
+        self.assertEqual(acct.scope, SyncScope())
 
     def test_missing_required_field(self) -> None:
         bad = dict(self.BASE_ACCOUNT)
@@ -271,14 +271,61 @@ class ParseAccountTest(unittest.TestCase):
         self.assertIn("mirror_path", str(ctx.exception))
         self.assertIn("string", str(ctx.exception))
 
-    def test_include_regex_compiled(self) -> None:
+    def test_include_rescues_from_exclude(self) -> None:
         acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["exclude"] = [".*"]
         acct_data["include"] = ["^personal-.*$", "^shared$"]
-        config = parse(self._wrap(acct_data))
-        patterns = config.accounts[0].include
-        self.assertEqual(len(patterns), 2)
-        self.assertIsNotNone(patterns[0].fullmatch("personal-work"))
-        self.assertIsNone(patterns[0].fullmatch("other"))
+        scope = parse(self._wrap(acct_data)).accounts[0].scope
+        self.assertEqual(scope.include, ("^personal-.*$", "^shared$"))
+        self.assertTrue(scope.should_sync("personal-work"))
+        self.assertTrue(scope.should_sync("shared"))
+        self.assertFalse(scope.should_sync("other"))
+
+    def test_an_include_with_nothing_to_except_is_refused(self) -> None:
+        """The one shape whose meaning changed, and both ways out.
+
+        `include` was a mandatory whitelist here, so an account naming
+        two calendars synced two.  Read as an exception to an `exclude`
+        that is not there, the same file would sync every calendar on
+        the server -- so it is refused rather than widened in silence.
+        """
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["include"] = ["personal"]
+        with self.assertRaises(ConfigError) as ctx:
+            parse(self._wrap(acct_data))
+        message = str(ctx.exception)
+        self.assertIn("'personal'", message)
+        self.assertIn('exclude = [".*"]', message)
+        self.assertIn("include", ctx.exception.key or message)
+
+    def test_a_catch_all_include_is_not_refused(self) -> None:
+        """What `pony calendar account add` has always written.
+
+        `include = [".*"]` was the default and is what a round-tripped
+        file holds, and it means the same thing under either reading:
+        everything.  Refusing it would lock out every account the
+        command ever wrote.
+        """
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["include"] = [".*"]
+        scope = parse(self._wrap(acct_data)).accounts[0].scope
+        self.assertTrue(scope.should_sync("anything"))
+
+    def test_a_catch_all_beside_a_name_is_not_refused(self) -> None:
+        """`include = [".*", "work"]` synced everything either way."""
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["include"] = [".*", "work"]
+        scope = parse(self._wrap(acct_data)).accounts[0].scope
+        self.assertTrue(scope.should_sync("anything"))
+
+    def test_read_only_only_marks(self) -> None:
+        acct_data = dict(self.BASE_ACCOUNT)
+        acct_data["exclude"] = ["archive"]
+        acct_data["read_only"] = ["archive", "work"]
+        scope = parse(self._wrap(acct_data)).accounts[0].scope
+        self.assertFalse(scope.should_sync("archive"))
+        self.assertTrue(scope.should_sync("work"))
+        self.assertTrue(scope.is_read_only("work"))
 
     def test_invalid_regex_surfaces_key(self) -> None:
         acct_data = dict(self.BASE_ACCOUNT)
@@ -488,9 +535,7 @@ def _sample_config(**overrides: object) -> AppConfig:
         credential=EnvCredential(variable="CHRONOS_PERSONAL_PW"),
         mirror_path=Path("/tmp/pony/calendar/personal"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
     return AppConfig(
         config_version=1,
@@ -530,9 +575,7 @@ class DumpTest(unittest.TestCase):
                     credential=config.accounts[0].credential,
                     mirror_path=None,
                     trash_retention_days=config.accounts[0].trash_retention_days,
-                    include=config.accounts[0].include,
-                    exclude=config.accounts[0].exclude,
-                    read_only=config.accounts[0].read_only,
+                    scope=config.accounts[0].scope,
                 ),
             ),
         )
@@ -554,9 +597,7 @@ class DumpTest(unittest.TestCase):
             credential=GoogleCredential(client_id="cid", client_secret="cs"),
             mirror_path=None,
             trash_retention_days=30,
-            include=(re.compile(".*"),),
-            exclude=(),
-            read_only=(),
+            scope=SyncScope(),
         )
         config = AppConfig(
             config_version=1, use_utf8=False, editor=None, accounts=(account,)
@@ -634,9 +675,7 @@ class DumpTest(unittest.TestCase):
                             trash_retention_days=config.accounts[
                                 0
                             ].trash_retention_days,
-                            include=config.accounts[0].include,
-                            exclude=config.accounts[0].exclude,
-                            read_only=config.accounts[0].read_only,
+                            scope=config.accounts[0].scope,
                         ),
                     ),
                 )
@@ -654,7 +693,6 @@ class SaveRoundTripTest(unittest.TestCase):
         save(original, path)
         self.assertTrue(path.exists())
         loaded = load(path)
-        # Regex patterns aren't directly comparable -- check .pattern.
         self.assertEqual(loaded.config_version, original.config_version)
         self.assertEqual(loaded.use_utf8, original.use_utf8)
         self.assertEqual(loaded.editor, original.editor)
@@ -666,10 +704,7 @@ class SaveRoundTripTest(unittest.TestCase):
         self.assertEqual(load_a.username, orig_a.username)
         self.assertEqual(load_a.credential, orig_a.credential)
         self.assertEqual(load_a.trash_retention_days, orig_a.trash_retention_days)
-        self.assertEqual(
-            [p.pattern for p in load_a.include],
-            [p.pattern for p in orig_a.include],
-        )
+        self.assertEqual(load_a.scope, orig_a.scope)
 
     def test_save_creates_parent_directory(self) -> None:
         path = self.tmp / "nested" / "deep" / "config.toml"

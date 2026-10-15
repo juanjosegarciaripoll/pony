@@ -10,8 +10,9 @@ from uuid import uuid4
 from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
-from pony.mail.domain import FolderConfig, LocalAccountConfig, ViewerRule
+from pony.mail.domain import AccountConfig, LocalAccountConfig, ViewerRule
 from pony.paths import is_half_qualified
+from pony.scope import SyncScope
 
 
 class ConfigParsingTestCase(unittest.TestCase):
@@ -64,7 +65,7 @@ class ConfigParsingTestCase(unittest.TestCase):
         config = parse_config(sample_config(), base_dir=base_dir)
         acc = config.accounts[0]
         assert isinstance(acc, AccountConfig)
-        self.assertEqual(acc.folders, FolderConfig())
+        self.assertEqual(acc.folders, SyncScope())
 
     def test_folders_parsed_from_dict(self) -> None:
         from pony.mail.domain import AccountConfig
@@ -571,76 +572,50 @@ class ConfigValidationErrorsTestCase(unittest.TestCase):
             parse_config(data)
 
 
-class FolderPolicyTestCase(unittest.TestCase):
-    """Validate FolderConfig.should_sync and is_read_only semantics."""
+class FoldersMigrationTestCase(unittest.TestCase):
+    """`read_only` no longer rescues a folder from `exclude`.
 
-    def _policy(
-        self,
-        include: list[str] | None = None,
-        exclude: list[str] | None = None,
-        read_only: list[str] | None = None,
-    ) -> FolderConfig:
-        return FolderConfig(
-            include=tuple(include or []),
-            exclude=tuple(exclude or []),
-            read_only=tuple(read_only or []),
+    The rule itself is `tests/test_scope.py`'s.  What the loader owes
+    the user is the refusal: a configuration written against the old
+    reading would quietly stop syncing folders, so it is stopped at the
+    door with the line to add.
+    """
+
+    def _with_folders(self, folders: dict[str, list[str]]) -> dict[str, object]:
+        data = sample_config()
+        account = data["accounts"][0]  # type: ignore[index]
+        account["folders"] = folders
+        return data
+
+    def test_a_stranded_read_only_folder_is_refused(self) -> None:
+        data = self._with_folders({"exclude": [".*"], "read_only": ["Sent"]})
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(data, base_dir=TMP_ROOT)
+        message = str(ctx.exception)
+        self.assertIn("'Sent'", message)
+        self.assertIn("folders.include", message)
+
+    def test_an_include_that_keeps_it_is_accepted(self) -> None:
+        data = self._with_folders(
+            {"exclude": [".*"], "include": ["INBOX", "Sent"], "read_only": ["Sent"]}
         )
+        config = parse_config(data, base_dir=TMP_ROOT)
+        account = config.accounts[0]
+        assert isinstance(account, AccountConfig)
+        folders = account.folders
+        self.assertTrue(folders.should_sync("Sent"))
+        self.assertTrue(folders.is_read_only("Sent"))
+        self.assertFalse(folders.should_sync("Trash"))
 
-    def test_empty_policy_syncs_all(self) -> None:
-        p = self._policy()
-        self.assertTrue(p.should_sync("INBOX"))
-        self.assertTrue(p.should_sync("Sent"))
-        self.assertFalse(p.is_read_only("INBOX"))
-
-    def test_include_alone_does_not_restrict(self) -> None:
-        # include is exceptions to exclude, not a global whitelist: folders
-        # matched by neither list still sync.
-        p = self._policy(include=["INBOX", "Archive"])
-        self.assertTrue(p.should_sync("INBOX"))
-        self.assertTrue(p.should_sync("Sent"))
-
-    def test_include_rescues_subfolders_from_exclude(self) -> None:
-        p = self._policy(include=["Archive/.*"], exclude=["Archive.*"])
-        self.assertTrue(p.should_sync("Archive/2024"))  # rescued by include
-        self.assertFalse(p.should_sync("Archive"))  # excluded, not rescued
-        self.assertTrue(p.should_sync("INBOX"))  # untouched -> syncs
-
-    def test_include_overrides_exclude(self) -> None:
-        p = self._policy(include=["INBOX", "Spam"], exclude=["Spam"])
-        self.assertTrue(p.should_sync("INBOX"))
-        self.assertTrue(p.should_sync("Spam"))  # include wins
-
-    def test_exclude_all_then_include_whitelist(self) -> None:
-        p = self._policy(exclude=[".*"], include=["INBOX", "Sent"])
-        self.assertTrue(p.should_sync("INBOX"))
-        self.assertTrue(p.should_sync("Sent"))
-        self.assertFalse(p.should_sync("Trash"))
-        self.assertFalse(p.should_sync("Spam"))
-
-    def test_exclude_regex_wildcard(self) -> None:
-        p = self._policy(exclude=[r"\[Gmail\]/.*"])  # raw string fine in Python
-        self.assertFalse(p.should_sync("[Gmail]/All Mail"))
-        self.assertFalse(p.should_sync("[Gmail]/Spam"))
-        self.assertTrue(p.should_sync("INBOX"))
-
-    def test_read_only_bypasses_include_filter(self) -> None:
-        p = self._policy(include=["INBOX"], read_only=["Sent"])
-        self.assertTrue(p.should_sync("Sent"))
-        self.assertTrue(p.is_read_only("Sent"))
-
-    def test_read_only_wildcard_matches_all(self) -> None:
-        p = self._policy(read_only=[".*"])
-        self.assertTrue(p.is_read_only("INBOX"))
-        self.assertTrue(p.is_read_only("Sent"))
-        self.assertTrue(p.is_read_only("[Gmail]/All Mail"))
-
-    def test_read_only_overrides_exclude(self) -> None:
-        p = self._policy(read_only=["Sent"], exclude=["Sent"])
-        self.assertTrue(p.should_sync("Sent"))  # read_only wins
-
-    def test_is_read_only_false_for_normal_folder(self) -> None:
-        p = self._policy(read_only=["Sent"])
-        self.assertFalse(p.is_read_only("INBOX"))
+    def test_the_sample_configuration_is_accepted(self) -> None:
+        """A narrow `exclude` beside a `read_only` list is untouched."""
+        data = self._with_folders({"exclude": ["Spam", "Trash"], "read_only": ["Sent"]})
+        config = parse_config(data, base_dir=TMP_ROOT)
+        account = config.accounts[0]
+        assert isinstance(account, AccountConfig)
+        folders = account.folders
+        self.assertTrue(folders.should_sync("Sent"))
+        self.assertTrue(folders.is_read_only("Sent"))
 
 
 class ViewersConfigTestCase(unittest.TestCase):

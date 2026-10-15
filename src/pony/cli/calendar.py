@@ -80,6 +80,7 @@ from pony.calendar.services import (
     run_doctor,
 )
 from pony.calendar.sync import describe_account_sync, sync_account
+from pony.scope import SyncScope
 from pony.shell import pick_editor, split_command
 
 from ..calendar_runtime import CalendarNotConfiguredError
@@ -1582,8 +1583,6 @@ def cmd_account_add(
             return 2
         resolved_url = url
         resolved_username = username
-    import re  # local import: avoid module-level coupling for one-shot CLI
-
     new_account = AccountConfig(
         name=name,
         url=resolved_url,
@@ -1597,9 +1596,9 @@ def cmd_account_add(
         # every account pointing at the old one.
         mirror_path=mirror_path,
         trash_retention_days=trash_retention_days,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        # Every calendar the account offers, which is what a new
+        # account wants and what declaring nothing means.
+        scope=SyncScope(),
     )
     updated = AppConfig(
         config_version=config.config_version,

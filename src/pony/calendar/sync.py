@@ -137,8 +137,8 @@ def sync_account(
         # nothing" case from "the server has no calendars at all". Without
         # this the user sees a 0-calendar success and is stumped.
         names = ", ".join(sorted(c.name for c in remote_calendars))
-        include_patterns = [p.pattern for p in account.include]
-        exclude_patterns = [p.pattern for p in account.exclude]
+        include_patterns = list(account.scope.include)
+        exclude_patterns = list(account.scope.exclude)
         errors.append(
             f"server has {len(remote_calendars)} calendar(s) "
             f"({names}) but none matched include={include_patterns} / "
@@ -1683,18 +1683,15 @@ def _compute_href(calendar_url: str, uid: str) -> str:
 def _scoped_calendars(
     remote_calendars: Sequence[RemoteCalendar], account: AccountConfig
 ) -> tuple[RemoteCalendar, ...]:
-    scoped: list[RemoteCalendar] = []
-    for calendar in remote_calendars:
-        if not any(p.fullmatch(calendar.name) for p in account.include):
-            continue
-        if any(p.fullmatch(calendar.name) for p in account.exclude):
-            continue
-        scoped.append(calendar)
-    return tuple(scoped)
+    return tuple(
+        calendar
+        for calendar in remote_calendars
+        if account.scope.should_sync(calendar.name)
+    )
 
 
 def _resolve_calendar(account: AccountConfig, remote: RemoteCalendar) -> CalendarConfig:
-    read_only = any(p.fullmatch(remote.name) for p in account.read_only)
+    read_only = account.scope.is_read_only(remote.name)
     return CalendarConfig(
         account_name=account.name,
         calendar_name=remote.name,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
 import tempfile
 import unittest
 from collections.abc import Callable, Sequence
@@ -76,6 +75,7 @@ from pony.calendar.views import (
     grid_window as grid_window_for,
 )
 from pony.scheduler import SyncOutcome
+from pony.scope import SyncScope
 from pony.tui.calendar.app import CALENDAR_CSS, TuiServices, start_calendar_sync
 from pony.tui.calendar.screens.confirm_screen import ConfirmScreen
 from pony.tui.calendar.screens.event_detail_screen import EventDetailScreen
@@ -134,9 +134,7 @@ def _account() -> AccountConfig:
         credential=PlaintextCredential(password="x"),
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 

@@ -67,6 +67,41 @@ removes it, because then it was asked for by name. The reset also clears
 the scan cache, so `pony rescan` sees the mail that is still on disk;
 without that a kept mirror came back indexed by nothing.
 
+**`include`, `exclude` and `read_only` mean one thing in both halves.**
+The mail accounts' `[accounts.folders]` and the calendar accounts'
+three lists had grown opposite rules for the same three keys. There is
+one rule now, for folder names and calendar names alike:
+
+- `exclude` takes a name out of the sync.
+- `include` is the **exception** to `exclude`, never a whitelist. A
+  name no list mentions is synced, so an empty `include` means "no
+  exceptions" and not "nothing", and `include` on its own narrows
+  nothing. To sync only a chosen set, exclude everything and name the
+  set: `exclude = [".*"]` beside `include = ["INBOX", "Archive/.*"]`.
+- `read_only` only marks — it says a name is synced server-to-local
+  only, and no longer rescues one from `exclude`.
+- `"*"` is accepted everywhere as a shorthand for `".*"`.
+
+Two file shapes change meaning, and **both are refused at load with the
+line to add** rather than reinterpreted:
+
+- a `[[calendar.accounts]]` whose `include` names a calendar with no
+  `exclude` beside it. Read as a whitelist that synced those calendars;
+  read as an exception, it would sync every calendar on the server. Add
+  `exclude = [".*"]` to keep the old scope, or drop `include` to sync
+  them all on purpose. The reverse shape is a fix rather than a break:
+  a calendar account with `exclude = [".*"]` beside an `include` list
+  synced *nothing* and reported "none matched" on every run, and now
+  syncs what `include` names.
+- an `[accounts.folders]` whose `read_only` pattern a catch-all
+  `exclude` swallows with no `include` to keep it. The folder used to
+  be rescued by `read_only` and synced; it would now be out of scope.
+  Add the same pattern to `include`.
+
+A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
+"Trash"]` with `read_only = ["Sent"]` — is untouched, and so is
+`include = [".*"]`, which is what `pony calendar account add` writes.
+
 ### Added
 
 - **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`
@@ -146,6 +181,13 @@ without that a kept mirror came back indexed by nothing.
   itself.
 
 ### Changed
+
+- **One rule for `include` / `exclude` / `read_only`**: `pony/scope.py`
+  answers what a sync covers for both halves, where each had written
+  its own reading of the same three keys and they came out opposite.
+  The calendar's `doctor` asks the same object the sync does — it had a
+  copy of the predicate, so it could have reported a scope the sync did
+  not use. See **Upgrading** for what changes in a config file.
 
 - **A message's parts are numbered, and `s` saves the message**: part `0`
   is the message as it arrived, part `T` is its body as text with no HTML

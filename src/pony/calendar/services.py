@@ -381,11 +381,11 @@ def _check_remote_caldav(
             )
         ]
 
+    # The same question the sync asks (`pony.calendar.sync._scoped_calendars`),
+    # asked through the same rule: a `doctor` that reported a scope of
+    # its own would be worse than no `doctor` at all.
     scoped = tuple(
-        calendar
-        for calendar in calendars
-        if any(pattern.fullmatch(calendar.name) for pattern in account.include)
-        and not any(pattern.fullmatch(calendar.name) for pattern in account.exclude)
+        calendar for calendar in calendars if account.scope.should_sync(calendar.name)
     )
     results: list[DiagnosticResult] = [
         DiagnosticResult(

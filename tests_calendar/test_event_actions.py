@@ -9,7 +9,6 @@ these tests go straight at them, against real SQLite and a real vdir.
 
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -38,6 +37,7 @@ from pony.calendar.event_actions import (
 )
 from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.storage import VdirMirrorRepository
+from pony.scope import SyncScope
 
 _CALENDAR = CalendarRef(account_name="personal", calendar_name="work")
 _NOW = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
@@ -51,9 +51,7 @@ def _account(username: str = "user@example.com") -> AccountConfig:
         credential=PlaintextCredential(password="s3cret"),
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 

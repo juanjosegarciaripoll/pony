@@ -9,7 +9,7 @@ Both front ends offer the same operations, because the operations are
 not in either of them: see **Where an operation lives** below.
 
 One package, four tiers: what both halves share (`pony.outcome`,
-`pony.paths`, `pony.sqlite`, `pony.keys`, ...), the two models
+`pony.paths`, `pony.sqlite`, `pony.keys`, `pony.scope`, ...), the two models
 (`pony.mail`, `pony.calendar`), the three front ends over them
 (`pony.tui`, `pony.web`, `pony.cli` + `pony.cli.calendar`), and the few
 modules where the halves meet (`pony.config`, `pony.invitation`,
@@ -177,6 +177,7 @@ Key test infrastructure:
 | The policy message HTML is shown under | `tests/test_html_policy.py` — the directives always, a real browser **opt-in** |
 | Reading a served page or `pony.js` | `tests/web_helpers.py` |
 | The shared keymap | `tests/test_keymap.py` — both tables, and that the screens bind exactly them |
+| What a sync covers | `tests/test_scope.py` — the one `include`/`exclude`/`read_only` rule, and that both loaders read it alike |
 | Answering an invitation | `tests/test_invitation_actions.py` — no screen, no socket |
 | Calendar grid geometry | `tests_calendar/test_grid_projections.py` |
 | Invitations (parsing, replies) | `tests/test_invitation.py` |
@@ -315,6 +316,16 @@ show. An operation that returns something as well returns it beside the
 outcome (`FiledMessage`, `FlaggedMessage`), never instead of it. No `app.notify`, no `query_one`, no Textual import. An operation
 that blocks (SMTP, a sync) is a plain blocking call: the terminal hands
 it to a worker thread, the browser to the thread pool.
+
+**`include`, `exclude` and `read_only` mean one thing.** `pony.scope`
+owns the rule for all three, for folder names and calendar names alike:
+`exclude` takes a name out, `include` is the *exception* to `exclude`
+and never a whitelist, `read_only` only marks what is synced and never
+rescues a name from `exclude`, and a name no list mentions is synced.
+The two halves each had their own reading and they were opposite, so
+the same three lines in one configuration file meant two things. Do not
+add a fourth list or a second reading; `tests/test_scope.py` holds both
+loaders against each other.
 
 **A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.mail.keymap`
 is the mail reader's table and `pony.calendar.keymap` is the calendar's, which

@@ -18,7 +18,6 @@ from conftest import TMP_ROOT
 from pony.mail.domain import (
     AccountConfig,
     AppConfig,
-    FolderConfig,
     FolderQuickStatus,
     FolderRef,
     MessageFlag,
@@ -32,6 +31,7 @@ from pony.mail.message_projection import project_rfc822_message
 from pony.mail.protocols import ImapClientSession, MirrorRepository
 from pony.mail.storage import MaildirMirrorRepository
 from pony.mail.sync import ImapSyncService, format_plan_detail
+from pony.scope import SyncScope
 
 # ---------------------------------------------------------------------------
 # FakeImapSession
@@ -950,7 +950,7 @@ class ReadOnlyFolderTestCase(unittest.TestCase):
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
-            folders=FolderConfig(read_only=("Archive",)),
+            folders=SyncScope(read_only=("Archive",)),
         )
         config = AppConfig(accounts=(account,))
 
@@ -2203,7 +2203,7 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
-            folders=FolderConfig(read_only=("INBOX",)),
+            folders=SyncScope(read_only=("INBOX",)),
         )
         config = AppConfig(accounts=(account,))
         session = FakeImapSession(
@@ -3376,7 +3376,7 @@ class ReadOnlyAppendSuppressionTestCase(unittest.TestCase):
             username="bob",
             credentials_source="plaintext",
             mirror=MirrorConfig(path=tmp / "mirror", format="maildir"),
-            folders=FolderConfig(read_only=("Archive",)),
+            folders=SyncScope(read_only=("Archive",)),
         )
         config = AppConfig(accounts=(account,))
         session = FakeImapSession(folders={"INBOX": {}, "Archive": {}})

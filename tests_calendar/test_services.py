@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -23,6 +22,7 @@ from pony.calendar.domain import (
 from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.services import DiagnosticStatus, format_report, run_doctor
 from pony.calendar.storage import VdirMirrorRepository
+from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -39,9 +39,7 @@ def _account(
         credential=credential or PlaintextCredential(password="s3cret"),
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 

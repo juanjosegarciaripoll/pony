@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -32,6 +31,7 @@ from pony.calendar.paths import CalendarPaths
 from pony.calendar.services import default_session_factory
 from pony.calendar.storage import VdirMirrorRepository
 from pony.cli import calendar as cli
+from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -50,9 +50,7 @@ def _account(
         credential=credential or PlaintextCredential(password="s3cret"),
         mirror_path=Path("/unused"),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
 
 
@@ -1940,9 +1938,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
             ),
             mirror_path=account.mirror_path,
             trash_retention_days=account.trash_retention_days,
-            include=account.include,
-            exclude=account.exclude,
-            read_only=account.read_only,
+            scope=account.scope,
         )
         # Through the document: the file is Pony's, and writing a
         # calendar configuration *over* it would take the mail keys with

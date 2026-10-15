@@ -33,13 +33,13 @@ from queue import Empty, Full, Queue
 
 from pony.outcome import ProgressGate, progress_stride
 from pony.scheduler import PeriodicSync, SyncOutcome
+from pony.scope import SyncScope
 
 from .accounts import find_imap_account, select_imap_accounts
 from .domain import (
     AccountConfig,
     AppConfig,
     FlagSet,
-    FolderConfig,
     FolderQuickStatus,
     FolderRef,
     FolderSyncState,
@@ -974,7 +974,7 @@ class ImapSyncService:
         *,
         account: AccountConfig,
         session: ImapClientSession,
-        folder_policy: FolderConfig,
+        folder_policy: SyncScope,
         all_server_folders: collections.abc.Sequence[str],
         server_folders: list[str],
         creates: tuple[str, ...],

@@ -10,7 +10,6 @@ its fixtures, because driving the model is what a command does.
 from __future__ import annotations
 
 import io
-import re
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -27,6 +26,7 @@ from pony.calendar.domain import (
 from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.paths import CalendarPaths
 from pony.calendar.storage import VdirMirrorRepository
+from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
 
@@ -62,9 +62,7 @@ class IngestCliTest(CalendarRootMixin, unittest.TestCase):
             credential=PlaintextCredential(password="s3cret"),
             mirror_path=Path("/unused"),
             trash_retention_days=30,
-            include=(re.compile(".*"),),
-            exclude=(),
-            read_only=(),
+            scope=SyncScope(),
         )
 
     def _config(self, *accounts: AccountConfig) -> AppConfig:

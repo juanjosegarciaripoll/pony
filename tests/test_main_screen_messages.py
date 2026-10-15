@@ -18,7 +18,6 @@ from tui_helpers import (
 
 from pony.mail.domain import (
     AnyAccount,
-    FolderConfig,
     FolderRef,
     MessageFlag,
     MessageStatus,
@@ -27,6 +26,7 @@ from pony.mail.domain import (
 from pony.mail.index_store import SqliteIndexRepository
 from pony.mail.protocols import MirrorRepository
 from pony.mail.storage import MaildirMirrorRepository, MboxMirrorRepository
+from pony.scope import SyncScope
 from pony.tui.mail.screens.compose_screen import ComposeScreen
 from pony.tui.mail.screens.main_screen import MainScreen
 from pony.tui.mail.widgets.folder_panel import FolderPanel
@@ -105,12 +105,12 @@ async def test_mark_seen_handles_seen_and_missing_rows() -> None:
 @pytest.mark.parametrize(
     ("folders", "expected"),
     [
-        (FolderConfig(read_only=("INBOX",)), "Cannot archive from read-only"),
-        (FolderConfig(exclude=("Archive",)), "excluded from sync"),
-        (FolderConfig(read_only=("Archive",)), "Archive folder 'Archive' is read-only"),
+        (SyncScope(read_only=("INBOX",)), "Cannot archive from read-only"),
+        (SyncScope(exclude=("Archive",)), "excluded from sync"),
+        (SyncScope(read_only=("Archive",)), "Archive folder 'Archive' is read-only"),
     ],
 )
-async def test_archive_policy_guards(folders: FolderConfig, expected: str) -> None:
+async def test_archive_policy_guards(folders: SyncScope, expected: str) -> None:
     paths = make_tmp_paths("main-archive-policy")
     account = make_test_account(paths, archive_folder="Archive")
     account = dataclasses.replace(account, folders=folders)
@@ -963,7 +963,7 @@ async def test_creating_a_folder_the_sync_would_never_push_is_refused() -> None:
     paths = make_tmp_paths("main-create-excluded")
     account = dataclasses.replace(
         make_test_account(paths),
-        folders=FolderConfig(exclude=("Scratch",)),
+        folders=SyncScope(exclude=("Scratch",)),
     )
     app, _cfg, _paths, _index, mirrors = build_pony_app(
         label="main-create-excluded-app",
@@ -988,7 +988,7 @@ async def test_a_synced_folder_name_is_still_created() -> None:
     paths = make_tmp_paths("main-create-allowed")
     account = dataclasses.replace(
         make_test_account(paths),
-        folders=FolderConfig(exclude=("Scratch",)),
+        folders=SyncScope(exclude=("Scratch",)),
     )
     app, _cfg, _paths, _index, mirrors = build_pony_app(
         label="main-create-allowed-app",

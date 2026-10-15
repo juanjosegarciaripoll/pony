@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -56,6 +55,7 @@ from pony.mail.index_store import SqliteIndexRepository
 from pony.mail.message_projection import project_rfc822_message
 from pony.mail.protocols import CredentialsProvider, IndexRepository, MirrorRepository
 from pony.paths import AppPaths
+from pony.scope import SyncScope
 from pony.tui.app import ComposeApp, PonyApp
 
 
@@ -338,9 +338,7 @@ def make_calendar_runtime(
         credential=CalendarPlaintextCredential(password="x"),
         mirror_path=calendar_paths.mirror_path(account_name),
         trash_retention_days=30,
-        include=(re.compile(".*"),),
-        exclude=(),
-        read_only=(),
+        scope=SyncScope(),
     )
     for uid, ics in events:
         mirror.write(ResourceRef(account_name, calendar_name, uid), ics)

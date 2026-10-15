@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+
+from pony.scope import SyncScope
 
 
 class ComponentKind(StrEnum):
@@ -115,9 +116,11 @@ class AccountConfig:
     #: to decide and not this file's to remember.
     mirror_path: Path | None
     trash_retention_days: int
-    include: tuple[re.Pattern[str], ...]
-    exclude: tuple[re.Pattern[str], ...]
-    read_only: tuple[re.Pattern[str], ...]
+    #: Which of the account's calendars are synced, and which of them
+    #: are server-to-local only.  The rule is `pony.scope`'s, shared
+    #: with the mail half so that the same three lists cannot mean two
+    #: different things in one configuration file.
+    scope: SyncScope
 
 
 @dataclass(frozen=True, kw_only=True)

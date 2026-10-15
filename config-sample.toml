@@ -119,19 +119,23 @@
 # - format: Either "maildir" or "mbox"
 # - trash_retention_days: Days to keep deleted messages in trash (default: 30)
 #
-# Folder sync policy (optional — omit the [accounts.folders] section to sync all):
+# Folder sync policy (optional — omit the [accounts.folders] section to sync all).
+# The calendar's [[calendar.accounts]] use the same three keys under the same
+# rule, so a pattern means the same thing in either half of this file:
 # - exclude:   Folders skipped during sync.
 # - include:   Exceptions to exclude — folders synced even when matched by an
-#              exclude pattern. NOT a global whitelist: folders matched by
-#              neither list are still synced. To sync only a chosen set,
-#              exclude everything (exclude = [".*"]) and list them in include.
+#              exclude pattern. NOT a whitelist: folders matched by neither
+#              list are still synced, and an empty include means "no
+#              exceptions", not "nothing". To sync only a chosen set, exclude
+#              everything (exclude = [".*"]) and list them in include.
 # - read_only: Folders synced server-to-local only. Local flag changes and
-#              deletions are never pushed back. Like include, read_only also
-#              rescues a folder from exclude.
+#              deletions are never pushed back. It only marks what is synced:
+#              it does not rescue a folder from exclude, so a read-only folder
+#              under an exclude pattern needs an include entry as well.
 #
 # All three lists are Python re.fullmatch() patterns, so plain names like "INBOX"
 # match exactly, while patterns like "Archive/.*" match subfolders and ".*" matches
-# everything.
+# everything. "*" is accepted as a shorthand for ".*".
 
 config_version = 3
 data_dir = "~/.local/share/pony"
@@ -321,7 +325,11 @@ trash_retention_days = 30
 # # without trying again.  0 keeps them until the delete succeeds.
 # # trash_retention_days = 30
 # # include / exclude / read_only are Python regexes matched with
-# # re.fullmatch against the calendar name; default include = [".*"].
+# # re.fullmatch against the calendar name, under the same rule as the
+# # mail half's [accounts.folders] above: exclude takes a calendar out,
+# # include is the exception to exclude, read_only only marks.  Declare
+# # none of them to sync every calendar the account offers; to sync only
+# # the ones you name, write exclude = [".*"] beside include.
 # #
 # # A calendar account's credential backends are plaintext, env,
 # # command, oauth and google.  There is no "encrypted" here: a mail

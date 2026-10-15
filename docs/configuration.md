@@ -270,7 +270,7 @@ it. See [Calendar → When it runs](calendar.md#when-it-runs).
 | `credential` | table | — | **Required.** `plaintext`, `env`, `command`, `oauth` or `google`. |
 | `mirror_path` | string | `<calendar data dir>/mirror/<account>` | Directory holding this account's `.ics` files, one subdirectory per calendar. The default is where the layout would put them anyway, so setting nothing moves nothing. |
 | `trash_retention_days` | int | `30` | How long a trashed event may linger locally when the server will not accept its deletion. The normal path is immediate: a trashed event is deleted on the server at the next sync and purged here straight away. This is the backstop for when that delete keeps failing — after the retention the row and its mirror file are dropped with no further network attempt. |
-| `include` / `exclude` / `read_only` | array | `[".*"]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`. `read_only` means server-to-local only: nothing is uploaded from such a calendar, and a local change there is undone when the server's copy is next fetched. |
+| `include` / `exclude` / `read_only` | array | `[]` / `[]` / `[]` | Python regexes matched against the calendar name with `re.fullmatch`, under the same rule as the mail half's [`[accounts.folders]`](#folder-sync-policy--accountsfolders): `exclude` takes a calendar out, `include` is the exception to it, `read_only` only marks. Declaring none of them syncs every calendar the account offers. `read_only` means server-to-local only: nothing is uploaded from such a calendar, and a local change there is undone when the server's copy is next fetched. |
 
 ### Calendar credential backends
 
@@ -414,19 +414,37 @@ name like `"INBOX"` matches exactly; `"Archive/.*"` matches any subfolder of
 Archive; `".*"` matches everything. In TOML, backslashes must be doubled
 (`"\\[Gmail\\]/.*"`).
 
+`"*"` is accepted as a shorthand for `".*"`.
+
 | Key | Default | Description |
 |---|---|---|
-| `include` | `[]` (all) | If non-empty, only matching folders are synced. |
-| `exclude` | `[]` | Folders never synced, even if matched by `include`. |
+| `exclude` | `[]` | Folders skipped during sync. |
+| `include` | `[]` | Exceptions to `exclude`: folders synced even though an `exclude` pattern matches them. |
 | `read_only` | `[]` | Synced server-to-local only; local flag changes and deletions are never pushed back. |
 
-**Precedence:** `exclude` beats `include` beats `read_only`. A folder in
-both `include` and `read_only` is synced read-only. A folder in both
-`read_only` and `exclude` is not synced at all.
+**The rule, in order:** a folder `exclude` matches is out, unless
+`include` matches it as well; `read_only` only marks, and never rescues
+a folder from `exclude`; a folder none of the three lists mentions is
+synced, and writable.
 
-**Auto-include of read_only:** When `include` is non-empty, folders in
-`read_only` are still synced unless also matched by `exclude` — so
-`include = ["INBOX"]` will still pull `Sent Mail` if it's in `read_only`.
+So `include` is an **exception**, not a whitelist. An empty `include`
+means "no exceptions", not "nothing", and `include = ["INBOX"]` on its
+own narrows nothing — there is no `exclude` for it to be an exception
+to. To sync only a chosen set, exclude everything and name the set:
+
+```toml
+exclude = [".*"]
+include = ["INBOX", "Archive/.*"]
+```
+
+A read-only folder under an `exclude` pattern needs an `include` entry
+too, or it is simply out of scope. Pony refuses a configuration where a
+`read_only` pattern is stranded that way rather than quietly dropping
+the folder.
+
+The calendar's `[[calendar.accounts]]` use these same three keys under
+this same rule, matched against the calendar's display name instead of
+a folder's — one rule for one configuration file (`pony/scope.py`).
 
 ### Common patterns
 
@@ -440,8 +458,10 @@ exclude = ["Spam", "Trash"]
 exclude   = ["\\[Gmail\\]/Spam", "\\[Gmail\\]/Trash"]
 read_only = ["\\[Gmail\\]/Sent Mail", "\\[Gmail\\]/All Mail"]
 
-# Sync only a specific project folder tree
+# Sync only a specific project folder tree: exclude everything first,
+# because include on its own has no exclude to make an exception to
 [accounts.folders]
+exclude = [".*"]
 include = ["INBOX", "Projects", "Projects/.*"]
 ```
 
