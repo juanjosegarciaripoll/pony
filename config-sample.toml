@@ -17,7 +17,7 @@
 # - markdown_compose:  Global default for Markdown composition mode (default: false).
 #                      When true, all new messages open in Markdown mode unless the
 #                      account sets markdown_compose = false.  Toggle per-message
-#                      with ctrl+x m inside the composer.
+#                      with Alt+M inside the composer.
 # - bbdb_path:         Path to a BBDB v3 file for Emacs interop.  Read by
 #                      `pony contacts import` when no path is given, and never
 #                      written to — `pony contacts export` with no path writes

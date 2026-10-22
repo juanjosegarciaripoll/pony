@@ -100,6 +100,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The composer's Alt shortcuts work again on terminals that report key
+  text**: Textual 8.2.7 began asking terminals for kitty's "report associated
+  text" enhancement and then discarded the alt modifier from any key event
+  carrying text. Windows Terminal duly answered Alt+A with
+  `CSI 97;3;97u` — the modifier *and* the letter — so the composer saw a bare
+  `a`, typed it into the message and never opened the attachment picker;
+  ++alt+e++ and ++alt+m++ went the same way. Textual is pinned below 8.2.7
+  until that is resolved upstream, and the key encodings are now tested
+  against raw terminal bytes, which is the only layer where this is visible —
+  `Pilot` injects key names and cannot see it.
+
+- **Holding shift no longer types the letter**: with Caps Lock on, or shift
+  held because the footer spells the shortcut "Alt+A", a terminal sends
+  `ESC A`, which is the distinct key `alt+shift+a`. Unbound, it fell through
+  to the focused field and inserted a capital letter into the message. Every
+  composer shortcut now answers to both forms.
+
 - **A pasted address list keeps every line**: Textual's input pastes only the
   first line of the clipboard, so a list copied one address per line out of
   another mail client silently lost every recipient after the first. Newlines

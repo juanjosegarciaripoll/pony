@@ -75,6 +75,7 @@ Key test infrastructure:
 | Main screen by concern | `tests/test_main_screen_{messages,compose,sync,io}.py` |
 | Message list widget | `tests/test_message_list_panel.py` |
 | Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
+| Terminal key encodings | `tests/test_key_encoding.py` — raw bytes through `XTermParser`; the only layer where a broken Alt binding is visible |
 | Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
 | Calendar config section | `tests/test_calendar_config.py` |
 | Notification space | `tests/test_notifications.py` |

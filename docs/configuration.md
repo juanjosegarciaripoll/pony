@@ -49,12 +49,12 @@ config_version = 2
 # Show Unicode symbols in the TUI (attachment clip, flag star, etc.).
 use_utf8 = true
 
-# External editor launched with ctrl+x e in the composer.  If omitted or
+# External editor launched with Alt+E in the composer.  If omitted or
 # not executable, the built-in inline editor is used.
 editor = "/usr/bin/nvim"
 
 # Global default for Markdown composition mode.  Override per-account
-# below; toggle per-message with ctrl+x m.
+# below; toggle per-message with Alt+M.
 markdown_compose = false
 
 # BBDB v3 file for Emacs interop.  Read by `pony contacts import` when no
@@ -171,7 +171,7 @@ trash_retention_days = 30
 |---|---|---|---|
 | `config_version` | int | — | **Required.** Must be `2`. |
 | `use_utf8` | bool | `false` | Enable Unicode symbols in the TUI. |
-| `editor` | string | *(none)* | External editor for the composer (`ctrl+x e`). |
+| `editor` | string | *(none)* | External editor for the composer (++alt+e++). |
 | `markdown_compose` | bool | `false` | Global default for Markdown composition mode. |
 | `bbdb_path` | string | *(none)* | BBDB v3 file imported/exported on each sync. Supports `~`, `$VAR`, `%VAR%`. |
 | `downloads_path` | string | `~/Downloads` | Directory for the TUI's open/save attachment keys. |

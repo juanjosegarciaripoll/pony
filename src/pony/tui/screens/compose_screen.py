@@ -365,13 +365,24 @@ class ComposeScreen(Screen[bool]):
     # Composer-specific actions use Alt+letter so that standard text-editing
     # shortcuts (Ctrl+X cut, Ctrl+C copy, Ctrl+V paste, Ctrl+Z undo, …) keep
     # working inside the body TextArea and address Input fields.
+    #
+    # Each of them is bound twice.  A terminal reports Alt held with a
+    # capital letter as ``alt+shift+a``, which is what the composer gets
+    # when Caps Lock is on or when shift comes along for the ride — the
+    # footer spells the shortcut "Alt+A", so holding shift is the natural
+    # reading.  Unbound, that key falls through to the focused field and
+    # types the letter into the message instead of running the action.
     BINDINGS = [
         Binding("ctrl+s", "send", "Send", priority=True),
         Binding("alt+s", "send", "Send", show=False, priority=True),
+        Binding("alt+shift+s", "send", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
         Binding("alt+a", "add_attachment", "Attach", priority=True),
+        Binding("alt+shift+a", "add_attachment", show=False, priority=True),
         Binding("alt+e", "edit_external", "Editor", priority=True),
+        Binding("alt+shift+e", "edit_external", show=False, priority=True),
         Binding("alt+m", "toggle_markdown", "Markdown", priority=True),
+        Binding("alt+shift+m", "toggle_markdown", show=False, priority=True),
     ]
 
     def __init__(

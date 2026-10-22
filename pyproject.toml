@@ -9,7 +9,12 @@ dependencies = [
     # the IMAP sequence-set strings ("1:*") imap_client.py sends.
     "imapclient>=3.0.0,<4",
     "markdown-it-py>=3.0.0",
-    "textual>=8.2.3",
+    # 8.2.7 asks terminals for kitty's "report associated text"
+    # enhancement and then drops the alt modifier from any key event
+    # that carries text, so every alt+<letter> binding in the composer
+    # goes unmatched on terminals that answer it (Windows Terminal
+    # sends CSI 97;3;97u for Alt+A).  See tests/test_key_encoding.py.
+    "textual>=8.2.3,<8.2.7",
     "tinymcp",
     # Calendar subsystem (src/chronos): iCalendar parsing and the
     # recurrence expansion both CalDAV sync and the agenda views need.

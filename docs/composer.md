@@ -47,7 +47,7 @@ window when launched from the command line.
 +----------------------------------------------------------------------------+
 | Attachments: (none)                                                        |
 +----------------------------------------------------------------------------+
- ctrl+s Send  Esc Cancel  ctrl+x... (s=send  a=attach  e=editor  m=markdown)
+ ctrl+s Send  Esc Cancel  Alt+A Attach  Alt+E Editor  Alt+M Markdown
 ```
 
 ### Fields
@@ -58,7 +58,7 @@ window when launched from the command line.
 | **To / Cc / Bcc** | Address fields. Multiple addresses are separated by commas. Supports tab-completion from the contacts store (see [Contacts](contacts.md)). |
 | **Subject** | Subject line. Prefilled with `Re:` or `Fwd:` when replying or forwarding. |
 | **Body** | Multi-line text editor. Quoted content is included at the bottom when replying or forwarding. |
-| **Attachments** | Listed at the bottom; managed with ++ctrl+x++ then ++a++. |
+| **Attachments** | Listed one per row at the bottom, each with a button that removes it; ++alt+a++ adds one. |
 
 !!! note "Screen-specific bindings"
     The compose screen footer shows only compose-relevant bindings. Mail-reader
@@ -68,30 +68,20 @@ window when launched from the command line.
 
 ## Keyboard shortcuts
 
-### Direct shortcuts
-
 | Key | Action |
 |---|---|
 | ++ctrl+s++ | Send the message immediately |
 | ++escape++ | Cancel (prompts to save as draft if body is non-empty) |
+| ++alt+a++ | Add an attachment |
+| ++alt+e++ | Open the body in an external editor |
+| ++alt+m++ | Toggle Markdown mode |
+| ++alt+s++ | Send, for keyboards where ++ctrl+s++ is taken |
 
-### `ctrl+x` prefix chord
-
-Press ++ctrl+x++ to enter prefix mode. A brief notification appears:
-
-```
-ctrl+x -- s=send  a=attach  e=editor  m=markdown  c=cancel
-```
-
-Then press the second key:
-
-| Second key | Action |
-|---|---|
-| ++s++ | Send |
-| ++a++ | Add attachment |
-| ++e++ | Open body in external editor |
-| ++m++ | Toggle Markdown mode |
-| ++c++ | Cancel |
+The composer's own actions sit on Alt rather than Ctrl so that ++ctrl+x++,
+++ctrl+c++, ++ctrl+v++ and ++ctrl+z++ keep cutting, copying, pasting and
+undoing inside the body and the address fields. Holding shift as well — or
+leaving Caps Lock on — works just as well: ++alt+shift+a++ and friends are
+bound to the same actions.
 
 ---
 
@@ -148,7 +138,7 @@ The border title of the body area reflects the current state:
 
 | Method | How |
 |---|---|
-| Per-message toggle | ++ctrl+x++ then ++m++ inside the composer |
+| Per-message toggle | ++alt+m++ inside the composer |
 | Account default | `markdown_compose = true` in the account config |
 | Global default | `markdown_compose = true` in the top-level config |
 | CLI flag | `pony compose --markdown` / `pony compose --no-markdown` |
@@ -178,7 +168,7 @@ Recipients in a plain-text client see the raw Markdown, which is legible as-is.
 
 ## External editor
 
-If `editor` is set in the config, press ++ctrl+x++ then ++e++ to open the
+If `editor` is set in the config, press ++alt+e++ to open the
 message body in that editor. Pony suspends the TUI, waits for the editor to
 exit, then resumes with the updated content.
 
@@ -193,7 +183,7 @@ does nothing and a notification is shown.
 
 ## Attachments
 
-Press ++ctrl+x++ then ++a++ to open the attachment picker:
+Press ++alt+a++ to open the attachment picker:
 
 ```
 +----------------- Add attachment -------------------+
@@ -208,8 +198,8 @@ Press ++ctrl+x++ then ++a++ to open the attachment picker:
 ```
 
 The picker is a `DirectoryTree` with a typeahead filter (0.8 s debounce).
-Navigate to a file and press ++enter++ to attach it. Repeat ++ctrl+x++ then
-++a++ to add more files.
+Navigate to a file and press ++enter++ to attach it. Press ++alt+a++ again to
+add more files.
 
 Attached files are shown at the bottom of the composer:
 
@@ -222,8 +212,7 @@ Attachments:
 
 ## Sending
 
-Pony sends immediately over SMTP when you press ++ctrl+s++ (or ++ctrl+x++
-then ++s++). The account's `[accounts.<name>.smtp]` subtable (`host`,
+Pony sends immediately over SMTP when you press ++ctrl+s++ (or ++alt+s++). The account's `[accounts.<name>.smtp]` subtable (`host`,
 `port`, `ssl`) controls the transport. After a successful send, the message
 is saved to the sent folder (auto-discovered by fuzzy name match, or the
 explicit `sent_folder` config value).
@@ -245,7 +234,7 @@ to save the message as a draft.
 
 ## Drafts
 
-There is no autosave. If you press ++escape++ (or ++ctrl+x++ then ++c++) with
+There is no autosave. If you press ++escape++ with
 a non-empty body, Pony asks whether to save a draft:
 
 ```

@@ -2420,6 +2420,42 @@ async def test_compose_add_attachment_key_opens_picker() -> None:
         await pilot.pause()
 
 
+async def test_compose_shifted_alt_keys_run_the_action() -> None:
+    """Alt held with a capital letter fires the action, and types nothing.
+
+    A terminal reports Alt+Shift+A as ``alt+shift+a`` carrying the
+    character ``"A"``, which is what the composer receives when Caps
+    Lock is on or shift is held.  Unbound, the letter landed in the
+    message body instead.
+    """
+    from textual.events import Key
+    from textual.widgets import TextArea
+
+    from pony.tui.screens.add_attachment_screen import AddAttachmentScreen
+
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="shift-alt")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ComposeScreen)
+        body = screen.query_one("#body-area", TextArea)
+        body.focus()
+        await pilot.pause()
+
+        initial_mode = screen._markdown_mode
+        app.post_message(Key("alt+shift+m", "M"))
+        await pilot.pause()
+        assert screen._markdown_mode != initial_mode
+
+        app.post_message(Key("alt+shift+a", "A"))
+        await pilot.pause()
+        assert any(isinstance(s, AddAttachmentScreen) for s in app.screen_stack)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert body.text == ""
+
+
 async def test_compose_screen_prompts_for_name_when_no_display_name() -> None:
     """ComposeApp pushes ContactEditScreen when account has no display name."""
     from pony.tui.app import ComposeApp
