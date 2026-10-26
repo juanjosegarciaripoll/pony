@@ -2176,23 +2176,23 @@ class ImapSyncService:
         )
         if new_uid is not None:
             self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
-        elif row.local_status == MessageStatus.PENDING_MOVE:
-            # Server didn't return APPENDUID but the APPEND succeeded.
-            # Clear PENDING_MOVE so the row isn't re-uploaded every sync.
-            # The server's copy will surface as a FetchNewOp next sync
-            # and create a second local row — accepted on non-UIDPLUS servers.
+        else:
+            # Server didn't return APPENDUID, but the APPEND succeeded.
+            # Record that with ``synced_at`` and clear any PENDING_MOVE:
+            # the row holds no UID, so only ``synced_at`` distinguishes
+            # "the server has this, handle unknown" from "never
+            # uploaded" — and a row read as the latter is APPENDed again
+            # on every sync, uploading a copy each time.  The folder
+            # diff adopts it by Message-ID when it next sees that UID.
             self._index.update_message(
                 message=dataclasses.replace(
                     row,
                     local_status=MessageStatus.ACTIVE,
                     source_folder=None,
                     source_uid=None,
+                    synced_at=now,
                 )
             )
-        # ACTIVE uid=NULL rows without APPENDUID: next sync's per-folder
-        # diff will see the new server UID and emit a FetchNewOp.  To
-        # avoid duplicate ingestion, the next sync would create a
-        # second row — accepted trade-off for non-UIDPLUS servers.
         return True
 
     def _execute_push_move(
@@ -2233,12 +2233,13 @@ class ImapSyncService:
         if new_uid is not None:
             self._finalize_after_new_uid(row, new_uid=new_uid, now=now)
         else:
-            # Server omitted COPYUID; we know the move executed but
-            # not the new UID.  Mark ACTIVE so the row is visible;
-            # next sync's per-folder diff will re-link uid via
-            # FetchNewOp's ingestion path (creating a duplicate row,
-            # which the user can clean up).  Pragmatic on UIDPLUS-less
-            # servers; UIDPLUS is universal on modern stacks.
+            # Server omitted COPYUID: the move executed but the new UID
+            # is unknown.  ``synced_at`` records that the server has the
+            # message even though we hold no handle on it, which keeps
+            # the row out of the push candidates — without it the row
+            # reads as a never-uploaded draft and the next sync APPENDs
+            # a second copy into the target folder.  The folder diff
+            # adopts the row by Message-ID when it next sees that UID.
             self._index.update_message(
                 message=dataclasses.replace(
                     row,
@@ -2246,7 +2247,7 @@ class ImapSyncService:
                     local_status=MessageStatus.ACTIVE,
                     source_folder=None,
                     source_uid=None,
-                    synced_at=None,
+                    synced_at=now,
                 )
             )
         return True

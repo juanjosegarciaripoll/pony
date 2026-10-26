@@ -1025,7 +1025,17 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def list_folder_push_candidates(
         self, *, account_name: str, folder_name: str
     ) -> Sequence[PendingPush]:
-        """Return rows needing a server-side push (SQL-filtered)."""
+        """Return rows needing a server-side push (SQL-filtered).
+
+        A UID-less ACTIVE row is a message the server has never seen —
+        a composed draft, or a row stranded by a UIDVALIDITY reset —
+        and wants ``APPEND``.  One exception: ``synced_at`` set with no
+        UID means the server *did* accept the message (a ``MOVE`` or
+        ``APPEND`` it confirmed without reporting the new UID) and only
+        the handle is missing.  Appending that again uploads a second
+        copy, so those rows wait for the folder diff to adopt them by
+        Message-ID instead.
+        """
         with self._use() as conn:
             rows = conn.execute(
                 """
@@ -1037,7 +1047,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                   AND (
                     local_status = ?
                     OR local_status = ?
-                    OR (local_status = ? AND uid IS NULL)
+                    OR (local_status = ? AND uid IS NULL AND synced_at IS NULL)
                     OR (
                         local_status = ?
                         AND uid IS NOT NULL

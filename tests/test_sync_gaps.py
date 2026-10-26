@@ -385,7 +385,12 @@ def test_push_move_handles_missing_row_failure_and_missing_copyuid() -> None:
     updated = index.update_message.call_args.kwargs["message"]
     assert updated.local_status == MessageStatus.ACTIVE
     assert updated.uid is None
-    assert updated.synced_at is None
+    # No COPYUID leaves no handle, so `synced_at` is the only record
+    # that the server took the message.  Without it the row reads as a
+    # never-uploaded draft and the next sync APPENDs a second copy.
+    assert updated.synced_at == now
+    assert updated.source_folder is None
+    assert updated.source_uid is None
 
 
 def test_uidvalidity_reset_keeps_the_mail_and_only_drops_the_uid_epoch() -> None:

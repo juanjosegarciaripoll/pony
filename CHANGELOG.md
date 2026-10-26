@@ -100,6 +100,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Archiving no longer uploads a second copy on servers without UIDPLUS**:
+  a message archived with ++a++ is moved locally at once and pushed with
+  `UID MOVE` on the next sync. When the server confirms the move but reports
+  no COPYUID — Courier-derived stacks do not — the row kept no UID, which made
+  it indistinguishable from a composed draft that had never been uploaded, so
+  the following sync `APPEND`ed it to the archive folder as well. Every
+  archived message ended up twice on the server, and the orphaned copy came
+  back as a duplicate row on the next pass. Such rows are now stamped as
+  server-confirmed and wait to be adopted by `Message-ID` instead of being
+  re-uploaded; the same applies to an `APPEND` the server accepts without
+  returning APPENDUID.
+
 - **The composer's Alt shortcuts work again on terminals that report key
   text**: Textual 8.2.7 began asking terminals for kitty's "report associated
   text" enhancement and then discarded the alt modifier from any key event

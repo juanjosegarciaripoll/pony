@@ -283,10 +283,39 @@ def _make_raw_message(
     return msg.as_bytes()
 
 
+class NoUidPlusSession(FakeImapSession):
+    """A server that executes MOVE/APPEND but reports no new UID.
+
+    Courier-derived stacks answer ``UID MOVE`` with a bare OK, no
+    COPYUID, and the same for APPEND.  The command succeeded; the
+    client simply cannot learn the UID it produced.
+    """
+
+    def move_message(
+        self,
+        source_folder: str,
+        uid: int,
+        target_folder: str,
+    ) -> int | None:
+        super().move_message(source_folder, uid, target_folder)
+        return None
+
+    def append_message(
+        self,
+        folder_name: str,
+        raw_message: bytes,
+        flags: frozenset[MessageFlag],
+        extra_imap_flags: frozenset[str] = frozenset(),
+    ) -> int | None:
+        super().append_message(folder_name, raw_message, flags, extra_imap_flags)
+        return None
+
+
 def _setup(
     *,
     server_folders: dict[str, dict[int, tuple[str, frozenset[MessageFlag], bytes]]],
     uid_validity: int = 1,
+    session_class: type[FakeImapSession] = FakeImapSession,
 ) -> tuple[
     ImapSyncService, SqliteIndexRepository, MaildirMirrorRepository, FakeImapSession
 ]:
@@ -312,7 +341,7 @@ def _setup(
     )
     config = AppConfig(accounts=(account,))
 
-    session = FakeImapSession(folders=server_folders, uid_validity=uid_validity)
+    session = session_class(folders=server_folders, uid_validity=uid_validity)
 
     class _FixedCredentials:
         def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
@@ -1870,6 +1899,110 @@ class LocalMoveSyncTestCase(unittest.TestCase):
             [c for c in session.call_log if c.startswith("append:")],
             appends_before,
         )
+
+    def test_move_without_copyuid_is_not_appended_again(self) -> None:
+        """A MOVE the server confirmed without COPYUID uploads once.
+
+        The row comes back from the move with no UID, so only
+        ``synced_at`` distinguishes "the server has this, handle
+        unknown" from "never uploaded".  Read as the latter it was
+        APPENDed on the following sync, leaving two copies in the
+        archive folder for every archived message — on a server that
+        reports no COPYUID, that is every archived message.
+        """
+        raw = _make_raw_message("Archive me", "<copyuid@example.com>")
+        service, index, _, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<copyuid@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+            session_class=NoUidPlusSession,
+        )
+        service.sync()  # ingest into INBOX
+        self._archive_locally(
+            index,
+            source="INBOX",
+            target="Archive",
+            message_id="<copyuid@example.com>",
+        )
+
+        service.sync()  # UID MOVE, no COPYUID in the reply
+
+        self.assertIn(("INBOX", 1, "Archive"), session.moves)
+        self.assertEqual(len(session.folders["Archive"]), 1)
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0].uid, "no COPYUID means no handle")
+        self.assertEqual(rows[0].local_status, MessageStatus.ACTIVE)
+        self.assertIsNotNone(
+            rows[0].synced_at,
+            "the server has the message even though its UID is unknown",
+        )
+
+        appends_before = [c for c in session.call_log if c.startswith("append:")]
+        service.sync()  # the pass that used to upload a second copy
+
+        self.assertEqual(
+            [c for c in session.call_log if c.startswith("append:")],
+            appends_before,
+            "the move was re-uploaded as an APPEND",
+        )
+        self.assertEqual(
+            len(session.folders["Archive"]),
+            1,
+            "a second copy of the message reached the server",
+        )
+        rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(rows), 1, "the message was duplicated locally")
+        self.assertEqual(
+            rows[0].uid,
+            next(iter(session.folders["Archive"])),
+            "the folder diff should adopt the row by Message-ID",
+        )
+
+    def test_append_without_appenduid_is_not_repeated(self) -> None:
+        """An APPEND the server confirmed without APPENDUID uploads once."""
+        raw = _make_raw_message("Orphan", "<noappenduid@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<noappenduid@example.com>", frozenset(), raw)},
+                "Archive": {},
+            },
+            session_class=NoUidPlusSession,
+        )
+        service.sync()
+        self._archive_locally(
+            index,
+            source="INBOX",
+            target="Archive",
+            message_id="<noappenduid@example.com>",
+        )
+        archive = FolderRef(account_name="personal", folder_name="Archive")
+        row = index.list_folder_messages(folder=archive)[0]
+        new_storage_key = mirror.move_message_to_folder(
+            folder=FolderRef(account_name="personal", folder_name="INBOX"),
+            storage_key=row.storage_key,
+            target_folder="Archive",
+        )
+        index.upsert_message(
+            message=dataclasses.replace(row, storage_key=new_storage_key)
+        )
+        # Another client purged the source, so the move becomes an APPEND.
+        session.folders["INBOX"].pop(1, None)
+
+        service.sync()
+        self.assertFalse(session.moves)
+        self.assertEqual(len(session.folders["Archive"]), 1)
+
+        service.sync()
+        self.assertEqual(
+            len(session.folders["Archive"]),
+            1,
+            "the APPEND was repeated, uploading a second copy",
+        )
+        rows = index.list_folder_messages(folder=archive)
+        self.assertEqual(len(rows), 1)
 
     def test_archive_appended_when_server_has_no_copy(self) -> None:
         raw = _make_raw_message("Orphan", "<orphan@example.com>")

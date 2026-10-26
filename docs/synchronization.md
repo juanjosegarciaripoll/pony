@@ -356,7 +356,10 @@ before changing the algorithm.
   `(account, folder)`. `Message-ID` is display-only and duplicates are allowed
   — see [Message identity](#message-identity).
 - **`uid IS NULL` means "needs push."** A `PENDING_MOVE` row carries
-  `source_folder` / `source_uid`; otherwise it is a message awaiting `APPEND`.
+  `source_folder` / `source_uid`; otherwise it is a message awaiting `APPEND`
+  — unless `synced_at` is set, which says the server accepted the message but
+  never reported its UID (see [UID recovery](#uid-recovery)). Such a row holds
+  no handle and still must not be uploaded again.
 
 ### Schema
 
@@ -403,7 +406,7 @@ A folder takes the cheapest path its watermarks allow:
 3. Pending push rows:
     - `PENDING_MOVE` + `source_*` → `PushMoveOp` (APPEND + EXPUNGE fallback when
       the server lacks MOVE).
-    - `ACTIVE` + `uid IS NULL` → `PushAppendOp`.
+    - `ACTIVE` + `uid IS NULL` + `synced_at IS NULL` → `PushAppendOp`.
     - `TRASHED` + uid set → `PushDeleteOp`.
     - `TRASHED` + `uid IS NULL` → `PurgeLocalOp`.
     - Flag drift on a UID-bearing row → `PushFlagsOp`.
@@ -439,7 +442,13 @@ the field sets below *are* the contract. They are implemented once, in
 
 `PushAppendOp` and `PushMoveOp` capture the new UID from APPENDUID / COPYUID
 (RFC 4315). If the server omits it, the row stays `uid IS NULL` and the next
-sync adopts it via `FetchNewOp`.
+sync adopts it by `Message-ID` when `FetchNewOp` brings that UID in.
+
+While it waits, the row is stamped with `synced_at`. Without that stamp it is
+indistinguishable from a composed draft that has never been uploaded, so the
+very next sync would `APPEND` it — putting a second copy of every archived
+message on the server, once per sync, on any server that does not implement
+UIDPLUS.
 
 ### Conflict identifiers
 
