@@ -433,3 +433,43 @@ async def test_saving_with_no_message_selected_is_a_noop(tmp_path: Path) -> None
         await pilot.pause()
 
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_missing_mirror_file_tells_the_user_how_to_fix_it() -> None:
+    """An index row whose mirror file is gone is a reconcilable state.
+
+    `pony doctor` reports it as a stale index row and `pony rescan`
+    clears it, so the reader should say that rather than show the
+    KeyError the mirror raises — which it did, with a fresh traceback
+    in the log on every keypress, because the row re-renders each time
+    the cursor lands on it.
+    """
+    from textual.widgets import Static
+
+    from pony.tui.widgets.message_list import MessageListPanel
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(
+        label="io-missing-mirror-file",
+        seed=[(folder, _attachment_message("Gone", "gone.bin"))],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        row = index.list_folder_messages(folder=folder)[0]
+        mirrors["acct"].delete_message(folder=folder, storage_key=row.storage_key)
+
+        panel = screen.query_one(MessageListPanel)
+        summary = panel.get_selected_summary()
+        assert summary is not None
+        view = screen.query_one(MessageViewPanel)
+        view.load_message(summary, mirrors["acct"])
+
+        rendered = str(view.query_one("#content", Static).render())
+        assert "pony rescan" in rendered, rendered
+        assert "KeyError" not in rendered
+        assert view.raw_bytes is None

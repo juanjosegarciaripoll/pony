@@ -183,6 +183,25 @@ class MessageViewPanel(VerticalScroll):
                 storage_key=summary.storage_key,
                 message_id=summary.message_id,
             )
+        except KeyError:
+            # The row points at a mirror file that is no longer on disk.
+            # `pony doctor` reports that as a stale index row and
+            # `pony rescan` reconciles it, so say so instead of showing
+            # the user a KeyError — and log it without a traceback,
+            # since the reader re-renders the row on every keypress.
+            _log.warning(
+                "No mirror file for %s (storage_key=%r)",
+                summary.message_ref,
+                summary.storage_key,
+            )
+            self._set_content(
+                _escape(
+                    "(the local copy of this message is missing from the "
+                    "mirror — run `pony rescan` to reconcile the index with "
+                    "the mirror, then sync to fetch it again)"
+                )
+            )
+            return
         except Exception as exc:  # noqa: BLE001
             _log.exception("load_message failed for %s", summary.message_ref)
             msg = f"(could not load message: {type(exc).__name__}: {exc})"

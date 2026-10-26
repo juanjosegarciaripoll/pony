@@ -100,6 +100,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A message whose local copy is missing says what to do about it**: when an
+  index row pointed at a mirror file that was no longer on disk, the reader
+  showed the raw `KeyError` the mirror raises and wrote a fresh traceback to
+  the log on every keypress, since the row re-renders whenever the cursor
+  lands on it. It now names the condition `pony doctor` already reports and
+  points at `pony rescan`, which reconciles it, and logs it once without a
+  traceback.
+
 - **Archiving no longer uploads a second copy on servers without UIDPLUS**:
   a message archived with ++a++ is moved locally at once and pushed with
   `UID MOVE` on the next sync. When the server confirms the move but reports
