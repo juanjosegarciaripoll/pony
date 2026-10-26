@@ -70,6 +70,8 @@ does nothing.
 | ++shift+p++ | Jump to previous account's INBOX |
 | ++shift+g++ | Goto-folder dialog: fuzzy-search every account/folder pair |
 | ++f1++ | Show the keybinding cheatsheet (centered modal) |
+| ++ctrl+left++ / ++ctrl+right++ | Narrow / widen the folder pane |
+| ++ctrl+up++ / ++ctrl+down++ | Shrink / grow the message list |
 | ++f2++ | Switch between mail and the calendar |
 
 ### Message list
@@ -205,6 +207,8 @@ read, flagged and answered state.
 | ++shift+m++ | Move the current message to another folder |
 | ++shift+n++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
 | ++shift+f8++ | Dedupe the current folder: trash redundant copies after typing the count back |
+| ++s++ | Save the message, or chosen attachments, to a directory you pick |
+| ++ctrl+p++ | Print the message to PDF (needs an external converter) |
 
 Opening a message marks it read; there is no separate key for that.
 
@@ -365,6 +369,8 @@ Attachments are listed between the header block and the message body:
 | ++0++ | Open all attachments |
 | ++ctrl+1++ / ++ctrl+2++ / ++ctrl+3++ | Save attachment 1, 2, or 3 to `~/Downloads` |
 | ++ctrl+0++ | Save all attachments |
+| ++shift+o++ | Open every attachment (same as ++0++, for when the digits are taken) |
+| ++shift+s++ | Save every attachment (same as ++ctrl+0++) |
 | ++w++ | Open the full raw message as HTML in the default browser |
 
 !!! tip

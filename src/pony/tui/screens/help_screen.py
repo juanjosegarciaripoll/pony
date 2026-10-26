@@ -4,9 +4,15 @@ Replaces Textual's built-in command-palette side panel.  The content
 is a curated, category-grouped reference rather than an auto-discovered
 list from ``Screen.BINDINGS`` — screens and widgets contribute bindings
 from many places, and a hand-maintained grouping reads better than
-whatever order those contributions happen in.  Keep in sync with the
-bindings declared on ``MainScreen``, ``FolderPanel``,
-``MessageListPanel``, and ``MessageViewPanel``.
+whatever order those contributions happen in.
+
+Curated does not mean remembered: every row carries the binding keys it
+documents, and ``tests/test_help_panel.py`` checks those against the
+keys the app, the reader screen and its three panels actually declare.
+A new key with no row here fails that test, and so does a row naming a
+key nothing binds any more.  A row may document behaviour that comes
+from a Textual default rather than one of our bindings (``Enter`` to
+open a message, say) by listing no keys at all.
 """
 
 from __future__ import annotations
@@ -22,10 +28,28 @@ from textual.widgets import Footer, Label, Static
 
 
 @dataclass(frozen=True, slots=True)
+class _Row:
+    """One line of the cheatsheet.
+
+    ``display`` is for the reader — ranges and alternatives spelled the
+    way a person reads them — while ``keys`` is the same keys exactly as
+    a ``Binding`` spells them, which is what the test compares against.
+    """
+
+    display: str
+    action: str
+    keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class _Section:
     title: str
-    bindings: tuple[tuple[str, str], ...]
+    bindings: tuple[_Row, ...]
 
+
+# The attachment accelerators are one row each but ten keys each.
+_DIGITS: tuple[str, ...] = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+_CTRL_DIGITS: tuple[str, ...] = tuple(f"ctrl+{d}" for d in _DIGITS)
 
 # Two-column layout: left list first, right list second.  Keep sections
 # short so the modal fits on a standard 80×24 terminal.
@@ -33,37 +57,43 @@ _LEFT_SECTIONS: tuple[_Section, ...] = (
     _Section(
         "Navigation",
         (
-            ("g", "Get mail (sync)"),
-            ("n / p", "Next / previous row"),
-            ("N / P", "Next / previous INBOX"),
-            ("/", "Search current folder"),
-            ("Q", "Quit"),
+            _Row("g / Ctrl+G", "Get mail — now / in the background", ("g", "ctrl+g")),
+            _Row("n / p", "Next / previous row", ("n", "p")),
+            _Row("< / >", "First / last row", ("<", ">")),
+            _Row("N / P", "Next / previous INBOX", ("N", "P")),
+            _Row("/", "Search current folder", ("/",)),
+            _Row("Q", "Quit", ("Q",)),
         ),
     ),
     _Section(
         "Compose",
         (
-            ("c", "New message"),
-            ("r", "Reply"),
-            ("R", "Reply all"),
-            ("f", "Forward"),
-            ("w", "Open in web browser"),
+            _Row("c", "New message", ("c",)),
+            _Row("e", "Edit the selected draft", ("e",)),
+            _Row("r", "Reply", ("r",)),
+            _Row("R", "Reply all", ("R",)),
+            _Row("f", "Forward", ("f",)),
+            _Row("w", "Open in web browser", ("w",)),
         ),
     ),
     _Section(
         "Folders & layout",
         (
-            ("Shift+N", "New folder"),
-            ("Ctrl+← / →", "Resize folder panel"),
-            ("Ctrl+↑ / ↓", "Resize message list"),
-            ("Drag border", "Resize with the mouse"),
+            _Row("Shift+G", "Goto folder…", ("G",)),
+            _Row("Shift+N", "New folder", ("N",)),
+            _Row(
+                "Ctrl+← → ↑ ↓",
+                "Resize panes (or drag a border)",
+                ("ctrl+left", "ctrl+right", "ctrl+up", "ctrl+down"),
+            ),
+            _Row("Shift+F8", "Dedupe this folder", ("shift+f8",)),
         ),
     ),
     _Section(
         "Contacts",
         (
-            ("B", "Browse contacts"),
-            ("H", "Harvest from folder"),
+            _Row("B", "Browse contacts", ("B",)),
+            _Row("H", "Harvest from folder", ("H",)),
         ),
     ),
 )
@@ -72,38 +102,44 @@ _RIGHT_SECTIONS: tuple[_Section, ...] = (
     _Section(
         "Messages",
         (
-            ("Enter", "Open message"),
-            ("Esc / q", "Close message"),
-            ("u", "Mark unread"),
-            ("C", "Mark all read"),
-            ("!", "Flag / unflag"),
-            ("D", "Trash"),
-            ("A", "Archive"),
-            ("Y", "Copy to folder…"),
-            ("M", "Move to folder…"),
-            ("m / Shift+↑↓", "Toggle mark / extend"),
-            ("Shift+F8", "Dedupe this folder"),
+            _Row("Enter", "Open message"),
+            _Row("Esc / q", "Close message", ("escape", "q")),
+            _Row("Space / PgDn", "Page through the message", ("space", "pagedown")),
+            _Row("u", "Mark unread", ("u",)),
+            _Row("C", "Mark all read", ("C",)),
+            _Row("!", "Flag / unflag", ("!",)),
+            _Row("D", "Trash", ("D",)),
+            _Row("A", "Archive", ("A",)),
+            _Row("Y", "Copy to folder…", ("Y",)),
+            _Row("M", "Move to folder…", ("M",)),
+            _Row(
+                "m / Shift+↑↓",
+                "Toggle mark / extend",
+                ("m", "shift+up", "shift+down"),
+            ),
+            _Row("s / Ctrl+P", "Save message… / print to PDF", ("s", "ctrl+p")),
         ),
     ),
     _Section(
         "Attachments",
         (
-            ("1-9 / 0", "Open attachment N / open all"),
-            ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
+            _Row("1-9 / 0", "Open attachment N / open all", _DIGITS),
+            _Row("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all", _CTRL_DIGITS),
+            _Row("O / S", "Open / save every attachment", ("O", "S")),
         ),
     ),
     _Section(
         "Calendar",
         (
-            ("F2", "Agenda (F2 again returns)"),
-            ("i", "Answer invitation on this message"),
+            _Row("F2", "Agenda (F2 again returns)", ("f2",)),
+            _Row("i", "Answer invitation on this message", ("i",)),
         ),
     ),
     _Section(
         "This panel",
         (
-            ("F1", "Toggle this help"),
-            ("Esc / q", "Dismiss"),
+            _Row("F1", "Toggle this help", ("f1",)),
+            _Row("Esc / q", "Dismiss", ("escape", "q")),
         ),
     ),
 )
@@ -117,10 +153,11 @@ def _render_column(sections: tuple[_Section, ...]) -> str:
         if idx > 0:
             lines.append("")
         lines.append(f"[b $accent]{markup_escape(section.title)}[/b $accent]")
-        width = max(len(key) for key, _ in section.bindings) + 2
-        for key, desc in section.bindings:
+        width = max(len(row.display) for row in section.bindings) + 2
+        for row in section.bindings:
             lines.append(
-                f"[b]{markup_escape(key).ljust(width)}[/b] {markup_escape(desc)}"
+                f"[b]{markup_escape(row.display).ljust(width)}[/b] "
+                f"{markup_escape(row.action)}"
             )
     return "\n".join(lines)
 

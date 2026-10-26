@@ -120,6 +120,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The F1 cheatsheet lists every key again**: the panel was hand-maintained
+  against a comment asking for it to be kept in sync, and had fallen behind —
+  ++shift+g++ (goto folder), ++e++ (edit draft), ++s++ (save), ++ctrl+p++
+  (print), ++shift+o++ / ++shift+s++ (every attachment), ++ctrl+g++
+  (background sync), ++less++ / ++greater++ (first / last row) and
+  ++space++ / ++page-down++ (paging) were all bound and none of them were
+  listed. Each row now carries the binding keys it documents and a test
+  compares those against the keys the app, the reader and its panels declare,
+  in both directions, so neither a missing row nor a stale one survives.
+  `docs/tui.md` gained the same keys.
+
 - **A message whose local copy is missing says what to do about it**: when an
   index row pointed at a mirror file that was no longer on disk, the reader
   showed the raw `KeyError` the mirror raises and wrote a fresh traceback to

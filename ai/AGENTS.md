@@ -53,6 +53,22 @@ so `tests_calendar/` still exercises the calendar standalone.
 
 9. **Live IMAP tests are opt-in.** `PONY_LIVE_IMAP=1 uv run python -m pytest tests/test_imap_live.py` runs the sync engine against a real Dovecot, started unprivileged by `scripts/dovecot_userspace.sh` (first run downloads it under `~/.cache`). Without the variable they skip, so the default run needs no server. Use them for anything touching UID handling, UIDVALIDITY or APPEND — a fake decides those for itself.
 
+10. **A key change is three edits.** A `Binding` added, moved or removed on
+   `PonyApp`, `MainScreen`, `HelpScreen`, `FolderPanel`, `MessageListPanel` or
+   `MessageViewPanel` also needs its row in `help_screen.py` — the ++f1++
+   cheatsheet, where every row carries the keys it documents — and its line in
+   `docs/tui.md`. `tests/test_help_panel.py` enforces the first two in both
+   directions: an undocumented key fails it, and so does a row naming a key
+   nothing binds any more.
+
+   Check a candidate key against the terminal before choosing it. Every
+   `ctrl+shift+<letter>` is claimed by some emulator — Windows Terminal alone
+   takes `ctrl+shift+d`, `f`, `n`, `t`, `w`, `a`, `m` and the digits — and a
+   terminal without the kitty keyboard protocol cannot encode them at all: it
+   reports plain `ctrl+<letter>`, so such a binding either never fires or
+   fires on the wrong key. Function keys above `f2` are the clear ground, and
+   `tests/test_key_encoding.py` is where a key's wire encoding gets pinned.
+
 ## Coverage requirements
 
 The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current baseline is **91.99 %** across both packages, measured on the full suite after the calendar merge — mail alone sat at 96.20 % before it, and the calendar's own suite runs to a lower figure, so the combined number fell without any mail coverage being lost. Regenerate rather than trusting it: every figure recorded here has drifted within a release or two, and a stale number reads as a regression against an honest run.
@@ -76,6 +92,7 @@ Key test infrastructure:
 | Message list widget | `tests/test_message_list_panel.py` |
 | Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
 | Terminal key encodings | `tests/test_key_encoding.py` — raw bytes through `XTermParser`; the only layer where a broken Alt binding is visible |
+| Keys ↔ help panel | `tests/test_help_panel.py` — every binding has a cheatsheet row, every row a live binding |
 | Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
 | Calendar config section | `tests/test_calendar_config.py` |
 | Notification space | `tests/test_notifications.py` |
