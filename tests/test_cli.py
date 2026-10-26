@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from uuid import uuid4
 
 import corpus
@@ -731,11 +732,14 @@ def _seed_dup_messages(
     message_id: str,
     flags_list: list[frozenset[MessageFlag]],
     folder_name: str = "INBOX",
+    bodies: list[str] | None = None,
 ) -> list[_SeedHandle]:
     """Seed multiple index rows that share one ``Message-ID``.
 
     Each entry in *flags_list* produces one row, assigned UIDs 1, 2, …
-    in order.  All rows are ACTIVE with their assigned flags.
+    in order.  All rows are ACTIVE with their assigned flags.  The
+    stored copies are byte-identical unless *bodies* gives each row its
+    own body — which ``folder dedup`` must then refuse to collapse.
     """
     import dataclasses
     from email.message import EmailMessage
@@ -753,14 +757,21 @@ def _seed_dup_messages(
     paths = AppPaths.default()
     paths.ensure_runtime_dirs()
 
-    msg = EmailMessage()
-    msg["From"] = "sender@example.com"
-    msg["To"] = account.email_address
-    msg["Subject"] = "Duplicate test"
-    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
-    msg["Message-ID"] = message_id
-    msg.set_content("duplicate body")
-    raw = msg.as_bytes()
+    def _raw(body: str) -> bytes:
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = account.email_address
+        msg["Subject"] = "Duplicate test"
+        msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+        msg["Message-ID"] = message_id
+        msg.set_content(body)
+        return msg.as_bytes()
+
+    raws = (
+        [_raw(body) for body in bodies]
+        if bodies is not None
+        else [_raw("duplicate body")] * len(flags_list)
+    )
 
     mirror = MaildirMirrorRepository(
         account_name=account.name,
@@ -772,6 +783,7 @@ def _seed_dup_messages(
 
     handles: list[_SeedHandle] = []
     for i, flags in enumerate(flags_list):
+        raw = raws[i]
         storage_key = mirror.store_message(folder=folder_ref, raw_message=raw)
         projected = project_rfc822_message(
             message_ref=MessageRef(
@@ -926,6 +938,18 @@ def isolated_app_env() -> Iterator[Path]:
                 os.environ[key] = value
 
 
+@contextlib.contextmanager
+def _dedup_confirmed(answer: str) -> Iterator[None]:
+    """Run inside an interactive terminal that types *answer* at the prompt."""
+    from pony import cli
+
+    with (
+        mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+        mock.patch("builtins.input", return_value=answer),
+    ):
+        yield
+
+
 class DedupFolderTestCase(unittest.TestCase):
     """Tests for ``pony folder dedup``."""
 
@@ -983,15 +1007,16 @@ class DedupFolderTestCase(unittest.TestCase):
                 ],
             )
 
-            run_cli(
-                "--config",
-                str(config_path),
-                "folder",
-                "dedup",
-                "personal",
-                "INBOX",
-                "--apply",
-            )
+            with _dedup_confirmed("1"):
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
 
             paths = AppPaths.default()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -1008,6 +1033,168 @@ class DedupFolderTestCase(unittest.TestCase):
             self.assertIn(MessageFlag.ANSWERED, active[0].local_flags)
             # Loser still carries its uid so sync emits PushDeleteOp
             self.assertIsNotNone(trashed[0].uid)
+
+    def test_apply_aborts_unless_the_count_is_typed_back(self) -> None:
+        """A wrong answer at the prompt changes nothing.
+
+        The gate is the count, not a ``y`` — this command deletes mail
+        from the server, so it should not be answerable by reflex.
+        """
+        from pony.domain import FolderRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<confirm@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            for answer in ("y", "yes", "", "2"):
+                with self.subTest(answer=answer), _dedup_confirmed(answer):
+                    output, code = run_cli_capture(
+                        "--config",
+                        str(config_path),
+                        "folder",
+                        "dedup",
+                        "personal",
+                        "INBOX",
+                        "--apply",
+                    )
+                self.assertEqual(code, 1)
+                self.assertIn("Aborted", output)
+
+                paths = AppPaths.default()
+                index = SqliteIndexRepository(database_path=paths.index_db_file)
+                rows = index.list_folder_messages(
+                    folder=FolderRef(account_name="personal", folder_name="INBOX")
+                )
+                self.assertEqual(
+                    [r.local_status for r in rows],
+                    [MessageStatus.ACTIVE, MessageStatus.ACTIVE],
+                    f"answering {answer!r} must not trash anything",
+                )
+
+    def test_apply_refuses_without_a_terminal(self) -> None:
+        """Piped stdin cannot confirm, so nothing is written."""
+        from pony import cli
+        from pony.domain import FolderRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<notty@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            with mock.patch.object(cli.sys.stdin, "isatty", return_value=False):
+                output, code = run_cli_capture(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("Refusing to trash messages without confirmation", output)
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            self.assertTrue(all(r.local_status == MessageStatus.ACTIVE for r in rows))
+
+    def test_copies_that_are_not_identical_are_left_alone(self) -> None:
+        """A repeated Message-ID is not enough to delete a message.
+
+        Resends and list copies share a Message-ID legitimately, so the
+        bytes have to match too.
+        """
+        from pony.domain import FolderRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<resend@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+                bodies=["the first draft", "a different body entirely"],
+            )
+
+            with _dedup_confirmed("1"):
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertIn("No duplicates found", output)
+            self.assertIn("not identical", output)
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            self.assertTrue(
+                all(r.local_status == MessageStatus.ACTIVE for r in rows),
+                "copies that differ must survive",
+            )
+
+    def test_identical_copies_among_differing_ones_are_collapsed(self) -> None:
+        """Two messages share a Message-ID; each pair dedupes on its own."""
+        from pony.domain import FolderRef, MessageStatus
+        from pony.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<twosets@test.example>",
+                flags_list=[frozenset({MessageFlag.SEEN})] * 4,
+                bodies=["first", "first", "second", "second"],
+            )
+
+            with _dedup_confirmed("2"):
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertIn("Trashed 2 row(s) in 2 group(s)", output)
+            paths = AppPaths.default()
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+            trashed = [r for r in rows if r.local_status == MessageStatus.TRASHED]
+            self.assertEqual(len(active), 2, "one copy of each message survives")
+            self.assertEqual(len(trashed), 2)
 
     def test_tiebreaker_answered_beats_flagged(self) -> None:
         """With equal flag counts, ANSWERED wins over FLAGGED."""
@@ -1026,15 +1213,16 @@ class DedupFolderTestCase(unittest.TestCase):
                 ],
             )
 
-            run_cli(
-                "--config",
-                str(config_path),
-                "folder",
-                "dedup",
-                "personal",
-                "INBOX",
-                "--apply",
-            )
+            with _dedup_confirmed("1"):
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
 
             paths = AppPaths.default()
             index = SqliteIndexRepository(database_path=paths.index_db_file)

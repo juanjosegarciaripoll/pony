@@ -86,6 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`pony folder dedup` asks before it deletes, and compares the bytes**: a
+  shared `Message-ID` is now only a candidate — the stored copies must be
+  byte-identical as well, because resends and list copies repeat a
+  `Message-ID` legitimately and this command expunges mail from the server. A
+  group whose copies differ, or whose mirror file cannot be read, is reported
+  and left alone. `--apply` no longer writes on the strength of the flag: the
+  plan is printed and the exact number of messages has to be typed back at an
+  interactive prompt, and the command refuses to act at all when stdin is not
+  a terminal.
+
 - **To: is one address per row, like Cc: and Bcc:**: the three recipient
   fields now behave identically. A comma-separated list splits into one row
   per address when you leave the field or paste it — never while you are

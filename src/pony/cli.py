@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import logging
 import shutil
 import sqlite3
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .calendar import CalendarRuntime
+    from .dedupe import DuplicatePlan
     from .message_renderer import AttachmentInfo
 
 from .accounts import (
@@ -36,7 +36,6 @@ from .domain import (
     FolderRef,
     IndexedMessage,
     LocalAccountConfig,
-    MessageFlag,
     MessageStatus,
 )
 from .fixture_flow import run_fixture_ingest
@@ -1488,99 +1487,102 @@ def run_dedup_folder(
 ) -> int:
     """Find and eliminate duplicate messages in one folder.
 
-    Two messages are duplicates when they share the same ``Message-ID``
-    header.  Among each duplicate group the copy with the most informative
-    flag set is kept; the rest are marked TRASHED so the next
-    ``pony sync`` expunges them from the server via ``PushDeleteOp``.
+    The duplicate rule, the keeper and the row projection all live in
+    :mod:`pony.dedupe`, shared with the TUI's dedupe action so the two
+    cannot drift apart on something that deletes mail.
 
-    Without ``--apply`` this is a dry-run: the plan is printed but
-    nothing is written.
+    Without ``--apply`` this is a dry-run.  With it, the plan is printed
+    and the exact number of messages has to be typed back at an
+    interactive prompt before anything is written.
     """
     from datetime import UTC, datetime
+
+    from .dedupe import plan_duplicates, trashed_duplicate
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
     index = SqliteIndexRepository(database_path=paths.index_db_file)
     index.initialize()
 
-    if not any(a.name == account for a in config.accounts):
+    acct = next((a for a in config.accounts if a.name == account), None)
+    if acct is None:
         raise SystemExit(f"No account named {account!r} in config.")
-
+    mirror = build_mirror(acct)
     folder_ref = FolderRef(account_name=account, folder_name=folder)
-
-    def _sort_key(msg: IndexedMessage) -> tuple[int, int, int, datetime, int]:
-        useful = msg.local_flags - {MessageFlag.DELETED}
-        return (
-            -len(useful),
-            -int(MessageFlag.ANSWERED in useful),
-            -int(MessageFlag.FLAGGED in useful),
-            msg.received_at,
-            msg.message_ref.id,
-        )
 
     now = datetime.now(tz=UTC)
     with index.connection():
         # Read and write inside the same connection so the snapshot is
         # consistent: a concurrent sync cannot alter flags between the
         # read and the upsert.
-        messages = index.list_folder_messages(folder=folder_ref)
+        plan = plan_duplicates(index=index, mirror=mirror, folder=folder_ref)
 
-        # Collect only ACTIVE rows that have a UID and a non-empty Message-ID.
-        # Rows without a UID are local-only drafts not yet pushed; TRASHED /
-        # PENDING_MOVE rows are already in flux.
-        groups: dict[str, list[IndexedMessage]] = {}
-        for msg in messages:
-            if not msg.message_id:
-                continue
-            if msg.local_status != MessageStatus.ACTIVE:
-                continue
-            if msg.uid is None:
-                continue
-            groups.setdefault(msg.message_id, []).append(msg)
-
-        dup_groups = {mid: rows for mid, rows in groups.items() if len(rows) > 1}
-
-        if not dup_groups:
+        if not plan.groups:
             print(f"No duplicates found in {account}/{folder}.")
+            _print_dedup_caveats(plan)
             return 0
 
-        all_losers: list[IndexedMessage] = []
-        for mid, rows in sorted(dup_groups.items()):
-            sorted_rows = sorted(rows, key=_sort_key)
-            winner = sorted_rows[0]
-            group_losers = sorted_rows[1:]
-            all_losers.extend(group_losers)
-
-            flag_str = ",".join(sorted(f.value for f in winner.local_flags)) or "(none)"
-            loser_uids = ", ".join(str(m.uid) for m in group_losers)
+        for group in plan.groups:
+            flags = (
+                ",".join(sorted(f.value for f in group.keep.local_flags)) or "(none)"
+            )
+            loser_uids = ", ".join(str(m.uid) for m in group.trash)
             print(
-                f"  {mid}\n"
-                f"    keep uid={winner.uid} flags=[{flag_str}]\n"
+                f"  {group.label}\n"
+                f"    keep uid={group.keep.uid} flags=[{flags}]\n"
                 f"    trash uid(s): {loser_uids}"
             )
 
-        n_losers = len(all_losers)
-        n_groups = len(dup_groups)
+        n_losers = plan.message_count
+        n_groups = plan.group_count
+        _print_dedup_caveats(plan)
 
         if not apply:
             print(f"\nWould trash {n_losers} row(s) in {n_groups} group(s).")
             print("Rerun with --apply to write changes.")
             return 0
 
-        for msg in all_losers:
-            index.upsert_message(
-                message=dataclasses.replace(
-                    msg,
-                    local_status=MessageStatus.TRASHED,
-                    trashed_at=now,
-                )
+        # Deleting mail asks for more than a reflexive "y": the count has
+        # to be read off the plan above and typed back.
+        print(
+            f"\nAbout to trash {n_losers} message(s) in {n_groups} group(s) "
+            f"from {account}/{folder}."
+        )
+        print(
+            "The next `pony sync` expunges them from the server.  They stay "
+            "recoverable locally until trash retention expires."
+        )
+        if not sys.stdin.isatty():
+            print(
+                "Refusing to trash messages without confirmation — "
+                "run this command in a terminal."
             )
+            return 1
+        answer = input(f"Type {n_losers} to confirm, anything else to abort: ")
+        if answer.strip() != str(n_losers):
+            print("Aborted.  Nothing was changed.")
+            return 1
+
+        for group in plan.groups:
+            for message in group.trash:
+                index.upsert_message(message=trashed_duplicate(message, now=now))
 
     print(
         f"\nTrashed {n_losers} row(s) in {n_groups} group(s)."
         "  Run `pony sync` to propagate deletions to the server."
     )
     return 0
+
+
+def _print_dedup_caveats(plan: DuplicatePlan) -> None:
+    """Report what the plan deliberately left alone."""
+    if plan.unmatched_ids:
+        print(
+            f"\n{len(plan.unmatched_ids)} Message-ID(s) repeat with copies that "
+            "are not identical — left alone."
+        )
+    if plan.unreadable:
+        print(f"{plan.unreadable} row(s) skipped: mirror file unreadable.")
 
 
 def run_mirror_folder(

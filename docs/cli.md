@@ -487,6 +487,43 @@ pony folder list [account]
 
 ---
 
+## `pony folder dedup`
+
+Find duplicate copies of the same message in one folder and mark the extras
+for deletion.
+
+```
+pony folder dedup <account> <folder> [--apply]
+```
+
+Two rows are duplicates only when they share a `Message-ID` **and** their
+stored copies are byte-identical. The header alone does not settle it —
+resends and mailing-list copies repeat a `Message-ID` routinely — so a group
+whose copies differ is reported and left untouched, as is any row whose mirror
+file cannot be read. Where one `Message-ID` covers several distinct messages,
+each set of identical copies is collapsed on its own.
+
+In each confirmed group the copy with the most informative flag set is kept
+(answered beats flagged, flagged beats plain) and the rest are marked
+`TRASHED`. The next `pony sync` expunges those from the server; locally they
+remain recoverable until `trash_retention_days` expires.
+
+Without `--apply` the command is a dry-run and prints the plan. With
+`--apply` it prints the plan and then requires the exact number of messages
+to be typed back:
+
+```
+About to trash 12 message(s) in 5 group(s) from Work/Archive.
+The next `pony sync` expunges them from the server.  They stay recoverable
+locally until trash retention expires.
+Type 12 to confirm, anything else to abort:
+```
+
+Anything else aborts without writing. The command also refuses to act when
+stdin is not a terminal, so it cannot delete mail from a script or a pipe.
+
+---
+
 ## `pony message get`
 
 Print the index metadata for a single message identified by its

@@ -45,6 +45,7 @@ src/pony/
   message_projection.py# RFC 5322 parsing and metadata projection
   message_copy.py      # byte-faithful RFC 5322 duplication for copy actions
   mailbox_ops.py       # index-row rewrites for local moves, copies and flags
+  dedupe.py            # duplicate-copy rule shared by the CLI and the reader
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments
   compose_utils.py     # quoting, address lists, MIME assembly
   composer.py          # what a reply/forward/new message starts as
