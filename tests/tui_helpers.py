@@ -289,6 +289,7 @@ def seed_message(
     folder: FolderRef,
     raw: bytes,
     message_id: str | None = None,
+    uid: int | None = None,
 ) -> MessageRef:
     """Write *raw* into *mirror*/*folder* and insert its projection into *index*.
 
@@ -297,6 +298,8 @@ def seed_message(
     uses whatever Message-ID header the raw bytes carry; callers that
     share the same raw bytes across folders should pass a distinct
     *message_id* per placement to avoid Message-ID display collisions.
+    *uid* seeds the row as server-backed; without it the row reads as a
+    message the server has never seen.
     """
     import dataclasses
 
@@ -313,6 +316,11 @@ def seed_message(
     )
     if message_id is not None:
         projected = dataclasses.replace(projected, message_id=message_id)
+    if uid is not None:
+        # A row without a uid is a local-only draft to the sync planner
+        # and to `pony folder dedup`; pass one to seed a server-backed
+        # message.
+        projected = dataclasses.replace(projected, uid=uid)
     saved = index.insert_message(message=projected)
     return saved.message_ref
 

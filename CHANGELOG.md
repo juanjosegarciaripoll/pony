@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [2.0.0]
 ### Added
 
+- **Dedupe a folder from the reader** (++shift+f8++): the duplicate rule
+  `pony folder dedup` applies is now available on the folder in front of you.
+  It names how many copies it would trash and requires that number to be typed
+  back before writing anything, and re-checks each row as it applies, so a
+  sync landing while the prompt is open cannot turn a confirmed deletion into
+  a different one. Both halves share `pony/dedupe.py`, so the rule cannot
+  drift between them. The key is a function key on purpose: terminals claim
+  most `Ctrl+Shift+<letter>` combinations for themselves, and the ones without
+  the kitty keyboard protocol cannot encode them at all.
+
 - **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`
   mirror, a SQLite index with recurrence and alarm caches, and agenda, day,
   multi-day and month views are now part of the program rather than a second

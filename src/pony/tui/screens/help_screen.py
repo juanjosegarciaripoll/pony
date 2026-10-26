@@ -82,6 +82,7 @@ _RIGHT_SECTIONS: tuple[_Section, ...] = (
             ("Y", "Copy to folder…"),
             ("M", "Move to folder…"),
             ("m / Shift+↑↓", "Toggle mark / extend"),
+            ("Shift+F8", "Dedupe this folder"),
         ),
     ),
     _Section(

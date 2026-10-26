@@ -204,6 +204,7 @@ read, flagged and answered state.
 | ++shift+y++ | Copy the current message to another folder |
 | ++shift+m++ | Move the current message to another folder |
 | ++shift+n++ | Create a new folder in the current account's local mirror (server-side `CREATE` issued on next sync) |
+| ++shift+f8++ | Dedupe the current folder: trash redundant copies after typing the count back |
 
 Opening a message marks it read; there is no separate key for that.
 
@@ -219,6 +220,23 @@ Opening a message marks it read; there is no separate key for that.
     sync executes `UID MOVE` on the server (or `COPY` + `EXPUNGE` on servers
     that don't support RFC 6851). Archiving is refused when the source or
     target folder is read-only or excluded from sync.
+
+!!! info "Dedupe a folder"
+    ++shift+f8++ looks for messages held more than once in the current
+    folder — a shared `Message-ID` *and* byte-identical copies, since resends
+    and list copies repeat a `Message-ID` legitimately. The copy with the most
+    informative flag set is kept and the rest are marked trashed, which the
+    next sync expunges from the server.
+
+    The prompt names the number of messages and that number has to be typed
+    back; anything else cancels. [`pony folder dedup`](cli.md#pony-folder-dedup)
+    applies the same rule and the same confirmation from the command line.
+
+    The key is deliberately awkward to reach, and deliberately a function key:
+    terminal emulators claim most `Ctrl+Shift+<letter>` combinations for
+    themselves — Windows Terminal alone takes `Ctrl+Shift+D` for Duplicate Tab
+    — and terminals without the kitty keyboard protocol cannot even encode
+    them, reporting plain `Ctrl+<letter>` instead.
 
 !!! info "New folder"
     `N` opens a one-line input for a folder name. The folder is created

@@ -30,6 +30,7 @@ from ...composer import (
     resumed_draft,
 )
 from ...contact_naming import harvested_name
+from ...dedupe import plan_duplicates, trashed_duplicate
 from ...domain import (
     AccountConfig,
     AnyAccount,
@@ -82,6 +83,7 @@ from ..widgets.message_view import MessageViewPanel
 
 if TYPE_CHECKING:
     from ...calendar import CalendarRuntime
+    from ...dedupe import DuplicatePlan
     from ..app import MailSyncHost
     from .invitation_screen import InvitationChoice
 
@@ -111,6 +113,15 @@ class MainScreen(Screen[None]):
         Binding("!", "toggle_flagged", "Flag"),
         Binding("D", "trash", "Trash"),
         Binding("A", "archive", "Archive"),
+        # Dedupe expunges mail from the server, so it gets a key no
+        # hand lands on by accident.  Function keys are the ones left
+        # after the terminal takes its share: every ctrl+shift+<letter>
+        # is spoken for by one terminal or another — Windows Terminal
+        # alone owns ctrl+shift+d, f, n, t, w, a, m and the digits —
+        # while f11 is the only function key it binds.  Shift+F8 also
+        # survives a terminal with no kitty keyboard protocol, which
+        # collapses every ctrl+shift+<letter> onto plain ctrl+<letter>.
+        Binding("shift+f8", "dedupe_folder", "Dedupe folder", show=False),
         Binding("C", "mark_all_read", "Mark all read"),
         Binding("Y", "copy", "Copy"),
         Binding("M", "move", "Move"),
@@ -1374,6 +1385,112 @@ class MainScreen(Screen[None]):
         if archived:
             suffix = "" if archived == 1 else f" ({archived} messages)"
             self.app.notify(f"Archived to {target}{suffix}.")  # pyright: ignore[reportUnknownMemberType]
+
+    def action_dedupe_folder(self) -> None:
+        """Trash redundant copies of messages in the current folder.
+
+        Same rule as ``pony folder dedup``: a shared ``Message-ID`` and
+        byte-identical copies, keeping the most informative one.  The
+        plan is shown and the count has to be typed back before
+        anything is written.
+        """
+        folder_ref = self._current_folder_ref
+        if folder_ref is None:
+            return
+        account = next(
+            (a for a in self._config.accounts if a.name == folder_ref.account_name),
+            None,
+        )
+        if account is None:
+            return
+        if isinstance(account, AccountConfig) and account.folders.is_read_only(
+            folder_ref.folder_name
+        ):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Folder {folder_ref.folder_name!r} is read-only.",
+                severity="warning",
+            )
+            return
+
+        mirror = self._mirrors[folder_ref.account_name]
+        plan = plan_duplicates(
+            index=self._index,
+            mirror=mirror,
+            folder=folder_ref,
+        )
+        if not plan.groups:
+            detail = ""
+            if plan.unmatched_ids:
+                detail = (
+                    f"  {len(plan.unmatched_ids)} repeated Message-ID(s) have "
+                    "copies that are not identical."
+                )
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"No duplicates in {folder_ref.folder_name}.{detail}",
+            )
+            return
+
+        from .dedupe_confirm_screen import DedupeConfirmScreen
+
+        expected = plan.message_count
+
+        def _on_answer(answer: str | None) -> None:
+            if answer is None or answer.strip() != str(expected):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    "Dedupe cancelled.  Nothing was changed.",
+                )
+                return
+            trashed = self._apply_dedupe_plan(plan)
+            self._reload_folder(folder_ref)
+            if trashed != expected:
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Trashed {trashed} of {expected} duplicate(s) — the rest "
+                    "changed while the prompt was open.",
+                    severity="warning",
+                )
+                return
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Trashed {trashed} duplicate(s).  Sync to expunge them.",
+            )
+
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            DedupeConfirmScreen(
+                count=expected,
+                groups=plan.group_count,
+                folder=folder_ref.folder_name,
+            ),
+            _on_answer,
+        )
+
+    def _apply_dedupe_plan(self, plan: DuplicatePlan) -> int:
+        """Mark the plan's redundant copies TRASHED; return how many.
+
+        Each row is re-read first: a sync may have run while the
+        confirmation prompt was open, and a row that moved, gained a
+        new UID or was already trashed is no longer the copy the user
+        agreed to delete.
+        """
+        now = datetime.now(tz=UTC)
+        trashed = 0
+        with self._index.connection():
+            for group in plan.groups:
+                for message in group.trash:
+                    current = self._index.get_message(
+                        message_ref=message.message_ref,
+                    )
+                    if current is None:
+                        continue
+                    if (
+                        current.local_status != MessageStatus.ACTIVE
+                        or current.uid != message.uid
+                        or current.storage_key != message.storage_key
+                    ):
+                        continue
+                    self._index.update_message(
+                        message=trashed_duplicate(current, now=now)
+                    )
+                    trashed += 1
+        return trashed
 
     def action_mark_all_read(self) -> None:
         """Mark every message in the current folder as read."""

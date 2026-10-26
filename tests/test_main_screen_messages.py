@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from email.message import EmailMessage
 from unittest.mock import Mock
 
 import pytest
@@ -785,3 +786,184 @@ def _numbered_message(index: int) -> bytes:
     message["Message-ID"] = f"<numbered-{index}@example.com>"
     message.set_content("body")
     return message.as_bytes()
+
+
+def _seed_identical_copies(
+    index: object,
+    mirror: MirrorRepository,
+    folder: FolderRef,
+    *,
+    count: int,
+    message_id: str = "<dup@tui.example>",
+) -> None:
+    """Seed *count* byte-identical rows for one Message-ID, each with a uid."""
+    raw = plain_text()
+    for i in range(count):
+        seed_message(
+            index=index,  # type: ignore[arg-type]
+            mirror=mirror,
+            folder=folder,
+            raw=raw,
+            uid=i + 1,
+            message_id=message_id,
+        )
+
+
+async def test_dedupe_folder_needs_the_count_typed_back() -> None:
+    """The dialog's gate is the number of messages, not a keypress.
+
+    Dedupe marks copies TRASHED and the next sync expunges them from
+    the server, so a dismissed or mistyped prompt must leave every row
+    ACTIVE.
+    """
+    from pony.tui.screens.dedupe_confirm_screen import DedupeConfirmScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="tui-dedupe-gate")
+    _seed_identical_copies(index, mirrors["acct"], folder, count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+
+        screen.action_dedupe_folder()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, DedupeConfirmScreen)
+        assert "Type 2 to confirm" in confirm.INPUT_LABEL
+
+        await pilot.press("1")  # one short of the real count
+        await pilot.press("enter")
+        await pilot.pause()
+
+        rows = index.list_folder_messages(folder=folder)
+        assert [r.local_status for r in rows] == [MessageStatus.ACTIVE] * 3
+
+        screen.action_dedupe_folder()
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        rows = index.list_folder_messages(folder=folder)
+        assert [r.local_status for r in rows] == [MessageStatus.ACTIVE] * 3
+
+        screen.action_dedupe_folder()
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        rows = index.list_folder_messages(folder=folder)
+        active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+        trashed = [r for r in rows if r.local_status == MessageStatus.TRASHED]
+        assert len(active) == 1
+        assert len(trashed) == 2
+        assert all(r.uid is not None for r in trashed), (
+            "a trashed duplicate keeps its uid so sync can expunge it"
+        )
+
+
+async def test_dedupe_folder_leaves_copies_that_differ() -> None:
+    """Two messages sharing a Message-ID are not duplicates."""
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="tui-dedupe-differ")
+    for i, body in enumerate(("first body", "second body")):
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = "me@example.com"
+        msg["Subject"] = "Resent"
+        msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+        msg["Message-ID"] = "<resend@tui.example>"
+        msg.set_content(body)
+        seed_message(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=folder,
+            raw=msg.as_bytes(),
+            uid=i + 1,
+            message_id="<resend@tui.example>",
+        )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+
+        screen.action_dedupe_folder()
+        await pilot.pause()
+
+        assert isinstance(app.screen, MainScreen), "no dialog for a non-duplicate"
+        rows = index.list_folder_messages(folder=folder)
+        assert [r.local_status for r in rows] == [MessageStatus.ACTIVE] * 2
+
+
+async def test_dedupe_skips_rows_that_changed_under_the_prompt() -> None:
+    """A row the plan listed but that moved on is left alone.
+
+    The user confirms a plan built before the dialog opened; a sync can
+    land in between, and a row that gained a UID, moved folder or was
+    already trashed is no longer the copy they agreed to delete.
+    """
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="tui-dedupe-race")
+    _seed_identical_copies(index, mirrors["acct"], folder, count=3)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+
+        from pony.dedupe import plan_duplicates
+
+        plan = plan_duplicates(
+            index=index,
+            mirror=mirrors["acct"],
+            folder=folder,
+        )
+        assert plan.message_count == 2
+
+        # A sync re-links one of the condemned rows to a different UID.
+        doomed = plan.groups[0].trash[0]
+        index.update_message(message=dataclasses.replace(doomed, uid=999))
+
+        assert screen._apply_dedupe_plan(plan) == 1
+
+        rows = index.list_folder_messages(folder=folder)
+        trashed = [r for r in rows if r.local_status == MessageStatus.TRASHED]
+        assert len(trashed) == 1
+        assert 999 not in [r.uid for r in trashed]
+
+
+async def test_the_dedupe_key_reaches_the_dialog() -> None:
+    """The binding is wired, not only the action behind it.
+
+    Worth its own test because the action was reachable while the key
+    was not: the first key chosen for it, ctrl+shift+d, is one Windows
+    Terminal keeps for Duplicate Tab, and nothing caught that because
+    every other test calls the action directly.
+    """
+    from pony.tui.screens.dedupe_confirm_screen import DedupeConfirmScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, _cfg, _paths, index, mirrors = build_pony_app(label="tui-dedupe-key")
+    _seed_identical_copies(index, mirrors["acct"], folder, count=2)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+
+        await pilot.press("shift+f8")
+        await pilot.pause()
+
+        assert isinstance(app.screen, DedupeConfirmScreen)
+        await pilot.press("escape")
+        await pilot.pause()
