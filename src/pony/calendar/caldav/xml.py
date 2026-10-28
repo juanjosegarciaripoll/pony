@@ -308,6 +308,26 @@ def _parse_calendars_propfind(
     return tuple(out)
 
 
+def _reports_removal(response: ET.Element, ns: dict[str, str]) -> bool:
+    """Does this sync-collection response say the member is gone?
+
+    RFC 6578 §3.6 reports a removed member as a `response` carrying a
+    `status` of its own and no `propstat` at all — a resource that no
+    longer exists has no properties left to report on.  That is the
+    shape Google, Sabre/DAV and Radicale send, so reading only
+    `propstat/status` sees a deletion as a change, fetches it, gets
+    nothing back and leaves the local copy in place for ever.  `410
+    Gone` is accepted beside `404` because both say the same thing
+    about a collection member, and the code is read as a token rather
+    than searched for in the line, since the reason phrase is optional.
+    """
+    status = response.find("d:status", ns)
+    if status is None or status.text is None:
+        return False
+    fields = status.text.split()
+    return len(fields) > 1 and fields[1] in {"404", "410"}
+
+
 def _parse_sync_collection(
     body: bytes,
     *,
@@ -332,6 +352,9 @@ def _parse_sync_collection(
             continue
         href = _absolute_href(href_elem.text.strip(), base_url=base_url)
         if not href:
+            continue
+        if _reports_removal(response, ns):
+            deleted.append(href)
             continue
         is_deleted = False
         etag = ""

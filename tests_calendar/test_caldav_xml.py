@@ -297,6 +297,59 @@ class ParseSyncCollectionTest(unittest.TestCase):
         self.assertTrue(deleted[0].endswith("b.ics"))
         self.assertEqual(new_token, "https://example.com/sync/tok-7")
 
+    def _removal(self, href: str, status: str) -> bytes:
+        """A removed member in the shape RFC 6578 §3.6 prescribes.
+
+        No `propstat`: the resource is gone, so it has no properties to
+        report on.  This is what Google, Sabre/DAV and Radicale send.
+        """
+        return (
+            b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<d:multistatus xmlns:d="DAV:">'
+            b"<d:response>"
+            + f"<d:href>{href}</d:href>".encode()
+            + f"<d:status>{status}</d:status>".encode()
+            + b"</d:response>"
+            b"<d:sync-token>tok-9</d:sync-token>"
+            b"</d:multistatus>"
+        )
+
+    def test_a_removal_reported_on_the_response_is_a_deletion(self) -> None:
+        body = self._removal("/dav/work/gone.ics", "HTTP/1.1 404 Not Found")
+        changed, deleted, token = _parse_sync_collection(body, base_url=_BASE)
+        self.assertEqual(changed, [])
+        self.assertEqual(len(deleted), 1)
+        self.assertTrue(deleted[0].endswith("gone.ics"))
+        self.assertEqual(token, "tok-9")
+
+    def test_a_removal_with_no_reason_phrase_is_still_a_deletion(self) -> None:
+        body = self._removal("/dav/work/gone.ics", "HTTP/1.1 404")
+        _, deleted, _ = _parse_sync_collection(body, base_url=_BASE)
+        self.assertEqual(len(deleted), 1)
+
+    def test_gone_counts_as_removed(self) -> None:
+        body = self._removal("/dav/work/gone.ics", "HTTP/1.1 410 Gone")
+        _, deleted, _ = _parse_sync_collection(body, base_url=_BASE)
+        self.assertEqual(len(deleted), 1)
+
+    def test_a_response_status_that_is_not_a_removal_leaves_the_member(self) -> None:
+        body = (
+            b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<d:multistatus xmlns:d="DAV:">'
+            b"<d:response>"
+            b"<d:href>/dav/work/a.ics</d:href>"
+            b"<d:propstat><d:prop><d:getetag>etag-a</d:getetag></d:prop>"
+            b"<d:status>HTTP/1.1 200 OK</d:status></d:propstat>"
+            b"<d:status>HTTP/1.1 200 OK</d:status>"
+            b"</d:response>"
+            b"<d:sync-token>tok-2</d:sync-token>"
+            b"</d:multistatus>"
+        )
+        changed, deleted, _ = _parse_sync_collection(body, base_url=_BASE)
+        self.assertEqual(deleted, [])
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(changed[0][1], "etag-a")
+
     def test_returns_none_token_when_absent(self) -> None:
         body = b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"></d:multistatus>'
         _, _, new_token = _parse_sync_collection(body, base_url=_BASE)

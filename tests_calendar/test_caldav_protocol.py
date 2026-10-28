@@ -199,11 +199,12 @@ def _sync_collection_response(
             b"</d:response>"
         )
     for href in deleted:
+        # RFC 6578 §3.6: a removed member carries a status of its own and
+        # no propstat, which is what Google and Sabre/DAV send.
         parts.append(
-            b"<d:response>" + f"<d:href>{href}</d:href>".encode() + b"<d:propstat>"
-            b"<d:prop/>"
-            b"<d:status>HTTP/1.1 404 Not Found</d:status>"
-            b"</d:propstat>"
+            b"<d:response>"
+            + f"<d:href>{href}</d:href>".encode()
+            + b"<d:status>HTTP/1.1 404 Not Found</d:status>"
             b"</d:response>"
         )
     parts.append(f"<d:sync-token>{new_token}</d:sync-token>".encode())

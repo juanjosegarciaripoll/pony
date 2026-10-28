@@ -218,6 +218,19 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **An event deleted on the server is deleted here**: a calendar's
+  incremental sync (`sync-collection`, RFC 6578) read a removed resource
+  only from a `propstat` status, and a removed resource has no properties
+  left to report on — Google, Sabre/DAV and Radicale all say it with a
+  `status` on the `response` itself. The deletion was read as a change,
+  fetched, answered with nothing, and the local copy stayed in the index
+  and in the agenda. Nothing re-checks the server's full membership once a
+  sync-token is stored, so it stayed for ever. `410 Gone` counts as removed
+  beside `404`, and a status line with no reason phrase is read the same
+  way. A calendar already carrying such a row is cleaned up by one
+  `pony calendar sync --force`, which drops the stored token and compares
+  the whole collection again.
+
 - **One command line, and the calendar has no application of its own**: the
   calendar's commands are declared in Pony's parser, so `pony --help` lists
   both halves and `pony calendar --help` lists the calendar's — where
