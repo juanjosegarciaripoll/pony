@@ -877,6 +877,26 @@ def _guard_mass_push(
     )
 
 
+# How many removals one calendar names in the log before it stops
+# naming them.  The mass-deletion guard lets a single run take a fifth
+# of a calendar, which on ten thousand resources is two thousand lines;
+# past the first few dozen the count in the summary is the useful
+# number, and the rest is a wall between the reader and it.
+_NAMED_REMOVALS = 25
+
+
+def _removal_description(component: StoredComponent) -> str:
+    """A removed component, as the reader would recognise it.
+
+    The start is logged exactly as stored rather than in the reader's
+    zone: this line is read beside the server's own copy of the event,
+    and a converted time would not match what the server showed.
+    """
+    summary = component.summary or "(no summary)"
+    start = component.dtstart.isoformat() if component.dtstart is not None else "?"
+    return f'"{summary}" {start} (uid {component.ref.uid})'
+
+
 def _apply_server_deletions(
     *,
     removed_hrefs: set[str],
@@ -889,7 +909,9 @@ def _apply_server_deletions(
         return 0
     removed = 0
     seen_resources: set[ResourceRef] = set()
-    for href in removed_hrefs:
+    unnamed = 0
+    # Sorted so a run's log reads the same way twice over the same set.
+    for href in sorted(removed_hrefs):
         anchor = local_by_href[href]
         resource = anchor.ref.resource
         # Delete every index row whose href matches (master + overrides share href).
@@ -901,6 +923,21 @@ def _apply_server_deletions(
             with contextlib.suppress(FileNotFoundError):
                 mirror.delete(resource)
             seen_resources.add(resource)
+            # Say what went, not only how much.  A count cannot answer
+            # "is the event I deleted on the server the one that
+            # disappeared here?", which is the question a reader has
+            # after a run that removes anything.
+            if len(seen_resources) <= _NAMED_REMOVALS:
+                logger.info(
+                    "  removed %s/%s: %s",
+                    resource.account_name,
+                    resource.calendar_name,
+                    _removal_description(anchor),
+                )
+            else:
+                unnamed += 1
+    if unnamed:
+        logger.info("  removed %d more, not named above", unnamed)
     return removed
 
 

@@ -215,6 +215,12 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   the label. Both button columns are reserved on every row — the + is hidden
   rather than removed on all but the last — so × and + keep one column each
   down the whole header, attachments included.
+- **A sync says which events it removed**: a calendar's log named the
+  resources it fetched and counted the ones it deleted, so a run ending in
+  `-9` left no way to tell whether the nine were the ones you deleted on
+  the server. Every removal now logs its summary, its start as stored and
+  its UID; past the first 25 in one calendar the rest are counted on a
+  line of their own rather than filling the log.
 
 ### Fixed
 

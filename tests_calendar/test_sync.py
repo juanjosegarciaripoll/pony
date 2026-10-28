@@ -317,6 +317,50 @@ class ServerDeletionTest(SyncTestCase):
         rows = self.index.list_calendar_components(self.calendar_ref)
         self.assertEqual(len(rows), 2)
 
+    def test_the_log_names_what_it_removed(self) -> None:
+        for uid in ("a", "b"):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}{uid}.ics",
+                ics=_ics_with_uid(f"{uid}@example.com"),
+                etag=f"etag-{uid}",
+            )
+        self._run()
+        self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}b.ics")
+        with self.assertLogs("pony.calendar.sync", level="INFO") as captured:
+            self._run()
+        named = [line for line in captured.output if "removed" in line]
+        self.assertEqual(len(named), 1, named)
+        # A count alone cannot be matched against what the reader
+        # deleted on the server; the summary, the start and the UID can.
+        self.assertIn("Event b@example.com", named[0])
+        self.assertIn("2026-05-01T09:00:00", named[0])
+        self.assertIn("uid b@example.com", named[0])
+        self.assertIn(CALENDAR_NAME, named[0])
+        self.assertNotIn("Event a@example.com", "\n".join(captured.output))
+
+    def test_a_calendar_losing_many_rows_names_only_the_first_few(self) -> None:
+        # 150 resources so the mass-deletion guard allows 30 to go.
+        for i in range(150):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}many-{i}.ics",
+                ics=_ics_with_uid(f"many-{i}@example.com"),
+                etag=f"etag-{i}",
+            )
+        self._run()
+        for i in range(30):
+            self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}many-{i}.ics")
+        with self.assertLogs("pony.calendar.sync", level="INFO") as captured:
+            result = self._run()
+        self.assertEqual(result.components_removed, 30)
+        named = [line for line in captured.output if "(uid " in line]
+        self.assertEqual(len(named), 25, len(named))
+        self.assertTrue(
+            any("removed 5 more, not named above" in line for line in captured.output),
+            captured.output,
+        )
+
     def test_etag_change_triggers_refetch(self) -> None:
         href = f"{CALENDAR_URL}a.ics"
         self.session.put_resource(
