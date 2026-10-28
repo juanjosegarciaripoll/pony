@@ -1498,6 +1498,26 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
 
 
 class NewEventFlowTest(TuiFlowTestCase):
+    async def test_the_form_opens_on_the_summary(self) -> None:
+        services = self.services()
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, EventEditScreen)
+            focused = pilot.app.focused
+            assert focused is not None
+            self.assertEqual(focused.id, "edit-summary")
+            # What a hand types next has to land in the summary rather
+            # than scrolling the calendar dropdown.
+            await pilot.press("H", "i")
+            await pilot.pause()
+            self.assertEqual(
+                pilot.app.screen.query_one("#edit-summary").value,  # type: ignore[attr-defined]
+                "Hi",
+            )
+
     async def test_new_event_creates_in_mirror_and_index(self) -> None:
         services = self.services()
         app = CalendarHostApp(services)
@@ -1654,6 +1674,24 @@ class NewEventFlowTest(TuiFlowTestCase):
 
 
 class EditExistingEventTest(TuiFlowTestCase):
+    async def test_the_form_opens_on_the_summary(self) -> None:
+        services = self.services()
+        component = services.index.get_component(
+            ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        )
+        assert isinstance(component, VEvent)
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen._edit_specific(component)
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, EventEditScreen)
+            focused = pilot.app.focused
+            assert focused is not None
+            self.assertEqual(focused.id, "edit-summary")
+
     async def test_edit_replaces_summary(self) -> None:
         services = self.services()
         # Find an existing event to edit.

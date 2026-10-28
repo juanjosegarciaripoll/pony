@@ -224,6 +224,13 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A new event starts on its summary**: the terminal's event form opened
+  on the calendar dropdown, because that is its first focusable widget —
+  so the first thing typed went nowhere, and an arrow key reached for the
+  next field changed which calendar the event would land in instead. It
+  opens on the summary now, for an edit as well as a new event, which is
+  where the browser's form already put the cursor.
+
 - **An event deleted on the server is deleted here**: a calendar's
   incremental sync (`sync-collection`, RFC 6578) read a removed resource
   only from a `propstat` status, and a removed resource has no properties

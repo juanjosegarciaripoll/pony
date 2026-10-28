@@ -220,6 +220,12 @@ class EventEditScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._sync_time_fields(self.query_one("#edit-all-day", Checkbox).value)
+        # Without this the form opens on its first focusable widget,
+        # which is the calendar dropdown -- the one field an event
+        # usually wants left alone, and one whose arrow keys are the
+        # ones a hand reaches for next.  The browser's event form
+        # autofocuses the summary; this is the same form.
+        self.query_one("#edit-summary", Input).focus()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "edit-all-day":
