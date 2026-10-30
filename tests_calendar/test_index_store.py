@@ -223,6 +223,52 @@ class IndexRepositoryTest(unittest.TestCase):
         self.assertIsNotNone(self.repo.get_sync_state(CalendarRef("work", "cal")))
 
 
+_LEGACY_COMPONENTS = """
+CREATE TABLE components(
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_name    TEXT NOT NULL,
+    calendar_name   TEXT NOT NULL,
+    uid             TEXT NOT NULL,
+    recurrence_id   TEXT,
+    component_kind  TEXT NOT NULL,
+    href            TEXT,
+    etag            TEXT,
+    raw_ics         BLOB NOT NULL,
+    summary         TEXT,
+    description     TEXT,
+    location        TEXT,
+    dtstart         TEXT,
+    dtend           TEXT,
+    due             TEXT,
+    status          TEXT,
+    local_flags     TEXT NOT NULL DEFAULT '[]',
+    server_flags    TEXT NOT NULL DEFAULT '[]',
+    local_status    TEXT NOT NULL DEFAULT 'active',
+    trashed_at      TEXT,
+    synced_at       TEXT
+);
+"""
+
+
+def _write_legacy_rows(
+    db_path: Path, rows: list[tuple[str, str | None, bytes]]
+) -> None:
+    """A database in the shape that kept the file's bytes on every row."""
+    import sqlite3
+
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(_LEGACY_COMPONENTS)
+    for uid, recurrence_id, raw in rows:
+        legacy.execute(
+            "INSERT INTO components(account_name, calendar_name, uid, "
+            "recurrence_id, component_kind, href, etag, raw_ics, summary) "
+            "VALUES ('personal', 'work', ?, ?, 'VEVENT', ?, 'etag-1', ?, 'Weekly')",
+            (uid, recurrence_id, f"/dav/{uid}.ics", raw),
+        )
+    legacy.commit()
+    legacy.close()
+
+
 class SchemaMigrationTest(unittest.TestCase):
     def test_adds_calendar_url_column_to_legacy_database(self) -> None:
         import sqlite3
@@ -273,6 +319,63 @@ class SchemaMigrationTest(unittest.TestCase):
         assert refreshed is not None
         self.assertEqual(refreshed.calendar_url, "https://cal.example.com/dav/work/")
 
+    def test_the_files_bytes_move_out_of_the_component_rows(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        db_path = tmp / "legacy.sqlite3"
+        series = b"BEGIN:VCALENDAR\r\nX-SERIES:yes\r\nEND:VCALENDAR\r\n"
+        single = b"BEGIN:VCALENDAR\r\nX-ONE:yes\r\nEND:VCALENDAR\r\n"
+        # One file with a master and two overrides -- three rows, each
+        # carrying the whole file -- and one file with a master alone.
+        _write_legacy_rows(
+            db_path,
+            [
+                ("series@example.com", None, series),
+                ("series@example.com", "20260505T090000Z", series),
+                ("series@example.com", "20260512T090000Z", series),
+                ("single@example.com", None, single),
+            ],
+        )
+
+        repo = SqliteIndexRepository(db_path)
+        self.addCleanup(repo.close)
+
+        with repo.connection() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(components)")}
+            resources = conn.execute(
+                "SELECT uid, raw_ics FROM resources ORDER BY uid"
+            ).fetchall()
+            stored = conn.execute("SELECT SUM(LENGTH(raw_ics)) FROM resources")
+            total = stored.fetchone()[0]
+        self.assertNotIn("raw_ics", columns)
+        self.assertEqual(
+            [r[0] for r in resources], ["series@example.com", "single@example.com"]
+        )
+        # Two files, two copies -- not four.
+        self.assertEqual(total, len(series) + len(single))
+
+        # Every row still reads the bytes of the file it came from.
+        for recurrence_id in (None, "20260505T090000Z", "20260512T090000Z"):
+            component = repo.get_component(_ref("series@example.com", recurrence_id))
+            assert component is not None
+            self.assertEqual(component.raw_ics, series)
+        alone = repo.get_component(_ref("single@example.com"))
+        assert alone is not None
+        self.assertEqual(alone.raw_ics, single)
+
+    def test_a_file_with_no_master_row_keeps_its_bytes(self) -> None:
+        """An override can be indexed before its master arrives."""
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        db_path = tmp / "legacy.sqlite3"
+        raw = b"BEGIN:VCALENDAR\r\nX-ORPHAN:yes\r\nEND:VCALENDAR\r\n"
+        _write_legacy_rows(db_path, [("orphan@example.com", "20260505T090000Z", raw)])
+
+        repo = SqliteIndexRepository(db_path)
+        self.addCleanup(repo.close)
+
+        component = repo.get_component(_ref("orphan@example.com", "20260505T090000Z"))
+        assert component is not None
+        self.assertEqual(component.raw_ics, raw)
+
     def test_migration_is_idempotent(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         db_path = tmp / "index.sqlite3"
@@ -282,6 +385,73 @@ class SchemaMigrationTest(unittest.TestCase):
         repo2 = SqliteIndexRepository(db_path)
         self.addCleanup(repo2.close)
         self.assertIsNone(repo2.get_sync_state(CalendarRef("personal", "work")))
+
+
+class ResourceBytesTest(unittest.TestCase):
+    """The file's bytes are stored once, for the file."""
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.repo = SqliteIndexRepository(tmp / "index.sqlite3")
+        self.addCleanup(self.repo.close)
+        self.raw = b"BEGIN:VCALENDAR\r\nX-FILE:one\r\nEND:VCALENDAR\r\n"
+        self.refs = [
+            _ref("series@example.com"),
+            _ref("series@example.com", "20260505T090000Z"),
+            _ref("series@example.com", "20260512T090000Z"),
+        ]
+        for ref in self.refs:
+            self.repo.upsert_component(_event(ref, raw_ics=self.raw, href="/dav/s.ics"))
+
+    def _resource_rows(self) -> list[tuple[object, ...]]:
+        with self.repo.connection() as conn:
+            return conn.execute(
+                "SELECT uid, LENGTH(raw_ics) FROM resources ORDER BY uid"
+            ).fetchall()
+
+    def test_a_recurrence_family_stores_its_file_once(self) -> None:
+        self.assertEqual(self._resource_rows(), [("series@example.com", len(self.raw))])
+        for ref in self.refs:
+            component = self.repo.get_component(ref)
+            assert component is not None
+            self.assertEqual(component.raw_ics, self.raw)
+
+    def test_two_files_are_two_rows(self) -> None:
+        other = b"BEGIN:VCALENDAR\r\nX-FILE:two\r\nEND:VCALENDAR\r\n"
+        self.repo.upsert_component(
+            _event(_ref("other@example.com"), raw_ics=other, href="/dav/o.ics")
+        )
+        self.assertEqual(len(self._resource_rows()), 2)
+
+    def test_rewriting_the_file_reaches_every_component_of_it(self) -> None:
+        """One file, one answer: a master rewritten with an EXDATE cannot
+        leave an override holding the text from before."""
+        rewritten = b"BEGIN:VCALENDAR\r\nEXDATE:20260519T090000Z\r\nEND:VCALENDAR\r\n"
+        self.repo.upsert_component(
+            _event(self.refs[0], raw_ics=rewritten, href="/dav/s.ics")
+        )
+        for ref in self.refs:
+            component = self.repo.get_component(ref)
+            assert component is not None
+            self.assertEqual(component.raw_ics, rewritten)
+
+    def test_the_bytes_go_when_the_last_component_goes(self) -> None:
+        self.repo.delete_component(self.refs[2])
+        self.assertEqual(len(self._resource_rows()), 1, "two components still hold it")
+        self.repo.delete_component(self.refs[1])
+        self.assertEqual(len(self._resource_rows()), 1, "the master still holds it")
+        self.repo.delete_component(self.refs[0])
+        self.assertEqual(self._resource_rows(), [])
+
+    def test_a_component_without_its_file_is_not_half_returned(self) -> None:
+        """The view's join is inner on purpose: a row whose file is gone
+        is not a component with no bytes, it is a broken index."""
+        with self.repo.connection() as conn:
+            conn.execute("DELETE FROM resources")
+        self.assertIsNone(self.repo.get_component(self.refs[0]))
+        self.assertEqual(
+            self.repo.list_calendar_components(CalendarRef("personal", "work")), ()
+        )
 
 
 class FtsSearchTest(unittest.TestCase):

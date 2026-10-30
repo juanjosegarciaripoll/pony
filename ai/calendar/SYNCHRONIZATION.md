@@ -34,6 +34,14 @@ calendar_sync_state(
   PRIMARY KEY (account_name, calendar_name)
 )
 
+resources(
+  account_name    TEXT NOT NULL,
+  calendar_name   TEXT NOT NULL,
+  uid             TEXT NOT NULL,
+  raw_ics         BLOB NOT NULL,            -- the file's bytes, once per file
+  PRIMARY KEY (account_name, calendar_name, uid)
+)
+
 components(
   id              INTEGER PRIMARY KEY,
   account_name    TEXT NOT NULL,
@@ -43,7 +51,6 @@ components(
   component_kind  TEXT NOT NULL,            -- 'VEVENT' | 'VTODO'
   href            TEXT,                     -- NULL => local-pending (see §1, AGENTS §4)
   etag            TEXT,
-  raw_ics         BLOB NOT NULL,            -- authoritative bytes, copied from mirror
   summary         TEXT,
   dtstart         TIMESTAMP,
   dtend           TIMESTAMP,
@@ -55,6 +62,8 @@ components(
   trashed_at      TIMESTAMP,
   synced_at       TIMESTAMP
 )
+
+components_with_ics                          -- VIEW: components JOIN resources
 
 occurrences(
   component_id       INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,

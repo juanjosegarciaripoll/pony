@@ -5,7 +5,7 @@ RRULE / RDATE / EXDATE expansion and the `occurrences` cache. Load-bearing for a
 ## 1. Principles
 
 1. **Expansion is a read-time concern.** We never materialise occurrences eagerly on write. Writes update the master (and overrides) and invalidate the cache.
-2. **The master stores recurrence rules verbatim.** The `components` row for a master VEVENT / VTODO keeps the original `RRULE`, `RDATE`, and `EXDATE` properties untouched in its `raw_ics` and in projected columns.
+2. **The master stores recurrence rules verbatim.** The `components` row for a master VEVENT / VTODO keeps the original `RRULE`, `RDATE`, and `EXDATE` properties untouched in the file's `raw_ics` -- which belongs to the resource, one copy for the master and every override of it -- and in projected columns.
 3. **Overrides are separate rows.** An override is a `components` row sharing the master's `UID` with a non-null `recurrence_id`. It carries the full override VEVENT / VTODO, not a patch.
 4. **The `occurrences` table is a rebuildable cache.** It holds pre-expanded rows for a bounded window. It can be dropped and rebuilt at any time without data loss.
 

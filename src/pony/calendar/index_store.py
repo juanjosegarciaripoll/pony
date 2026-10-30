@@ -35,6 +35,21 @@ CREATE TABLE IF NOT EXISTS calendar_sync_state(
     PRIMARY KEY (account_name, calendar_name)
 );
 
+-- One resource is one `.ics` file on the server and one file in the
+-- mirror: one UID, one href, whatever components it holds.  Its bytes
+-- live here, once, because that is the grain they have.  They used to
+-- sit on every `components` row parsed out of the file, so a recurring
+-- event with overrides stored its whole file once per override -- 49.5
+-- MB of blob where 19 MB was distinct, on a 12,700-event calendar --
+-- and the copies could be written apart from each other.
+CREATE TABLE IF NOT EXISTS resources(
+    account_name   TEXT NOT NULL,
+    calendar_name  TEXT NOT NULL,
+    uid            TEXT NOT NULL,
+    raw_ics        BLOB NOT NULL,
+    PRIMARY KEY (account_name, calendar_name, uid)
+);
+
 CREATE TABLE IF NOT EXISTS components(
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     account_name    TEXT NOT NULL,
@@ -44,7 +59,6 @@ CREATE TABLE IF NOT EXISTS components(
     component_kind  TEXT NOT NULL,
     href            TEXT,
     etag            TEXT,
-    raw_ics         BLOB NOT NULL,
     summary         TEXT,
     description     TEXT,
     location        TEXT,
@@ -146,6 +160,32 @@ AFTER UPDATE ON components BEGIN
 END;
 """
 
+# `components` joined to its resource's bytes.  A `StoredComponent`
+# carries `raw_ics`, so a query that builds one reads this rather than
+# the table -- the column list below names `raw_ics` in the position it
+# has always had, so `_row_to_component` is unchanged.  SQLite flattens
+# a view this simple into the surrounding query, so the partial indexes
+# on `components` are still reachable through it.
+#
+# The join is inner, not left: a component without its resource's bytes
+# would be a component whose file is unknown, and `upsert_component`
+# writes both or neither.
+_COMPONENT_VIEW_SQL = """
+CREATE VIEW IF NOT EXISTS components_with_ics AS
+SELECT c.id, c.account_name, c.calendar_name, c.uid, c.recurrence_id,
+       c.component_kind, c.href, c.etag, r.raw_ics, c.summary,
+       c.description, c.location, c.dtstart, c.dtend, c.due, c.status,
+       c.local_flags, c.server_flags, c.local_status, c.trashed_at,
+       c.synced_at
+FROM components c
+JOIN resources r
+  ON r.account_name = c.account_name
+ AND r.calendar_name = c.calendar_name
+ AND r.uid = c.uid;
+"""
+
+# What a `StoredComponent` is made of, in the order `_row_to_component`
+# reads it.  Selected from the view above, not from `components`.
 _COMPONENT_COLUMNS = (
     "account_name",
     "calendar_name",
@@ -169,6 +209,10 @@ _COMPONENT_COLUMNS = (
     "synced_at",
 )
 
+# The subset `components` itself holds: everything above except the
+# bytes, which belong to the resource.
+_COMPONENT_TABLE_COLUMNS = tuple(c for c in _COMPONENT_COLUMNS if c != "raw_ics")
+
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Apply additive migrations the idempotent `CREATE` statements miss.
@@ -184,6 +228,40 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     }
     if "calendar_url" not in cols:
         conn.execute("ALTER TABLE calendar_sync_state ADD COLUMN calendar_url TEXT")
+
+    component_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(components)").fetchall()
+    }
+    if "raw_ics" in component_cols:
+        _move_bytes_to_resources(conn)
+
+
+def _move_bytes_to_resources(conn: sqlite3.Connection) -> None:
+    """Lift `components.raw_ics` into `resources`, one row per file.
+
+    The master's copy is the canonical one; a resource whose file holds
+    no master (an override arriving before its master does) falls back
+    to any row's, which is the same text either way -- every row held
+    the whole file.
+
+    The view is dropped first and rebuilt by the caller: SQLite refuses
+    `DROP COLUMN` while anything it cannot re-prepare refers to the
+    table, and declines to reason about which side of a join a name
+    came from.
+    """
+    conn.execute("DROP VIEW IF EXISTS components_with_ics")
+    for only_masters in (True, False):
+        conn.execute(
+            "INSERT OR IGNORE INTO resources"
+            "(account_name, calendar_name, uid, raw_ics) "
+            "SELECT account_name, calendar_name, uid, raw_ics FROM components"
+            + (" WHERE recurrence_id IS NULL" if only_masters else "")
+        )
+    conn.execute("ALTER TABLE components DROP COLUMN raw_ics")
+    # The freed pages go to the freelist, not back to the filesystem.
+    # This is the one moment the I/O of a VACUUM is worth it: on a
+    # calendar of thirteen thousand events it returns about 30 MB.
+    conn.execute("VACUUM")
 
 
 class SqliteIndexRepository:
@@ -212,6 +290,9 @@ class SqliteIndexRepository:
         conn = self._db.conn()
         conn.executescript(_SCHEMA)
         _migrate_schema(conn)
+        # After the migration, which drops and rebuilds nothing else but
+        # has to drop this.
+        conn.executescript(_COMPONENT_VIEW_SQL)
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection]:
@@ -228,27 +309,41 @@ class SqliteIndexRepository:
 
     def upsert_component(self, component: StoredComponent) -> None:
         row = _component_to_row(component)
+        ref = component.ref
         with self.connection() as conn:
-            existing_id = _find_component_id(conn, component.ref)
+            # The file's bytes first, so the view's join always has its
+            # other side.  Every component of one resource carries the
+            # same bytes, so ingesting a recurrence family writes this
+            # row once and then leaves it alone: the guard keeps the
+            # rewrite -- and the page it would dirty for a backup -- out
+            # of the way when nothing changed.
+            conn.execute(
+                "INSERT INTO resources(account_name, calendar_name, uid, raw_ics) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(account_name, calendar_name, uid) DO UPDATE SET "
+                "raw_ics = excluded.raw_ics WHERE raw_ics IS NOT excluded.raw_ics",
+                (ref.account_name, ref.calendar_name, ref.uid, component.raw_ics),
+            )
+            existing_id = _find_component_id(conn, ref)
             if existing_id is None:
-                placeholders = ", ".join("?" for _ in _COMPONENT_COLUMNS)
-                columns = ", ".join(_COMPONENT_COLUMNS)
+                placeholders = ", ".join("?" for _ in _COMPONENT_TABLE_COLUMNS)
+                columns = ", ".join(_COMPONENT_TABLE_COLUMNS)
                 conn.execute(
                     f"INSERT INTO components ({columns}) VALUES ({placeholders})",
-                    tuple(row[c] for c in _COMPONENT_COLUMNS),
+                    tuple(row[c] for c in _COMPONENT_TABLE_COLUMNS),
                 )
             else:
-                assignments = ", ".join(f"{c} = ?" for c in _COMPONENT_COLUMNS)
+                assignments = ", ".join(f"{c} = ?" for c in _COMPONENT_TABLE_COLUMNS)
                 conn.execute(
                     f"UPDATE components SET {assignments} WHERE id = ?",
-                    (*(row[c] for c in _COMPONENT_COLUMNS), existing_id),
+                    (*(row[c] for c in _COMPONENT_TABLE_COLUMNS), existing_id),
                 )
-            _invalidate_master_occurrences(conn, component.ref)
+            _invalidate_master_occurrences(conn, ref)
 
     def get_component(self, ref: ComponentRef) -> StoredComponent | None:
         with self.connection() as conn:
             cursor = conn.execute(
-                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components "
+                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components_with_ics "
                 "WHERE account_name = ? AND calendar_name = ? AND uid = ? "
                 "AND COALESCE(recurrence_id, '') = COALESCE(?, '')",
                 (
@@ -277,6 +372,21 @@ class SqliteIndexRepository:
                 ),
             )
             _invalidate_master_occurrences(conn, ref)
+            # The bytes belong to the file, so they go when its last
+            # component does.  `ON DELETE CASCADE` runs parent to child
+            # and would do the opposite -- drop a resource and take its
+            # components with it -- so the direction that matters here
+            # is written out.
+            conn.execute(
+                "DELETE FROM resources "
+                "WHERE account_name = ? AND calendar_name = ? AND uid = ? "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM components"
+                "  WHERE account_name = resources.account_name"
+                "    AND calendar_name = resources.calendar_name"
+                "    AND uid = resources.uid)",
+                (ref.account_name, ref.calendar_name, ref.uid),
+            )
 
     def set_occurrences(
         self, ref: ComponentRef, occurrences: Sequence[Occurrence]
@@ -377,7 +487,7 @@ class SqliteIndexRepository:
     def list_pending_pushes(self, calendar: CalendarRef) -> tuple[StoredComponent, ...]:
         with self.connection() as conn:
             cursor = conn.execute(
-                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components "
+                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components_with_ics "
                 "WHERE account_name = ? AND calendar_name = ? "
                 "AND href IS NULL AND local_status = 'active' "
                 "ORDER BY uid, COALESCE(recurrence_id, '')",
@@ -395,7 +505,7 @@ class SqliteIndexRepository:
         always quoted — matched with a LIKE on the serialized form)."""
         with self.connection() as conn:
             cursor = conn.execute(
-                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components "
+                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components_with_ics "
                 "WHERE account_name = ? AND calendar_name = ? "
                 "AND href IS NOT NULL AND local_status = 'active' "
                 f"AND local_flags LIKE '%\"{LOCAL_FLAG_DIRTY}\"%' "
@@ -413,7 +523,7 @@ class SqliteIndexRepository:
         to pre-select the exact calendar it lives in."""
         with self.connection() as conn:
             cursor = conn.execute(
-                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components "
+                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components_with_ics "
                 "WHERE uid = ? "
                 "ORDER BY account_name, calendar_name, COALESCE(recurrence_id, '')",
                 (uid,),
@@ -426,7 +536,7 @@ class SqliteIndexRepository:
     ) -> tuple[StoredComponent, ...]:
         with self.connection() as conn:
             cursor = conn.execute(
-                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components "
+                f"SELECT {', '.join(_COMPONENT_COLUMNS)} FROM components_with_ics "
                 "WHERE account_name = ? AND calendar_name = ? "
                 "ORDER BY uid, COALESCE(recurrence_id, '')",
                 (calendar.account_name, calendar.calendar_name),
@@ -459,7 +569,7 @@ class SqliteIndexRepository:
             for chunk in chunked(wanted):
                 placeholders = ", ".join("?" * len(chunk))
                 cursor = conn.execute(
-                    f"SELECT {columns} FROM components "  # noqa: S608
+                    f"SELECT {columns} FROM components_with_ics "  # noqa: S608
                     "WHERE account_name = ? AND calendar_name = ? "
                     f"AND uid IN ({placeholders}) "
                     "ORDER BY uid, COALESCE(recurrence_id, '')",
@@ -485,7 +595,7 @@ class SqliteIndexRepository:
         """
         columns = ", ".join(_COMPONENT_COLUMNS)
         sql = (
-            f"SELECT {columns} FROM components "  # noqa: S608
+            f"SELECT {columns} FROM components_with_ics "  # noqa: S608
             "WHERE account_name = ? AND calendar_name = ? "
             f"AND component_kind = '{ComponentKind.VTODO.value}' "
             "AND local_status = ? "
@@ -523,7 +633,7 @@ class SqliteIndexRepository:
         params: list[object] = [query]
         sql = (
             f"SELECT {', '.join('c.' + c for c in _COMPONENT_COLUMNS)} "
-            "FROM components c "
+            "FROM components_with_ics c "
             "JOIN components_fts ON components_fts.rowid = c.id "
             "WHERE components_fts MATCH ? "
         )

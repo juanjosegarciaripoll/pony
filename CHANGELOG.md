@@ -215,6 +215,19 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   the label. Both button columns are reserved on every row — the + is hidden
   rather than removed on all but the last — so × and + keep one column each
   down the whole header, attachments included.
+- **A calendar's file is stored once, not once per component**: the index
+  kept a whole `.ics` file's bytes on every row it parsed out of that
+  file, so a recurring event with overrides stored its file once per
+  override — 49.5 MB of blob where 19 MB was distinct, on a calendar of
+  12,700 events. The bytes now live in a `resources` table at the grain
+  they have, one row per file, and the view `components_with_ics` joins
+  them back for the queries that build a whole component. An existing
+  index migrates on first open, which moves the bytes, drops the column
+  and runs a single `VACUUM` to hand the pages back to the filesystem.
+  One consequence beyond the space: a file rewritten through one of its
+  components — adding an `EXDATE` to a master, say — can no longer leave
+  the others holding the text from before.
+
 - **A sync says which events it removed**: a calendar's log named the
   resources it fetched and counted the ones it deleted, so a run ending in
   `-9` left no way to tell whether the nine were the ones you deleted on
