@@ -14,6 +14,8 @@ from pony.paths import (
     AppPaths,
     bundled_docs_path,
     contain,
+    default_config_file,
+    default_data_dir,
     expand_path,
     graft,
     resolve,
@@ -261,6 +263,31 @@ class SandboxRootTest(unittest.TestCase):
             inside = Path(tmpdir) / "data"
             with patch.dict(os.environ, {"PONY_ROOT": tmpdir}):
                 self.assertEqual(resolve(data_dir=inside).data_dir, inside)
+
+    def test_the_platform_defaults_are_contained(self) -> None:
+        """Asking for a default directly must not reach a real one.
+
+        `resolve` contained what it returned, but the two functions it
+        asks were plain ``$HOME`` arithmetic, so every caller that asked
+        one of them itself escaped the root.  `pony.mail.handoff` is one,
+        and its own test wrote 510 directories into the user's real
+        ``~/.local/share/pony`` before anyone noticed.
+        """
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"PONY_ROOT": tmpdir}),
+        ):
+            self.assertTrue(default_data_dir().is_relative_to(Path(tmpdir)))
+            self.assertTrue(default_config_file().is_relative_to(Path(tmpdir)))
+
+    def test_a_default_inside_the_root_is_not_relocated_twice(self) -> None:
+        """`resolve` contains again; grafting an image of itself is a no-op."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "box"
+            with patch.dict(os.environ, {"PONY_ROOT": str(root)}):
+                self.assertEqual(resolve().data_dir, default_data_dir())
+                self.assertEqual(resolve().config_file, default_config_file())
+                self.assertEqual(contain(default_data_dir()), default_data_dir())
 
     def test_the_variable_expands_a_home_reference(self) -> None:
         with patch.dict(os.environ, {"PONY_ROOT": "~/boxed"}):

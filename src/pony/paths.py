@@ -126,19 +126,33 @@ def _home_dir(windows: str, xdg: str, fallback: Path) -> Path:
 
 
 def default_config_file() -> Path:
-    """Where ``config.toml`` lives when ``--config`` does not say."""
+    """Where ``config.toml`` lives when ``--config`` does not say.
+
+    Contained, like the data directory below: a default is somewhere
+    Pony chose, not somewhere the user pointed at, so ``PONY_ROOT``
+    relocates it.
+    """
     home = _home_dir("APPDATA", "XDG_CONFIG_HOME", Path.home() / ".config")
-    return home / APP_NAME / "config.toml"
+    return contain(home / APP_NAME / "config.toml")
 
 
 def default_data_dir() -> Path:
-    """Where data lives when no config declares a ``data_dir``."""
+    """Where data lives when no config declares a ``data_dir``.
+
+    The containment belongs here rather than only in :func:`resolve`,
+    because this is the answer callers act on: `pony.mail.handoff` asks
+    for it directly, and so does anything else that wants the platform
+    default without building an :class:`AppPaths`.  While it was plain
+    ``$HOME`` arithmetic, every such caller escaped the root -- the
+    hand-off tests left 510 directories in a real
+    ``~/.local/share/pony``.
+    """
     home = _home_dir(
         "LOCALAPPDATA",
         "XDG_DATA_HOME",
         Path.home() / ".local" / "share",
     )
-    return home / APP_NAME
+    return contain(home / APP_NAME)
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,12 +203,11 @@ def resolve(
 
     *config_arg* is ``--config``, taken as given: reading a file where
     the user pointed is not a write.  *data_dir* is what that config
-    declares.  Both directories Pony writes into -- the data directory,
-    and the one holding a *default* config file -- are contained by
-    ``PONY_ROOT``.
+    declares, and is contained here; the two defaults contain
+    themselves, and grafting an already-grafted path changes nothing, so
+    a default passes through unaltered.
     """
-    default_config = contain(default_config_file())
-    config_file = config_arg if config_arg is not None else default_config
+    config_file = config_arg if config_arg is not None else default_config_file()
     declared = data_dir if data_dir is not None else default_data_dir()
     return AppPaths(config_file=config_file, data_dir=contain(declared))
 

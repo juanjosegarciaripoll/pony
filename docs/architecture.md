@@ -188,7 +188,11 @@ loadable config: where the default `config.toml` is looked for, and where
 `pony doctor`, `pony config edit` and `pony reset` work when there is none.
 `PONY_ROOT`, when set, contains all of it: `graft` strips a path's anchor
 and re-adds it as an ordinary component, because joining an absolute or
-drive-qualified path onto a root discards the root.
+drive-qualified path onto a root discards the root. The two default
+locations contain themselves rather than relying on `resolve()` to do it,
+so a caller that asks for one directly — `pony.mail.handoff` does — cannot
+reach a real user directory either; grafting twice is a no-op, so
+`resolve()` containing a declared `data_dir` again costs nothing.
 
 Path values in the config support `~`, `$VAR`, and `%VAR%` expansion via
 `_expand_path`.
