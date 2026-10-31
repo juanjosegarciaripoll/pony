@@ -224,6 +224,27 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **The index migration says it is happening, and how far along it is**:
+  opening a v3 index on 2.0.0 rewrites every message row and reindexes
+  every body first, which is minutes on a large mailbox — and it printed
+  nothing, because `pony sync` says nothing until planning starts. A
+  one-time reindex was indistinguishable from a hung sync, so it got
+  interrupted, which starts it over. It now names both schema versions
+  and the message count up front, counts the table rewrite and the
+  search-index rebuild on one overwritten line, and reports how long it
+  took. Every command opens the index through one helper, so this is not
+  `sync` alone; a front end that reports nothing of its own logs the two
+  milestones instead.
+
+- **A sync failure says what failed**: both front ends built the message
+  from `str(exc)`, and the failures a sync meets have nothing to say —
+  `TimeoutError()`, a bare `OSError`, a dropped TLS connection all
+  stringify to `""`. The browser showed `Sync failed: ` and stopped; the
+  reader's `str(err) if err else "unknown error"` never reached its
+  fallback, an exception being truthy however empty. A reason with no
+  text now falls back to the exception's class, and the browser logs the
+  traceback.
+
 - **A new event starts on its summary**: the terminal's event form opened
   on the calendar dropdown, because that is its first focusable widget —
   so the first thing typed went nowhere, and an arrow key reached for the

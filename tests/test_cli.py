@@ -4561,3 +4561,90 @@ format = "mbox"
 
         self.assertEqual(rc, 0)
         self.assertEqual(len(rows), 1)
+
+
+class MigrationIsVisibleOnTheCommandLineTest(unittest.TestCase):
+    """Every command opens the index through one helper, which speaks.
+
+    A v3 index is rewritten row by row and reindexed body by body
+    before ``initialize`` returns.  ``pony sync`` prints nothing of its
+    own until planning starts, so against a large index it was silent
+    for the whole migration -- long enough that the thing to do (wait)
+    was indistinguishable from the thing people did (kill it).
+    """
+
+    def _v3_index(self, path: Path) -> None:
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "CREATE TABLE messages ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " account_name TEXT NOT NULL, folder_name TEXT NOT NULL,"
+                " uid INTEGER, uid_validity INTEGER,"
+                " message_id TEXT NOT NULL DEFAULT '',"
+                " sender TEXT NOT NULL, recipients TEXT NOT NULL,"
+                " cc TEXT NOT NULL, subject TEXT NOT NULL,"
+                " body_preview TEXT NOT NULL,"
+                " storage_key TEXT NOT NULL DEFAULT '',"
+                " has_attachments INTEGER NOT NULL DEFAULT 0,"
+                " local_flags TEXT NOT NULL, base_flags TEXT NOT NULL,"
+                " server_flags TEXT NOT NULL DEFAULT '',"
+                " extra_imap_flags TEXT NOT NULL DEFAULT '',"
+                " local_status TEXT NOT NULL, received_at TEXT NOT NULL,"
+                " trashed_at TEXT, synced_at TEXT,"
+                " source_folder TEXT, source_uid INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO messages (id, account_name, folder_name, uid,"
+                " uid_validity, message_id, sender, recipients, cc, subject,"
+                " body_preview, local_flags, base_flags, local_status,"
+                " received_at) VALUES (1,'personal','INBOX',3,9,"
+                "'<m@example.com>','a@example.com','b@example.com','',"
+                "'Quarterly numbers','the numbers are inside','','',"
+                "'active','2026-04-20T10:00:00+00:00')"
+            )
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_opening_a_v3_index_announces_the_migration(self) -> None:
+        from pony.cli.program import open_index
+        from pony.paths import AppPaths
+
+        root = TMP_ROOT / "cli-migration" / uuid4().hex
+        paths = AppPaths(config_file=root / "config.toml", data_dir=root / "data")
+        self._v3_index(paths.index_db_file)
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            index = open_index(paths)
+        index.close()
+        shown = buffer.getvalue()
+
+        self.assertIn("Migrating the message index from schema v3 to v4", shown)
+        self.assertIn("1 messages", shown)
+        self.assertIn("Rebuilding the search index: 1 of 1 messages", shown)
+        self.assertIn("Index migrated to schema v4", shown)
+        # One overwritten line, closed off so the command's own first
+        # line does not land on the end of the last count.
+        self.assertIn("\r\033[K", shown)
+        self.assertTrue(shown.endswith("\n"), repr(shown[-40:]))
+
+    def test_opening_a_current_index_prints_nothing(self) -> None:
+        from pony.cli.program import open_index
+        from pony.paths import AppPaths
+
+        root = TMP_ROOT / "cli-no-migration" / uuid4().hex
+        paths = AppPaths(config_file=root / "config.toml", data_dir=root / "data")
+        paths.index_db_file.parent.mkdir(parents=True, exist_ok=True)
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            index = open_index(paths)
+        index.close()
+
+        self.assertEqual(buffer.getvalue(), "")

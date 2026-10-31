@@ -256,6 +256,21 @@ async def test_exec_callbacks_and_progress_route_through_modal() -> None:
         modal.dismiss.assert_called_once_with(None)
         assert messages[-1] == "Sync failed: fictional execution failure"
 
+        # A worker error whose exception says nothing -- a timeout, a
+        # bare OSError -- used to reach the toast as "Sync failed: ".
+        # The old guard was `str(err) if err else ...`, and an
+        # exception object is truthy however empty its message.
+        modal.dismiss.reset_mock()
+        screen._sync_screen = modal
+        screen._on_exec_complete(
+            _worker(
+                name="sync-exec",
+                state=WorkerState.ERROR,
+                error=TimeoutError(),
+            )
+        )
+        assert messages[-1] == "Sync failed: TimeoutError"
+
         modal.dismiss.reset_mock()
         screen._sync_screen = modal
         screen._on_exec_complete(

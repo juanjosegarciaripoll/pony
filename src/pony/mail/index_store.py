@@ -5,13 +5,16 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import logging
 import sqlite3
-from collections.abc import Generator, Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
 from pathlib import Path
 from typing import cast
 
+from pony.outcome import ProgressGate
 from pony.sqlite import ThreadLocalSqlite, chunked, datetime_to_sql, sql_to_datetime
 
 from .contact_merge import merged_contact
@@ -51,6 +54,58 @@ _SCHEMA_VERSION = 4
 # cost disappears into the work.
 _BATCH_COMMIT_ROWS = 500
 _MIGRATABLE_FROM: tuple[int, ...] = (2, 3)
+
+_log = logging.getLogger(__name__)
+
+# How many messages one step of a migration moves.  The whole migration
+# is a single transaction -- a half-rebuilt schema is not a schema -- so
+# this does not bound the WAL; it bounds how often there is something to
+# say, and keeps the per-step `max(id)` lookup cheap.
+_MIGRATION_BATCH_ROWS = 2000
+
+#: What a long migration reports to whoever asked for the index: one
+#: sentence at a time, already counted.  A front end prints it, draws it
+#: into a dialog, or ignores it; the model does not know which.
+MigrationProgress = Callable[[str], None]
+
+
+class _MigrationReporter:
+    """Where a migration's two kinds of sentence go.
+
+    Migrating a large index is minutes of work with the index locked,
+    and it used to say nothing whatsoever: ``pony sync`` against a v3
+    database printed its first character only once planning began, so a
+    one-time reindex of 130k messages read as a hung network sync.
+
+    Whoever opened the index owns the user-facing text.  A caller that
+    passed a reporter is showing these sentences already, so the log
+    takes them at debug level; one that passed none -- the reader, the
+    browser, the MCP server -- would be silent, so for it the two
+    *milestones* (a migration began, a migration finished) are logged
+    at warning instead.  Either way each sentence is said once: logging
+    the milestones unconditionally printed them twice on a terminal,
+    where the root logger writes warnings to stderr.
+
+    *Steps* -- the running counts -- are never logged above debug.  A
+    hundred of them belong on one overwritten line, not in a log file.
+    """
+
+    __slots__ = ("_progress",)
+
+    def __init__(self, progress: MigrationProgress | None) -> None:
+        self._progress = progress
+
+    def milestone(self, message: str) -> None:
+        if self._progress is None:
+            _log.warning("%s", message)
+            return
+        _log.debug("%s", message)
+        self._progress(message)
+
+    def step(self, message: str) -> None:
+        _log.debug("%s", message)
+        if self._progress is not None:
+            self._progress(message)
 
 
 class ContactEmailConflictError(RuntimeError):
@@ -245,7 +300,11 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS pending_operations")
 
 
-def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+def _migrate_v3_to_v4(
+    conn: sqlite3.Connection,
+    *,
+    report: _MigrationReporter,
+) -> None:
     """Migrate the v3 messages table to v4: no per-row epoch, named body.
 
     Runs inside the calling transaction.  Two changes, both of them
@@ -304,28 +363,78 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     # ``MessageRef`` holds, and anything that remembered one -- the
     # reader's last view, a pending move's source row -- would point at
     # a different message if the rebuild renumbered them.
-    conn.execute(
-        """
-        INSERT INTO messages_new (
-            id, account_name, folder_name, uid, message_id,
-            sender, recipients, cc, subject, body_text,
-            storage_key, has_attachments,
-            local_flags, base_flags, server_flags, extra_imap_flags,
-            local_status, received_at, trashed_at, synced_at,
-            source_folder, source_uid
-        )
-        SELECT
-            id, account_name, folder_name, uid, message_id,
-            sender, recipients, cc, subject, body_preview,
-            storage_key, has_attachments,
-            local_flags, base_flags, server_flags, extra_imap_flags,
-            local_status, received_at, trashed_at, synced_at,
-            source_folder, source_uid
-        FROM messages
-        """
+    # Copied in batches so the step can be counted.  One statement over
+    # 130k rows carrying whole message bodies is minutes with nothing to
+    # report, and "nothing to report" is indistinguishable from hung.
+    _copy_in_batches(
+        conn,
+        report=report,
+        what="Rewriting the message table",
+        into="messages_new",
+        columns=(
+            "id, account_name, folder_name, uid, message_id, "
+            "sender, recipients, cc, subject, body_text, "
+            "storage_key, has_attachments, "
+            "local_flags, base_flags, server_flags, extra_imap_flags, "
+            "local_status, received_at, trashed_at, synced_at, "
+            "source_folder, source_uid"
+        ),
+        select=(
+            "id, account_name, folder_name, uid, message_id, "
+            "sender, recipients, cc, subject, body_preview, "
+            "storage_key, has_attachments, "
+            "local_flags, base_flags, server_flags, extra_imap_flags, "
+            "local_status, received_at, trashed_at, synced_at, "
+            "source_folder, source_uid"
+        ),
     )
     conn.execute("DROP TABLE messages")
     conn.execute("ALTER TABLE messages_new RENAME TO messages")
+
+
+def _copy_in_batches(
+    conn: sqlite3.Connection,
+    *,
+    report: _MigrationReporter,
+    what: str,
+    into: str,
+    columns: str,
+    select: str,
+) -> None:
+    """Copy ``messages`` into *into* a batch at a time, counting as it goes.
+
+    Each step first asks the *source* where the batch ends, then copies
+    the half-open range up to it.  The high-water mark therefore never
+    comes from the destination -- ``messages_fts`` is an
+    external-content FTS5 table with no ``id`` column of its own -- and
+    no step rescans the rows before it, as an ``OFFSET`` would.
+
+    *columns* and *select* are this module's own column lists, which is
+    what makes interpolating them into the statement safe.
+    """
+    total = int(conn.execute("SELECT count(*) FROM messages").fetchone()[0])
+    if not total:
+        return
+    gate = ProgressGate()
+    done = 0
+    last = -1
+    while True:
+        boundary = conn.execute(
+            "SELECT max(id) FROM "
+            "(SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT ?)",
+            (last, _MIGRATION_BATCH_ROWS),
+        ).fetchone()[0]
+        if boundary is None:
+            break
+        cursor = conn.execute(
+            f"INSERT INTO {into} ({columns}) "  # noqa: S608 — module's own columns
+            f"SELECT {select} FROM messages WHERE id > ? AND id <= ?",
+            (last, boundary),
+        )
+        done += cursor.rowcount if cursor.rowcount > 0 else 0
+        last = int(boundary)
+        if gate.due(done, final=done >= total):
+            report.step(f"{what}: {done:,} of {total:,} messages")
 
 
 class SqliteIndexRepository(IndexRepository, ContactRepository):
@@ -366,6 +475,10 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
     def __init__(self, *, database_path: Path) -> None:
         self._database_path = database_path
         self._db = ThreadLocalSqlite(database_path, commit_every=_BATCH_COMMIT_ROWS)
+        # Whether :meth:`initialize` had to migrate this database.  A
+        # caller that drew progress on one overwritten terminal line
+        # needs to know whether there is a line to close off.
+        self.migrated = False
 
     # ------------------------------------------------------------------
     # Connection management
@@ -430,9 +543,18 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         with self._db.statement() as conn:
             yield conn
 
-    def initialize(self) -> None:
-        """Create or migrate the schema, refusing DBs we cannot upgrade."""
+    def initialize(self, *, progress: MigrationProgress | None = None) -> None:
+        """Create or migrate the schema, refusing DBs we cannot upgrade.
+
+        *progress* is told, in sentences, that a migration is happening
+        and how far along it is.  Migrating a large index rewrites every
+        message row and reindexes every body, which is minutes of work
+        on a real mailbox; whoever opened the index gets to say so.
+        Everything reported also goes to the log, so a front end that
+        passes nothing is not silent either.
+        """
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        report = _MigrationReporter(progress)
         # One transaction for the whole thing: the v2 -> v3 migration
         # rewrites the messages table in several statements and a
         # half-applied rewrite is not a schema anything can read.
@@ -461,12 +583,22 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 )
 
             migrated = has_messages and version in _MIGRATABLE_FROM
+            self.migrated = migrated
+            started = time.monotonic()
+            if migrated:
+                held = int(conn.execute("SELECT count(*) FROM messages").fetchone()[0])
+                report.milestone(
+                    f"Migrating the message index from schema v{version} to "
+                    f"v{_SCHEMA_VERSION}: {held:,} messages to rewrite and "
+                    "reindex.  This happens once and cannot be interrupted "
+                    "safely -- please let it finish."
+                )
             # One step at a time, so a v2 database arrives at v4 through
             # the same v3 rewrite a v3 one was built by.
             if has_messages and version == 2:
                 _migrate_v2_to_v3(conn)
             if has_messages and version in (2, 3):
-                _migrate_v3_to_v4(conn)
+                _migrate_v3_to_v4(conn, report=report)
 
             conn.execute(
                 """
@@ -636,8 +768,27 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 # without this every search silently returns nothing and
                 # no ordinary sync ever repairs it, because unchanged rows
                 # are never rewritten.
-                conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+                #
+                # Populated row by row rather than with
+                # ``VALUES('rebuild')``, which is the same work in one
+                # opaque statement: inserting into an external-content
+                # table is the documented way to fill it, and it is the
+                # longest step of the migration, so it is the one that
+                # most needs counting.
+                _copy_in_batches(
+                    conn,
+                    report=report,
+                    what="Rebuilding the search index",
+                    into="messages_fts",
+                    columns="rowid, sender, recipients, cc, subject, body_text",
+                    select="id, sender, recipients, cc, subject, body_text",
+                )
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            if migrated:
+                report.milestone(
+                    f"Index migrated to schema v{_SCHEMA_VERSION} in "
+                    f"{time.monotonic() - started:.0f}s."
+                )
 
     # ------------------------------------------------------------------
     # Messages

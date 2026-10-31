@@ -74,6 +74,7 @@ from .program import (
     _resolve_theme,
     _run_pager,
     _setup_tui_logging,
+    open_index,
     require_config,
     try_load_config,
 )
@@ -90,8 +91,7 @@ def run_sync(
     """Synchronise one or all accounts with their IMAP servers."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     credentials = build_credentials_provider(config, index)
 
     def session_factory(acc: AccountConfig, password: str) -> ImapClientSession:
@@ -578,8 +578,7 @@ def run_rescan(
     """
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     accounts = list(config.accounts)
     if account:
@@ -642,8 +641,7 @@ def run_reindex(
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     accounts = list(config.accounts)
     if account:
@@ -775,8 +773,7 @@ def run_folder_list(
     """List folders with indexed message counts and sync status."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     accounts: list[AnyAccount] = list(config.accounts)
     if account:
@@ -841,8 +838,7 @@ def run_dedup_folder(
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     if not any(a.name == account for a in config.accounts):
         raise SystemExit(f"No account named {account!r} in config.")
@@ -911,8 +907,7 @@ def run_mirror_folder(
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     all_accounts: dict[str, AnyAccount] = {a.name: a for a in config.accounts}
     if src_account not in all_accounts:
@@ -1025,8 +1020,7 @@ def run_message_get(
     ``pony message attachment`` to extract one attachment to disk.
     """
     paths.ensure_runtime_dirs()
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     hits = _find_messages_or_fail(
         index,
         account_name=account,
@@ -1179,8 +1173,7 @@ def run_message_body(
     # Users pass an RFC 5322 Message-ID (from search results); the mirror
     # keys off the backend's own storage_key.  Resolve via the index;
     # when a Message-ID has multiple matches, the most recent wins.
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     indexed = _find_messages_or_fail(
         index,
         account_name=account,
@@ -1236,8 +1229,7 @@ def run_message_attachment(
 
     acc = _require_account(config, account)
 
-    idx = SqliteIndexRepository(database_path=paths.index_db_file)
-    idx.initialize()
+    idx = open_index(paths)
     hits = _find_messages(
         idx,
         account_name=account,
@@ -1307,8 +1299,7 @@ def run_message_mime(
 
     acc = _require_account(config, account)
 
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     indexed = _find_messages_or_fail(
         index,
         account_name=account,
@@ -1373,8 +1364,7 @@ def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) 
     """Run a real SQLite-backed search query and print results."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    repository = SqliteIndexRepository(database_path=paths.index_db_file)
-    repository.initialize()
+    repository = open_index(paths)
     requested_query = query or ""
     # Same parser the TUI's "/" search uses, so "from:alice" means the
     # same thing in both places.
@@ -1406,8 +1396,7 @@ def run_server_summary(
     """Connect to each IMAP server and print folder counts and last-message dates."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     credentials = build_credentials_provider(config, index)
 
     imap_accounts = [a for a in config.accounts if isinstance(a, AccountConfig)]
@@ -1864,8 +1853,7 @@ def _run_reset_account(
             end="",
             flush=True,
         )
-        index = SqliteIndexRepository(database_path=paths.index_db_file)
-        index.initialize()
+        index = open_index(paths)
         index.purge_account(account_name=acc.name)
         print(" done.")
     else:
@@ -1934,8 +1922,7 @@ def run_compose(
     else:
         selected = sendable[0]
 
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     mirrors = build_mirrors(config)
 
@@ -1984,8 +1971,7 @@ def run_account_test(
     """Test IMAP connection and authentication for one account."""
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     credentials = build_credentials_provider(config, index)
 
     account = find_imap_account(config, account_name)
@@ -2267,8 +2253,7 @@ def run_account_add_interactive(*, paths: AppPaths, config_path: Path | None) ->
         if pw:
             from ..mail.credentials import encrypt_password
 
-            index = SqliteIndexRepository(database_path=paths.index_db_file)
-            index.initialize()
+            index = open_index(paths)
             index.store_credential(
                 account_name=name,
                 encrypted=encrypt_password(pw),
@@ -2358,8 +2343,7 @@ def run_account_set_password(
         return 1
 
     encrypted = encrypt_password(password)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     index.store_credential(account_name=account_name, encrypted=encrypted)
     print(f"Password stored for account {account_name!r}.")
     return 0
@@ -2466,8 +2450,7 @@ def run_contacts_browse(*, paths: AppPaths) -> int:
     """Open the interactive contacts browser TUI."""
     from ..tui.app import ContactsApp
 
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     ContactsApp(contacts=index).run()
     return 0
@@ -2480,8 +2463,7 @@ def run_contacts_search(
     limit: int,
 ) -> int:
     """Print contacts whose name or address matches *prefix*."""
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     results = index.search_contacts(prefix=prefix, limit=limit)
     if not results:
         print(f"No contacts matching {prefix!r}.")
@@ -2499,8 +2481,7 @@ def run_contacts_search(
 
 def run_contacts_show(*, paths: AppPaths, email: str) -> int:
     """Display full details for a contact identified by *email*."""
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     contact = index.find_contact_by_email(email_address=email)
     if contact is None:
         print(f"No contact found for {email!r}.")
@@ -2541,8 +2522,7 @@ def run_contacts_export(
 
     dest = Path(output_path) if output_path else paths.data_dir / "contacts.bbdb"
 
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     contacts = index.list_all_contacts()
     write_bbdb(contacts, dest)
     print(f"Exported {len(contacts)} contact(s) to {dest}")
@@ -2592,8 +2572,7 @@ def run_contacts_import(
 
     from ..mail.bbdb import BbdbError
 
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     try:
         tally, outcome = import_bbdb_contacts(index=index, bbdb_path=src)
     except BbdbError as exc:

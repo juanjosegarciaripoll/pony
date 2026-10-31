@@ -11,6 +11,7 @@ call the terminal makes.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1345,6 +1346,52 @@ def test_a_failing_sync_is_reported_not_raised() -> None:
     assert outcome["changed"] == 0
     assert outcome["notices"][0]["text"] == "Sync failed: the server hung up"
     assert outcome["notices"][0]["severity"] == "error"
+
+
+def test_a_failure_with_no_message_still_says_what_it_was() -> None:
+    """A timeout is the common failure, and it stringifies to nothing.
+
+    The notice used to be built straight out of ``str(exc)``, so the
+    browser was handed "Sync failed: " and the user had no way to tell
+    a timeout from a reset from a bug.
+    """
+    services, _index = _services("web-sync-silent-failure")
+
+    with patch.object(services.sync, "service") as service:
+        service.plan.side_effect = TimeoutError()
+        with _client(services) as client:
+            response = client.post("/action/sync", data={})
+
+    outcome = response.json()
+    assert outcome["notices"][0]["text"] == "Sync failed: TimeoutError"
+    assert outcome["notices"][0]["severity"] == "error"
+
+
+def test_a_failing_sync_logs_a_traceback() -> None:
+    """The one place the failing call is written down.
+
+    The notice carries a sentence; what actually broke inside the
+    engine is only recoverable from the stack, and the handler used to
+    log neither -- ``_log.error("...: %s", exc)`` repeated the sentence
+    the browser already had.
+    """
+    services, _index = _services("web-sync-traceback")
+    records: list[logging.LogRecord] = []
+    sink = logging.Handler()
+    sink.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("pony.web.syncing")
+    logger.addHandler(sink)
+    try:
+        with patch.object(services.sync, "service") as service:
+            service.plan.side_effect = TimeoutError()
+            with _client(services) as client:
+                client.post("/action/sync", data={})
+    finally:
+        logger.removeHandler(sink)
+
+    assert [record.getMessage() for record in records] == ["web sync failed"]
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[0] is TimeoutError
 
 
 def test_only_one_sync_runs_at_a_time_in_this_server() -> None:

@@ -61,6 +61,34 @@ def _configure_logging(*, debug: bool) -> None:
     )
 
 
+def _say_migrating(message: str) -> None:
+    """Put a migration's progress on the terminal, one line, overwritten.
+
+    Same ``\r`` + erase-to-end-of-line shape as the sync's own progress,
+    so a migration that takes minutes occupies one line rather than
+    scrolling a thousand.
+    """
+    print(f"\r\033[K{message}", end="", flush=True)
+
+
+def open_index(paths: AppPaths) -> SqliteIndexRepository:
+    """Open the message index, saying so if it has to be migrated first.
+
+    Every command that opens the index goes through here.  Migrating a
+    large index rewrites every row and reindexes every body before
+    ``initialize`` returns, and a command whose own first output comes
+    later -- ``sync`` prints nothing until planning starts -- was simply
+    silent for the whole of it.
+    """
+    index = SqliteIndexRepository(database_path=paths.index_db_file)
+    index.initialize(progress=_say_migrating)
+    # Close off the overwritten progress line, if there was one, so what
+    # the command prints next starts at column 0.
+    if index.migrated:
+        print()
+    return index
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the top-level CLI parser."""
     parser = argparse.ArgumentParser(
@@ -1080,8 +1108,7 @@ def run_tui(
     logging.getLogger("pony").info("TUI starting; log file: %s", log_file)
 
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
 
     credentials = build_credentials_provider(config, index)
 
@@ -1168,8 +1195,7 @@ def run_web(
         return 1
 
     config = require_config(config_path)
-    index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize()
+    index = open_index(paths)
     credentials = build_credentials_provider(config, index)
     mirrors = build_mirrors(config)
     # The same reconciliation the terminal does at startup, for the same

@@ -18,7 +18,7 @@ from textual.widgets import Footer, Header
 from textual.worker import Worker
 
 from pony.keys import for_surface
-from pony.outcome import Notice, Outcome
+from pony.outcome import Notice, Outcome, describe_exception
 from pony.tui.reporting import report
 
 from ....invitation import Invitation
@@ -690,7 +690,11 @@ class MainScreen(Screen[None]):
         """Execution finished — dismiss screen and refresh."""
         if worker.state == worker.state.ERROR:
             err = worker.error
-            msg = str(err) if err else "unknown error"
+            # An exception object is truthy whatever it says, so the
+            # old ``str(err) if err else ...`` fell through to "" for
+            # every failure whose message is empty -- a timeout, a bare
+            # OSError, a dropped TLS connection, which is most of them.
+            msg = describe_exception(err) if err is not None else "unknown error"
             self.app.notify(f"Sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
         else:
             self.app.notify(describe_sync_result(worker.result))  # pyright: ignore[reportUnknownMemberType]
