@@ -189,7 +189,7 @@ async def test_compose_send_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         app.screen.query_one("#body-area", TextArea).load_text("Body text")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     assert send_mock.call_count == 1
     kwargs = send_mock.call_args.kwargs
@@ -219,7 +219,7 @@ async def test_compose_send_requires_to(monkeypatch: pytest.MonkeyPatch) -> None
         app.screen.query_one("#body-area", TextArea).load_text("Body")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
         assert any(isinstance(s, ComposeScreen) for s in app.screen_stack)
 
     assert send_mock.call_count == 0
@@ -298,7 +298,7 @@ async def test_forward_sends_original_message_as_removable_eml_attachment(
 
         app.screen.query_one("#to-input", Input).value = "bob@example.com"
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     assert send_mock.call_count == 1
     sent = send_mock.call_args.kwargs["msg"]
@@ -344,7 +344,7 @@ async def test_forward_eml_attachment_can_be_removed(
         await pilot.pause()
         app.screen.query_one("#to-input", Input).value = "bob@example.com"
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     assert send_mock.call_count == 1
     sent = send_mock.call_args.kwargs["msg"]
@@ -1485,7 +1485,7 @@ async def test_compose_send_smtp_error_notifies(
         app.screen.query_one("#body-area", TextArea).load_text("Body")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
         still_open = [s for s in app.screen_stack if isinstance(s, ComposeScreen)]
 
     assert any("connection refused" in n for n in notifications)
@@ -1493,8 +1493,28 @@ async def test_compose_send_smtp_error_notifies(
     assert len(still_open) == 1
 
 
-async def _fill_and_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
-    """Fill the minimum compose fields and press the send chord."""
+async def _settle_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
+    """Wait for the send to finish, not for one turn of the message pump.
+
+    ``ctrl+s`` hands the SMTP call to a thread worker, so ``pause()``
+    yields the event loop without waiting for the thread, and leaving
+    ``run_test()`` is no wait either -- shutdown cancels workers, and a
+    thread worker cannot be cancelled.  A test that then reads the Sent
+    folder, the answered flag or the notifications was racing the
+    worker and winning only because the machine was quick: these passed
+    on every Linux run and three of them failed on the macOS runner,
+    where the suite takes ten times as long.
+    """
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def _fill_and_send(pilot, app, *, wait=True) -> None:  # type: ignore[no-untyped-def]
+    """Fill the minimum compose fields and press the send chord.
+
+    *wait* is False for the two tests that need the send still in
+    flight when they look at the screen.
+    """
     from textual.widgets import Input, TextArea
 
     app.screen.query_one("#to-input", Input).value = "bob@example.com"
@@ -1502,7 +1522,10 @@ async def _fill_and_send(pilot, app) -> None:  # type: ignore[no-untyped-def]
     app.screen.query_one("#body-area", TextArea).load_text("Body")
     await pilot.pause()
     await pilot.press("ctrl+s")
-    await pilot.pause()
+    if wait:
+        await _settle_send(pilot, app)
+    else:
+        await pilot.pause()
 
 
 async def test_compose_send_keeps_the_ui_responsive(
@@ -1575,7 +1598,7 @@ async def test_compose_send_refuses_a_second_send_while_one_is_in_flight(
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _fill_and_send(pilot, app)
+        await _fill_and_send(pilot, app, wait=False)
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert any("already in progress" in n for n in notifications)
@@ -2202,7 +2225,7 @@ async def test_compose_send_with_contacts_harvests_recipients(
         app.screen.query_one("#body-area", TextArea).load_text("Body")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     assert send_mock.call_count == 1
     # Verify harvest ran without error — contact may or may not exist yet
@@ -2700,7 +2723,7 @@ async def test_compose_send_fails_without_password(
         app.screen.query_one("#to-input", Input).value = "bob@example.com"
         app.screen.query_one("#body-area", TextArea).load_text("Body")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     # Send should NOT have been called due to missing password
     assert send_mock.call_count == 0
@@ -2724,7 +2747,7 @@ async def test_compose_send_with_no_sent_folder(
         app.screen.query_one("#body-area", TextArea).load_text("Body")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
 
     # SMTP was called (send succeeded) even though Sent folder didn't exist
     assert send_mock.call_count == 1
@@ -3279,7 +3302,7 @@ async def test_reply_and_send_marks_answered(
         app.screen.query_one("#to-input", Input).value = "alice@example.com"
         app.screen.query_one("#body-area", TextArea).load_text("Reply body")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
         # Asserted inside the app, because the flag is what makes the
         # list show the reply arrow and the test is named for it.
         rows = index.list_folder_messages(folder=folder)
@@ -3357,7 +3380,7 @@ async def test_compose_reply_sends_and_marks_answered(
         app.screen.query_one("#to-input", Input).value = "alice@example.com"
         app.screen.query_one("#body-area", TextArea).load_text("Reply")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _settle_send(pilot, app)
         answered = [
             row
             for row in index.list_folder_messages(folder=folder)
