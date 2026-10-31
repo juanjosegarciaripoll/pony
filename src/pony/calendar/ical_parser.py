@@ -169,6 +169,12 @@ def localize_naive(value: datetime) -> datetime:
     return value.replace(tzinfo=local_tzinfo(value))
 
 
+#: Pre-epoch moments do not convert on every platform, so the zone is
+#: read at the same point of this year instead of at *when*.  A leap
+#: year, so that 29 February survives the substitution.
+_IN_RANGE_YEAR = 1972
+
+
 def local_tzinfo(when: datetime) -> tzinfo:
     """The local zone as it stood at *when*.
 
@@ -182,8 +188,18 @@ def local_tzinfo(when: datetime) -> tzinfo:
 
     A naive *when* is read as local wall time, which is what a floating
     DTSTART is.
+
+    Before the epoch the platform is asked about the same point of
+    ``_IN_RANGE_YEAR`` rather than about *when*: Windows' ``localtime``
+    refuses a negative ``time_t``, so ``astimezone`` on a 1900 date
+    answers ``OSError 22`` there and the parser went down on a file it
+    should read -- a birthday carried as a floating ``DTSTART`` is
+    exactly that shape.  Keeping the month and day keeps the season,
+    which is the part of the answer that varies; the year's own rules
+    are beyond any platform's table anyway.
     """
-    return when.astimezone().tzinfo or UTC
+    anchor = when if when.year >= _IN_RANGE_YEAR else when.replace(year=_IN_RANGE_YEAR)
+    return anchor.astimezone().tzinfo or UTC
 
 
 def _decoded(component: object, key: str) -> object:

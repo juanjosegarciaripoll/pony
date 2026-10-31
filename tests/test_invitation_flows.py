@@ -119,6 +119,21 @@ async def _open_first_message(pilot: Any) -> None:
     await pilot.pause()
 
 
+async def _settle_invitation(pilot: Any, app: Any) -> None:
+    """Wait for the answer to be filed and sent, not for one pump turn.
+
+    `MainScreen._apply_invitation` is a ``@work`` worker that files the
+    event and talks to SMTP in `asyncio.to_thread`, so `pilot.pause()`
+    yields the event loop without waiting for the thread.  A test that
+    read the calendar index or the notifications straight after was
+    racing it: on CI it read an empty index, and on Windows a second
+    connection met the worker's write and answered "database is
+    locked".
+    """
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
 # ---------------------------------------------------------------------------
 # The reader pane
 # ---------------------------------------------------------------------------
@@ -300,7 +315,7 @@ async def test_adding_an_invitation_files_it_in_the_calendar() -> None:
             invitation,
             InvitationChoice(calendar=CalendarRef(_ACCOUNT, _CALENDAR), partstat=None),
         )
-        await pilot.pause()
+        await _settle_invitation(pilot, app)
         stored = list(runtime.index.list_components_by_uid("design-review@example.com"))
         assert len(stored) == 1
         assert stored[0].summary == "Design review"
@@ -331,7 +346,7 @@ async def test_accepting_files_it_and_replies_to_the_organizer() -> None:
                     calendar=CalendarRef(_ACCOUNT, _CALENDAR), partstat="ACCEPTED"
                 ),
             )
-            await pilot.pause()
+            await _settle_invitation(pilot, app)
             await pilot.pause()
         finally:
             smtp_module.send_message = original  # type: ignore[assignment]
@@ -377,7 +392,7 @@ async def test_a_cancellation_removes_the_event() -> None:
         screen._apply_invitation(  # noqa: SLF001
             first, InvitationChoice(calendar=target, partstat=None)
         )
-        await pilot.pause()
+        await _settle_invitation(pilot, app)
         index_calendar(mirror=runtime.mirror, index=runtime.index, calendar=target)
         assert list(runtime.index.list_components_by_uid("design-review@example.com"))
 
@@ -389,7 +404,7 @@ async def test_a_cancellation_removes_the_event() -> None:
         screen._apply_invitation(  # noqa: SLF001
             cancellation, InvitationChoice(calendar=target, partstat=None)
         )
-        await pilot.pause()
+        await _settle_invitation(pilot, app)
         assert list_panel is not None
         messages = [n.message for n in app._notifications]  # noqa: SLF001
         assert any("Cancelled in work" in m for m in messages), messages
@@ -413,7 +428,7 @@ async def test_malformed_calendar_data_is_reported_not_raised() -> None:
             broken,
             InvitationChoice(calendar=CalendarRef(_ACCOUNT, _CALENDAR), partstat=None),
         )
-        await pilot.pause()
+        await _settle_invitation(pilot, app)
         messages = [n.message for n in app._notifications]  # noqa: SLF001
         assert any("Could not file the invitation" in m for m in messages), messages
 
@@ -444,7 +459,7 @@ async def test_a_reply_without_a_sendable_account_is_reported() -> None:
         )
         messages: list[str] = []
         for _ in range(20):
-            await pilot.pause()
+            await _settle_invitation(pilot, app)
             messages = [n.message for n in app._notifications]  # noqa: SLF001
             if any("nothing was answered" in m for m in messages):
                 break

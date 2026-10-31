@@ -93,7 +93,7 @@ from pony.tui.calendar.widgets.event_list import EventList, component_ref_for_ro
 from pony.tui.calendar.widgets.event_view import EventView
 from pony.tui.reporting import on_ui_thread
 from tests_calendar import corpus
-from tests_calendar.zones import local_zone
+from tests_calendar.zones import local_zone, requires_tzset
 
 
 def simple_event_day() -> date:
@@ -3603,12 +3603,20 @@ class TimelineGridHelpersTest(unittest.TestCase):
         )
         self.assertFalse(is_full_day(short.occurrence))
 
-        # A 24h-long event that is NOT anchored at midnight is timed, not
-        # all-day — guards the midnight-anchor requirement. Both zones
-        # are pinned, the event's and the reader's: the rule accepts
-        # either a UTC midnight or a *local* midnight anchor, so 09:00
-        # Madrid reads as all-day for a reader at UTC+9 (where it is UTC
-        # midnight) or at UTC-7 (where it is local midnight).
+    @requires_tzset
+    def test_a_day_long_event_away_from_midnight_is_timed(self) -> None:
+        """A 24h event not anchored at midnight is timed, not all-day.
+
+        Both zones are pinned, the event's and the reader's: the rule
+        accepts either a UTC midnight or a *local* midnight anchor, so
+        09:00 Madrid reads as all-day for a reader at UTC+9 (where it is
+        UTC midnight) or at UTC-7 (where it is local midnight).  Pinning
+        the reader's zone needs `time.tzset`, which Windows has not got,
+        so this half is separate from the rest -- a skip there costs the
+        timed-event check and nothing else.
+        """
+        from pony.calendar.views import is_full_day
+
         offset_zone = ZoneInfo("Europe/Madrid")
         day_long_offset = self._all_day_row(
             "offset",

@@ -496,8 +496,9 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
         Safe to call while another thread is mid-batch: that thread's
         connection is left for it to commit, and no thread is handed a
-        connection this call has closed.  Nothing in ``src/pony`` calls
-        it yet — the mail index relies on ``__del__``.
+        connection this call has closed.  ``pony.cli.program.open_index`` calls
+        it when ``initialize`` raises, because whoever handles that may
+        delete the database; everything else relies on ``__del__``.
         """
         self._db.close()
 

@@ -81,7 +81,18 @@ def open_index(paths: AppPaths) -> SqliteIndexRepository:
     silent for the whole of it.
     """
     index = SqliteIndexRepository(database_path=paths.index_db_file)
-    index.initialize(progress=_say_migrating)
+    try:
+        index.initialize(progress=_say_migrating)
+    except BaseException:
+        # A repository that could not open its schema must not be left
+        # holding the file.  `SchemaMismatchError` is caught in `main`,
+        # which offers to *delete* the database -- and Windows refuses
+        # to delete a file any handle is open on.  Letting the garbage
+        # collector reap it is not enough: the traceback keeps this
+        # frame, and so this local, alive for as long as the handler
+        # runs.
+        index.close()
+        raise
     # Close off the overwritten progress line, if there was one, so what
     # the command prints next starts at column 0.
     if index.migrated:

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from conftest import absolute
+
 from pony.calendar.config import ConfigDocument, mirror_roots
 from pony.calendar.credentials import DefaultCredentialsProvider
 from pony.calendar.domain import (
@@ -1519,7 +1521,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "s3cret",
                 "--mirror-path",
-                "/tmp/pony/calendar/personal",
+                absolute("/tmp/pony/calendar/personal"),
             ]
         )
         self.assertEqual(code, 0)
@@ -1581,7 +1583,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "CHRONOS_PW",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.assertEqual(code, 0)
@@ -1608,7 +1610,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "pass show chronos",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.assertEqual(code, 0)
@@ -1635,7 +1637,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "p",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.stdout.truncate(0)
@@ -1657,7 +1659,7 @@ class AccountAddCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "p",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.assertEqual(code, 1)
@@ -1690,7 +1692,7 @@ class AccountListCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "SUPER_SECRET_DO_NOT_LEAK",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.stdout.truncate(0)
@@ -1722,7 +1724,7 @@ class AccountRmCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "X",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.stdout.truncate(0)
@@ -1761,7 +1763,7 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
                 "--client-secret",
                 "GOCSPX-secret",
                 "--mirror-path",
-                "/tmp/pony/calendar/google",
+                absolute("/tmp/pony/calendar/google"),
             ]
         )
         self.assertEqual(code, 0)
@@ -1866,7 +1868,7 @@ class AccountAddOAuthTest(ConfigEditingCliTestCase):
                 "--client-secret",
                 "s",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.assertEqual(code, 2)
@@ -1893,7 +1895,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
                 "--client-secret",
                 "cs",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.stdout.truncate(0)
@@ -1986,7 +1988,7 @@ class OAuthAuthorizeCommandTest(ConfigEditingCliTestCase):
                 "--credential-value",
                 "pw",
                 "--mirror-path",
-                "/tmp/m",
+                absolute("/tmp/m"),
             ]
         )
         self.stdout.truncate(0)

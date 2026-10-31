@@ -7,7 +7,7 @@ import unittest.mock
 from pathlib import Path
 from uuid import uuid4
 
-from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
+from conftest import TMP_ROOT, absolute, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
 from pony.mail.domain import AccountConfig, LocalAccountConfig, ViewerRule
@@ -825,7 +825,7 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
 
         root = TMP_ROOT / "contained-mirror" / uuid4().hex
         with unittest.mock.patch.dict(os.environ, {"PONY_ROOT": str(root)}):
-            config = parse_config(self._config("/var/mail/live-mail"))
+            config = parse_config(self._config(absolute("/var/mail/live-mail")))
 
         path = config.accounts[0].mirror.path
         self.assertTrue(
