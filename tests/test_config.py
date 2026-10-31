@@ -731,7 +731,7 @@ def sample_toml_config() -> str:
     return resolve_fixture(
         """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 
 [[accounts]]
@@ -861,3 +861,35 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
             config = parse_config(self._config(str(declared)))
 
         self.assertEqual(declared, config.accounts[0].mirror.path)
+
+
+def test_no_config_fixture_spells_a_path_in_a_basic_string() -> None:
+    """A path in a double-quoted TOML value is invalid TOML on Windows.
+
+    `C:\\Users\\...` opens TOML's `\\U` escape, which wants eight hex
+    digits, so a data directory in a basic string parsed everywhere but
+    Windows -- where it took out every test that loads a config, and
+    left the failures looking like missing output rather than a broken
+    fixture.
+    A literal string processes no escapes at all, which is what
+    `conftest.resolve_fixture` has always said the placeholder belongs
+    in.  `as_posix()` is the other way to spell it, so a line using
+    that is fine.
+    """
+    import re
+
+    keys = ("data_dir", "path", "bbdb_path", "downloads_path", "mirror_path")
+    basic_string = re.compile(rf"\b({'|'.join(keys)})\s*=\s*\"[^\"\n]*\{{")
+    suite = Path(__file__).resolve().parent.parent
+    offenders = [
+        f"{source.name}:{number}: {line.strip()}"
+        for folder in ("tests", "tests_calendar")
+        for source in sorted((suite / folder).glob("*.py"))
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if "as_posix" not in line and basic_string.search(line)
+    ]
+    assert offenders == [], "config fixtures that break on Windows:\n" + "\n".join(
+        offenders
+    )

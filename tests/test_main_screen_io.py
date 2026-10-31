@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
 from corpus import multipart_mixed_attachment, plain_text
 from textual.widgets import Label
 from tui_helpers import build_pony_app
@@ -163,6 +165,9 @@ async def test_saving_parts_names_what_it_wrote_and_what_was_missing(
     assert "No part 9 on this message." in said
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="chmod cannot make a directory unwritable on Windows"
+)
 async def test_a_part_that_cannot_be_written_is_reported_on_its_own(
     tmp_path: Path,
 ) -> None:

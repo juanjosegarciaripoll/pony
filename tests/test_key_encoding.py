@@ -21,7 +21,6 @@ import unittest
 
 from textual._xterm_parser import XTermParser  # noqa: PLC2701
 from textual.binding import Binding
-from textual.drivers import linux_driver
 from textual.events import Key
 
 from pony.tui.mail.screens.compose_screen import ComposeScreen
@@ -63,7 +62,18 @@ def _requests_associated_text() -> bool:
     This reads the driver's source on purpose: the handshake it writes
     decides which of the encodings below a terminal will use, and there
     is no public accessor for it.
+
+    Imported here rather than at the top of the module: the driver
+    imports ``termios``, so a module-level import made the whole file
+    fail to collect on Windows -- and the parser the rest of these
+    tests exercise is platform-independent.  No Linux handshake means
+    no associated text, which is what the only caller skips on.
     """
+    try:
+        from textual.drivers import linux_driver
+    except ImportError:  # pragma: no cover - only Windows lacks termios
+        return False
+
     source = inspect.getsource(linux_driver)
     match = re.search(r"KITTY_PROTOCOL_FLAG\s*=\s*\(([^)]*)\)", source)
     if match is None:

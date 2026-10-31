@@ -1321,7 +1321,7 @@ class ConfigLoadErrorTest(CliTestCase):
 
 _HOST_CONFIG = """\
 config_version = 3
-data_dir = "{data_dir}"
+data_dir = '{data_dir}'
 profile = "calendar-cli-tests"
 accounts = []
 """

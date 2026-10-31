@@ -9,6 +9,7 @@ the browser offers the same set — so the rules belong to
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -165,6 +166,8 @@ class SavePartsTest(unittest.TestCase):
         self.assertEqual(len(outcome.notices), 1)
 
     def test_a_part_that_cannot_be_written_leaves_the_others_alone(self) -> None:
+        if os.name != "posix":
+            self.skipTest("chmod cannot make a directory unwritable on Windows")
         rendered = render_message(corpus.multipart_mixed_attachment())
         with TemporaryDirectory() as tmp:
             dest = Path(tmp) / "closed"

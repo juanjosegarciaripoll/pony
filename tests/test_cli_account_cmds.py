@@ -57,7 +57,7 @@ def _encrypted_config_toml() -> str:
     return resolve_fixture(
         """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 
 [[accounts]]

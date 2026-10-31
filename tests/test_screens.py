@@ -9,6 +9,7 @@ do not re-test business logic already covered by unit tests.
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import tempfile
 from collections.abc import AsyncIterator
@@ -1818,6 +1819,9 @@ def test_the_pickers_never_browse_the_real_home() -> None:
     assert not downloads_dir(None).is_relative_to(home)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="chmod cannot make a directory unwritable on Windows"
+)
 def test_a_directory_entry_that_cannot_be_looked_at_is_left_out() -> None:
     """An entry whose ``is_dir()`` raises is dropped, not propagated.
 

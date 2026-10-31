@@ -2101,7 +2101,7 @@ class LocalSummaryMboxTest(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "mbox-test"\n'
@@ -2421,7 +2421,7 @@ def sample_config_toml() -> str:
     return resolve_fixture(
         """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 
 [[accounts]]
@@ -3482,7 +3482,7 @@ class AppLaunchingCommandTests(unittest.TestCase):
             config_path.write_text(
                 text.replace(
                     'profile = "test"',
-                    f'profile = "test"\ndownloads_path = "{TMP_ROOT / name}"',
+                    f"profile = 'test'\ndownloads_path = '{TMP_ROOT / name}'",
                     1,
                 ),
                 encoding="utf-8",
@@ -3700,7 +3700,7 @@ class RemainingCommandArmTests(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n',
                 encoding="utf-8",
             )
@@ -3940,7 +3940,7 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
         config_path = TMP_ROOT / f"config-local-{uuid4().hex}.toml"
         config_path.write_text(
             "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
+            f"data_dir = '{isolated_data_dir()}'\n"
             'profile = "test"\n'
             "\n[[accounts]]\n"
             'account_type = "local"\n'
@@ -4153,7 +4153,7 @@ class ProfileStampTestCase(unittest.TestCase):
         target = self.data if data_dir is None else data_dir
         path.write_text(
             "config_version = 3\n"
-            f'data_dir = "{target}"\n'
+            f"data_dir = '{target}'\n"
             f'profile = "{profile}"\n'
             "accounts = []\n",
             encoding="utf-8",
@@ -4418,7 +4418,7 @@ class MirrorShapedDeleteTestCase(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "personal"\n'
@@ -4583,7 +4583,7 @@ class ReindexCommandTest(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "boxed"\n'
