@@ -135,6 +135,25 @@ with no mail code in the way.
 
     The same switch guards `tests/test_html_policy.py`, which loads a message that tries to navigate itself away — once under `MESSAGE_HTML_CSP` and once without it — and reads the DOM back with `--dump-dom`. The policy's `sandbox` is the only thing that stops a `<meta http-equiv="refresh">`, and nothing but a browser can show that it does. It uses no iframe and no driver page: one URL, one `--dump-dom`, and the control case proves the probe can see a real hijack.
 
+12. **A key change is two edits.** A key lives in `pony.mail.keymap` or
+   `pony.calendar.keymap` (see **Where an operation lives**), and its line in
+   `docs/tui.md` is the other one. The ++f1++ cheatsheet and the footer are
+   *rendered* from the table, so neither needs touching —
+   `tests/test_keymap.py` holds the screens to it, and fails both ways: a key
+   written straight into a `BINDINGS` list, and a screen that no longer binds
+   what its table says.
+
+   Check a candidate key against the terminal before choosing it. Every
+   `ctrl+shift+<letter>` is claimed by some emulator — Windows Terminal alone
+   takes `ctrl+shift+d`, `f`, `n`, `t`, `w`, `a`, `m` and the digits — and a
+   terminal without the kitty keyboard protocol cannot encode them at all: it
+   reports plain `ctrl+<letter>`, so such a binding either never fires or
+   fires on the wrong key. Function keys above `f2` are the clear ground, and
+   `tests/test_key_encoding.py` is where a key's wire encoding gets pinned.
+   `to_textual` also binds every `alt+<letter>` as `alt+shift+<letter>`,
+   because a terminal reports Alt with a capital letter that way; that is one
+   key, so it is not a second table row.
+
 ## Coverage requirements
 
 The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.29 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
@@ -161,6 +180,7 @@ Key test infrastructure:
 | Main screen by concern | `tests/test_main_screen_{messages,compose,sync,io}.py` |
 | Message list widget | `tests/test_message_list_panel.py` |
 | Compose widgets | `tests/test_compose_screen_widgets.py` — buttons, paste, account resolution |
+| Terminal key encodings | `tests/test_key_encoding.py` — raw bytes through `XTermParser`; the only layer where a broken Alt binding is visible |
 | Index / storage | `tests/test_index_store.py`, `tests/test_storage_conformance.py` |
 | Calendar config section | `tests/test_calendar_config.py` |
 | Notification space | `tests/test_notifications.py` |

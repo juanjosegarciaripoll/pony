@@ -28,6 +28,7 @@ from ..mail.accounts import (
 )
 from ..mail.contact_actions import ImportTally, import_contacts
 from ..mail.credentials import build_credentials_provider, encrypt_password
+from ..mail.dedupe import DuplicatePlan  # noqa: TC002
 from ..mail.domain import (
     CONFIG_VERSION,
     AccountConfig,
@@ -820,62 +821,90 @@ def run_dedup_folder(
 ) -> int:
     """Find and eliminate duplicate messages in one folder.
 
-    Two messages are duplicates when they share the same ``Message-ID``
-    header.  Among each duplicate group the copy with the most informative
-    flag set is kept; the rest are marked TRASHED so the next
-    ``pony sync`` expunges them from the server via ``PushDeleteOp``.
+    The duplicate rule, the keeper and the row projection all live in
+    :mod:`pony.dedupe`, shared with the TUI's dedupe action so the two
+    cannot drift apart on something that deletes mail.
 
-    Without ``--apply`` this is a dry-run: the plan is printed but
-    nothing is written.
+    Without ``--apply`` this is a dry-run.  With it, the plan is printed
+    and the exact number of messages has to be typed back at an
+    interactive prompt before anything is written.
     """
     from datetime import UTC, datetime
 
     # Which rows are duplicates and which copy survives are
-    # `mailbox_actions.plan_dedup`'s, as the trashing is
-    # `trash_messages`': what is left here is printing the plan and
-    # asking for `--apply`.
-    from ..mail.mailbox_actions import Mailboxes, plan_dedup, trash_messages
+    # `dedupe.plan_duplicates`', as the trashing is `trash_messages`':
+    # what is left here is printing the plan and asking for it twice.
+    from ..mail.dedupe import plan_duplicates
+    from ..mail.mailbox_actions import Mailboxes, trash_messages
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
     index = open_index(paths)
 
-    if not any(a.name == account for a in config.accounts):
+    acct = next((a for a in config.accounts if a.name == account), None)
+    if acct is None:
         raise SystemExit(f"No account named {account!r} in config.")
-
+    mirror = build_mirror(acct)
     folder_ref = FolderRef(account_name=account, folder_name=folder)
+
     now = datetime.now(tz=UTC)
     with index.connection():
         # Read and write inside the same connection so the snapshot is
         # consistent: a concurrent sync cannot alter flags between the
         # read and the upsert.
-        groups = plan_dedup(index.list_folder_messages(folder=folder_ref))
-        if not groups:
+        plan = plan_duplicates(index=index, mirror=mirror, folder=folder_ref)
+        if not plan.groups:
             print(f"No duplicates found in {account}/{folder}.")
+            _print_dedup_caveats(plan)
             return 0
 
-        losers = [row for group in groups for row in group.trash]
-        for group in groups:
+        losers = [row for group in plan.groups for row in group.trash]
+        for group in plan.groups:
             flags = (
                 ",".join(sorted(f.value for f in group.keep.local_flags)) or "(none)"
             )
-            trashing = ", ".join(str(row.uid) for row in group.trash)
+            loser_uids = ", ".join(str(m.uid) for m in group.trash)
             print(
-                f"  {group.message_id}\n"
+                f"  {group.label}\n"
                 f"    keep uid={group.keep.uid} flags=[{flags}]\n"
-                f"    trash uid(s): {trashing}"
+                f"    trash uid(s): {loser_uids}"
             )
 
+        n_losers = plan.message_count
+        n_groups = plan.group_count
+        _print_dedup_caveats(plan)
+
         if not apply:
-            print(f"\nWould trash {len(losers)} row(s) in {len(groups)} group(s).")
+            print(f"\nWould trash {n_losers} message(s) in {n_groups} group(s).")
             print("Rerun with --apply to write changes.")
             return 0
 
+        # Deleting mail asks for more than a reflexive "y": the count has
+        # to be read off the plan above and typed back.
+        print(
+            f"\nAbout to trash {n_losers} message(s) in {n_groups} group(s) "
+            f"from {account}/{folder}."
+        )
+        print(
+            "The next `pony sync` expunges them from the server.  They stay "
+            "recoverable locally until trash retention expires."
+        )
+        if not sys.stdin.isatty():
+            print(
+                "Refusing to trash messages without confirmation -- "
+                "run this command in a terminal."
+            )
+            return 1
+        answer = input(f"Type {n_losers} to confirm, anything else to abort: ")
+        if answer.strip() != str(n_losers):
+            print("Aborted.  Nothing was changed.")
+            return 1
+
         # Through the action, not a second spelling of it: the field set
-        # a trashed row carries *is* the sync contract, and this copy
-        # overwrote `trashed_at` -- so a row already in the trash had
-        # its retention clock reset by a dedup pass, and survived a
-        # retention it had already outlived.
+        # a trashed row carries *is* the sync contract, and a private
+        # copy of it overwrote `trashed_at` -- so a row already in the
+        # trash had its retention clock reset by a dedup pass, and
+        # survived a retention it had already outlived.
         trash_messages(
             Mailboxes(config=config, index=index, mirrors={}),
             losers,
@@ -883,10 +912,21 @@ def run_dedup_folder(
         )
 
     print(
-        f"\nTrashed {len(losers)} row(s) in {len(groups)} group(s)."
+        f"\nTrashed {n_losers} message(s) in {n_groups} group(s)."
         "  Run `pony sync` to propagate deletions to the server."
     )
     return 0
+
+
+def _print_dedup_caveats(plan: DuplicatePlan) -> None:
+    """Report what the plan deliberately left alone."""
+    if plan.unmatched_ids:
+        print(
+            f"\n{len(plan.unmatched_ids)} Message-ID(s) repeat with copies that "
+            "are not identical — left alone."
+        )
+    if plan.unreadable:
+        print(f"{plan.unreadable} row(s) skipped: mirror file unreadable.")
 
 
 def run_mirror_folder(

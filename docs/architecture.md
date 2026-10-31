@@ -77,6 +77,7 @@ src/pony/mail/         # the mail model
   contact_actions.py   # harvest, list, the form's fields, delete, merge
   contact_merge.py     # what one record holds when two are combined
   message_export.py    # the parts of a message (0 it, T its text, 1..N), saved
+  dedupe.py            # duplicate-copy rule shared by the CLI and the reader
   keymap.py            # which key does what in the mail reader
   views.py             # what a row and the folder tree are, before drawing
   message_renderer.py  # RFC 5322 -> plain text / browser HTML / attachments

@@ -64,8 +64,11 @@ _WEB_KEY_NAMES = {
     "pagedown": "PageDown",
     "pageup": "PageUp",
     "colon": ":",
-    "f1": "F1",
-    "f2": "F2",
+    # Every function key, not the two that happen to be bound: the DOM
+    # spells them "F8" where Textual spells them "f8", and a key added
+    # to a table without a spelling here is served in a form no press
+    # can produce.
+    **{f"f{number}": f"F{number}" for number in range(1, 13)},
 }
 
 

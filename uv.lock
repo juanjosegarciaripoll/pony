@@ -735,7 +735,7 @@ requires-dist = [
     { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "python-dateutil", specifier = ">=2.9" },
     { name = "starlette", marker = "extra == 'web'", specifier = ">=0.41" },
-    { name = "textual", specifier = ">=8.2.3" },
+    { name = "textual", specifier = ">=8.2.3,<8.2.7" },
     { name = "tinymcp", git = "https://github.com/juanjosegarciaripoll/tinymcp.git" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.32" },
 ]

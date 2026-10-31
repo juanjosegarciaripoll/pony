@@ -427,7 +427,14 @@ def test_every_available_key_is_an_action_the_page_can_really_run() -> None:
 
 
 def test_a_key_the_browser_has_not_got_is_marked_rather_than_silent() -> None:
-    """One key is terminal-only, and the press says so."""
+    """Two keys are terminal-only, and a press says so rather than dying.
+
+    ``edit_external`` spawns an editor on the machine running the
+    process, which a browser tab cannot be handed.  ``dedupe_folder``
+    expunges mail from the server after a count is typed back, and the
+    browser has no dialog that reads one; it is marked unavailable
+    instead of being served as a key that would do nothing.
+    """
     source = script()
     services, _runtime, _seeded = _services("dispatch-unavailable")
 
@@ -440,7 +447,7 @@ def test_a_key_the_browser_has_not_got_is_marked_rather_than_silent() -> None:
         for entry in entries
         if not entry["available"]
     }
-    assert absent == {"edit_external"}
+    assert absent == {"dedupe_folder", "edit_external"}
     # Nothing claims to implement it, on either side.
     assert absent.isdisjoint(client_actions(source))
     assert absent.isdisjoint(SERVER_ACTIONS)
