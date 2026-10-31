@@ -67,13 +67,17 @@ def sandbox_root() -> Path | None:
     return expand_path(raw)
 
 
-def _lexically_normal[AnyPath: PurePath](path: AnyPath) -> AnyPath:
+def lexically_normal[AnyPath: PurePath](path: AnyPath) -> AnyPath:
     """*path* with its ``.`` and ``..`` segments folded away.
 
     Lexical, not filesystem-truthful: nothing is read from disk and
     symlinks are not followed.  It exists because containment is decided
     by comparing spellings, and ``/box/../../etc`` is spelled as though
     it were inside ``/box``.
+
+    It is the normalisation a path gets before it is handed to
+    :func:`contain`, and the reason it is not ``Path.resolve``: see
+    :func:`graft`.
     """
     kept: list[str] = []
     for part in path.parts[1:] if path.anchor else path.parts:
@@ -102,9 +106,17 @@ def graft[AnyPath: PurePath](root: AnyPath, path: AnyPath) -> AnyPath:
 
     Grafting an already-grafted path returns it unchanged, so resolving
     twice is harmless.
+
+    Because containment is a comparison of spellings, the caller must
+    not hand in a path straight from ``Path.resolve``: a symlink
+    anywhere above the root -- which is what the system temporary
+    directory is on macOS, ``/var`` being a link to ``/private/var`` --
+    gives the resolved path a spelling the root does not share, and a
+    directory already inside the root is relocated into it a second
+    time.  Fold with :func:`lexically_normal` instead.
     """
-    base = _lexically_normal(root)
-    target = _lexically_normal(path)
+    base = lexically_normal(root)
+    target = lexically_normal(path)
     if target.is_relative_to(base):
         return target
     anchor = target.anchor

@@ -809,7 +809,7 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         config = parse_config(self._config(str(TMP_ROOT / "a" / ".." / "b")))
         self.assertEqual(
             config.accounts[0].mirror.path,
-            contain((TMP_ROOT / "b").resolve()),
+            contain(TMP_ROOT / "b"),
         )
 
     def test_an_absolute_path_is_confined_to_pony_root(self) -> None:
@@ -834,3 +834,30 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         )
         # Relocated, not merged: the spelling is still recoverable.
         self.assertEqual(("var", "mail", "live-mail"), path.parts[-3:])
+
+    def test_a_mirror_inside_a_symlinked_root_is_left_where_it_is(self) -> None:
+        """Containment compares spellings, so the spelling must survive.
+
+        The absolute arm used to resolve the path before containing it.
+        A symlink anywhere above ``PONY_ROOT`` -- which is what the
+        system temporary directory is on macOS, ``/var`` being a link
+        to ``/private/var`` -- then gave the resolved mirror a spelling
+        the root did not share, so a directory already inside the
+        sandbox was relocated into it a second time, under a ``%2F``
+        component.  Every run after that wrote its mirror to a
+        directory nothing else looked in: four CLI tests failed on
+        macOS and nowhere else.
+        """
+        import os
+
+        base = TMP_ROOT / "symlinked-root" / uuid4().hex
+        real = base / "real"
+        (real / "data").mkdir(parents=True)
+        link = base / "link"
+        link.symlink_to(real, target_is_directory=True)
+
+        declared = link / "data" / "mirror"
+        with unittest.mock.patch.dict(os.environ, {"PONY_ROOT": str(link)}):
+            config = parse_config(self._config(str(declared)))
+
+        self.assertEqual(declared, config.accounts[0].mirror.path)

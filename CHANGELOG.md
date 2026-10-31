@@ -244,6 +244,15 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A sandboxed mirror stays where the config puts it**: `mirror.path`
+  was resolved before being confined to `PONY_ROOT`, and containment
+  compares spellings. A symlink above the root — the system temporary
+  directory on macOS is one, `/var` being a link to `/private/var` —
+  gave the resolved path a prefix the root did not share, so a mirror
+  already inside the sandbox was relocated into it a second time under
+  a `%2F` component. Reads found nothing there, a rescan indexed
+  nothing, and `reset` deleted the wrong tree.
+
 - **The index migration says it is happening, and how far along it is**:
   opening a v3 index on 2.0.0 rewrites every message row and reindexes
   every body first, which is minutes on a large mailbox — and it printed
