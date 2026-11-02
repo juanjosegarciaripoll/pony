@@ -285,19 +285,19 @@ class UntrustedNameTest(unittest.TestCase):
         self._write("../../../../etc/cron.d")
         written = [p for p in self.root.rglob("*.ics")]
         self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+        self.assertTrue(written[0].resolve().is_relative_to(self.root.resolve()))
 
     def test_a_drive_qualified_name_stays_inside_the_mirror(self) -> None:
         self._write("C:\\Windows\\Temp")
         written = [p for p in self.root.rglob("*.ics")]
         self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+        self.assertTrue(written[0].resolve().is_relative_to(self.root.resolve()))
 
     def test_a_unc_name_stays_inside_the_mirror(self) -> None:
         self._write("//attacker/share")
         written = [p for p in self.root.rglob("*.ics")]
         self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].is_relative_to(self.root.resolve()))
+        self.assertTrue(written[0].resolve().is_relative_to(self.root.resolve()))
 
     def test_two_names_that_differ_never_share_a_directory(self) -> None:
         """The encoding is injective, so no two calendars can merge."""

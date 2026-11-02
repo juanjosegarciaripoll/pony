@@ -18,7 +18,7 @@ from textual.widgets import Footer, Header
 from textual.worker import Worker
 
 from pony.keys import for_surface
-from pony.outcome import Notice, Outcome
+from pony.outcome import Notice, Outcome, describe_exception
 from pony.tui.reporting import report
 
 from ....invitation import Invitation
@@ -37,13 +37,16 @@ from ....mail.composer import (
     resumed_draft,
 )
 from ....mail.contact_actions import contact_for_address, harvest_folder
+from ....mail.dedupe import plan_duplicates, trashed_duplicate
 from ....mail.domain import (
+    AccountConfig,
     AnyAccount,
     AppConfig,
     FolderMessageSummary,
     FolderRef,
     IndexedMessage,
     MessageFlag,
+    MessageStatus,
 )
 from ....mail.folder_utils import holds_drafts, shows_recipient
 from ....mail.keymap import MAIL_KEYMAP, Surface
@@ -95,6 +98,7 @@ from ..widgets.message_view import MessageViewPanel
 
 if TYPE_CHECKING:
     from ....calendar_runtime import CalendarRuntime
+    from ....mail.dedupe import DuplicatePlan
     from ...app import MailSyncHost
     from .sync_confirm_screen import SyncConfirmScreen
 
@@ -690,7 +694,11 @@ class MainScreen(Screen[None]):
         """Execution finished — dismiss screen and refresh."""
         if worker.state == worker.state.ERROR:
             err = worker.error
-            msg = str(err) if err else "unknown error"
+            # An exception object is truthy whatever it says, so the
+            # old ``str(err) if err else ...`` fell through to "" for
+            # every failure whose message is empty -- a timeout, a bare
+            # OSError, a dropped TLS connection, which is most of them.
+            msg = describe_exception(err) if err is not None else "unknown error"
             self.app.notify(f"Sync failed: {msg}", severity="error")  # pyright: ignore[reportUnknownMemberType]
         else:
             self.app.notify(describe_sync_result(worker.result))  # pyright: ignore[reportUnknownMemberType]
@@ -1334,6 +1342,112 @@ class MainScreen(Screen[None]):
                 source,
             ),
         )
+
+    def action_dedupe_folder(self) -> None:
+        """Trash redundant copies of messages in the current folder.
+
+        Same rule as ``pony folder dedup``: a shared ``Message-ID`` and
+        byte-identical copies, keeping the most informative one.  The
+        plan is shown and the count has to be typed back before
+        anything is written.
+        """
+        folder_ref = self._current_folder_ref
+        if folder_ref is None:
+            return
+        account = next(
+            (a for a in self._config.accounts if a.name == folder_ref.account_name),
+            None,
+        )
+        if account is None:
+            return
+        if isinstance(account, AccountConfig) and account.folders.is_read_only(
+            folder_ref.folder_name
+        ):
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Folder {folder_ref.folder_name!r} is read-only.",
+                severity="warning",
+            )
+            return
+
+        mirror = self._mirrors[folder_ref.account_name]
+        plan = plan_duplicates(
+            index=self._index,
+            mirror=mirror,
+            folder=folder_ref,
+        )
+        if not plan.groups:
+            detail = ""
+            if plan.unmatched_ids:
+                detail = (
+                    f"  {len(plan.unmatched_ids)} repeated Message-ID(s) have "
+                    "copies that are not identical."
+                )
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"No duplicates in {folder_ref.folder_name}.{detail}",
+            )
+            return
+
+        from .dedupe_confirm_screen import DedupeConfirmScreen
+
+        expected = plan.message_count
+
+        def _on_answer(answer: str | None) -> None:
+            if answer is None or answer.strip() != str(expected):
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    "Dedupe cancelled.  Nothing was changed.",
+                )
+                return
+            trashed = self._apply_dedupe_plan(plan)
+            self._reload_keeping_cursor(folder_ref)
+            if trashed != expected:
+                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                    f"Trashed {trashed} of {expected} duplicate(s) — the rest "
+                    "changed while the prompt was open.",
+                    severity="warning",
+                )
+                return
+            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
+                f"Trashed {trashed} duplicate(s).  Sync to expunge them.",
+            )
+
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            DedupeConfirmScreen(
+                count=expected,
+                groups=plan.group_count,
+                folder=folder_ref.folder_name,
+            ),
+            _on_answer,
+        )
+
+    def _apply_dedupe_plan(self, plan: DuplicatePlan) -> int:
+        """Mark the plan's redundant copies TRASHED; return how many.
+
+        Each row is re-read first: a sync may have run while the
+        confirmation prompt was open, and a row that moved, gained a
+        new UID or was already trashed is no longer the copy the user
+        agreed to delete.
+        """
+        now = datetime.now(tz=UTC)
+        trashed = 0
+        with self._index.connection():
+            for group in plan.groups:
+                for message in group.trash:
+                    current = self._index.get_message(
+                        message_ref=message.message_ref,
+                    )
+                    if current is None:
+                        continue
+                    if (
+                        current.local_status != MessageStatus.ACTIVE
+                        or current.uid != message.uid
+                        or current.storage_key != message.storage_key
+                    ):
+                        continue
+                    self._index.update_message(
+                        message=trashed_duplicate(current, now=now)
+                    )
+                    trashed += 1
+        return trashed
 
     def action_mark_all_read(self) -> None:
         """Mark every message in the current folder as read."""

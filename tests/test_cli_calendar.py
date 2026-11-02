@@ -15,7 +15,7 @@ from pony.paths import resolve
 
 _CONFIG = """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 accounts = []
 
@@ -30,7 +30,7 @@ credential = { backend = "env", variable = "CAL_PASSWORD" }
 
 _MAIL_ONLY = """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 accounts = []
 """

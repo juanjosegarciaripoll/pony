@@ -9,6 +9,7 @@ do not re-test business logic already covered by unit tests.
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import tempfile
 from collections.abc import AsyncIterator
@@ -1797,27 +1798,48 @@ def test_the_pickers_never_browse_the_real_home() -> None:
     directory and stat-ed what is in it. That found a symlink into a
     network share that was down, whose ``is_dir()`` raises rather than
     answering, and the screens went down with it on open.
+
+    The claim is containment, not distance from ``$HOME``: on Windows
+    the temporary directory *is* inside the home directory
+    (``C:/Users/<user>/AppData/Local/Temp``), so the sandbox is too,
+    and asking whether a contained path is under ``$HOME`` answered yes
+    there while saying nothing about whether the picker could reach the
+    user's own files.  Being under ``PONY_ROOT`` is what stops it.
     """
+    from pony.paths import sandbox_root
     from pony.tui.mail.screens.add_attachment_screen import AddAttachmentScreen
     from pony.tui.mail.screens.save_folder_picker_screen import SaveFolderPickerScreen
 
     home = pathlib.Path.home()
+    contained = sandbox_root()
+    # `tests/conftest.py` sets it for the whole session.
+    assert contained is not None
+    # Resolved, because the pickers resolve what they root themselves
+    # at, and the comparison is between spellings: the system temporary
+    # directory is behind a symlink on macOS, so the sandbox has two.
+    root = contained.resolve()
 
     saving = SaveFolderPickerScreen()
     attaching = AddAttachmentScreen()
 
     # The save picker defaults to the home directory, so that is the
     # default containment has to move.
-    assert not saving._root.is_relative_to(home), saving._root
+    assert saving._root != home
+    assert saving._root.is_relative_to(root), saving._root
     # The attachment picker defaults to the working directory -- the
     # checkout a test runs in, which is not the user's own data -- and
     # climbs no further than the contained home above it.
     assert attaching._root == pathlib.Path.cwd().resolve()
-    assert not attaching._root.is_relative_to(home / "Downloads")
-    # And the one place a saved file goes by default.
-    assert not downloads_dir(None).is_relative_to(home)
+    assert attaching._root != home / "Downloads"
+    # And the one place a saved file goes by default.  Against the
+    # unresolved root, because `downloads_dir` contains the path and
+    # hands it back without resolving it, which is the right order.
+    assert downloads_dir(None).is_relative_to(contained)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="chmod cannot make a directory unwritable on Windows"
+)
 def test_a_directory_entry_that_cannot_be_looked_at_is_left_out() -> None:
     """An entry whose ``is_dir()`` raises is dropped, not propagated.
 

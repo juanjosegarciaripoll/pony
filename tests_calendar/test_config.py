@@ -7,6 +7,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from conftest import absolute
+
 from pony.calendar.config import ConfigError, dump, load, mirror_roots, parse, save
 from pony.calendar.domain import (
     AccountConfig,
@@ -135,7 +137,7 @@ class ParseAccountTest(unittest.TestCase):
         "url": "https://caldav.example.com/dav/",
         "username": "user@example.com",
         "credential": {"backend": "env", "variable": "CHRONOS_PERSONAL_PW"},
-        "mirror_path": "/tmp/pony/calendar/personal",
+        "mirror_path": absolute("/tmp/pony/calendar/personal"),
     }
 
     def _wrap(self, account: dict[str, object]) -> dict[str, object]:
@@ -210,14 +212,16 @@ class ParseAccountTest(unittest.TestCase):
         acct_data["mirror_path"] = "mirrors/personal"
         config = parse(self._wrap(acct_data))
 
-        one = CalendarPaths(root=Path("/one"))
-        two = CalendarPaths(root=Path("/two"))
+        one = CalendarPaths(root=Path(absolute("/one")))
+        two = CalendarPaths(root=Path(absolute("/two")))
 
         self.assertEqual(
-            mirror_roots(config, one)["personal"], Path("/one/mirrors/personal")
+            mirror_roots(config, one)["personal"],
+            Path(absolute("/one/mirrors/personal")),
         )
         self.assertEqual(
-            mirror_roots(config, two)["personal"], Path("/two/mirrors/personal")
+            mirror_roots(config, two)["personal"],
+            Path(absolute("/two/mirrors/personal")),
         )
 
     def test_a_half_qualified_mirror_path_is_refused(self) -> None:
@@ -243,12 +247,14 @@ class ParseAccountTest(unittest.TestCase):
     def test_an_absolute_mirror_path_is_its_own_answer(self) -> None:
         """A root is for resolving relative paths, not for overriding one."""
         acct_data = dict(self.BASE_ACCOUNT)
-        acct_data["mirror_path"] = "/srv/calendars/personal"
+        acct_data["mirror_path"] = absolute("/srv/calendars/personal")
         config = parse(self._wrap(acct_data))
 
         self.assertEqual(
-            mirror_roots(config, CalendarPaths(root=Path("/elsewhere")))["personal"],
-            Path("/srv/calendars/personal"),
+            mirror_roots(config, CalendarPaths(root=Path(absolute("/elsewhere"))))[
+                "personal"
+            ],
+            Path(absolute("/srv/calendars/personal")),
         )
 
     def test_an_omitted_mirror_path_declares_nothing(self) -> None:
@@ -390,7 +396,7 @@ class ParseCredentialTest(unittest.TestCase):
                     "url": "https://caldav.example.com/",
                     "username": "u@example.com",
                     "credential": credential,
-                    "mirror_path": "/tmp/m",
+                    "mirror_path": absolute("/tmp/m"),
                 }
             ],
         }
@@ -520,7 +526,7 @@ class ParseCredentialTest(unittest.TestCase):
                             "name": "a",
                             "url": "https://x/",
                             "username": "u@example.com",
-                            "mirror_path": "/tmp/m",
+                            "mirror_path": absolute("/tmp/m"),
                         }
                     ],
                 }
@@ -533,7 +539,7 @@ def _sample_config(**overrides: object) -> AppConfig:
         url="https://caldav.example.com/dav/",
         username="user@example.com",
         credential=EnvCredential(variable="CHRONOS_PERSONAL_PW"),
-        mirror_path=Path("/tmp/pony/calendar/personal"),
+        mirror_path=Path(absolute("/tmp/pony/calendar/personal")),
         trash_retention_days=30,
         scope=SyncScope(),
     )
@@ -622,7 +628,8 @@ class DumpTest(unittest.TestCase):
         accounts = data["accounts"]
         assert isinstance(accounts, list)
         self.assertEqual(
-            Path(str(accounts[0]["mirror_path"])), Path("/tmp/pony/calendar/personal")
+            Path(str(accounts[0]["mirror_path"])),
+            Path(absolute("/tmp/pony/calendar/personal")),
         )
 
     def test_dump_includes_editor_when_set(self) -> None:

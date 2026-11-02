@@ -75,7 +75,7 @@ def _config_with_policy() -> str:
     """A single-account config that marks one folder ignored, one read-only."""
     return (
         "config_version = 3\n"
-        f'data_dir = "{isolated_data_dir()}"\n'
+        f"data_dir = '{isolated_data_dir()}'\n"
         'profile = "test"\n'
         "[[accounts]]\n"
         'name = "personal"\n'

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import logging
 import sqlite3
 import threading
 import time
@@ -849,6 +850,87 @@ class V3ToV4MigrationTestCase(unittest.TestCase):
             query=SearchQuery(body="inside"), account_name="personal"
         )
         self.assertEqual([h.message_ref.id for h in body_hits], [17])
+
+    def test_a_migration_says_it_is_happening_and_how_far_it_got(self) -> None:
+        """Silence was the whole defect.
+
+        Migrating a real index rewrites every row and reindexes every
+        body before ``initialize`` returns.  ``pony sync`` prints its
+        first character only once planning starts, so against a v3
+        database of 130k messages it sat there saying nothing, and the
+        one safe thing to do -- wait -- looked exactly like the one
+        thing people did instead, which was kill it.
+        """
+        path = TMP_ROOT / "v3-migration-voice" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+        said: list[str] = []
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize(progress=said.append)
+
+        assert repo.migrated
+        # It says so before doing any of it, naming both versions and
+        # the size of the job.
+        self.assertIn("schema v3 to v4", said[0])
+        self.assertIn("2 messages", said[0])
+        self.assertIn("let it finish", said[0])
+        # Both long phases are counted, not just the first.
+        self.assertIn("Rewriting the message table: 2 of 2 messages", said)
+        self.assertIn("Rebuilding the search index: 2 of 2 messages", said)
+        # And it says when it is over, so a wait has a visible end.
+        self.assertRegex(said[-1], r"^Index migrated to schema v4 in \d+s\.$")
+
+    def test_a_caller_that_reports_nothing_still_leaves_a_trace(self) -> None:
+        """The reader, the browser and the MCP server pass no reporter.
+
+        They must not be silent either, so for them the two milestones
+        go to the log.  Only the milestones: a hundred running counts
+        belong on one overwritten line, not in a log file.
+        """
+        path = TMP_ROOT / "v3-migration-log" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        with self.assertLogs("pony.mail.index_store", level="WARNING") as captured:
+            repo.initialize()
+
+        self.assertEqual(len(captured.records), 2, captured.output)
+        self.assertIn("schema v3 to v4", captured.output[0])
+        self.assertIn("Index migrated to schema v4", captured.output[1])
+
+    def test_a_reported_migration_is_not_also_logged_as_a_warning(self) -> None:
+        """Said once.  A terminal shows stderr and stdout in one stream."""
+        path = TMP_ROOT / "v3-migration-once" / f"{uuid4().hex}.sqlite3"
+        self._build_v3_db(path)
+
+        repo = SqliteIndexRepository(database_path=path)
+        logger = logging.getLogger("pony.mail.index_store")
+        records: list[logging.LogRecord] = []
+        sink = logging.Handler(level=logging.WARNING)
+        sink.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(sink)
+        try:
+            repo.initialize(progress=lambda _message: None)
+        finally:
+            logger.removeHandler(sink)
+
+        self.assertEqual(records, [])
+
+    def test_a_database_needing_no_migration_says_nothing(self) -> None:
+        """A fresh index is created, not migrated, and keeps quiet."""
+        path = TMP_ROOT / "v3-migration-quiet" / f"{uuid4().hex}.sqlite3"
+        said: list[str] = []
+
+        repo = SqliteIndexRepository(database_path=path)
+        repo.initialize(progress=said.append)
+        self.assertEqual(said, [])
+        self.assertFalse(repo.migrated)
+
+        # And neither does opening an already-migrated one again.
+        again = SqliteIndexRepository(database_path=path)
+        again.initialize(progress=said.append)
+        self.assertEqual(said, [])
+        self.assertFalse(again.migrated)
 
     def test_running_initialize_again_changes_nothing(self) -> None:
         path = TMP_ROOT / "v3-migration-idem" / f"{uuid4().hex}.sqlite3"

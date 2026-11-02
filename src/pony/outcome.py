@@ -45,6 +45,21 @@ def failure(text: str) -> Notice:
     return Notice(text, "error")
 
 
+def describe_exception(exc: BaseException) -> str:
+    """A reason worth showing for *exc*, never the empty string.
+
+    ``str(exc)`` is what to show when there is one, but the failures a
+    sync actually hits are the ones without: ``TimeoutError()``, a bare
+    ``OSError``, ``ssl.SSLEOFError``.  Every one of those renders as
+    ``""``, so a front end reporting ``f"Sync failed: {exc}"`` said
+    "Sync failed: " and stopped — the failure with no output at all.
+    The class name is not prose, but it is the difference between a
+    timeout and a connection reset.
+    """
+    text = str(exc).strip()
+    return text if text else type(exc).__name__
+
+
 @dataclass(frozen=True, slots=True)
 class Outcome:
     """What an operation changed, and what to say about it.
@@ -200,6 +215,7 @@ __all__ = [
     "ProgressGate",
     "Severity",
     "failure",
+    "describe_exception",
     "progress_stride",
     "info",
     "warn",

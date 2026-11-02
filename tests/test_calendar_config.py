@@ -181,7 +181,7 @@ class LoadCalendarConfigTest(unittest.TestCase):
         path = self._write(
             """
             config_version = 3
-            data_dir = "{DATA_DIR}"
+            data_dir = '{DATA_DIR}'
             profile = "test"
             use_utf8 = true
             accounts = []
@@ -205,7 +205,7 @@ class LoadCalendarConfigTest(unittest.TestCase):
     def test_mail_only_file_has_no_calendar(self) -> None:
         path = self._write(
             "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
+            f"data_dir = '{isolated_data_dir()}'\n"
             'profile = "test"\n'
             "accounts = []\n"
         )
@@ -233,7 +233,7 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
     def test_unconfigured_calendar_opens_nothing(self) -> None:
         path = self._write(
             "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
+            f"data_dir = '{isolated_data_dir()}'\n"
             'profile = "test"\n'
             "accounts = []\n"
         )
@@ -243,7 +243,7 @@ class OpenCalendarRuntimeTest(unittest.TestCase):
         path = self._write(
             """
             config_version = 3
-            data_dir = "{DATA_DIR}"
+            data_dir = '{DATA_DIR}'
             profile = "test"
             accounts = []
 

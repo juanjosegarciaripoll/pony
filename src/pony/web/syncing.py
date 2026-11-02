@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pony.calendar.sync import describe_sync_result as describe_calendar_sync
-from pony.outcome import Outcome, failure, info, warn
+from pony.outcome import Outcome, describe_exception, failure, info, warn
 
 from ..mail.sync import describe_halt, describe_sync_result
 from .actions import Confirmation, Reply
@@ -191,8 +191,15 @@ class SyncGate:
                 progress=self._note,
             )
         except Exception as exc:  # noqa: BLE001 — any backend may fail
-            _log.error("web sync failed: %s", exc)
-            return Reply(Outcome.refused(failure(f"Sync failed: {exc}")))
+            # ``exception``, not ``error``: the notice carries one
+            # sentence and the traceback is the only place the failing
+            # call is written down.  Without it a sync that broke inside
+            # the engine left the server log saying nothing but what the
+            # browser already said.
+            _log.exception("web sync failed")
+            return Reply(
+                Outcome.refused(failure(f"Sync failed: {describe_exception(exc)}")),
+            )
         finally:
             self._progress = SyncProgress()
             self._release()
@@ -256,8 +263,10 @@ class SyncGate:
         try:
             results = runner()
         except Exception as exc:  # noqa: BLE001 — any backend may fail
-            _log.error("web calendar sync failed: %s", exc)
-            return Outcome.refused(failure(f"Calendar sync failed: {exc}"))
+            _log.exception("web calendar sync failed")
+            return Outcome.refused(
+                failure(f"Calendar sync failed: {describe_exception(exc)}"),
+            )
         finally:
             self._progress = SyncProgress()
         return _calendar_outcome(results)

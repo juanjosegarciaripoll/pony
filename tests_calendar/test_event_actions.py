@@ -92,6 +92,10 @@ class EventActionsTest(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        # Before the directory goes: the repository holds its
+        # connection until it is closed, and Windows refuses to delete
+        # a file a handle is open on.
+        self.index.close()
         self._tmp.cleanup()
 
     def _draft(self, **overrides: object) -> EditDraft:

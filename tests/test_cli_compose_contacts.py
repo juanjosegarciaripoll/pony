@@ -44,7 +44,7 @@ def _local_only_config_toml() -> str:
     """Return a config with one local account that cannot send (no SMTP)."""
     return (
         "config_version = 3\n"
-        f'data_dir = "{isolated_data_dir()}"\n'
+        f"data_dir = '{isolated_data_dir()}'\n"
         'profile = "test"\n\n'
         "[[accounts]]\n"
         'account_type = "local"\n'

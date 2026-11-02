@@ -387,7 +387,17 @@ def test_every_key_bound_in_a_screen_is_in_the_table_or_named_here() -> None:
 
     from textual.binding import Binding as TextualBinding
 
-    known = {(binding.key, binding.action) for binding in MAIL_KEYMAP}
+    # Built through the converter, not off the table: ``to_textual``
+    # also emits the ``alt+shift+<letter>`` spelling of every
+    # ``alt+<letter>``, which is one key as a terminal reports it and
+    # not a second entry anyone declared.
+    known = {
+        (binding.key, binding.action)
+        for binding in to_textual(MAIL_KEYMAP)
+        # Always true -- the converter builds nothing else -- but its
+        # return type is Textual's wider `BindingType`.
+        if isinstance(binding, TextualBinding)
+    }
     local: dict[str, set[str]] = {}
     for name_of_module in _mail_tui_modules():
         module = importlib.import_module(name_of_module)

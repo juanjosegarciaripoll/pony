@@ -133,6 +133,21 @@ READER_KEYS: tuple[KeyBinding, ...] = (
     # it would have put a key in the browser's own help that could never
     # fire.
     KeyBinding("F", "new_folder", "New folder", Surface.READER),
+    # Dedupe expunges mail from the server, so it gets a key no hand
+    # lands on by accident.  Function keys are what is left after the
+    # terminal takes its share: every ++ctrl+shift+letter++ is spoken
+    # for by one emulator or another -- Windows Terminal alone owns
+    # ctrl+shift+d, f, n, t, w, a, m and the digits -- while f11 is the
+    # only function key it binds.  ++shift+f8++ also survives a terminal
+    # with no kitty keyboard protocol, which collapses every
+    # ctrl+shift+<letter> onto plain ctrl+<letter>.
+    KeyBinding(
+        "shift+f8",
+        "dedupe_folder",
+        "Dedupe folder",
+        Surface.READER,
+        show=False,
+    ),
     KeyBinding("s", "save_message", "Save message", Surface.READER, show=False),
     KeyBinding("O", "attachments_open", "Open part", Surface.READER, show=False),
     KeyBinding("S", "attachments_save", "Save part", Surface.READER, show=False),

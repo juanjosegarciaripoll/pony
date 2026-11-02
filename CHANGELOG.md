@@ -104,6 +104,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Added
 
+- **Dedupe a folder from the reader** (++shift+f8++): the duplicate rule
+  `pony folder dedup` applies is now available on the folder in front of you.
+  It names how many copies it would trash and requires that number to be typed
+  back before writing anything, and re-checks each row as it applies, so a
+  sync landing while the prompt is open cannot turn a confirmed deletion into
+  a different one. Both halves share `pony/dedupe.py`, so the rule cannot
+  drift between them. The key is a function key on purpose: terminals claim
+  most `Ctrl+Shift+<letter>` combinations for themselves, and the ones without
+  the kitty keyboard protocol cannot encode them at all.
+
 - **Pony Express has a calendar**: CalDAV synchronisation, a local `.ics`
   mirror, a SQLite index with recurrence and alarm caches, and agenda, day,
   multi-day and month views are now part of the program rather than a second
@@ -204,6 +214,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   attachments alone, because every message has a part 0 and a part `T`
   and naming them on every message said nothing a reader did not know.
   The Markdown rendering of a body is no longer written by any key.
+- **`pony folder dedup` asks before it deletes, and compares the bytes**: a
+  shared `Message-ID` is now only a candidate — the stored copies must be
+  byte-identical as well, because resends and list copies repeat a
+  `Message-ID` legitimately and this command expunges mail from the server. A
+  group whose copies differ, or whose mirror file cannot be read, is reported
+  and left alone. `--apply` no longer writes on the strength of the flag: the
+  plan is printed and the exact number of messages has to be typed back at an
+  interactive prompt, and the command refuses to act at all when stdin is not
+  a terminal.
+
 - **To: is one address per row, like Cc: and Bcc:**: the three recipient
   fields now behave identically. A comma-separated list splits into one row
   per address when you leave the field or paste it — never while you are
@@ -236,6 +256,36 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   line of their own rather than filling the log.
 
 ### Fixed
+
+- **A sandboxed mirror stays where the config puts it**: `mirror.path`
+  was resolved before being confined to `PONY_ROOT`, and containment
+  compares spellings. A symlink above the root — the system temporary
+  directory on macOS is one, `/var` being a link to `/private/var` —
+  gave the resolved path a prefix the root did not share, so a mirror
+  already inside the sandbox was relocated into it a second time under
+  a `%2F` component. Reads found nothing there, a rescan indexed
+  nothing, and `reset` deleted the wrong tree.
+
+- **The index migration says it is happening, and how far along it is**:
+  opening a v3 index on 2.0.0 rewrites every message row and reindexes
+  every body first, which is minutes on a large mailbox — and it printed
+  nothing, because `pony sync` says nothing until planning starts. A
+  one-time reindex was indistinguishable from a hung sync, so it got
+  interrupted, which starts it over. It now names both schema versions
+  and the message count up front, counts the table rewrite and the
+  search-index rebuild on one overwritten line, and reports how long it
+  took. Every command opens the index through one helper, so this is not
+  `sync` alone; a front end that reports nothing of its own logs the two
+  milestones instead.
+
+- **A sync failure says what failed**: both front ends built the message
+  from `str(exc)`, and the failures a sync meets have nothing to say —
+  `TimeoutError()`, a bare `OSError`, a dropped TLS connection all
+  stringify to `""`. The browser showed `Sync failed: ` and stopped; the
+  reader's `str(err) if err else "unknown error"` never reached its
+  fallback, an exception being truthy however empty. A reason with no
+  text now falls back to the exception's class, and the browser logs the
+  traceback.
 
 - **A new event starts on its summary**: the terminal's event form opened
   on the calendar dropdown, because that is its first focusable widget —
@@ -351,6 +401,53 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   A folder URL now names the row (`id`, as on `/message`, where the same
   parameter opens one), and the composer carries where it was opened
   from, so Discard, Send and Save draft all return to it.
+- **The F1 cheatsheet lists every key again**: the panel was hand-maintained
+  against a comment asking for it to be kept in sync, and had fallen behind —
+  ++shift+g++ (goto folder), ++e++ (edit draft), ++s++ (save), ++ctrl+p++
+  (print), ++shift+o++ / ++shift+s++ (every attachment), ++ctrl+g++
+  (background sync), ++less++ / ++greater++ (first / last row) and
+  ++space++ / ++page-down++ (paging) were all bound and none of them were
+  listed. Each row now carries the binding keys it documents and a test
+  compares those against the keys the app, the reader and its panels declare,
+  in both directions, so neither a missing row nor a stale one survives.
+  `docs/tui.md` gained the same keys.
+
+- **A message whose local copy is missing says what to do about it**: when an
+  index row pointed at a mirror file that was no longer on disk, the reader
+  showed the raw `KeyError` the mirror raises and wrote a fresh traceback to
+  the log on every keypress, since the row re-renders whenever the cursor
+  lands on it. It now names the condition `pony doctor` already reports and
+  points at `pony rescan`, which reconciles it, and logs it once without a
+  traceback.
+
+- **Archiving no longer uploads a second copy on servers without UIDPLUS**:
+  a message archived with ++a++ is moved locally at once and pushed with
+  `UID MOVE` on the next sync. When the server confirms the move but reports
+  no COPYUID — Courier-derived stacks do not — the row kept no UID, which made
+  it indistinguishable from a composed draft that had never been uploaded, so
+  the following sync `APPEND`ed it to the archive folder as well. Every
+  archived message ended up twice on the server, and the orphaned copy came
+  back as a duplicate row on the next pass. Such rows are now stamped as
+  server-confirmed and wait to be adopted by `Message-ID` instead of being
+  re-uploaded; the same applies to an `APPEND` the server accepts without
+  returning APPENDUID.
+
+- **The composer's Alt shortcuts work again on terminals that report key
+  text**: Textual 8.2.7 began asking terminals for kitty's "report associated
+  text" enhancement and then discarded the alt modifier from any key event
+  carrying text. Windows Terminal duly answered Alt+A with
+  `CSI 97;3;97u` — the modifier *and* the letter — so the composer saw a bare
+  `a`, typed it into the message and never opened the attachment picker;
+  ++alt+e++ and ++alt+m++ went the same way. Textual is pinned below 8.2.7
+  until that is resolved upstream, and the key encodings are now tested
+  against raw terminal bytes, which is the only layer where this is visible —
+  `Pilot` injects key names and cannot see it.
+
+- **Holding shift no longer types the letter**: with Caps Lock on, or shift
+  held because the footer spells the shortcut "Alt+A", a terminal sends
+  `ESC A`, which is the distinct key `alt+shift+a`. Unbound, it fell through
+  to the focused field and inserted a capital letter into the message. Every
+  composer shortcut now answers to both forms.
 
 - **A pasted address list keeps every line**: Textual's input pastes only the
   first line of the clipboard, so a list copied one address per line out of

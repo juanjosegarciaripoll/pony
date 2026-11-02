@@ -1211,16 +1211,13 @@ class MaildirUidNamingTestCase(unittest.TestCase):
         client had happened not to touch.
         """
         key = self._store("theirs", uid=200, uid_validity=99)
-        found = next(
-            path
-            for subdir in ("cur", "new")
-            for path in (self.root / subdir).iterdir()
-            if path.name.startswith(key)
-        )
-        foreign = found.with_name(f"{key}:2,S")
-        found.rename(foreign)
-
-        self.assertEqual(uid_of(foreign.name), (99, 200))
+        # The foreign name is built, not created on disk.  `uid_of`
+        # reads a name rather than a file, and ``:`` cannot appear in a
+        # Windows filename at all -- which is the whole reason Pony
+        # writes ``!`` -- so renaming a real file to the standard
+        # spelling fails there with `WinError 123` before the parsing
+        # this test is about is ever reached.
+        self.assertEqual(uid_of(f"{key}:2,S"), (99, 200))
         self.assertEqual(uid_of(f"{key}!2,FS"), (99, 200))
         # A plain key, and anything that is not an info section, are
         # unchanged.

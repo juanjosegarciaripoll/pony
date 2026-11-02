@@ -20,8 +20,9 @@ whichever imported second won for that worker.
 """
 
 import atexit
+import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -37,9 +38,44 @@ TMP_ROOT = Path(_tmp_dir.name)
 atexit.register(_tmp_dir.cleanup)
 
 
+#: The anchor a rooted-but-driveless path resolves against: ``/`` on
+#: POSIX, the current drive on Windows.  ``Path.cwd()`` and not the
+#: temporary directory, because that is what ``Path.resolve()`` itself
+#: prepends, and these paths are compared against resolved ones.
+FS_ANCHOR = Path.cwd().anchor
+
+
+def absolute(posix_path: str) -> str:
+    """*posix_path* spelled as an absolute path on this platform.
+
+    ``"/tmp/m"`` has a root but no drive on Windows, so it is neither
+    relative nor fully qualified and `pony.paths.is_half_qualified`
+    refuses it -- correctly.  A fixture that wants a complete path has
+    to say which drive, or it tests the refusal instead of the feature.
+    """
+    return str(Path(FS_ANCHOR, *PurePosixPath(posix_path).parts[1:]))
+
+
+_UNPORTABLE_IN_A_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_dir_name(nodeid: str) -> str:
+    """A pytest node id as one directory name, on any filesystem.
+
+    A node id is ``file.py::Class::test_name``, and Windows forbids
+    ``:`` in a filename outright -- the ``mkdir`` answers ``WinError
+    123``, "the filename, directory name, or volume label syntax is
+    incorrect", which took out every test that writes under a root of
+    its own there.  Replacing only ``/``, as this did, is enough for
+    POSIX and nowhere else.  The tail is what is kept, because that is
+    the part that names the test.
+    """
+    return _UNPORTABLE_IN_A_NAME.sub("_", nodeid)[-120:]
+
+
 def paths_for(name: str) -> CalendarPaths:
     """A calendar root of its own for *name*."""
-    return CalendarPaths(root=TMP_ROOT / "per-test" / name.replace("/", "_")[-120:])
+    return CalendarPaths(root=TMP_ROOT / "per-test" / safe_dir_name(name))
 
 
 @pytest.fixture(autouse=True)

@@ -270,7 +270,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
     def test_a_mail_only_config_reports_no_calendar(self) -> None:
         self._write_config(
             "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
+            f"data_dir = '{isolated_data_dir()}'\n"
             'profile = "test"\n'
             "accounts = []\n"
         )
@@ -282,7 +282,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self._write_config(
             """
             config_version = 3
-            data_dir = "{DATA_DIR}"
+            data_dir = '{DATA_DIR}'
             profile = "test"
             accounts = []
 
@@ -303,7 +303,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self._write_config(
             """
             config_version = 3
-            data_dir = "{DATA_DIR}"
+            data_dir = '{DATA_DIR}'
             profile = "test"
             accounts = []
 
@@ -317,7 +317,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
 
     _CALENDAR_ACCOUNT = """
         config_version = 3
-        data_dir = "{DATA_DIR}"
+        data_dir = '{DATA_DIR}'
         profile = "test"
         accounts = []
 
@@ -386,7 +386,7 @@ class CalendarDoctorChecksTest(unittest.TestCase):
         self._write_config(
             """
             config_version = 3
-            data_dir = "{DATA_DIR}"
+            data_dir = '{DATA_DIR}'
             profile = "test"
             accounts = []
 

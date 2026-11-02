@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from uuid import uuid4
 
 import corpus
@@ -761,11 +762,14 @@ def _seed_dup_messages(
     message_id: str,
     flags_list: list[frozenset[MessageFlag]],
     folder_name: str = "INBOX",
+    bodies: list[str] | None = None,
 ) -> list[_SeedHandle]:
     """Seed multiple index rows that share one ``Message-ID``.
 
     Each entry in *flags_list* produces one row, assigned UIDs 1, 2, …
-    in order.  All rows are ACTIVE with their assigned flags.
+    in order.  All rows are ACTIVE with their assigned flags.  The
+    stored copies are byte-identical unless *bodies* gives each row its
+    own body — which ``folder dedup`` must then refuse to collapse.
     """
     import dataclasses
     from email.message import EmailMessage
@@ -782,14 +786,21 @@ def _seed_dup_messages(
     paths = isolated_paths()
     paths.ensure_runtime_dirs()
 
-    msg = EmailMessage()
-    msg["From"] = "sender@example.com"
-    msg["To"] = account.email_address
-    msg["Subject"] = "Duplicate test"
-    msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
-    msg["Message-ID"] = message_id
-    msg.set_content("duplicate body")
-    raw = msg.as_bytes()
+    def _raw(body: str) -> bytes:
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = account.email_address
+        msg["Subject"] = "Duplicate test"
+        msg["Date"] = "Fri, 17 Apr 2026 12:00:00 +0000"
+        msg["Message-ID"] = message_id
+        msg.set_content(body)
+        return msg.as_bytes()
+
+    raws = (
+        [_raw(body) for body in bodies]
+        if bodies is not None
+        else [_raw("duplicate body")] * len(flags_list)
+    )
 
     mirror = MaildirMirrorRepository(
         account_name=account.name,
@@ -801,6 +812,7 @@ def _seed_dup_messages(
 
     handles: list[_SeedHandle] = []
     for i, flags in enumerate(flags_list):
+        raw = raws[i]
         storage_key = mirror.store_message(folder=folder_ref, raw_message=raw)
         projected = project_rfc822_message(
             message_ref=MessageRef(
@@ -943,6 +955,18 @@ def isolated_app_env() -> Iterator[Path]:
             os.environ["PONY_ROOT"] = previous
 
 
+@contextlib.contextmanager
+def _dedup_confirmed(answer: str) -> Iterator[None]:
+    """Run inside an interactive terminal that types *answer* at the prompt."""
+    from pony.cli import mail as cli_mail
+
+    with (
+        mock.patch.object(cli_mail.sys.stdin, "isatty", return_value=True),
+        mock.patch("builtins.input", return_value=answer),
+    ):
+        yield
+
+
 class DedupFolderTestCase(unittest.TestCase):
     """Tests for ``pony folder dedup``."""
 
@@ -972,7 +996,7 @@ class DedupFolderTestCase(unittest.TestCase):
             )
 
             self.assertIn("<dup@test.example>", output)
-            self.assertIn("Would trash 2 row(s)", output)
+            self.assertIn("Would trash 2 message(s)", output)
             self.assertNotIn("Run `pony sync`", output)
 
             paths = isolated_paths()
@@ -998,15 +1022,16 @@ class DedupFolderTestCase(unittest.TestCase):
                 ],
             )
 
-            run_cli(
-                "--config",
-                str(config_path),
-                "folder",
-                "dedup",
-                "personal",
-                "INBOX",
-                "--apply",
-            )
+            with _dedup_confirmed("1"):
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
 
             paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -1024,6 +1049,171 @@ class DedupFolderTestCase(unittest.TestCase):
             # Loser still carries its uid so sync emits PushDeleteOp
             self.assertIsNotNone(trashed[0].uid)
 
+    def test_apply_aborts_unless_the_count_is_typed_back(self) -> None:
+        """A wrong answer at the prompt changes nothing.
+
+        The gate is the count, not a ``y`` — this command deletes mail
+        from the server, so it should not be answerable by reflex.
+        """
+        from pony.mail.domain import FolderRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<confirm@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            for answer in ("y", "yes", "", "2"):
+                with self.subTest(answer=answer), _dedup_confirmed(answer):
+                    output, code = run_cli_capture(
+                        "--config",
+                        str(config_path),
+                        "folder",
+                        "dedup",
+                        "personal",
+                        "INBOX",
+                        "--apply",
+                    )
+                self.assertEqual(code, 1)
+                self.assertIn("Aborted", output)
+
+                paths = AppPaths(
+                    config_file=config_path, data_dir=ISOLATED_DATA_DIR[-1]
+                )
+                index = SqliteIndexRepository(database_path=paths.index_db_file)
+                rows = index.list_folder_messages(
+                    folder=FolderRef(account_name="personal", folder_name="INBOX")
+                )
+                self.assertEqual(
+                    [r.local_status for r in rows],
+                    [MessageStatus.ACTIVE, MessageStatus.ACTIVE],
+                    f"answering {answer!r} must not trash anything",
+                )
+
+    def test_apply_refuses_without_a_terminal(self) -> None:
+        """Piped stdin cannot confirm, so nothing is written."""
+        from pony.mail.domain import FolderRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<notty@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+            )
+
+            from pony.cli import mail as cli_mail
+
+            with mock.patch.object(cli_mail.sys.stdin, "isatty", return_value=False):
+                output, code = run_cli_capture(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("Refusing to trash messages without confirmation", output)
+            paths = AppPaths(config_file=config_path, data_dir=ISOLATED_DATA_DIR[-1])
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            self.assertTrue(all(r.local_status == MessageStatus.ACTIVE for r in rows))
+
+    def test_copies_that_are_not_identical_are_left_alone(self) -> None:
+        """A repeated Message-ID is not enough to delete a message.
+
+        Resends and list copies share a Message-ID legitimately, so the
+        bytes have to match too.
+        """
+        from pony.mail.domain import FolderRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<resend@test.example>",
+                flags_list=[
+                    frozenset({MessageFlag.SEEN}),
+                    frozenset({MessageFlag.SEEN, MessageFlag.ANSWERED}),
+                ],
+                bodies=["the first draft", "a different body entirely"],
+            )
+
+            with _dedup_confirmed("1"):
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertIn("No duplicates found", output)
+            self.assertIn("not identical", output)
+            paths = AppPaths(config_file=config_path, data_dir=ISOLATED_DATA_DIR[-1])
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            self.assertTrue(
+                all(r.local_status == MessageStatus.ACTIVE for r in rows),
+                "copies that differ must survive",
+            )
+
+    def test_identical_copies_among_differing_ones_are_collapsed(self) -> None:
+        """Two messages share a Message-ID; each pair dedupes on its own."""
+        from pony.mail.domain import FolderRef, MessageStatus
+        from pony.mail.index_store import SqliteIndexRepository
+        from pony.paths import AppPaths
+
+        with isolated_app_env(), temporary_config() as config_path:
+            _seed_dup_messages(
+                config_path,
+                message_id="<twosets@test.example>",
+                flags_list=[frozenset({MessageFlag.SEEN})] * 4,
+                bodies=["first", "first", "second", "second"],
+            )
+
+            with _dedup_confirmed("2"):
+                output = run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
+
+            self.assertIn("Trashed 2 message(s) in 2 group(s)", output)
+            paths = AppPaths(config_file=config_path, data_dir=ISOLATED_DATA_DIR[-1])
+            index = SqliteIndexRepository(database_path=paths.index_db_file)
+            rows = index.list_folder_messages(
+                folder=FolderRef(account_name="personal", folder_name="INBOX")
+            )
+            active = [r for r in rows if r.local_status == MessageStatus.ACTIVE]
+            trashed = [r for r in rows if r.local_status == MessageStatus.TRASHED]
+            self.assertEqual(len(active), 2, "one copy of each message survives")
+            self.assertEqual(len(trashed), 2)
+
     def test_tiebreaker_answered_beats_flagged(self) -> None:
         """With equal flag counts, ANSWERED wins over FLAGGED."""
         from pony.mail.domain import FolderRef, MessageFlag, MessageStatus
@@ -1040,15 +1230,16 @@ class DedupFolderTestCase(unittest.TestCase):
                 ],
             )
 
-            run_cli(
-                "--config",
-                str(config_path),
-                "folder",
-                "dedup",
-                "personal",
-                "INBOX",
-                "--apply",
-            )
+            with _dedup_confirmed("1"):
+                run_cli(
+                    "--config",
+                    str(config_path),
+                    "folder",
+                    "dedup",
+                    "personal",
+                    "INBOX",
+                    "--apply",
+                )
 
             paths = isolated_paths()
             index = SqliteIndexRepository(database_path=paths.index_db_file)
@@ -1910,7 +2101,7 @@ class LocalSummaryMboxTest(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "mbox-test"\n'
@@ -2230,7 +2421,7 @@ def sample_config_toml() -> str:
     return resolve_fixture(
         """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 
 [[accounts]]
@@ -3291,7 +3482,7 @@ class AppLaunchingCommandTests(unittest.TestCase):
             config_path.write_text(
                 text.replace(
                     'profile = "test"',
-                    f'profile = "test"\ndownloads_path = "{TMP_ROOT / name}"',
+                    f"profile = 'test'\ndownloads_path = '{TMP_ROOT / name}'",
                     1,
                 ),
                 encoding="utf-8",
@@ -3509,7 +3700,7 @@ class RemainingCommandArmTests(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n',
                 encoding="utf-8",
             )
@@ -3749,7 +3940,7 @@ class LocalAccountReadCommandsTest(unittest.TestCase):
         config_path = TMP_ROOT / f"config-local-{uuid4().hex}.toml"
         config_path.write_text(
             "config_version = 3\n"
-            f'data_dir = "{isolated_data_dir()}"\n'
+            f"data_dir = '{isolated_data_dir()}'\n"
             'profile = "test"\n'
             "\n[[accounts]]\n"
             'account_type = "local"\n'
@@ -3962,7 +4153,7 @@ class ProfileStampTestCase(unittest.TestCase):
         target = self.data if data_dir is None else data_dir
         path.write_text(
             "config_version = 3\n"
-            f'data_dir = "{target}"\n'
+            f"data_dir = '{target}'\n"
             f'profile = "{profile}"\n'
             "accounts = []\n",
             encoding="utf-8",
@@ -4227,7 +4418,7 @@ class MirrorShapedDeleteTestCase(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "personal"\n'
@@ -4392,7 +4583,7 @@ class ReindexCommandTest(unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
                 "config_version = 3\n"
-                f'data_dir = "{isolated_data_dir()}"\n'
+                f"data_dir = '{isolated_data_dir()}'\n"
                 'profile = "test"\n'
                 "[[accounts]]\n"
                 'name = "boxed"\n'
@@ -4561,3 +4752,90 @@ format = "mbox"
 
         self.assertEqual(rc, 0)
         self.assertEqual(len(rows), 1)
+
+
+class MigrationIsVisibleOnTheCommandLineTest(unittest.TestCase):
+    """Every command opens the index through one helper, which speaks.
+
+    A v3 index is rewritten row by row and reindexed body by body
+    before ``initialize`` returns.  ``pony sync`` prints nothing of its
+    own until planning starts, so against a large index it was silent
+    for the whole migration -- long enough that the thing to do (wait)
+    was indistinguishable from the thing people did (kill it).
+    """
+
+    def _v3_index(self, path: Path) -> None:
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "CREATE TABLE messages ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " account_name TEXT NOT NULL, folder_name TEXT NOT NULL,"
+                " uid INTEGER, uid_validity INTEGER,"
+                " message_id TEXT NOT NULL DEFAULT '',"
+                " sender TEXT NOT NULL, recipients TEXT NOT NULL,"
+                " cc TEXT NOT NULL, subject TEXT NOT NULL,"
+                " body_preview TEXT NOT NULL,"
+                " storage_key TEXT NOT NULL DEFAULT '',"
+                " has_attachments INTEGER NOT NULL DEFAULT 0,"
+                " local_flags TEXT NOT NULL, base_flags TEXT NOT NULL,"
+                " server_flags TEXT NOT NULL DEFAULT '',"
+                " extra_imap_flags TEXT NOT NULL DEFAULT '',"
+                " local_status TEXT NOT NULL, received_at TEXT NOT NULL,"
+                " trashed_at TEXT, synced_at TEXT,"
+                " source_folder TEXT, source_uid INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO messages (id, account_name, folder_name, uid,"
+                " uid_validity, message_id, sender, recipients, cc, subject,"
+                " body_preview, local_flags, base_flags, local_status,"
+                " received_at) VALUES (1,'personal','INBOX',3,9,"
+                "'<m@example.com>','a@example.com','b@example.com','',"
+                "'Quarterly numbers','the numbers are inside','','',"
+                "'active','2026-04-20T10:00:00+00:00')"
+            )
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_opening_a_v3_index_announces_the_migration(self) -> None:
+        from pony.cli.program import open_index
+        from pony.paths import AppPaths
+
+        root = TMP_ROOT / "cli-migration" / uuid4().hex
+        paths = AppPaths(config_file=root / "config.toml", data_dir=root / "data")
+        self._v3_index(paths.index_db_file)
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            index = open_index(paths)
+        index.close()
+        shown = buffer.getvalue()
+
+        self.assertIn("Migrating the message index from schema v3 to v4", shown)
+        self.assertIn("1 messages", shown)
+        self.assertIn("Rebuilding the search index: 1 of 1 messages", shown)
+        self.assertIn("Index migrated to schema v4", shown)
+        # One overwritten line, closed off so the command's own first
+        # line does not land on the end of the last count.
+        self.assertIn("\r\033[K", shown)
+        self.assertTrue(shown.endswith("\n"), repr(shown[-40:]))
+
+    def test_opening_a_current_index_prints_nothing(self) -> None:
+        from pony.cli.program import open_index
+        from pony.paths import AppPaths
+
+        root = TMP_ROOT / "cli-no-migration" / uuid4().hex
+        paths = AppPaths(config_file=root / "config.toml", data_dir=root / "data")
+        paths.index_db_file.parent.mkdir(parents=True, exist_ok=True)
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            index = open_index(paths)
+        index.close()
+
+        self.assertEqual(buffer.getvalue(), "")

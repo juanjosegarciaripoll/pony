@@ -7,7 +7,7 @@ import unittest.mock
 from pathlib import Path
 from uuid import uuid4
 
-from conftest import TMP_ROOT, isolated_data_dir, resolve_fixture
+from conftest import TMP_ROOT, absolute, isolated_data_dir, resolve_fixture
 
 from pony.config import ConfigError, load_config, parse_config
 from pony.mail.domain import AccountConfig, LocalAccountConfig, ViewerRule
@@ -731,7 +731,7 @@ def sample_toml_config() -> str:
     return resolve_fixture(
         """
 config_version = 3
-data_dir = "{DATA_DIR}"
+data_dir = '{DATA_DIR}'
 profile = "test"
 
 [[accounts]]
@@ -809,7 +809,7 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         config = parse_config(self._config(str(TMP_ROOT / "a" / ".." / "b")))
         self.assertEqual(
             config.accounts[0].mirror.path,
-            contain((TMP_ROOT / "b").resolve()),
+            contain(TMP_ROOT / "b"),
         )
 
     def test_an_absolute_path_is_confined_to_pony_root(self) -> None:
@@ -825,7 +825,7 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
 
         root = TMP_ROOT / "contained-mirror" / uuid4().hex
         with unittest.mock.patch.dict(os.environ, {"PONY_ROOT": str(root)}):
-            config = parse_config(self._config("/var/mail/live-mail"))
+            config = parse_config(self._config(absolute("/var/mail/live-mail")))
 
         path = config.accounts[0].mirror.path
         self.assertTrue(
@@ -834,3 +834,62 @@ class HalfQualifiedMirrorPathTestCase(unittest.TestCase):
         )
         # Relocated, not merged: the spelling is still recoverable.
         self.assertEqual(("var", "mail", "live-mail"), path.parts[-3:])
+
+    def test_a_mirror_inside_a_symlinked_root_is_left_where_it_is(self) -> None:
+        """Containment compares spellings, so the spelling must survive.
+
+        The absolute arm used to resolve the path before containing it.
+        A symlink anywhere above ``PONY_ROOT`` -- which is what the
+        system temporary directory is on macOS, ``/var`` being a link
+        to ``/private/var`` -- then gave the resolved mirror a spelling
+        the root did not share, so a directory already inside the
+        sandbox was relocated into it a second time, under a ``%2F``
+        component.  Every run after that wrote its mirror to a
+        directory nothing else looked in: four CLI tests failed on
+        macOS and nowhere else.
+        """
+        import os
+
+        base = TMP_ROOT / "symlinked-root" / uuid4().hex
+        real = base / "real"
+        (real / "data").mkdir(parents=True)
+        link = base / "link"
+        link.symlink_to(real, target_is_directory=True)
+
+        declared = link / "data" / "mirror"
+        with unittest.mock.patch.dict(os.environ, {"PONY_ROOT": str(link)}):
+            config = parse_config(self._config(str(declared)))
+
+        self.assertEqual(declared, config.accounts[0].mirror.path)
+
+
+def test_no_config_fixture_spells_a_path_in_a_basic_string() -> None:
+    """A path in a double-quoted TOML value is invalid TOML on Windows.
+
+    `C:\\Users\\...` opens TOML's `\\U` escape, which wants eight hex
+    digits, so a data directory in a basic string parsed everywhere but
+    Windows -- where it took out every test that loads a config, and
+    left the failures looking like missing output rather than a broken
+    fixture.
+    A literal string processes no escapes at all, which is what
+    `conftest.resolve_fixture` has always said the placeholder belongs
+    in.  `as_posix()` is the other way to spell it, so a line using
+    that is fine.
+    """
+    import re
+
+    keys = ("data_dir", "path", "bbdb_path", "downloads_path", "mirror_path")
+    basic_string = re.compile(rf"\b({'|'.join(keys)})\s*=\s*\"[^\"\n]*\{{")
+    suite = Path(__file__).resolve().parent.parent
+    offenders = [
+        f"{source.name}:{number}: {line.strip()}"
+        for folder in ("tests", "tests_calendar")
+        for source in sorted((suite / folder).glob("*.py"))
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if "as_posix" not in line and basic_string.search(line)
+    ]
+    assert offenders == [], "config fixtures that break on Windows:\n" + "\n".join(
+        offenders
+    )

@@ -37,7 +37,7 @@ from .mail.domain import (
 from .mail.domain import (
     AppConfig as AppConfig,  # explicit re-export
 )
-from .paths import contain, resolve
+from .paths import contain, lexically_normal, resolve
 
 
 class ConfigError(ValueError):
@@ -423,7 +423,15 @@ def _parse_mirror(
         # this a test session or a sandboxed install reached the real
         # mail the moment a config spelled its mirror out in full --
         # which the configuration docs tell the user to do.
-        mirror_path = contain(mirror_path.resolve())
+        #
+        # Folded lexically, not resolved: `contain` decides containment
+        # by comparing spellings, so a symlink above the root -- the
+        # system temporary directory on macOS is one -- made
+        # `.resolve()` hand it a spelling the root did not share, and a
+        # mirror already inside the sandbox was relocated into it again,
+        # under a `%2F` component.  The run then wrote its mirror to a
+        # directory nothing else ever looked in.
+        mirror_path = contain(lexically_normal(mirror_path))
     elif is_half_qualified(str(mirror_path)):
         # Half-qualified: "/mail" on Windows has a root but no drive, and
         # "C:mail" a drive but no root.  Neither is absolute, so the old

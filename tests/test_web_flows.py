@@ -590,13 +590,23 @@ def test_a_refused_send_keeps_the_form_and_the_next_attempt_sends_it() -> None:
 
 
 def test_the_calendar_walks_from_the_agenda_to_the_month_and_back() -> None:
-    """Switching view keeps the date; stepping and stepping back returns."""
+    """Switching view keeps the date; stepping and stepping back returns.
+
+    The day is pinned rather than taken from the clock.  Month steps
+    move by a calendar month, which clamps into a shorter one, so a
+    walk that starts on the 29th, 30th or 31st does not come back to
+    where it began -- see
+    ``test_a_month_step_from_a_day_a_shorter_month_lacks_clamps``.  Run
+    against ``today`` this passed for 28 days a month and failed for
+    the rest.
+    """
     services, _index, _runtime = _services("flow-calendar-nav", calendar=True)
 
     with _client(services) as client:
-        agenda = client.get("/calendar").text
+        agenda = client.get("/calendar?date=2026-03-15").text
         assert page_data(agenda)["view"] == "agenda"
         today = page_data(agenda)["date"]
+        assert today == "2026-03-15"
 
         month = client.get(link_to(agenda, "Month")).text
         assert page_data(month)["view"] == "month"
@@ -615,6 +625,29 @@ def test_the_calendar_walks_from_the_agenda_to_the_month_and_back() -> None:
         returned = client.get(link_to(back, "Agenda")).text
         assert page_data(returned)["view"] == "agenda"
         assert page_data(returned)["date"] == today
+
+
+def test_a_month_step_from_a_day_a_shorter_month_lacks_clamps() -> None:
+    """Next then Prev does not return, and that is the month arithmetic.
+
+    ``step_viewed`` moves a month view by one calendar month, which
+    clamps 31 October to 30 November rather than overshooting into
+    December the way adding 31 days would.  The anchor is a single date
+    in the URL, so the original day is gone once it has been clamped
+    and the step back lands on the 30th.  Pinned here so the behaviour
+    is a decision and not something a test discovers on the 31st.
+    """
+    services, _index, _runtime = _services("flow-calendar-month-end", calendar=True)
+
+    with _client(services) as client:
+        month = client.get("/calendar?view=month&date=2026-10-31").text
+        assert page_data(month)["date"] == "2026-10-31"
+
+        later = client.get(link_by_id(month, "next-date")).text
+        assert page_data(later)["date"] == "2026-11-30"
+
+        back = client.get(link_by_id(later, "prev-date")).text
+        assert page_data(back)["date"] == "2026-10-30"
 
 
 def test_an_event_is_created_from_the_calendar_and_deleted_again() -> None:
