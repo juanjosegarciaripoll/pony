@@ -23,6 +23,7 @@ from ...mail.pdf_export import (
 
 if TYPE_CHECKING:
     from textual.app import App
+    from textual.screen import Screen
 
 __all__ = [
     "Converter",
@@ -30,6 +31,7 @@ __all__ = [
     "export_pdf_in_thread",
     "find_converter",
     "html_to_pdf",
+    "start_pdf_export",
 ]
 
 
@@ -49,3 +51,34 @@ def export_pdf_in_thread(app: App[object], html: str, out: Path, dest: Path) -> 
         )
     else:
         app.call_from_thread(app.notify, f"Saved {out.name} to {dest}")
+
+
+def start_pdf_export[Dismissed](
+    screen: Screen[Dismissed],
+    *,
+    html: str,
+    filename: str,
+    dest: Path,
+) -> None:
+    """Dispatch the export of *html* to *dest*/*filename*, and say so.
+
+    Both the reader and the ``.eml`` viewer print the same way, and both
+    said nothing between the folder being chosen and the converter
+    finishing.  That is an external program: on a cold start it is
+    seconds before it writes anything, and if it never returns there is
+    no second event to report.  Either way the reader picked a folder
+    and watched nothing happen, so the dispatch is announced here, once,
+    for both of them.
+    """
+    out = (dest / filename).resolve()
+    if not out.is_relative_to(dest.resolve()):
+        screen.app.notify(  # pyright: ignore[reportUnknownMemberType]
+            "Invalid destination.", severity="error"
+        )
+        return
+    screen.app.notify(f"Printing {filename}...")  # pyright: ignore[reportUnknownMemberType]
+    screen.run_worker(
+        lambda: export_pdf_in_thread(screen.app, html, out, dest),
+        name="print-pdf",
+        thread=True,
+    )

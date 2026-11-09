@@ -412,6 +412,7 @@ async def test_print_pdf_picks_folder_and_exports(
     )
     export_mock = Mock()
     monkeypatch.setattr("pony.tui.mail.pdf_export.export_pdf_in_thread", export_mock)
+    notifications = _capture_notifications(app)
     # Make the folder picker default to (and confirm) the temp directory.
     monkeypatch.setattr(
         "pony.tui.mail.screens.save_folder_picker_screen._session_dir", tmp_path
@@ -433,6 +434,11 @@ async def test_print_pdf_picks_folder_and_exports(
     assert out.suffix == ".pdf"
     assert dest == tmp_path.resolve()
     assert out.parent == dest
+    # The converter is an external program that says nothing for seconds
+    # on a cold start, so choosing the folder has to look like it did
+    # something.  Without this the reader saw nothing at all until it
+    # finished -- or for ever, if it never did.
+    assert any(f"Printing {out.name}" in note for note in notifications), notifications
 
 
 def _dated_message(subject: str, date: str, message_id: str) -> bytes:

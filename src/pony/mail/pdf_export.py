@@ -44,6 +44,18 @@ class NoPdfConverterError(RuntimeError):
     """Raised when no supported HTML-to-PDF converter is on ``PATH``."""
 
 
+#: How long a converter is given before the run is abandoned.  It has to
+#: be bounded: these are external programs with their own ideas about
+#: when to wait -- LibreOffice blocks on a profile lock left by a crashed
+#: instance, and a browser can sit on a page that never finishes
+#: loading -- and `subprocess.run` with no timeout waits for either
+#: forever.  The caller is on a worker thread with nothing watching it,
+#: so the run that never returns is the one no one is ever told about:
+#: the reader picked a folder and nothing happened, with nothing logged.
+#: Generous enough for a long message through the slowest of them.
+_CONVERTER_TIMEOUT_SECONDS = 120
+
+
 # Command builder: (executable, source, output_or_outdir) -> argv.  The
 # source is whatever that converter is handed: a URL for one that speaks
 # HTTP, otherwise the path of a temporary file.
@@ -142,8 +154,10 @@ def find_converter() -> Converter | None:
 def html_to_pdf(html: str, out_path: Path) -> None:
     """Render *html* to a PDF at *out_path* using an external converter.
 
-    Raises :class:`NoPdfConverterError` when no converter is installed and
-    ``subprocess.CalledProcessError`` when the converter itself fails.
+    Raises :class:`NoPdfConverterError` when no converter is installed,
+    ``subprocess.CalledProcessError`` when the converter itself fails,
+    and ``subprocess.TimeoutExpired`` when it does not finish in
+    :data:`_CONVERTER_TIMEOUT_SECONDS`.
     """
     converter = find_converter()
     if converter is None:
@@ -155,7 +169,12 @@ def html_to_pdf(html: str, out_path: Path) -> None:
         # loopback server, which answers under the message-HTML policy.
         with document_server(html) as url:
             argv = converter.build(converter.executable, url, out_path)
-            subprocess.run(argv, check=True, capture_output=True)  # noqa: S603
+            subprocess.run(  # noqa: S603
+                argv,
+                check=True,
+                capture_output=True,
+                timeout=_CONVERTER_TIMEOUT_SECONDS,
+            )
         return
     with tempfile.TemporaryDirectory(prefix="pony-pdf-") as tmp:
         tmpdir = Path(tmp)
@@ -163,9 +182,19 @@ def html_to_pdf(html: str, out_path: Path) -> None:
         src.write_text(html, encoding="utf-8")
         if converter.outdir_mode:
             argv = converter.build(converter.executable, str(src), tmpdir)
-            subprocess.run(argv, check=True, capture_output=True)  # noqa: S603
+            subprocess.run(  # noqa: S603
+                argv,
+                check=True,
+                capture_output=True,
+                timeout=_CONVERTER_TIMEOUT_SECONDS,
+            )
             produced = tmpdir / f"{src.stem}.pdf"
             shutil.move(str(produced), str(out_path))
         else:
             argv = converter.build(converter.executable, str(src), out_path)
-            subprocess.run(argv, check=True, capture_output=True)  # noqa: S603
+            subprocess.run(  # noqa: S603
+                argv,
+                check=True,
+                capture_output=True,
+                timeout=_CONVERTER_TIMEOUT_SECONDS,
+            )

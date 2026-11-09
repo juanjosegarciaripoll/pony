@@ -130,7 +130,7 @@ class EmlViewerScreen(Screen[None]):
             proposed_filename,
             render_message,
         )
-        from ..pdf_export import export_pdf_in_thread
+        from ..pdf_export import start_pdf_export
         from .save_folder_picker_screen import SaveFolderPickerScreen
 
         raw = self._raw_bytes
@@ -141,17 +141,7 @@ class EmlViewerScreen(Screen[None]):
         def _on_folder(dest: Path | None) -> None:
             if dest is None:
                 return
-            out = (dest / filename).resolve()
-            if not out.is_relative_to(dest.resolve()):
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    "Invalid destination.", severity="error"
-                )
-                return
-            self.run_worker(
-                lambda: export_pdf_in_thread(self.app, html, out, dest),
-                name="print-pdf",
-                thread=True,
-            )
+            start_pdf_export(self, html=html, filename=filename, dest=dest)
 
         # Falls back to where saving puts things, which is the one
         # directory the viewer knows the reader wants; somewhere they

@@ -185,6 +185,76 @@ class _FakeApp:
         self.notes.append((message, severity))
 
 
+class ConverterTimeoutTest(unittest.TestCase):
+    """A converter that never returns has to stop being waited on.
+
+    These are external programs: LibreOffice blocks on a profile lock
+    left by a crashed instance, a browser can sit on a page that never
+    finishes loading.  The call is made on a worker thread with nothing
+    watching it, so an unbounded wait is the one failure nobody is ever
+    told about -- the reader picks a folder and nothing happens, with
+    nothing logged.
+    """
+
+    @staticmethod
+    def _deadline_for(installed: str) -> float | None:
+        """The timeout *installed* is invoked with, through a fake run."""
+        calls: list[float | None] = []
+
+        def _fake_run(
+            argv: list[str],
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[bytes]:
+            timeout = kwargs.get("timeout")
+            calls.append(timeout if isinstance(timeout, float | int) else None)
+            # Write whatever this converter is supposed to write, so the
+            # caller does not then fail on a missing file.
+            for arg in argv:
+                if arg.startswith("--print-to-pdf="):
+                    Path(arg.split("=", 1)[1]).write_bytes(b"%PDF-1.4\n")
+            return subprocess.CompletedProcess(argv, 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "msg.pdf"
+            with (
+                mock.patch(_WHICH, _which_for({installed})),
+                mock.patch(_RUN, _fake_run),
+                # LibreOffice is the one that moves a file it was given
+                # an output directory for; there is nothing there to move.
+                mock.patch("pony.mail.pdf_export.shutil.move", lambda _s, _d: None),
+            ):
+                html_to_pdf("<html>hi</html>", out)
+
+        assert len(calls) == 1, calls
+        return calls[0]
+
+    def test_every_converter_is_given_a_deadline(self) -> None:
+        for installed in ("chromium", "wkhtmltopdf", "weasyprint", "soffice"):
+            with self.subTest(converter=installed):
+                deadline = self._deadline_for(installed)
+                assert deadline is not None, f"{installed} was given no timeout"
+                self.assertGreater(deadline, 0)
+
+    def test_a_converter_that_hangs_is_reported(self) -> None:
+        """The reader hears about it instead of waiting for ever."""
+        app = _FakeApp()
+
+        def _raise(_h: str, _o: Path) -> None:
+            raise subprocess.TimeoutExpired(["soffice"], 120)
+
+        with mock.patch.object(pdf_export, "html_to_pdf", _raise):
+            pdf_export.export_pdf_in_thread(
+                app,  # type: ignore[arg-type]
+                "<html></html>",
+                Path("/tmp/x.pdf"),
+                Path("/tmp"),
+            )
+        message, severity = app.notes[0]
+        self.assertIn("Could not create PDF", message)
+        self.assertIn("timed out", message)
+        self.assertEqual(severity, "error")
+
+
 class ExportPdfInThreadTest(unittest.TestCase):
     def test_success_notifies_saved(self) -> None:
         app = _FakeApp()

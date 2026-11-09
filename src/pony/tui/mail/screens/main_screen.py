@@ -1938,7 +1938,7 @@ class MainScreen(Screen[None]):
     def action_print_pdf(self) -> None:
         """Render the current message to a PDF in a folder the user picks."""
         from ....mail.message_renderer import build_browser_html, proposed_filename
-        from ..pdf_export import export_pdf_in_thread
+        from ..pdf_export import start_pdf_export
         from .save_folder_picker_screen import SaveFolderPickerScreen
 
         msg = self.get_current_message()
@@ -1966,17 +1966,7 @@ class MainScreen(Screen[None]):
         def _on_folder(dest: Path | None) -> None:
             if dest is None:
                 return
-            out = (dest / filename).resolve()
-            if not out.is_relative_to(dest.resolve()):
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    "Invalid destination.", severity="error"
-                )
-                return
-            self.run_worker(
-                lambda: export_pdf_in_thread(self.app, html, out, dest),
-                name="print-pdf",
-                thread=True,
-            )
+            start_pdf_export(self, html=html, filename=filename, dest=dest)
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             SaveFolderPickerScreen(default_dir=self._downloads_dir()), _on_folder

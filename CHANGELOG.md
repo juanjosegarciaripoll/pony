@@ -257,6 +257,17 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **Printing says it started, and stops waiting on a converter that
+  hangs**: the PDF converter is an external program, and nothing was
+  said between the folder being chosen and it finishing — seconds on a
+  cold start. `subprocess.run` was also given no deadline, so a
+  converter that never returns (LibreOffice blocking on a profile lock
+  left by a crashed instance is the usual one) left the worker waiting
+  with nothing on screen and nothing logged: choosing a folder looked
+  like it had done nothing, for ever. The dispatch is announced, the
+  converter gets 120 seconds, and a timeout is reported like any other
+  failure.
+
 - **A sandboxed mirror stays where the config puts it**: `mirror.path`
   was resolved before being confined to `PONY_ROOT`, and containment
   compares spellings. A symlink above the root — the system temporary
