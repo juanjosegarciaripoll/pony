@@ -249,8 +249,10 @@ On the Day and Grid views the mouse does the obvious things:
 ++enter++ opens the entry under the cursor: summary, calendar, location,
 start, end, status, attendees, reminders and the full notes, which scroll
 if they run past the dialog. ++e++ from there (or from any view) opens
-the same form the event was created with; ++ctrl+d++ inside the form
-deletes the event being edited.
+the same form the event was created with, and ++shift+d++ deletes the
+event you are reading, after the same confirmation the views ask for.
+Inside the form the key is ++f8++ — a function key rather than a chord,
+because the text fields claim every obvious one.
 
 ### All-day events
 
@@ -548,12 +550,19 @@ In the event form:
 | Key | Action |
 |---|---|
 | ++ctrl+s++ | Save |
-| ++ctrl+d++ | Delete this event *(only when editing an existing one)* |
+| ++f8++ | Delete this event *(only when editing an existing one)* |
 | ++escape++ | Cancel |
 
-In the event detail dialog, ++e++ edits and ++escape++ closes. In the
-search box, ++enter++ opens the highlighted result and ++escape++
-cancels.
+!!! note "Why ++f8++ and not a chord"
+    Textual's text input binds ++ctrl+d++ to delete-character and resolves
+    it before the form does, and a browser takes ++ctrl+d++ for "bookmark
+    this page", so the chord this key used to be was shadowed on both
+    front ends: it edited the field, and the footer could not show it.
+    Function keys above ++f2++ are the ground no one else has claimed.
+
+In the event detail dialog, ++e++ edits, ++shift+d++ deletes after
+confirmation and ++escape++ closes. In the search box, ++enter++ opens
+the highlighted result and ++escape++ cancels.
 
 ++f2++ belongs to Pony Express rather than to the calendar, and swaps the
 two halves from either side.

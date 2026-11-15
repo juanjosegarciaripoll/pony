@@ -726,7 +726,12 @@ class MainScreen(Screen[None]):
 
     def _open_specific(self, component: StoredComponent) -> None:
         today = self._services().now().date()
-        screen = EventDetailScreen(component, today=today, on_edit=self._edit_specific)
+        screen = EventDetailScreen(
+            component,
+            today=today,
+            on_edit=self._edit_specific,
+            on_delete=self.delete_with_confirm,
+        )
         self.app.push_screen(screen)  # pyright: ignore[reportUnknownMemberType]
 
     def _run_sync(self) -> None:

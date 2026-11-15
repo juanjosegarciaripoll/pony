@@ -95,6 +95,13 @@ KEY_NEW = "c"
 KEY_EDIT = "e"
 KEY_DELETE = "D"
 KEY_DELETE_ALT = "shift+d"
+# Deleting from inside the event form needs a key no text field claims.
+# Textual's `Input` binds "delete,ctrl+d" to delete-character and sits
+# nearer the focus than the screen, so a `ctrl+d` here was shadowed:
+# the key edited the summary field and the footer could not show it.  A
+# browser takes `ctrl+d` for "bookmark this page", so the obvious chord
+# was dead on both front ends.
+KEY_DELETE_FORM = "f8"
 # Spelled the way the mail reader spells it, so one key means one thing
 # in both halves of the program: ++ctrl+g++ syncs in the background
 # without asking and restarts the periodic countdown, while `g` opens the
@@ -249,12 +256,14 @@ VIEW_KEYS: tuple[KeyBinding, ...] = (
 )
 
 EDIT_KEYS: tuple[KeyBinding, ...] = (
-    # A Ctrl chord, like Save, because a bare letter would be swallowed
-    # as text by the focused field.  `ctrl+d` only resolves to an action
-    # when editing an existing event, so the footer hides it in "new
-    # event" mode.
+    # Not a bare letter: the focused field would swallow it as text.
+    # Save is a Ctrl chord no field claims; Delete is a function key,
+    # because the chord for it is taken twice over (see
+    # ``KEY_DELETE_FORM``).  Delete only resolves to an action when
+    # editing an existing event, so the footer hides it in "new event"
+    # mode.
     KeyBinding("ctrl+s", "save", "Save", CalendarSurface.EDIT),
-    KeyBinding("ctrl+d", "delete", "Delete", CalendarSurface.EDIT),
+    KeyBinding(KEY_DELETE_FORM, "delete", "Delete", CalendarSurface.EDIT),
     KeyBinding(KEY_BACK, "cancel", "Cancel", CalendarSurface.EDIT),
 )
 
@@ -265,6 +274,17 @@ EDIT_KEYS: tuple[KeyBinding, ...] = (
 DETAIL_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding(KEY_BACK, "close", "Back", CalendarSurface.DETAIL),
     KeyBinding(KEY_EDIT, "edit", "Edit", CalendarSurface.DETAIL),
+    # The same key as in the views, which is what a reader who opened an
+    # event to decide about it reaches for.  Nothing here takes text, so
+    # the bare capital is safe where the form needs a function key.
+    KeyBinding(KEY_DELETE, "delete", "Delete", CalendarSurface.DETAIL),
+    KeyBinding(
+        KEY_DELETE_ALT,
+        "delete",
+        "Delete",
+        CalendarSurface.DETAIL,
+        show=False,
+    ),
 )
 
 SEARCH_KEYS: tuple[KeyBinding, ...] = (
@@ -293,6 +313,7 @@ __all__ = [
     "KEY_CONTACTS_ALT",
     "KEY_DELETE",
     "KEY_DELETE_ALT",
+    "KEY_DELETE_FORM",
     "KEY_EDIT",
     "KEY_GOTO",
     "KEY_GOTO_ALTS",

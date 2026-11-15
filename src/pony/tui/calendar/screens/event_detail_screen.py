@@ -22,9 +22,9 @@ class EventDetailScreen(ModalScreen[None]):
     meeting, a wall of conferencing boilerplate — and a plain container
     clipped them at the dialog's height with no scrollbar, no key and no
     wheel that would reach the rest. It takes focus on mount so the
-    scroll keys work without a click, and the screen's own `escape` / `e`
-    still reach the screen because the scroll container does not bind
-    them.
+    scroll keys work without a click, and the screen's own `escape`, `e`
+    and `D` still reach the screen because the scroll container does not
+    bind them.
     """
 
     BINDINGS = detail_bindings()
@@ -35,11 +35,13 @@ class EventDetailScreen(ModalScreen[None]):
         *,
         today: date,
         on_edit: Callable[[StoredComponent], None],
+        on_delete: Callable[[StoredComponent], None],
     ) -> None:
         super().__init__()
         self._component = component
         self._today = today
         self._on_edit = on_edit
+        self._on_delete = on_delete
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="event-detail", classes="dialog-box"):
@@ -62,6 +64,14 @@ class EventDetailScreen(ModalScreen[None]):
     def action_edit(self) -> None:
         self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
         self._on_edit(self._component)
+
+    def action_delete(self) -> None:
+        # Close first, so the confirmation the caller raises is not
+        # stacked behind a modal the user can no longer see past — and
+        # so declining it returns to the view rather than to a detail
+        # of an event that may have just been trashed.
+        self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
+        self._on_delete(self._component)
 
 
 __all__ = ["EventDetailScreen"]

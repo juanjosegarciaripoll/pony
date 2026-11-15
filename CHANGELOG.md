@@ -257,6 +257,20 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **An event opened to be read can be deleted from there** (++shift+d++):
+  the detail dialog — what clicking an event, or ++enter++ on its row, puts
+  in front of you — offered only Back and Edit, so deciding to drop an event
+  meant closing it and finding the row again. It takes the same key the views
+  use, and asks the same confirmation.
+
+- **The event form's Delete is reachable at last**: it was ++ctrl+d++, which
+  Textual's text input binds to delete-character and resolves before the form
+  does, so the key edited the field it was typed in and the footer could not
+  list it at all; in the browser, where the same table drives the event page,
+  ++ctrl+d++ opens the bookmark dialog. It is now ++f8++, which no field and
+  no browser claims, and a test presses it with a field focused rather than
+  calling the action behind it.
+
 - **Printing says it started, and stops waiting on a converter that
   hangs**: the PDF converter is an external program, and nothing was
   said between the folder being chosen and it finishing — seconds on a

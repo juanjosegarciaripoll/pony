@@ -16,7 +16,7 @@ from textual.app import App
 from textual.events import MouseEvent
 from textual.pilot import Pilot
 from textual.widget import Widget
-from textual.widgets import Label, Select
+from textual.widgets import Input, Label, Select
 
 from pony.calendar.credentials import DefaultCredentialsProvider
 from pony.calendar.domain import (
@@ -37,6 +37,7 @@ from pony.calendar.domain import (
 )
 from pony.calendar.event_actions import EditDraft
 from pony.calendar.index_store import SqliteIndexRepository
+from pony.calendar.keymap import KEY_DELETE_FORM
 from pony.calendar.paths import CalendarPaths
 from pony.calendar.protocols import CalendarSyncOutcome
 from pony.calendar.recurrence import populate_occurrences
@@ -1426,7 +1427,10 @@ class DetailPaneTracksCursorTest(TuiFlowTestCase):
             await pilot.pause()
             app.push_screen(
                 EventDetailScreen(
-                    component, today=NOW.date(), on_edit=lambda _component: None
+                    component,
+                    today=NOW.date(),
+                    on_edit=lambda _component: None,
+                    on_delete=lambda _component: None,
                 )
             )
             await pilot.pause()
@@ -1981,6 +1985,117 @@ class DeleteFlowTest(TuiFlowTestCase):
             confirm = pilot.app.screen
             assert isinstance(confirm, ConfirmScreen)
             self.assertIn("Delete", confirm._prompt)
+
+    async def test_delete_reaches_the_event_opened_to_be_read(self) -> None:
+        """An event opened to be read can be deleted from there.
+
+        Opening one — clicking it, or Enter on its row — is where a
+        reader decides whether to keep it, and the modal offered only
+        Back and Edit.  The key is the same `D` the views use, which is
+        what the hand reaches for; nothing in the modal takes text, so
+        the bare capital is safe here.
+        """
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            component = services.index.get_component(ref)
+            assert component is not None
+            screen._open_specific(component)
+            await pilot.pause()
+            detail = pilot.app.screen
+            assert isinstance(detail, EventDetailScreen)
+            self.assertIn(
+                "Delete",
+                [
+                    active.binding.description
+                    for active in detail.active_bindings.values()
+                    if active.binding.show
+                ],
+                "the detail modal must offer Delete in its footer",
+            )
+
+            await pilot.press("D")
+            await pilot.pause()
+
+            confirm = pilot.app.screen
+            assert isinstance(confirm, ConfirmScreen), type(confirm)
+            self.assertIn("Delete", confirm._prompt)
+
+            await pilot.press("y")
+            await pilot.pause()
+
+        trashed = services.index.get_component(ref)
+        assert trashed is not None
+        self.assertEqual(trashed.local_status, LocalStatus.TRASHED)
+
+    async def test_delete_in_the_form_is_not_swallowed_by_a_field(self) -> None:
+        """The form's Delete has to beat the focused text field.
+
+        It was `ctrl+d`, which Textual's `Input` binds to
+        delete-character and resolves first because it sits nearer the
+        focus: the key edited the summary instead of the event, and the
+        footer could not show it at all.  A browser takes `ctrl+d` for
+        "bookmark this page", so it was dead on both front ends.
+        """
+        services = self.services()
+        ref = ComponentRef(ACCOUNT_NAME, WORK_CAL, "simple-event-1@example.com")
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            component = services.index.get_component(ref)
+            assert component is not None
+            screen._edit_specific(component)
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertIn(
+                "Delete",
+                [
+                    active.binding.description
+                    for active in edit.active_bindings.values()
+                    if active.binding.show
+                ],
+                "the form must offer Delete while editing an existing event",
+            )
+            summary = edit.query_one("#edit-summary", Input)
+            summary.focus()
+            await pilot.pause()
+            before = summary.value
+
+            await pilot.press(KEY_DELETE_FORM)
+            await pilot.pause()
+
+            self.assertIsInstance(pilot.app.screen, ConfirmScreen)
+            self.assertEqual(
+                summary.value, before, "the key must not edit the field as well"
+            )
+
+    async def test_the_form_offers_no_delete_for_a_new_event(self) -> None:
+        """There is nothing to delete before the event exists."""
+        services = self.services()
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, MainScreen)
+            screen.action_new_event()
+            await pilot.pause()
+            edit = pilot.app.screen
+            assert isinstance(edit, EventEditScreen)
+            self.assertNotIn(
+                "Delete",
+                [
+                    active.binding.description
+                    for active in edit.active_bindings.values()
+                    if active.binding.show
+                ],
+            )
 
 
 class HelpScreenTest(TuiFlowTestCase):

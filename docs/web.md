@@ -225,7 +225,9 @@ view switcher, **‹ Prev / Today / Next ›**, the per-calendar filters,
 Which view, which date and which calendars are showing all live in the
 URL, so a week can be bookmarked and the back button steps through what
 you looked at. The event form saves with ++ctrl+s++, deletes with
-++ctrl+d++ and leaves with ++escape++.
+++f8++ — the browser keeps ++ctrl+d++ for its own bookmark dialog — and
+leaves with ++escape++. The Delete button beside Save does the same
+thing for a mouse, and appears only once the event exists.
 
 [Calendar](calendar.md) is the manual for everything the events
 themselves do: accounts, recurrence, reminders, `.ics` import and the
