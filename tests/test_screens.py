@@ -284,6 +284,86 @@ async def test_link_action_escape_dismisses(monkeypatch: pytest.MonkeyPatch) -> 
     assert app.return_value is False
 
 
+async def test_link_action_for_an_address_offers_to_write_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`c` answers True, which is what makes the caller compose.
+
+    The dialog does not compose itself: that needs the accounts and the
+    configuration, which belong to the screen that owns the reader.
+    """
+    open_mock = MagicMock()
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open", open_mock
+    )
+    app = _make_host(LinkActionScreen, "ada@example.test", kind="mail")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # The address is shown, because the words that were clicked need
+        # not be it.
+        assert "ada@example.test" in str(app.screen.query_one("#body").render())
+        await pilot.press("c")
+        await pilot.pause()
+    assert app.return_value is True
+    open_mock.assert_not_called()
+
+
+async def test_link_action_for_an_address_has_no_browser_to_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`o` is the web link's key and does nothing to an address.
+
+    An address handed to `webbrowser.open` reaches whatever the desktop
+    has registered, which is the one program this dialog exists to keep
+    it away from.
+    """
+    open_mock = MagicMock()
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.link_action_screen.webbrowser.open", open_mock
+    )
+    app = _make_host(LinkActionScreen, "ada@example.test", kind="mail")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert list(app.screen.query("#open")) == []
+        await pilot.press("o")
+        await pilot.pause()
+        open_mock.assert_not_called()
+        assert app.return_value is None
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is False
+
+
+async def test_link_action_copies_an_address_without_writing_to_it() -> None:
+    app = _make_host(LinkActionScreen, "ada@example.test", kind="mail")
+    copied: list[str] = []
+
+    def _copy(text: str) -> None:
+        copied.append(text)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.copy_to_clipboard = _copy
+        await pilot.click("#copy")
+        await pilot.pause()
+    assert copied == ["ada@example.test"]
+    assert app.return_value is False
+
+
+async def test_link_action_for_a_web_link_will_not_compose_to_it() -> None:
+    """`c` is the address key and does nothing to a web link."""
+    app = _make_host(LinkActionScreen, "https://example.com")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert list(app.screen.query("#compose")) == []
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.return_value is None
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is False
+
+
 # ===========================================================================
 # GotoFolderScreen — pure function first
 # ===========================================================================

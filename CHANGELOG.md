@@ -257,6 +257,39 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A link's own words answer a click**: a message reading
+  `Please <a href="mailto:ada@example.test">Contact Ada</a>` drew the
+  anchor's words as ordinary text and a two-cell ✉ token after them, and
+  only the token was clickable. The words are the whole of what looks
+  like a link, so a mouse aimed at them — which is where a mouse goes —
+  did nothing at all. They are now inside the clickable region, for
+  addresses and web links alike.
+
+- **An address asks before it opens a composer**: clicking one used to
+  replace the message being read, with no sight of the address and no
+  way back to where you were. Both kinds of link now open a dialog
+  naming the target first — ++o++ opens a web link, ++c++ composes to an
+  address, ++y++ copies, ++escape++ does neither. The words an anchor
+  shows and the place it goes are chosen separately by the sender, so
+  `<a href="mailto:billing@elsewhere.test">accounts@yourbank.test</a>`
+  reads as one address and would write to another; the dialog is where
+  that is visible. Copy moves from ++c++ to ++y++ to make room, matching
+  the reader's own ++Y++.
+
+- **A URL printed inside a link's text no longer splits the link**:
+  `<a href="https://track.test/x">Visit https://real.test</a>` had the
+  printed URL linkified in place, which opened a second link inside the
+  first and cut the anchor's words in half in the reader and in the
+  plain-text body. One anchor is one link, and where it goes is its
+  target, not the address the sender chose to print.
+
+- **The browser shows a link's words rather than repeating its target**:
+  the same anchor came out as `Contact Ada ada@example.test`, because the
+  page drew the words as text and then the link as its own target. The
+  address a `mailto:` link would write to is now its `title`, since its
+  `href` is a `/compose` URL and the address would otherwise be nowhere
+  on the page.
+
 - **An event opened to be read can be deleted from there** (++shift+d++):
   the detail dialog — what clicking an event, or ++enter++ on its row, puts
   in front of you — offered only Back and Edit, so deciding to drop an event

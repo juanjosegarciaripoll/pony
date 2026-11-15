@@ -567,3 +567,121 @@ async def test_a_cancelled_forward_leaves_no_temporary_file_behind() -> None:
 
         assert not attached[0].exists(), "forwarded copy outlived the composer"
         assert not attached[0].parent.exists(), "scratch directory was left behind"
+
+
+def _anchor_message() -> bytes:
+    """An HTML message whose links show words rather than their targets."""
+    message = EmailMessage()
+    message["From"] = "Ada <ada@example.test>"
+    message["To"] = "acct@example.test"
+    message["Subject"] = "Say hello"
+    message["Date"] = "Tue, 4 Mar 2025 10:00:00 +0000"
+    message["Message-ID"] = "<anchors@example.test>"
+    message.set_content(
+        '<p>Please <a href="mailto:river@example.test">Contact Ada</a> today.</p>'
+        '<p>Or read <a href="https://example.test/notes">the notes</a>.</p>',
+        subtype="html",
+    )
+    return message.as_bytes()
+
+
+async def _open_anchor_message(pilot: object, app: object) -> tuple[object, list[str]]:
+    """Open the seeded message and return its reader panel and rendered lines."""
+    await pilot.pause()  # type: ignore[attr-defined]
+    await pilot.press("enter")  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+    await pilot.press("enter")  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+    panel = _main(app).query_one(MessageViewPanel)
+    content = panel.query_one("#content")
+    return content, content.render().plain.split("\n")  # type: ignore[attr-defined]
+
+
+async def _click_word(pilot: object, content: object, lines: list[str], word: str):
+    """Click the middle of *word* where the reader has drawn it."""
+    row = next(i for i, line in enumerate(lines) if word in line)
+    column = lines[row].index(word) + len(word) // 2
+    await pilot.click(content, offset=(column, row))  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+
+
+async def test_clicking_the_words_of_a_mailto_anchor_asks_before_composing() -> None:
+    """A mouse on the link's text reaches the link, and is asked first.
+
+    Both halves are regressions.  The anchor's words used to be drawn
+    beside the click region rather than inside it, so a click on
+    `Contact Ada` -- the only thing in the body that looks like a link --
+    did nothing whatever, and only the two-cell token after it answered.
+    And the click that did land composed at once, replacing the message
+    being read with no way back to it and no sight of the address, which
+    an anchor need not show.
+    """
+    from textual.widgets import Input
+
+    from pony.tui.mail.screens.compose_screen import ComposeScreen
+    from pony.tui.mail.screens.link_action_screen import LinkActionScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-anchor-click", seed=[(folder, _anchor_message())]
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        content, lines = await _open_anchor_message(pilot, app)
+        assert any("Contact Ada" in line for line in lines)
+
+        await _click_word(pilot, content, lines, "Contact Ada")
+
+        assert isinstance(app.screen, LinkActionScreen)
+        # The address is on screen, because the words above are not it.
+        assert "river@example.test" in str(
+            app.screen.query_one("#body").render()  # type: ignore[attr-defined]
+        )
+
+        await pilot.press("c")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ComposeScreen)
+        assert app.screen.query_one("#to-input", Input).value == "river@example.test"
+
+
+async def test_declining_the_address_leaves_the_message_on_screen() -> None:
+    """Escape is the whole point of asking: nothing is composed."""
+    from pony.tui.mail.screens.compose_screen import ComposeScreen
+    from pony.tui.mail.screens.link_action_screen import LinkActionScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-anchor-decline", seed=[(folder, _anchor_message())]
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        content, lines = await _open_anchor_message(pilot, app)
+        await _click_word(pilot, content, lines, "Contact Ada")
+        assert isinstance(app.screen, LinkActionScreen)
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not any(isinstance(s, ComposeScreen) for s in app.screen_stack)
+        assert isinstance(_main(app).query_one(MessageViewPanel), MessageViewPanel)
+
+
+async def test_clicking_the_words_of_a_web_anchor_reaches_the_link() -> None:
+    """The same defect, and the same fix, for an `https://` anchor."""
+    from pony.tui.mail.screens.link_action_screen import LinkActionScreen
+
+    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    app, *_ = build_pony_app(
+        label="main-anchor-web", seed=[(folder, _anchor_message())]
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        content, lines = await _open_anchor_message(pilot, app)
+
+        await _click_word(pilot, content, lines, "the notes")
+
+        assert isinstance(app.screen, LinkActionScreen)
+        assert "https://example.test/notes" in str(
+            app.screen.query_one("#body").render()  # type: ignore[attr-defined]
+        )

@@ -2047,8 +2047,16 @@ async def test_main_screen_address_and_link_actions() -> None:
         await pilot.press("escape")
         await pilot.pause()
 
+        # An address is confirmed before it composes: the dialog shows
+        # where the link goes, which the words clicked need not say.
         panel.body_link = Mock(return_value=("mail", "river@example.test"))
+        screen.compose_new.reset_mock()
         screen.action_compose_link("1")
+        await pilot.pause()
+        assert isinstance(app.screen, LinkActionScreen)
+        screen.compose_new.assert_not_called()
+        await pilot.press("c")
+        await pilot.pause()
         screen.compose_new.assert_called_with(to="river@example.test")
 
 

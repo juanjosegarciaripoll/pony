@@ -472,10 +472,27 @@ class MainScreen(Screen[None]):
         self.app.push_screen(LinkActionScreen(pair[1]))  # pyright: ignore[reportUnknownMemberType]
 
     def action_compose_link(self, idx: str) -> None:
+        """Offer to write to a `mailto:` address the open message carries.
+
+        The address is shown and confirmed first.  A click lands on the
+        words the sender chose to display, which need not be the address
+        the link carries, and saying yes replaces the message on screen
+        with a composer.
+        """
         pair = self.query_one(MessageViewPanel).body_link(int(idx))
         if pair is None or pair[0] != "mail":
             return
-        self.compose_new(to=pair[1])
+        from .link_action_screen import LinkActionScreen
+
+        address = pair[1]
+
+        def _write(confirmed: bool | None) -> None:
+            if confirmed:
+                self.compose_new(to=address)
+
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            LinkActionScreen(address, kind="mail"), _write
+        )
 
     def action_harvest_contact(self, idx: str) -> None:
         if self._contacts is None:

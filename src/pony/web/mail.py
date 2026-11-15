@@ -747,7 +747,12 @@ def _body(rendered: RenderedMessage, *, ref: MessageRef) -> Raw:
             pieces.append(
                 element(
                     "a",
-                    segment.target,
+                    # The anchor's own words when it had any, which is
+                    # what the terminal draws too.  They used to arrive
+                    # as the text run before the link and the link then
+                    # repeated the target, so a message reading "Contact
+                    # Ada" came out as "Contact Ada ada@example.test".
+                    segment.text or segment.target,
                     href=segment.target
                     if web
                     else urls.compose_url(
@@ -759,6 +764,13 @@ def _body(rendered: RenderedMessage, *, ref: MessageRef) -> Raw:
                     ),
                     rel="noopener noreferrer nofollow",
                     target="_blank" if web else None,
+                    # A web link's `href` is the address itself, which the
+                    # browser shows on hover; an address link's is a
+                    # `/compose` URL, so the address it would write to
+                    # would otherwise be nowhere on the page.  The words
+                    # an anchor shows and the address it carries are both
+                    # the sender's to choose, and need not agree.
+                    title=None if web else segment.target,
                 ),
             )
     return fragment(*pieces)

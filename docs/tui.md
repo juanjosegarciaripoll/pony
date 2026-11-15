@@ -144,6 +144,39 @@ is looking at, and the two differ for every mailing list.
 The browser front end shows the same padlock, as a panel that opens in
 place; so does the page ++w++ opens and the PDF ++ctrl+p++ prints.
 
+### Links in the body
+
+A link in a message is clickable, with a token after it saying which
+kind it is: 🌐↗ for a web address, ✉ for one you can write to. The
+words the message shows are part of the link — clicking them is the
+same as clicking the token.
+
+Either kind opens a small dialog first, showing where the link actually
+goes:
+
+| Key | Action |
+|---|---|
+| ++o++ | Open a web link in a browser |
+| ++c++ | Compose to an address |
+| ++y++ | Copy it to the clipboard |
+| ++escape++ | Do neither |
+
+The dialog is not ceremony. The words an anchor shows and the place it
+goes are chosen separately by whoever sent the message, so
+`<a href="mailto:billing@elsewhere.test">accounts@yourbank.test</a>`
+reads as one address and writes to another; the dialog is where you see
+which. For an address it also means a stray click cannot replace the
+message you are reading with a composer.
+
+An address opens Pony's own composer, never the system's `mailto:`
+handler — that would be whatever the desktop has registered, which is
+not the mail program you are reading in. The browser front end does the
+same, as a link to its compose page.
+
+A URL printed inside a link's own text stays text. The message has one
+link there, and where it goes is the link's target, not the address the
+sender chose to print.
+
 ---
 
 ## The calendar

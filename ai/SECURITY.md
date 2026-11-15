@@ -184,7 +184,7 @@ came from is gone.
 |---|---|
 | XSS via HTML event handlers (`onclick`, `onload`, …) | Pony Express renders email in a Textual terminal UI — there is no JavaScript runtime.  HTML is converted to plain text before display. |
 | SQL injection | All queries in `index_store.py` use `?` parameterized placeholders.  FTS5 user queries are double-quote escaped. |
-| Rich markup injection via link sentinels | Link indices are validated as integers; `kind` is assigned internally, never from email content. |
+| Rich markup injection via link sentinels | Link indices are validated as integers and `kind` is assigned internally, never from email content.  A sentinel also carries the anchor's own words, which *are* the sender's: the terminal puts them through `_escape` before they reach Textual markup (`tests/test_link_rendering.py` pins a `[URGENT]` anchor), and the browser through `element()`, which escapes every child. |
 | ReDoS in `_PLAIN_LINK_RE` | The regex has no nested quantifiers or overlapping alternation — backtracking is linear. |
 | `os.startfile()` shell injection | `os.startfile` takes a `Path` object, not a shell string.  No command injection is possible; double-extension attacks remain a user-education issue. |
 | RFC 2047 unknown-charset decode | Falls back to `latin-1`, which may corrupt text but cannot execute code. |

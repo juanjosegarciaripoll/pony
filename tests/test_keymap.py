@@ -359,7 +359,7 @@ _LOCAL_BINDINGS = {
     "HelpScreen": "escape / q dismiss the help itself",
     "DialogScreen": "tab, shift+tab and copy are dialog plumbing",
     "SyncConfirmScreen": "tab, shift+tab and copy are dialog plumbing",
-    "LinkActionScreen": "o / c answer which of the two it is to be",
+    "LinkActionScreen": "o / c / y answer which of the three it is to be",
     "AddAttachmentScreen": "ctrl+l moves the focus inside the form",
     "ContactEditScreen": "ctrl+s submits the form it is",
     # A widget's own navigation and editing, which Textual gives every

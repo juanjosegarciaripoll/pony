@@ -40,6 +40,11 @@ _IS_URL_RE = re.compile(r"^https?://|^mailto:", re.IGNORECASE)
 # Collapses runs of whitespace to a single space (HTML text normalization).
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# One already-injected sentinel, from its opening NUL to its closing one.
+# NUL reaches the body from nowhere else: `handle_data` strips it out of
+# the message's own text.
+_SENTINEL_RE = re.compile(r"\x00[^\x00]*\x00")
+
 # Matches plain-text link patterns in order of specificity to avoid overlap.
 _PLAIN_LINK_RE = re.compile(
     r"<(https?://[^>\s]+)>"  # <https://…>  angle-bracketed web URL
@@ -297,7 +302,9 @@ class RenderedMessage:
     attachments: tuple[AttachmentInfo, ...]
     raw_bytes: bytes  # kept for W (open in browser)
     links: tuple[tuple[str, str], ...] = ()  # (kind, target): kind="web"|"mail"
-    styled_body: str = ""  # body with \x00LINK:N\x00 + format sentinels for TUI
+    # body with \x00LINK:N\x00 (or \x00LINK:N:anchor text\x00) + format
+    # sentinels, for a front end to render as links and emphasis
+    styled_body: str = ""
     # Threading identity (RFC 5322 s3.6.4).  Carried so a reply can chain
     # itself to this message; empty when the sender omitted the header.
     message_id: str = ""
@@ -386,7 +393,9 @@ class BodySegment:
     """One run of a styled body.
 
     ``kind`` is ``"text"`` (``text`` is what to show), ``"link"``
-    (``index``, ``link_kind`` and ``target`` say where it goes) or
+    (``index``, ``link_kind`` and ``target`` say where it goes, and
+    ``text`` is the anchor's own words when it had any that were not
+    just the target again) or
     ``"format"`` (``format_id`` is one of ``B1``/``B0``/``I1``/``I0``/
     ``U1``/``U0``/``S1``/``S0``: bold, italic, underline, strike, on
     and off).
@@ -414,14 +423,16 @@ def parse_styled_body(
     segments: list[BodySegment] = []
     for piece in body.split("\x00"):
         if piece.startswith("LINK:"):
+            number, _, anchor_text = piece[5:].partition(":")
             try:
-                index = int(piece[5:])
+                index = int(number)
                 kind, target = links[index]
             except (ValueError, IndexError):
                 continue
             segments.append(
                 BodySegment(
                     kind="link",
+                    text=anchor_text,
                     index=index,
                     link_kind=kind,
                     target=target,
@@ -437,7 +448,10 @@ def parse_styled_body(
 def _sentinels_to_plain(text: str, links: list[tuple[str, str]]) -> str:
     """Expand NUL sentinels to plain-text equivalents.
 
-    ``\\x00LINK:N\\x00`` → the link target URL or e-mail address.
+    ``\\x00LINK:N\\x00`` → the link target URL or e-mail address, and
+    ``\\x00LINK:N:text\\x00`` → that anchor's words followed by it, which
+    is what the two of them read as before the words moved inside the
+    sentinel.
     ``\\x00B1\\x00`` / ``\\x00B0\\x00`` etc. (format sentinels) → removed.
     The result contains no NUL characters and is safe for CLI, MCP, and quoting.
     """
@@ -445,12 +459,14 @@ def _sentinels_to_plain(text: str, links: list[tuple[str, str]]) -> str:
     parts: list[str] = []
     for seg in segments:
         if seg.startswith("LINK:"):
+            number, _, anchor_text = seg[5:].partition(":")
             try:
-                idx = int(seg[5:])
+                idx = int(number)
                 _kind, target = links[idx]
-                parts.append(target)
             except (ValueError, IndexError):
                 pass
+            else:
+                parts.append(f"{anchor_text} {target}" if anchor_text else target)
         elif seg in _FORMAT_IDS:
             pass  # format sentinel — omit from plain output
         else:
@@ -561,7 +577,7 @@ class _HTMLStripper(HTMLParser):
     """Minimal tag stripper that preserves line structure.
 
     Anchor tags are intercepted: ``<a href="URL">text</a>`` is replaced by
-    either ``text \x00LINK:{n}\x00`` (when the anchor text is human-readable)
+    either ``\x00LINK:{n}:text\x00`` (when the anchor text is human-readable)
     or ``\x00LINK:{n}\x00`` alone (when it is empty or duplicates the URL).
     Collected links are available via ``links()``.
     """
@@ -651,15 +667,20 @@ class _HTMLStripper(HTMLParser):
             anchor_text = "".join(self._anchor_text).strip()
             idx = len(self._links)
             self._links.append((self._anchor_kind, self._anchor_target))
-            sentinel = f"\x00LINK:{idx}\x00"
             is_url = (
                 bool(_IS_URL_RE.match(anchor_text))
                 or anchor_text == self._anchor_target
             )
             if anchor_text and not is_url:
-                self._current.append(f"{anchor_text} {sentinel}")
+                # The anchor's own words belong *to* the link, so they go
+                # inside the sentinel.  They used to sit beside it as
+                # ordinary text, which left the words a reader aims at
+                # inert: in the terminal only the two-cell token that
+                # followed them answered a click, and a mouse that landed
+                # on "Contact us" did nothing at all.
+                self._current.append(f"\x00LINK:{idx}:{anchor_text}\x00")
             else:
-                self._current.append(sentinel)
+                self._current.append(f"\x00LINK:{idx}\x00")
             self._in_anchor = False
             self._anchor_kind = ""
             self._anchor_target = ""
@@ -1038,8 +1059,15 @@ def _inject_plaintext_links(text: str, links: list[tuple[str, str]]) -> str:
 
     Each detected URL is appended to *links* (mutated in-place) and replaced
     with ``\\x00LINK:{idx}\\x00`` so the view layer can render a clickable token.
-    Already-injected sentinels (from HTML stripping) are untouched because NUL
-    never appears in URL text.
+
+    Only the runs *between* sentinels are scanned.  A sentinel left by
+    the HTML stripper carries the anchor's own words, and those may hold
+    a URL of their own -- ``<a href="https://track.test/x">Visit
+    https://real.test</a>`` is the shape -- which linkified in place
+    would open a second sentinel inside the first and cut the anchor's
+    words in half.  Leaving it as text is also the truthful rendering:
+    the message has one link there, and where it goes is the `href`, not
+    the URL the sender chose to print.
     """
 
     def _replace(m: re.Match[str]) -> str:
@@ -1055,4 +1083,11 @@ def _inject_plaintext_links(text: str, links: list[tuple[str, str]]) -> str:
         links.append((kind, target))
         return f"\x00LINK:{idx}\x00"
 
-    return _PLAIN_LINK_RE.sub(_replace, text)
+    pieces: list[str] = []
+    cursor = 0
+    for sentinel in _SENTINEL_RE.finditer(text):
+        pieces.append(_PLAIN_LINK_RE.sub(_replace, text[cursor : sentinel.start()]))
+        pieces.append(sentinel.group())
+        cursor = sentinel.end()
+    pieces.append(_PLAIN_LINK_RE.sub(_replace, text[cursor:]))
+    return "".join(pieces)

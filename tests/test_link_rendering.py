@@ -40,12 +40,10 @@ class HTMLAnchorExtractionTest(unittest.TestCase):
         html = "<p>Click <a href='https://example.com'>here</a> for info.</p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("web", "https://example.com"),))
-        # styled_body has the sentinel; body has plain URL text
-        self.assertIn("here", r.styled_body)
-        self.assertIn("\x00LINK:0\x00", r.styled_body)
-        pos_text = r.styled_body.index("here")
-        pos_sentinel = r.styled_body.index("\x00LINK:0\x00")
-        self.assertLess(pos_text, pos_sentinel)
+        # styled_body carries the anchor's words inside the sentinel, so
+        # a front end can make them part of the link rather than leaving
+        # them beside it as text no click reaches.
+        self.assertIn("\x00LINK:0:here\x00", r.styled_body)
         # body is NUL-free and contains the URL as plain text
         self.assertNotIn("\x00", r.body)
         self.assertIn("here", r.body)
@@ -80,15 +78,13 @@ class HTMLAnchorExtractionTest(unittest.TestCase):
         html = "<p>See <a href='HTTP://Example.COM/x'>the notes</a>.</p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("web", "HTTP://Example.COM/x"),))
-        self.assertIn("the notes", r.styled_body)
-        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        self.assertIn("\x00LINK:0:the notes\x00", r.styled_body)
 
     def test_mailto_anchor_human_text(self) -> None:
         html = "<p>Mail <a href='mailto:foo@bar.com'>Foo</a>.</p>"
         r = render_message(_html_msg(html))
         self.assertEqual(r.links, (("mail", "foo@bar.com"),))
-        self.assertIn("Foo", r.styled_body)
-        self.assertIn("\x00LINK:0\x00", r.styled_body)
+        self.assertIn("\x00LINK:0:Foo\x00", r.styled_body)
         self.assertNotIn("\x00", r.body)
         self.assertIn("Foo", r.body)
         self.assertIn("foo@bar.com", r.body)
@@ -103,6 +99,35 @@ class HTMLAnchorExtractionTest(unittest.TestCase):
         # body: address expanded as plain text
         self.assertNotIn("\x00", r.body)
         self.assertIn("foo@bar.com", r.body)
+
+    def test_a_url_printed_inside_an_anchor_stays_text(self) -> None:
+        """One anchor is one link, whatever its words print.
+
+        The anchor's words live inside the sentinel now, and the
+        plain-text linkifier runs over the result; without skipping
+        sentinels it opened a second one inside the first and cut the
+        words in half.  Leaving it as text is also the honest reading:
+        where the link goes is the `href`, not the URL the sender chose
+        to show.
+        """
+        html = "<p><a href='https://track.test/x'>Visit https://real.test now</a></p>"
+        r = render_message(_html_msg(html))
+        self.assertEqual(r.links, (("web", "https://track.test/x"),))
+        self.assertEqual(r.styled_body, "\x00LINK:0:Visit https://real.test now\x00")
+        self.assertNotIn("\x00", r.body)
+
+    def test_a_bare_url_beside_an_anchor_is_still_linkified(self) -> None:
+        """Skipping sentinels does not stop the text around them."""
+        html = (
+            "<p><a href='https://track.test/x'>Visit us</a></p>"
+            "<p>Plain https://other.test here</p>"
+        )
+        r = render_message(_html_msg(html))
+        self.assertEqual(
+            r.links,
+            (("web", "https://track.test/x"), ("web", "https://other.test")),
+        )
+        self.assertIn("\x00LINK:1\x00", r.styled_body)
 
     def test_multiple_links(self) -> None:
         html = "<p><a href='https://a.com'>A</a> and <a href='https://b.com'>B</a></p>"
@@ -223,6 +248,24 @@ class RenderBodyMarkupTest(unittest.TestCase):
         body = "Contact \x00LINK:0\x00 for help."
         markup = self._assert_valid_markup(body, (("mail", "user@example.com"),))
         self.assertIn("compose_link", markup)
+
+    def test_the_anchors_words_are_inside_the_click_region(self) -> None:
+        """What a reader aims a mouse at is what answers the click.
+
+        The words used to be drawn before the markup that made the token
+        clickable, so a click on them reached nothing at all.
+        """
+        body = "Please \x00LINK:0:Contact Ada\x00 today."
+        markup = self._assert_valid_markup(body, (("mail", "ada@example.test"),))
+        self.assertIn("compose_link('0')\"]Contact Ada ", markup)
+        # And the token still marks it as a link to the eye.
+        self.assertIn("\u2709", markup)
+
+    def test_a_bracket_in_the_anchors_words_is_escaped(self) -> None:
+        """Anchor text is the sender's, and it lands inside markup."""
+        body = "\x00LINK:0:[URGENT] read this\x00"
+        markup = self._assert_valid_markup(body, (("web", "https://x.com"),))
+        self.assertIn("\\[URGENT]", markup)
 
     def test_bracket_before_link_sentinel(self) -> None:
         # Regression: HTML email with [<a href="mailto:...">addr</a>] produces

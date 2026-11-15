@@ -67,22 +67,31 @@ _FORMAT_RICH = {
 def _render_body(body: str, links: tuple[tuple[str, str], ...]) -> str:
     """Convert a styled body string into Rich markup.
 
-    Handles ``\\x00LINK:{idx}\\x00`` (clickable link tokens) and
-    ``\\x00B1\\x00`` / ``\\x00B0\\x00`` etc. (bold/italic/underline/strike).
+    Handles ``\\x00LINK:{idx}\\x00`` and ``\\x00LINK:{idx}:anchor text\\x00``
+    (clickable link tokens) and ``\\x00B1\\x00`` / ``\\x00B0\\x00`` etc.
+    (bold/italic/underline/strike).
+
+    When the anchor carried words of its own they are drawn *inside* the
+    click region, beside the token: the words are what a reader aims a
+    mouse at, and while they sat outside it a click on them did nothing
+    and only the token itself answered.
     """
     segments = body.split("\x00")
     parts: list[str] = []
     for seg in segments:
         if seg.startswith("LINK:"):
+            number, _, anchor_text = seg[5:].partition(":")
             try:
-                idx = int(seg[5:])
+                idx = int(number)
                 kind, _ = links[idx]
             except (ValueError, IndexError):
                 continue
             if kind == "web":
-                parts.append(f"[@click=\"screen.activate_link('{idx}')\"]\\[🌐 ↗][/]")
+                action, token = "activate_link", "\\[🌐 ↗]"
             else:
-                parts.append(f"[@click=\"screen.compose_link('{idx}')\"]\\[✉ ][/]")
+                action, token = "compose_link", "\\[✉ ]"
+            label = f"{_escape(anchor_text)} {token}" if anchor_text else token
+            parts.append(f"[@click=\"screen.{action}('{idx}')\"]{label}[/]")
         elif seg in _FORMAT_RICH:
             parts.append(_FORMAT_RICH[seg])
         else:

@@ -2146,9 +2146,13 @@ def test_an_address_in_a_body_opens_the_composer_and_not_the_desktop() -> None:
         body = client.get(_message(message_id)).text
 
     assert "mailto:" not in body
-    assert "Ada" in body
-    target = link_to(body, "ada@example.test")
+    # Labelled with the anchor's own word, as the terminal draws it, and
+    # carrying the address it would write to in its `title`: the two are
+    # the sender's to choose separately, so a page that showed only the
+    # word would not say where writing to it goes.
+    target = link_to(body, "Ada")
     assert target.startswith("/compose")
+    assert 'title="ada@example.test"' in body
     # And the composer it opens is prefilled with that address, on the
     # account the mail arrived at.
     with _client(services) as client:
