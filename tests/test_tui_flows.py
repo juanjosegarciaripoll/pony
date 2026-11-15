@@ -453,8 +453,14 @@ def _dated_message(subject: str, date: str, message_id: str) -> bytes:
     return msg.as_bytes()
 
 
-async def test_trash_flips_status() -> None:
-    """Pressing ``d`` marks the highlighted row TRASHED, leaving peers alone."""
+async def test_trash_moves_the_row_into_the_trash_folder() -> None:
+    """Pressing ``D`` moves the highlighted row, leaving peers alone.
+
+    It used to mark the row ``TRASHED``, which the next sync turned
+    into an expunge on the server with the mirror file deleted too --
+    nothing confirmed, nothing kept, nothing to undo.  `D` is now a
+    move into the account's trash folder, like `A` into its archive.
+    """
     folder = FolderRef(account_name="acct", folder_name="INBOX")
     # Distinct Date headers keep list ordering deterministic — the panel
     # sorts ``received_at DESC``, so the newer row is row 0 and ``down``
@@ -495,10 +501,21 @@ async def test_trash_flips_status() -> None:
         await pilot.pause()
 
     newer_row = index.get_message(message_ref=newer_ref)
-    older_row = index.get_message(message_ref=older_ref)
-    assert newer_row is not None and older_row is not None
+    assert newer_row is not None
     assert newer_row.local_status == MessageStatus.ACTIVE
-    assert older_row.local_status == MessageStatus.TRASHED
+    # The one under the cursor left INBOX for Trash, and nothing is
+    # marked for deletion.  `get_message` keys on the row id alone, so
+    # it answers with the row in its new folder.
+    moved = index.get_message(message_ref=older_ref)
+    assert moved is not None
+    assert moved.message_ref.folder_name == "Trash"
+    assert list(index.list_folder_messages(folder=folder)) != []
+    trash = FolderRef(account_name="acct", folder_name="Trash")
+    (older_row,) = index.list_folder_messages(folder=trash)
+    assert older_row.message_id == "<older@example.com>"
+    assert older_row.local_status == MessageStatus.PENDING_MOVE
+    assert older_row.source_folder == "INBOX"
+    assert older_row.trashed_at is not None
 
 
 async def test_toggle_flagged() -> None:

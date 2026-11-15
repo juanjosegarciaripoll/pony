@@ -3079,6 +3079,27 @@ class ImapSyncService:
                 retention = account.mirror.trash_retention_days
                 if retention <= 0:
                     continue
+                # A deletion is a move into the trash folder, so the mail
+                # retention is meant to reap is sitting there as ordinary
+                # rows.  Marking them TRASHED hands them to the planner,
+                # which expunges the server copy and drops the local one
+                # together; purging them here would leave the server half
+                # behind.  This runs before the purge below, which now
+                # only reaps rows the server no longer has.
+                expired = self._index.expire_trash_folder(
+                    account_name=account.name,
+                    folder_name=account.trash_folder,
+                    retention_days=retention,
+                )
+                if expired:
+                    logger.info(
+                        "Cleanup: %d message(s) in %r/%r outlived"
+                        " trash_retention_days=%d and will be expunged",
+                        expired,
+                        account.name,
+                        account.trash_folder,
+                        retention,
+                    )
                 purged = self._index.purge_expired_trash(
                     account_name=account.name,
                     retention_days=retention,

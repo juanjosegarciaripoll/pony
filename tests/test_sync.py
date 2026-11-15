@@ -10,11 +10,13 @@ from __future__ import annotations
 import dataclasses
 import unittest
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from uuid import uuid4
 
 from conftest import TMP_ROOT
 
+from pony.mail import mailbox_actions
 from pony.mail.domain import (
     AccountConfig,
     AppConfig,
@@ -27,6 +29,7 @@ from pony.mail.domain import (
     SmtpConfig,
 )
 from pony.mail.index_store import SqliteIndexRepository
+from pony.mail.mailbox_actions import Mailboxes
 from pony.mail.message_projection import project_rfc822_message
 from pony.mail.protocols import ImapClientSession, MirrorRepository
 from pony.mail.storage import MaildirMirrorRepository
@@ -4797,3 +4800,201 @@ class NonUtcDateIsAdoptedTestCase(unittest.TestCase):
         self.assertTrue(all(row.uid is not None for row in rows), "UIDs not re-adopted")
         # An unadopted row becomes an upload on the next pass.
         self.assertNotIn("append", " ".join(session.call_log).lower())
+
+
+class TrashIsAMoveTest(unittest.TestCase):
+    """Deleting a message must not expunge it from the server.
+
+    The regression these guard is the one that lost mail: `D` marked
+    the row ``TRASHED``, the next sync issued ``STORE \\Deleted`` plus
+    ``UID EXPUNGE``, and the index row and mirror file went with it.
+    Nothing had been confirmed and no retention had expired, which
+    `docs/synchronization.md` has forbidden since the first commit.
+    """
+
+    def _mailboxes(
+        self,
+        service: ImapSyncService,
+        index: SqliteIndexRepository,
+        mirror: MaildirMirrorRepository,
+    ) -> Mailboxes:
+        return Mailboxes(
+            config=service._config,  # noqa: SLF001
+            index=index,
+            mirrors={"personal": mirror},
+        )
+
+    def test_deleting_moves_on_the_server_and_expunges_nothing(self) -> None:
+        raw = _make_raw_message("Delete me", "<del@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<del@example.com>", frozenset(), raw)},
+                "Trash": {},
+            },
+        )
+        service.sync()  # ingest into INBOX
+
+        inbox = FolderRef(account_name="personal", folder_name="INBOX")
+        trash = FolderRef(account_name="personal", folder_name="Trash")
+        outcome = mailbox_actions.trash_messages(
+            self._mailboxes(service, index, mirror),
+            list(index.list_folder_messages(folder=inbox)),
+            inbox,
+            now=datetime.now(tz=UTC),
+        )
+        self.assertEqual(outcome.changed, 1)
+
+        service.sync()
+
+        # The server moved it; it was never flagged \Deleted.
+        self.assertIn(("INBOX", 1, "Trash"), session.moves)
+        self.assertEqual(session.folders["INBOX"], {})
+        self.assertEqual(len(session.folders["Trash"]), 1)
+        self.assertEqual(
+            [call for call in session.call_log if "expunge" in call.lower()],
+            [],
+            "deleting a message must not expunge anything",
+        )
+
+        # And locally it is readable mail in the Trash folder.
+        rows = index.list_folder_messages(folder=trash)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].local_status, MessageStatus.ACTIVE)
+        self.assertEqual(rows[0].message_id, "<del@example.com>")
+        self.assertEqual(
+            mirror.get_message_bytes(
+                folder=trash,
+                storage_key=rows[0].storage_key,
+                message_id=rows[0].message_id,
+            ),
+            raw,
+        )
+        self.assertEqual(list(index.list_folder_messages(folder=inbox)), [])
+
+    def test_a_message_that_outlives_its_retention_is_expunged(self) -> None:
+        """The other half: retention expiry is allowed to delete for good."""
+        raw = _make_raw_message("Old rubbish", "<old@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {},
+                "Trash": {7: ("<old@example.com>", frozenset(), raw)},
+            },
+        )
+        service.sync()
+
+        trash = FolderRef(account_name="personal", folder_name="Trash")
+        (row,) = index.list_folder_messages(folder=trash)
+        # It landed in the trash well past the retention window.
+        index.update_message(
+            message=dataclasses.replace(
+                row,
+                trashed_at=datetime.now(tz=UTC) - timedelta(days=45),
+            ),
+        )
+
+        # Two syncs, and deliberately so: the retention sweep runs in
+        # `execute`, after `plan` has already decided what to do, because
+        # planning is required to be side-effect free -- the terminal
+        # shows a plan and waits before anything is applied.  So the
+        # sweep marks the row in one sync and the next one's planner
+        # turns that into the expunge.  Thirty days plus one sync is
+        # still thirty days.
+        service.sync()
+        self.assertEqual(len(session.folders["Trash"]), 1)
+        (marked,) = index.list_folder_messages(folder=trash)
+        self.assertEqual(marked.local_status, MessageStatus.TRASHED)
+
+        service.sync()
+
+        self.assertEqual(session.folders["Trash"], {})
+        self.assertEqual(list(index.list_folder_messages(folder=trash)), [])
+
+    def test_mail_sitting_in_the_trash_within_retention_is_left_alone(self) -> None:
+        raw = _make_raw_message("Recent rubbish", "<recent@example.com>")
+        service, index, _mirror, session = _setup(
+            server_folders={
+                "INBOX": {},
+                "Trash": {7: ("<recent@example.com>", frozenset(), raw)},
+            },
+        )
+        service.sync()
+
+        trash = FolderRef(account_name="personal", folder_name="Trash")
+        (row,) = index.list_folder_messages(folder=trash)
+        index.update_message(
+            message=dataclasses.replace(
+                row,
+                trashed_at=datetime.now(tz=UTC) - timedelta(days=3),
+            ),
+        )
+
+        service.sync()
+
+        self.assertEqual(len(session.folders["Trash"]), 1)
+        self.assertEqual(len(index.list_folder_messages(folder=trash)), 1)
+
+    def test_mail_filed_in_the_trash_by_hand_is_never_reaped(self) -> None:
+        """No `trashed_at` means no retention clock.
+
+        A trash folder the server filled itself, or mail moved there
+        with `M`, has no stamp saying when it was deleted -- and
+        guessing one would delete mail nobody deleted.
+        """
+        raw = _make_raw_message("Server's own", "<theirs@example.com>")
+        service, index, _mirror, session = _setup(
+            server_folders={
+                "INBOX": {},
+                "Trash": {7: ("<theirs@example.com>", frozenset(), raw)},
+            },
+        )
+        service.sync()
+
+        trash = FolderRef(account_name="personal", folder_name="Trash")
+        (row,) = index.list_folder_messages(folder=trash)
+        self.assertIsNone(row.trashed_at)
+
+        service.sync()
+
+        self.assertEqual(len(session.folders["Trash"]), 1)
+        self.assertEqual(len(index.list_folder_messages(folder=trash)), 1)
+
+    def test_a_deletion_still_in_flight_is_not_expired_under_it(self) -> None:
+        """Retention must not reap a move that has not been pushed yet.
+
+        Found while building this: the sweep marked any row in the trash
+        folder whose stamp was old enough, including a `PENDING_MOVE`
+        row — a deletion the server has not been told about, whose
+        message is still in the folder it came from.  Marking it
+        ``TRASHED`` gave it no UID of its own, so the retention purge
+        dropped the local row and the server kept the original: the
+        message reappeared as new mail in the folder it was deleted
+        from, and the deletion was lost.
+        """
+        raw = _make_raw_message("In flight", "<flight@example.com>")
+        service, index, mirror, session = _setup(
+            server_folders={
+                "INBOX": {1: ("<flight@example.com>", frozenset(), raw)},
+                "Trash": {},
+            },
+        )
+        service.sync()
+
+        inbox = FolderRef(account_name="personal", folder_name="INBOX")
+        trash = FolderRef(account_name="personal", folder_name="Trash")
+        # Deleted long ago, and never yet synced — the shape a machine
+        # that was offline for a month comes back with.
+        mailbox_actions.trash_messages(
+            self._mailboxes(service, index, mirror),
+            list(index.list_folder_messages(folder=inbox)),
+            inbox,
+            now=datetime.now(tz=UTC) - timedelta(days=45),
+        )
+
+        service.sync()
+
+        # The move happened; nothing was purged behind its back.
+        self.assertIn(("INBOX", 1, "Trash"), session.moves)
+        rows = index.list_folder_messages(folder=trash)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].message_id, "<flight@example.com>")
+        self.assertEqual(list(index.list_folder_messages(folder=inbox)), [])

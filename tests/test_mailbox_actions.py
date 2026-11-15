@@ -194,13 +194,141 @@ def test_mark_folder_read_reports_a_count_or_says_nothing() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_trash_records_when_it_happened_and_keeps_the_first_answer() -> None:
-    """``trashed_at`` is what retention and the planner key off."""
+TRASH = FolderRef(account_name="acct", folder_name="Trash")
+
+
+def test_deleting_moves_the_message_into_the_trash_folder() -> None:
+    """A deletion is a move, not an expunge.
+
+    This is the whole contract.  `trash_messages` used to mark the row
+    ``TRASHED``, which the next sync turned into ``STORE \\Deleted``
+    plus ``UID EXPUNGE`` within seconds -- unconfirmed, and with the
+    mirror file deleted too, so neither Pony nor the server had the
+    message any more.  `docs/synchronization.md` has promised since the
+    first commit that nothing is deleted for good "without either
+    explicit confirmation or retention expiry", and this is what makes
+    that true.
+    """
     mailboxes, _config = _build("actions-trash")
+    now = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+
+    outcome = mailbox_actions.trash_messages(
+        mailboxes, _rows(mailboxes, INBOX), INBOX, now=now
+    )
+
+    assert outcome.changed == 1
+    assert _rows(mailboxes, INBOX) == []
+    (stored,) = _rows(mailboxes, TRASH)
+    # A pending move, exactly as archiving leaves one: the server still
+    # has the message where it was, and the next sync issues UID MOVE.
+    assert stored.local_status is MessageStatus.PENDING_MOVE
+    assert stored.source_folder == "INBOX"
+    assert stored.uid is None
+    # Nothing is marked for deletion.
+    assert stored.local_status is not MessageStatus.TRASHED
+    # And the stamp retention counts from says when it arrived here.
+    assert stored.trashed_at == now
+
+
+def test_the_deleted_message_is_still_in_the_mirror() -> None:
+    """The bytes move with the row; they are not unlinked."""
+    mailboxes, _config = _build("actions-trash-mirror")
+    now = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+
+    mailbox_actions.trash_messages(mailboxes, _rows(mailboxes, INBOX), INBOX, now=now)
+
+    (stored,) = _rows(mailboxes, TRASH)
+    mirror = mailboxes.mirrors["acct"]
+    raw = mirror.get_message_bytes(
+        folder=TRASH,
+        storage_key=stored.storage_key,
+        message_id=stored.message_id,
+    )
+    assert b"Subject:" in raw
+
+
+def test_deleting_again_from_inside_the_trash_is_refused_here() -> None:
+    """The permanent one is a different function, and it asks first."""
+    mailboxes, _config = _build("actions-trash-twice")
+    now = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+    mailbox_actions.trash_messages(mailboxes, _rows(mailboxes, INBOX), INBOX, now=now)
+
+    outcome = mailbox_actions.trash_messages(
+        mailboxes, _rows(mailboxes, TRASH), TRASH, now=now
+    )
+
+    assert outcome.changed == 0
+    assert [notice.text for notice in outcome.notices] == [
+        "Already in 'Trash' — deleting from there is permanent, and asks first.",
+    ]
+    (stored,) = _rows(mailboxes, TRASH)
+    assert stored.local_status is not MessageStatus.TRASHED
+
+
+def test_deleting_is_refused_when_the_trash_folder_is_not_synced() -> None:
+    """Stranding it locally is not deleting it.
+
+    A trash folder left out of the folder policy would take the move
+    and never push it, so the server would keep the message in the
+    inbox for ever while Pony showed it as deleted.
+    """
+    paths = make_tmp_paths("actions-trash-excluded")
+    account = make_test_account(paths)
+    account = dataclasses.replace(account, folders=SyncScope(exclude=("Trash",)))
+    mailboxes, _config = _build("actions-trash-excluded-2", accounts=(account,))
+
+    outcome = mailbox_actions.trash_messages(
+        mailboxes,
+        _rows(mailboxes, INBOX),
+        INBOX,
+        now=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+    )
+
+    assert outcome.changed == 0
+    assert [notice.text for notice in outcome.notices] == [
+        "Trash folder 'Trash' is excluded from sync.",
+    ]
+    assert len(_rows(mailboxes, INBOX)) == 1
+
+
+def test_the_trash_folder_comes_from_the_account_or_a_default() -> None:
+    """`Trash` unless the account names another, never None."""
+    paths = make_tmp_paths("actions-trash-name")
+    plain = make_test_account(paths)
+    named = make_test_account(paths, name="other", trash_folder="Deleted Items")
+    config = make_test_config(accounts=(plain, named))
+
+    assert mailbox_actions.trash_folder_name(config, "acct") == "Trash"
+    assert mailbox_actions.trash_folder_name(config, "other") == "Deleted Items"
+    # An account the config does not know still answers, rather than
+    # leaving a caller to expunge for want of a destination.
+    assert mailbox_actions.trash_folder_name(config, "absent") == "Trash"
+
+
+def test_a_named_trash_folder_is_where_the_message_goes() -> None:
+    paths = make_tmp_paths("actions-trash-named")
+    account = make_test_account(paths, trash_folder="Deleted Items")
+    mailboxes, _config = _build("actions-trash-named-2", accounts=(account,))
+
+    mailbox_actions.trash_messages(
+        mailboxes,
+        _rows(mailboxes, INBOX),
+        INBOX,
+        now=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+    )
+
+    target = FolderRef(account_name="acct", folder_name="Deleted Items")
+    assert len(_rows(mailboxes, target)) == 1
+    assert _rows(mailboxes, TRASH) == []
+
+
+def test_permanent_deletion_records_when_it_happened_and_keeps_the_first() -> None:
+    """``trashed_at`` is what retention and the planner key off."""
+    mailboxes, _config = _build("actions-delete")
     first = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
     second = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
 
-    outcome = mailbox_actions.trash_messages(
+    outcome = mailbox_actions.delete_messages_permanently(
         mailboxes, _rows(mailboxes, INBOX), now=first
     )
 
@@ -209,7 +337,9 @@ def test_trash_records_when_it_happened_and_keeps_the_first_answer() -> None:
     assert stored.local_status is MessageStatus.TRASHED
     assert stored.trashed_at == first
 
-    mailbox_actions.trash_messages(mailboxes, _rows(mailboxes, INBOX), now=second)
+    mailbox_actions.delete_messages_permanently(
+        mailboxes, _rows(mailboxes, INBOX), now=second
+    )
     (stored,) = _rows(mailboxes, INBOX)
     assert stored.trashed_at == first
 

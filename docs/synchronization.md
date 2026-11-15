@@ -51,7 +51,10 @@ config (see [Configuration](configuration.md)). Within each folder:
 - **Messages deleted on the server** are moved to local trash.
 - **Flag changes** (read, flagged, answered, etc.) are reconciled in both
   directions using a three-way merge.
-- **Messages you deleted locally** are expunged from the server.
+- **Messages you deleted locally** are moved, server-side, into the
+  account's `trash_folder`. They are expunged only once they have sat
+  there for `trash_retention_days`, or when you delete them again from
+  inside that folder and confirm it.
 - **Messages you flagged locally** have their flags pushed to the server.
 
 ### Performance
@@ -155,6 +158,10 @@ trash.
 
 ### You deleted a message but the server changed its flags
 
+(This section is about a `TRASHED` row — a deletion that has been
+confirmed or has outlived its retention. An ordinary `D` is a move, and
+conflicts over it are resolved as the move rows below.)
+
 **In a writable folder the deletion wins.** If you trashed a message locally
 and another client changed its flags on the server before the next sync, Pony
 still expunges it. Deleting is an explicit instruction and a flag change is
@@ -202,19 +209,40 @@ until one of the paths above answers the question once.
 
 ## Trash and garbage collection
 
-When a message is deleted (either by you or by the server), it passes through
-a two-stage lifecycle:
+**Deleting is a move.** `D` moves the message into the account's
+`trash_folder` — the same local move as archiving, pushed to the server
+as `UID MOVE` on the next sync. The message is still on the server, still
+readable, and can be moved back out with `M`. Nothing is expunged.
 
-1. **Trashed**: the message is marked for deletion locally. The raw message
-   and index row are retained. On the next sync with a writable folder, the
-   deletion is pushed to the server.
-2. **Purged**: after the server confirms the deletion (or after the configured
-   retention period expires), the local copy is removed from both the index
-   and the mirror.
+Permanent deletion happens in exactly two ways, which are the two the
+principle above allows and no others:
 
-The retention period is controlled by `trash_retention_days` in the mirror
-config (default: 30 days). Garbage collection runs automatically at the start
-of each sync.
+1. **Retention expiry.** A message that has sat in the trash folder for
+   `trash_retention_days` (mirror config, default 30, counted from the
+   `trashed_at` stamp written when it arrived) is marked `TRASHED` by the
+   cleanup pass, and the next sync's planner turns that into
+   `STORE \Deleted` + `UID EXPUNGE` and drops the index row and mirror
+   file. Mail that reached the folder by another route — filed there with
+   `M`, or put there by the server — carries no `trashed_at` and is never
+   reaped.
+2. **Deleting from inside the trash folder.** `D` there is the permanent
+   one, so both front ends ask first: a dialog in the terminal, a
+   `Confirmation` the page has to put in the browser.
+
+The cleanup pass runs at the start of `execute`, after planning, because
+planning makes no changes. So an expiry is marked in one sync and
+expunged by the next — thirty days plus one sync is still thirty days.
+
+A deletion still in flight is never expired under itself: a `PENDING_MOVE`
+row in the trash folder is an instruction the server has not yet been
+given, and the message is still in the folder it came from. Marking that
+`TRASHED` would leave it with no UID of its own, and the retention purge
+would then drop the local row while the server kept the original — the
+message would come back as new mail in the folder it was deleted from.
+`expire_trash_folder` therefore touches only `ACTIVE` rows that carry a UID.
+
+Garbage collection also runs at the start of each sync for stale accounts
+and folders.
 
 ---
 
@@ -415,7 +443,11 @@ before changing the algorithm.
   from a history of actions. There is no operation log to replay.
 - **Idempotent.** Syncing unchanged state produces no mutations.
 - **Non-destructive.** Nothing is permanently deleted without either explicit
-  confirmation or retention expiry.
+  confirmation or retention expiry. This is the oldest principle in this
+  document and for a long time the implementation broke it: `D` marked the
+  row `TRASHED` and the next sync expunged it from the server seconds
+  later, unasked. Deleting is now a move into the trash folder, and the
+  only two things that delete for good are the two named here.
 - **Per-row identity.** The key is the SQLite autoincrement `id` scoped to
   `(account, folder)`. `Message-ID` is display-only and duplicates are allowed
   — see [Message identity](#message-identity).
@@ -526,7 +558,9 @@ the field sets below *are* the contract. They are implemented once, in
 | Archive | `folder=T`, `uid=NULL`, `local_status=PENDING_MOVE`, `source_folder=F`, `source_uid` | `PushMoveOp` |
 | Move (same account) | Same, user-chosen folder | `PushMoveOp` |
 | Move (cross account) | New row in target; source → `TRASHED` | `PushAppendOp` (target) + `PushDeleteOp` (source) |
-| Trash (`D`) | `local_status=TRASHED`; keep `uid` | `PushDeleteOp` |
+| Delete (`D`) | Move into `trash_folder`: `PENDING_MOVE`, `trashed_at` stamped | `PushMoveOp` |
+| Delete from inside `trash_folder` (confirmed) | `local_status=TRASHED`; keep `uid` | `PushDeleteOp` |
+| Retention expiry in `trash_folder` | `local_status=TRASHED`; keep `uid` | `PushDeleteOp` |
 | Compose / send | New row `uid=NULL`, `folder=Sent` | `PushAppendOp` |
 | Flag change | Update `local_flags` | `PushFlagsOp` if drift |
 
@@ -572,5 +606,12 @@ it.
 
 ### Trash retention
 
-`TRASHED` rows are kept for `account.mirror.trash_retention_days` (default 30),
-then reaped by sync cleanup.
+Two different things are counted, both from `trashed_at`:
+
+- Mail in the account's `trash_folder` is marked `TRASHED` once it has been
+  there for `account.mirror.trash_retention_days` (default 30), which hands
+  it to the planner to expunge. Only `ACTIVE` rows with a UID.
+- `TRASHED` rows the server no longer holds (`uid IS NULL`) are dropped from
+  the index and mirror outright. A `TRASHED` row that still has a UID is
+  **not** reaped here: it has a server copy, and dropping the local half
+  would strand rather than delete it, so it goes through `PushDeleteOp`.

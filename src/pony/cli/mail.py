@@ -832,10 +832,11 @@ def run_dedup_folder(
     from datetime import UTC, datetime
 
     # Which rows are duplicates and which copy survives are
-    # `dedupe.plan_duplicates`', as the trashing is `trash_messages`':
-    # what is left here is printing the plan and asking for it twice.
+    # `dedupe.plan_duplicates`', as the deleting is
+    # `delete_messages_permanently`': what is left here is printing the
+    # plan and asking for it twice.
     from ..mail.dedupe import plan_duplicates
-    from ..mail.mailbox_actions import Mailboxes, trash_messages
+    from ..mail.mailbox_actions import Mailboxes, delete_messages_permanently
 
     paths.ensure_runtime_dirs()
     config = require_config(config_path)
@@ -905,7 +906,14 @@ def run_dedup_folder(
         # copy of it overwrote `trashed_at` -- so a row already in the
         # trash had its retention clock reset by a dedup pass, and
         # survived a retention it had already outlived.
-        trash_messages(
+        #
+        # The permanent action deliberately, not `trash_messages`: the
+        # count was typed back, which is the explicit confirmation the
+        # non-destructive principle asks for, and a duplicate's whole
+        # point is that another copy survives.  Moving redundant copies
+        # into the trash folder would only queue them to be deleted
+        # again in thirty days.
+        delete_messages_permanently(
             Mailboxes(config=config, index=index, mirrors={}),
             losers,
             now=now,

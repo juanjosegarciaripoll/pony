@@ -66,6 +66,18 @@
 #                  pushes the move to the server via UID MOVE.  Omit to disable
 #                  the archive action.  The folder must be synced (not matched
 #                  by folders.exclude) and not read-only.
+# - trash_folder:  Target folder for the "D" key in the TUI.  Deleting is a
+#                  *move* into this folder, not an expunge: the message stays
+#                  on the server until it has sat here for
+#                  mirror.trash_retention_days, or until you delete it again
+#                  from inside this folder and confirm.  Defaults to "Trash".
+#                  Unlike archive_folder there is no way to switch it off --
+#                  the only alternative to a destination is expunging on the
+#                  next sync.  It must be synced (not matched by
+#                  folders.exclude) and not read-only, or "D" refuses rather
+#                  than strand the message locally.  Set it if your server
+#                  calls the folder something else, as Exchange does with
+#                  "Deleted Items".
 # - signature:     Text appended below the cursor when composing, replying or
 #                  forwarding.  Use a TOML multi-line string for several lines:
 #                      signature = """
@@ -203,6 +215,9 @@ username = "user@example.com"
 credentials_source = "plaintext"
 # Archive the selected message with the "A" key to this folder.
 archive_folder = "Archive"
+# Delete it with "D" to this one.  "Trash" is the default, so this line
+# only needs writing for a server that calls the folder something else.
+trash_folder = "Trash"
 
 [accounts.smtp]
 host = "smtp.example.com"
@@ -213,9 +228,12 @@ path = "mirrors/personal"
 format = "maildir"
 trash_retention_days = 30
 
-# Sync all folders except Spam and Trash; treat Sent as read-only.
+# Sync all folders except Spam; treat Sent as read-only.  Note that the
+# trash folder is deliberately *not* excluded: deleting is a move into it,
+# so a trash folder left out of sync leaves "D" with nowhere to put
+# anything and it refuses.
 [accounts.folders]
-exclude   = ["Spam", "Trash"]
+exclude   = ["Spam"]
 read_only = ["Sent"]
 
 # Example of a second account (Gmail-style) using STARTTLS on port 587.

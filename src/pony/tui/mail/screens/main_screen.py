@@ -1341,13 +1341,67 @@ class MainScreen(Screen[None]):
         )
 
     def trash_current_message(self) -> None:
-        """Mark every target message as trashed in the index."""
-        self._act_on_targets(
-            lambda messages, _source: mailbox_actions.trash_messages(
-                self._mailboxes,
-                messages,
-                now=datetime.now(tz=UTC),
+        """Delete every target message: a move into the trash folder.
+
+        Nothing is expunged here.  `D` moves the message to the
+        account's `trash_folder`, the way `A` moves it to
+        `archive_folder`, so it stays on the server and can be moved
+        back.  The exception is `D` pressed on mail that is *already*
+        in the trash folder: that is the permanent one, so it asks
+        first, and those two are the only things the project's
+        non-destructive principle lets delete mail for good -- the
+        other being the retention sweep.
+        """
+        from .confirm_screen import ConfirmScreen
+
+        in_trash = [
+            source
+            for source in self._target_folders()
+            if source.folder_name
+            == mailbox_actions.trash_folder_name(self._config, source.account_name)
+        ]
+        if not in_trash:
+            self._apply_trash()
+            return
+
+        def _on_answer(confirmed: bool | None) -> None:
+            if confirmed:
+                self._apply_trash()
+
+        folders = ", ".join(sorted({source.folder_name for source in in_trash}))
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ConfirmScreen(
+                "Delete permanently?",
+                f"Mail in {folders} is already deleted. Deleting it again"
+                " removes it from the server for good — Pony cannot undo"
+                " this and has nowhere left to keep it.",
             ),
+            _on_answer,
+        )
+
+    def _apply_trash(self) -> None:
+        """Move targets to the trash, or expunge the ones already there."""
+        now = datetime.now(tz=UTC)
+
+        def _act(messages: list[IndexedMessage], source: FolderRef) -> Outcome:
+            trash = mailbox_actions.trash_folder_name(self._config, source.account_name)
+            if source.folder_name == trash:
+                return mailbox_actions.delete_messages_permanently(
+                    self._mailboxes, messages, now=now
+                )
+            return mailbox_actions.trash_messages(
+                self._mailboxes, messages, source, now=now
+            )
+
+        self._act_on_targets(_act)
+
+    def _target_folders(self) -> list[FolderRef]:
+        """The folders the cursor and the marks point into, without acting."""
+        targets = self._targets()
+        if not targets:
+            return []
+        return list(
+            mailbox_actions.group_by_folder(self._resolve_targets(targets)).keys()
         )
 
     def archive_current_message(self) -> None:

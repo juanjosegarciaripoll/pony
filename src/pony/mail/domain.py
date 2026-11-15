@@ -15,6 +15,13 @@ CredentialsSource = Literal["plaintext", "env", "command", "encrypted"]
 AccountType = Literal["imap", "local"]
 
 
+#: The folder `D` moves a message into when an account names no other.
+#: "Trash" is what IMAP servers conventionally call it; a server that
+#: calls it something else (Exchange's "Deleted Items") needs
+#: `trash_folder` set, or Pony will CREATE a second folder beside it.
+DEFAULT_TRASH_FOLDER = "Trash"
+
+
 @dataclass(frozen=True, slots=True)
 class MirrorConfig:
     """Local mirror configuration for one account."""
@@ -62,6 +69,16 @@ class AccountConfig:
     # message locally moves it into this folder; the next sync propagates
     # the move to the server.  None disables the archive action.
     archive_folder: str | None = None
+    # Where `D` puts a message.  A deletion is a *move* into this
+    # folder, not an expunge: the message stays on the server, where it
+    # can be read and moved back, until it is deleted *from* here or
+    # `mirror.trash_retention_days` runs out.  Unlike `archive_folder`
+    # this is never None -- every account needs somewhere for a
+    # deletion to go, and the alternative to a destination is expunging
+    # on the next sync, which is what this exists to stop.  The folder
+    # must be one the account actually syncs; excluding it from sync
+    # leaves `D` with nowhere to put anything and it refuses.
+    trash_folder: str = DEFAULT_TRASH_FOLDER
     # Composer: default Markdown composition mode for this account
     markdown_compose: bool = False
     # Composer: signature text appended after quoted content (None = no signature)

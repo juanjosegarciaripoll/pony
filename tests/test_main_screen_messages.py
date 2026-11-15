@@ -889,14 +889,13 @@ async def test_goto_offers_a_folder_that_has_no_directory_yet() -> None:
     assert "INBOX" in offered
 
 
-async def test_trashing_records_when_it_happened() -> None:
-    """``trashed_at`` drives both retention and the sync planner.
+async def test_trashing_records_when_it_entered_the_trash() -> None:
+    """``trashed_at`` drives retention, and now it is the arrival time.
 
-    A trashed row with no server UID and no ``trashed_at`` is given a
-    PurgeLocalOp by the planner — dropped outright instead of kept
-    recoverable — and ``purge_expired_trash`` selects on
-    ``trashed_at IS NOT NULL``, so such a row is invisible to retention
-    as well.  ``pony folder dedup`` always set it; the TUI did not.
+    Retention counts from this, so without it a deleted message would
+    sit in the trash folder for ever; `expire_trash_folder` selects on
+    ``trashed_at IS NOT NULL`` precisely so that mail which reached the
+    folder by some other route is never reaped.
     """
     from datetime import UTC, datetime
 
@@ -912,46 +911,60 @@ async def test_trashing_records_when_it_happened() -> None:
         screen = _main(app)
         current = screen.get_current_message()
         assert current is not None
-        seeded = current.message_ref
         screen.trash_current_message()
         await pilot.pause()
     after = datetime.now(tz=UTC)
 
-    trashed = index.get_message(message_ref=seeded)
-    assert trashed is not None
-    assert trashed.local_status == MessageStatus.TRASHED
+    trash = FolderRef(account_name="acct", folder_name="Trash")
+    (trashed,) = index.list_folder_messages(folder=trash)
+    assert trashed.local_status == MessageStatus.PENDING_MOVE
     assert trashed.trashed_at is not None
     assert before <= trashed.trashed_at <= after
 
 
-async def test_trashing_an_already_trashed_row_keeps_the_original_time() -> None:
-    """Re-trashing must not restart the retention clock."""
-    import dataclasses as _dc
-    from datetime import UTC, datetime, timedelta
+async def test_deleting_from_the_trash_folder_asks_before_it_destroys() -> None:
+    """The one case that really deletes, and it is confirmed.
 
-    folder = FolderRef(account_name="acct", folder_name="INBOX")
+    `D` inside the trash folder is the permanent one: the sync expunges
+    it from the server and drops the mirror file.  That is allowed only
+    because the question is put first -- the project's non-destructive
+    principle permits a permanent deletion on an explicit confirmation
+    or a retention expiry, and nothing else.
+    """
+    from pony.tui.mail.screens.confirm_screen import ConfirmScreen
+
+    trash = FolderRef(account_name="acct", folder_name="Trash")
     app, _cfg, _paths, index, _mirrors = build_pony_app(
-        label="main-trash-idempotent",
-        seed=[(folder, plain_text())],
+        label="main-trash-forever",
+        seed=[(trash, plain_text())],
     )
-    original = datetime.now(tz=UTC) - timedelta(days=5)
 
     async with app.run_test() as pilot:
         await _select_inbox(pilot)
         screen = _main(app)
-        msg = screen.get_current_message()
-        assert msg is not None
-        index.update_message(
-            message=_dc.replace(
-                msg, local_status=MessageStatus.TRASHED, trashed_at=original
-            )
-        )
+        panel = screen.query_one(MessageListPanel)
+        panel.load_folder(trash)
+        await panel.wait_for_load_complete()
+        await pilot.pause()
+
         screen.trash_current_message()
         await pilot.pause()
 
-    reloaded = index.get_message(message_ref=msg.message_ref)
-    assert reloaded is not None
-    assert reloaded.trashed_at == original
+        assert isinstance(app.screen, ConfirmScreen)
+        # Saying no leaves the message exactly where it was.
+        await pilot.press("n")
+        await pilot.pause()
+        (kept,) = index.list_folder_messages(folder=trash)
+        assert kept.local_status is not MessageStatus.TRASHED
+
+        screen.trash_current_message()
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("y")
+        await pilot.pause()
+
+    (gone,) = index.list_folder_messages(folder=trash)
+    assert gone.local_status == MessageStatus.TRASHED
 
 
 async def test_creating_a_folder_the_sync_would_never_push_is_refused() -> None:

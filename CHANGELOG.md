@@ -255,6 +255,51 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   its UID; past the first 25 in one calendar the rest are counted on a
   line of their own rather than filling the log.
 
+### Changed
+
+- **Deleting a message no longer destroys it.** `D` moved nothing: it
+  marked the index row `TRASHED`, and the next sync — often seconds later,
+  unprompted — sent `STORE \Deleted` and `UID EXPUNGE` to the server and
+  deleted the mirror file. The message was then gone from the server, from
+  the index and from the disk, with no confirmation asked, nothing in any
+  Trash folder, and nothing in Pony able to bring it back. Only the
+  server's own recovery (Exchange's Recoverable Items, Gmail's Trash)
+  stood between a keystroke and permanent loss.
+
+  `docs/synchronization.md` has carried this principle since the first
+  commit: *"Nothing is permanently deleted without either explicit
+  confirmation or retention expiry."* Eight lines below it, the same
+  document specified the expunge. The procedure won, and the principle
+  was decoration. `trash_retention_days = 30` did not help either —
+  stage 2 of the documented lifecycle reads *"after server ACK **or**
+  retention expiry"*, and the ACK branch always fired first, so the
+  thirty days in every config file governed nothing but the case where
+  the server refused to delete.
+
+  Deleting is now a move, and the principle is true:
+
+  - **`D` moves the message into the account's new `trash_folder`**
+    (default `Trash`), exactly as `A` moves it into `archive_folder` —
+    a local move, then `UID MOVE` on the server at the next sync. It
+    stays on the server, stays readable, and `M` moves it back out.
+  - **`D` inside the trash folder is the permanent one**, and both front
+    ends ask first: a dialog in the terminal, a `Confirmation` the page
+    must put in the browser.
+  - **Retention finally does something.** Mail that has sat in the trash
+    folder for `trash_retention_days` is expunged from the server and
+    dropped locally, counted from a `trashed_at` stamp written when it
+    arrived. Mail you filed into that folder yourself carries no stamp
+    and is never reaped.
+  - **`D` is refused** where the move could not be pushed: a read-only
+    source, or a trash folder excluded from sync. Stranding a message
+    locally while the server keeps it is not deleting it. The sample
+    config no longer excludes `Trash` for this reason.
+
+  `pony folder dedup` still deletes permanently rather than moving
+  thousands of redundant copies into the trash to be deleted again in a
+  month; its typed-count prompt is the explicit confirmation the
+  principle asks for.
+
 ### Fixed
 
 - **A link's own words answer a click**: a message reading

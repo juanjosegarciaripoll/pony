@@ -705,6 +705,9 @@ class ExpiredTrashTestCase(unittest.TestCase):
                 row,
                 local_status=MessageStatus.TRASHED,
                 trashed_at=long_ago,
+                # No server copy left: this is what the local purge is
+                # for, and the only shape it reaps.  See the test below.
+                uid=None,
             )
         )
         # Remove the file behind its back.
@@ -713,6 +716,46 @@ class ExpiredTrashTestCase(unittest.TestCase):
         service._run_cleanup()
 
         self.assertIsNone(index.get_message(message_ref=row.message_ref))
+
+    def test_expired_trash_the_server_still_holds_is_left_for_the_expunge(
+        self,
+    ) -> None:
+        """A local purge of a row with a UID would strand, not delete.
+
+        This test used to assert the opposite, and the opposite was a
+        bug: the row went from the index and the mirror while the
+        server kept its copy, so the next fetch brought the message
+        back as new mail — mail the user had deleted a year earlier.
+        Such a row goes through ``PushDeleteOp``, which expunges the
+        server copy and drops the local one in one step.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        service, index, _mirror, session = _setup(
+            server_folders={"INBOX": _server_message(1, "Old trash")}
+        )
+        service.sync()
+        row = index.list_folder_messages(folder=_PERSONAL_INBOX)[0]
+        self.assertIsNotNone(row.uid)
+
+        index.update_message(
+            message=dataclasses.replace(
+                row,
+                local_status=MessageStatus.TRASHED,
+                trashed_at=datetime.now(tz=UTC) - timedelta(days=365),
+            )
+        )
+
+        service._run_cleanup()
+
+        kept = index.get_message(message_ref=row.message_ref)
+        self.assertIsNotNone(kept)
+        self.assertEqual(len(session.folders["INBOX"]), 1)
+
+        # And the sync that follows does delete it, from both sides.
+        service.sync()
+        self.assertIsNone(index.get_message(message_ref=row.message_ref))
+        self.assertEqual(session.folders["INBOX"], {})
 
 
 class ProducerThreadTestCase(unittest.TestCase):

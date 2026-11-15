@@ -31,6 +31,7 @@ from pony.outcome import Notice, NoticeLog, Outcome, failure, warn
 
 from .accounts import find_imap_account
 from .domain import (
+    DEFAULT_TRASH_FOLDER,
     AppConfig,
     FolderRef,
     IndexedMessage,
@@ -180,13 +181,94 @@ def _rewrite_flags(
 # ----------------------------------------------------------------------
 
 
+def trash_folder_name(config: AppConfig, account_name: str) -> str:
+    """Where a deletion goes for *account_name*.
+
+    Never ``None``: an account that names no ``trash_folder`` gets
+    `DEFAULT_TRASH_FOLDER`, because the alternative to a destination is
+    expunging on the next sync.  An account with no IMAP side has no
+    setting to read and uses the same default; its mirror has folders
+    like any other.
+    """
+    account = find_imap_account(config, account_name)
+    return DEFAULT_TRASH_FOLDER if account is None else account.trash_folder
+
+
 def trash_messages(
+    mailboxes: Mailboxes,
+    messages: Sequence[IndexedMessage],
+    source: FolderRef,
+    *,
+    now: datetime,
+) -> Outcome:
+    """Move every message in *messages* into the account's trash folder.
+
+    **A deletion is a move.**  `docs/synchronization.md` has said since
+    the first commit that nothing is permanently deleted "without
+    either explicit confirmation or retention expiry", and for years
+    this function did the opposite: it marked the row ``TRASHED``,
+    which the next sync turned into ``STORE \\Deleted`` plus
+    ``UID EXPUNGE`` within seconds, unconfirmed and unrecoverable.
+    The message now goes to `trash_folder` the way archiving goes to
+    `archive_folder` -- the same ``UID MOVE``, the same
+    ``PENDING_MOVE`` row -- so it is still on the server, still
+    readable, and can be moved back.
+
+    Permanent deletion is left to the two things the principle allows:
+    :func:`delete_messages_permanently`, which the front ends call only
+    after asking, and the retention sweep in
+    `ImapSyncService._run_cleanup`.
+
+    *now* stamps when the message entered the trash, which is what
+    retention counts from.
+    """
+    target_name = trash_folder_name(mailboxes.config, source.account_name)
+    if target_name == source.folder_name:
+        # Deleting *from* the trash is the permanent one, and it is not
+        # this function's to do silently.
+        return Outcome.refused(
+            warn(
+                f"Already in {target_name!r} — deleting from there is"
+                " permanent, and asks first.",
+            ),
+        )
+    target = FolderRef(account_name=source.account_name, folder_name=target_name)
+    refusal = check_move_policy(
+        mailboxes.config,
+        source,
+        target,
+        verb="delete",
+        target_noun="Trash folder",
+    )
+    if refusal is not None:
+        return Outcome.refused(refusal)
+    return move_messages(
+        mailboxes,
+        messages,
+        source,
+        target,
+        past_verb="Deleted",
+        checked=True,
+        entered_trash_at=now,
+    )
+
+
+def delete_messages_permanently(
     mailboxes: Mailboxes,
     messages: Sequence[IndexedMessage],
     *,
     now: datetime,
 ) -> Outcome:
-    """Mark every message in *messages* as trashed in the index."""
+    """Mark every message in *messages* for permanent deletion.
+
+    The destructive one: the next sync expunges these from the server
+    and drops both the index row and the mirror file.  The project's
+    non-destructive principle allows exactly two callers -- something
+    that has explicitly asked the user (deleting from inside the trash
+    folder, a deduplication whose count was typed back), and retention
+    expiry.  Anything else wanting to get rid of a message wants
+    :func:`trash_messages`.
+    """
     changed = 0
     with mailboxes.index.connection():
         for msg in messages:
@@ -258,6 +340,7 @@ def move_messages(
     *,
     past_verb: str = "Moved",
     checked: bool = False,
+    entered_trash_at: datetime | None = None,
 ) -> Outcome:
     """Move every message in *messages* from *source* to *target*.
 
@@ -280,6 +363,10 @@ def move_messages(
 
     *checked* says the caller has already run :func:`check_move_policy`,
     which is how archiving reports its refusals in its own words.
+
+    *entered_trash_at* is for the one move that is a deletion: it
+    stamps ``trashed_at`` so retention can count from the moment the
+    message landed in the trash folder.  See :func:`trash_messages`.
     """
     if source == target:
         return Outcome()
@@ -306,6 +393,7 @@ def move_messages(
                     source=source,
                     target=target,
                     log=log,
+                    entered_trash_at=entered_trash_at,
                 )
             else:
                 ok = _move_across_accounts(
@@ -482,6 +570,7 @@ def _move_in_place(
     source: FolderRef,
     target: FolderRef,
     log: NoticeLog,
+    entered_trash_at: datetime | None = None,
 ) -> bool:
     """Rename the mirror file, keep the row, mark it ``PENDING_MOVE``.
 
@@ -512,7 +601,12 @@ def _move_in_place(
     # recorded as the server-side source, so sync executes UID MOVE (or
     # APPEND+EXPUNGE).  No delete-then-insert.
     mailboxes.index.update_message(
-        message=moved_to_folder(msg, target=target, storage_key=new_key),
+        message=moved_to_folder(
+            msg,
+            target=target,
+            storage_key=new_key,
+            trashed_at=entered_trash_at,
+        ),
     )
     return True
 
@@ -830,5 +924,7 @@ __all__ = [
     "retire_message",
     "set_flag",
     "toggle_flag",
+    "delete_messages_permanently",
+    "trash_folder_name",
     "trash_messages",
 ]

@@ -278,7 +278,7 @@ read, flagged and answered state.
 | ++u++ | Mark current message as unread |
 | ++shift+c++ | Mark every message in the current folder as read |
 | ++exclam++ | Toggle the starred/flagged flag |
-| ++shift+d++ | Move to trash (sets `local_status = trashed`; pushed to server on next sync) |
+| ++shift+d++ | Delete: move into the account's `trash_folder` (local move; pushed to the server on next sync). Pressed *inside* that folder it deletes permanently, and asks first |
 | ++shift+a++ | Archive to the account's `archive_folder` (local move; pushed to server on next sync) |
 | ++shift+y++ | Copy the current message to another folder |
 | ++shift+m++ | Move the current message to another folder |
@@ -291,10 +291,28 @@ read, flagged and answered state.
 Opening a message marks it read; there is no separate key for that.
 
 !!! info "Trash vs. delete"
-    `D` marks the message for deletion locally. It stays in the local mirror
-    until the next sync, when Pony sends an EXPUNGE to the server and purges
-    the local copy. In a read-only folder, `D` is a no-op that self-corrects
-    on the next sync.
+    **`D` is a move, not an expunge.** The message goes into the account's
+    `trash_folder` — `Trash` unless the account names another — exactly as
+    `A` moves it into `archive_folder`: immediately in the mirror and the
+    index, then `UID MOVE` on the server at the next sync. It is still on
+    the server, still readable, and `M` moves it back out.
+
+    Two things, and only two, delete a message for good:
+
+    - **`D` pressed while you are in the trash folder**, which asks for
+      confirmation first and then expunges.
+    - **Retention.** Mail that has sat in the trash folder for
+      `trash_retention_days` (default 30) is expunged from the server and
+      dropped from the mirror automatically. The clock starts when the
+      message arrived there, so mail you filed into that folder yourself
+      is never reaped.
+
+    In a read-only folder, `D` is refused — the move could not be pushed,
+    and the message would come straight back.
+
+    The trash folder has to be one the account syncs. If your
+    `[accounts.folders]` `exclude` list matches it, `D` refuses rather
+    than strand the message locally while the server keeps it in place.
 
 !!! info "Archive"
     `A` requires `archive_folder = "..."` on the account. The selected message

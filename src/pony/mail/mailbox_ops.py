@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from .domain import FolderRef, IndexedMessage, MessageRef, MessageStatus
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .protocols import MirrorRepository
 
 _log = logging.getLogger(__name__)
@@ -103,6 +105,7 @@ def moved_to_folder(
     *,
     target: FolderRef,
     storage_key: str,
+    trashed_at: datetime | None = None,
 ) -> IndexedMessage:
     """The row for *message* moved locally into *target* within one account.
 
@@ -113,6 +116,12 @@ def moved_to_folder(
 
     ``source_uid`` is the UID the message had *before* the move; without
     it the planner cannot tell the server which message to remove.
+
+    *trashed_at* stamps when the message entered the trash folder, for
+    the one move that is a deletion.  Retention is counted from it, so
+    without it a message moved into the trash would sit there for ever;
+    it is not a status, and the row stays ``PENDING_MOVE`` like any
+    other move.
     """
     return dataclasses.replace(
         message,
@@ -129,4 +138,5 @@ def moved_to_folder(
         local_status=MessageStatus.PENDING_MOVE,
         source_folder=message.message_ref.folder_name,
         source_uid=message.uid,
+        trashed_at=trashed_at if trashed_at is not None else message.trashed_at,
     )

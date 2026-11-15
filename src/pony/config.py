@@ -25,6 +25,7 @@ from pony.scope import SyncScope, pattern_problem
 
 from .mail.domain import (
     CONFIG_VERSION,
+    DEFAULT_TRASH_FOLDER,
     AccountConfig,
     AnyAccount,
     CredentialsSource,
@@ -287,6 +288,7 @@ def _parse_imap_account(
         sent_folder=_optional_string(data, "sent_folder"),
         drafts_folder=_optional_string(data, "drafts_folder"),
         archive_folder=_optional_string(data, "archive_folder"),
+        trash_folder=_optional_string(data, "trash_folder") or DEFAULT_TRASH_FOLDER,
         markdown_compose=_require_bool(data, "markdown_compose", default=False),
         signature=_optional_string(data, "signature"),
         full_name=_optional_string(data, "full_name"),

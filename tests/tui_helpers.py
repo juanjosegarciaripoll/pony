@@ -42,6 +42,7 @@ from pony.calendar_runtime import CalendarRuntime
 from pony.mail.accounts import build_mirrors
 from pony.mail.credentials import PlaintextCredentialsProvider
 from pony.mail.domain import (
+    DEFAULT_TRASH_FOLDER,
     AccountConfig,
     AnyAccount,
     AppConfig,
@@ -221,6 +222,7 @@ def make_test_account(
     name: str = "acct",
     *,
     archive_folder: str | None = None,
+    trash_folder: str = DEFAULT_TRASH_FOLDER,
     password: str | None = "secret",
 ) -> AccountConfig:
     """Build a deterministic IMAP-shaped account for tests.
@@ -246,6 +248,7 @@ def make_test_account(
         mirror=MirrorConfig(path=mirror_dir, format="maildir"),
         password=password,
         archive_folder=archive_folder,
+        trash_folder=trash_folder,
     )
 
 

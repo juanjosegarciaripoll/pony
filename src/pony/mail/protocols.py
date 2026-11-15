@@ -258,7 +258,18 @@ class IndexRepository(Protocol):
         """Delete trashed messages older than *retention_days*.
 
         Returns ``[(folder_ref, storage_key), ...]`` so the caller can
-        remove the corresponding mirror files.
+        remove the corresponding mirror files.  Only rows with no
+        server UID; the rest go through ``PushDeleteOp``.
+        """
+        ...
+
+    def expire_trash_folder(
+        self, *, account_name: str, folder_name: str, retention_days: int
+    ) -> int:
+        """Mark mail that has sat in the trash folder past its retention.
+
+        Returns how many rows were marked ``TRASHED``, which is what
+        hands them to the planner to expunge.
         """
         ...
 

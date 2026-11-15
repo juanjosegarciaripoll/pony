@@ -1041,7 +1041,6 @@ def test_an_action_reports_its_refusal_rather_than_failing() -> None:
 @pytest.mark.parametrize(
     ("action", "check"),
     [
-        ("trash", "trashed"),
         ("toggle_flagged", "flagged"),
         ("mark_unread", "unread"),
     ],
@@ -1060,9 +1059,7 @@ def test_the_local_mutations_are_offered_over_http(action: str, check: str) -> N
     assert response.status_code == 200
     assert response.json()["changed"] == 1
     (row,) = index.list_folder_messages(folder=INBOX)
-    if check == "trashed":
-        assert row.local_status is MessageStatus.TRASHED
-    elif check == "flagged":
+    if check == "flagged":
         assert MessageFlag.FLAGGED in row.local_flags
     else:
         assert MessageFlag.SEEN not in row.local_flags
@@ -2330,3 +2327,72 @@ def test_the_move_prompt_offers_a_folder_with_no_directory_yet() -> None:
     )
 
     assert "acct/Synced/Elsewhere" in folder_options(services)
+
+
+_TRASH = FolderRef(account_name="acct", folder_name="Trash")
+
+
+def test_deleting_over_http_moves_the_message_into_the_trash() -> None:
+    """The browser deletes the way the terminal does: a move.
+
+    It used to mark the row ``TRASHED``, which the next sync expunged
+    from the server, so a tap on Delete destroyed the message with
+    nothing asked and nothing kept.
+    """
+    services, index = _services("web-trash-move")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        response = client.post(
+            "/action/trash",
+            data={"account": "acct", "folder": "INBOX", "id": str(message_id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["changed"] == 1
+    assert list(index.list_folder_messages(folder=INBOX)) == []
+    (row,) = index.list_folder_messages(folder=_TRASH)
+    assert row.local_status is MessageStatus.PENDING_MOVE
+    assert row.local_status is not MessageStatus.TRASHED
+
+
+def test_deleting_from_inside_the_trash_asks_the_page_first() -> None:
+    """The one destructive case, and the page has to put the question.
+
+    `Confirmation` is the browser's spelling of the terminal's dialog:
+    nothing is applied until `pony.js` re-sends the action with the
+    fields it names.
+    """
+    services, index = _services("web-trash-forever")
+    message_id = _only_message(index)
+
+    with _client(services) as client:
+        client.post(
+            "/action/trash",
+            data={"account": "acct", "folder": "INBOX", "id": str(message_id)},
+        )
+        (row,) = index.list_folder_messages(folder=_TRASH)
+        asked = client.post(
+            "/action/trash",
+            data={"account": "acct", "folder": "Trash", "id": str(row.message_ref.id)},
+        )
+        body = asked.json()
+        assert "Delete it from the server for good?" in body["confirm"]["question"]
+        assert body["confirm"]["fields"] == {"confirm_delete": "1"}
+        # Nothing happened on the strength of the question alone.
+        (still,) = index.list_folder_messages(folder=_TRASH)
+        assert still.local_status is not MessageStatus.TRASHED
+
+        agreed = client.post(
+            "/action/trash",
+            data={
+                "account": "acct",
+                "folder": "Trash",
+                "id": str(row.message_ref.id),
+                "confirm_delete": "1",
+            },
+        )
+
+    assert agreed.json()["changed"] == 1
+    (gone,) = index.list_folder_messages(folder=_TRASH)
+    assert gone.local_status is MessageStatus.TRASHED

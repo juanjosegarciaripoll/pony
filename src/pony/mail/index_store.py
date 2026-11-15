@@ -848,6 +848,18 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
         Returns ``[(folder_ref, storage_key), ...]`` for each purged row so
         the caller can clean up the corresponding mirror files.
+
+        Only rows the server no longer holds (``uid IS NULL``) are
+        reaped here.  A trashed row that still has a UID has a copy on
+        the server, and dropping the local half of that pair would
+        strand the message rather than delete it -- the next fetch
+        would bring it back as new mail.  Those go through
+        ``PushDeleteOp``, which expunges the server copy and the local
+        one together.  That matters most for the retention sweep this
+        serves: `expire_trash_folder` marks rows whose `trashed_at` is
+        already past the cutoff, so without this condition they would
+        be deleted locally in the same pass that was meant to have the
+        server delete them.
         """
         cutoff = datetime_to_sql(datetime.now(tz=UTC) - timedelta(days=retention_days))
         with self._use_atomic() as conn:
@@ -857,6 +869,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 FROM messages
                 WHERE account_name = ?
                   AND local_status = ?
+                  AND uid IS NULL
                   AND trashed_at IS NOT NULL
                   AND trashed_at <= ?
                 """,
@@ -878,12 +891,68 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                     DELETE FROM messages
                     WHERE account_name = ?
                       AND local_status = ?
+                      AND uid IS NULL
                       AND trashed_at IS NOT NULL
                       AND trashed_at <= ?
                     """,
                     (account_name, MessageStatus.TRASHED.value, cutoff),
                 )
         return entries
+
+    def expire_trash_folder(
+        self, *, account_name: str, folder_name: str, retention_days: int
+    ) -> int:
+        """Mark messages that have sat in the trash folder too long.
+
+        The second half of a non-destructive deletion.  `D` moves a
+        message into the trash folder and stamps ``trashed_at``; this
+        marks it ``TRASHED`` once that stamp is older than
+        *retention_days*, and the sync planner then emits the
+        ``PushDeleteOp`` that expunges it from the server and drops the
+        local copy.  Retention expiry is one of the two things the
+        project's non-destructive principle allows to delete something
+        for good, the other being a confirmation the user answered.
+
+        Only mail the server is known to hold *here*: ``ACTIVE`` with a
+        UID.  A ``PENDING_MOVE`` row is a deletion still in flight --
+        the message is on the server in the folder it came from, and
+        this row is the instruction to move it.  Marking that
+        ``TRASHED`` would turn a move that had not happened yet into a
+        delete, and because such a row has no UID of its own
+        `purge_expired_trash` would then drop it locally while the
+        server kept the original: the message would come back as new
+        mail, in the folder it was deleted from.  A row already
+        ``TRASHED`` is left alone so its retention clock is not reset.
+
+        A row with no ``trashed_at`` is one that reached this folder by
+        some route other than `D` -- mail filed here by hand, or a
+        trash folder the server fills itself -- and is never reaped,
+        because nothing recorded when it was deleted and guessing
+        would delete mail nobody deleted.  Returns how many rows it
+        marked.
+        """
+        cutoff = datetime_to_sql(datetime.now(tz=UTC) - timedelta(days=retention_days))
+        with self._use_atomic() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE messages
+                   SET local_status = ?
+                 WHERE account_name = ?
+                   AND folder_name = ?
+                   AND local_status = ?
+                   AND uid IS NOT NULL
+                   AND trashed_at IS NOT NULL
+                   AND trashed_at <= ?
+                """,
+                (
+                    MessageStatus.TRASHED.value,
+                    account_name,
+                    folder_name,
+                    MessageStatus.ACTIVE.value,
+                    cutoff,
+                ),
+            )
+            return cursor.rowcount
 
     def list_indexed_accounts(self) -> list[str]:
         """Return all distinct account names from the messages table."""

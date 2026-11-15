@@ -353,6 +353,7 @@ See [Credential backends](#credential-backends) below.
 | `sent_folder` | string | *(auto)* | Exact folder name where sent messages are stored; auto-discovered by fuzzy match if omitted. |
 | `drafts_folder` | string | *(auto)* | Exact folder name for saved drafts. |
 | `archive_folder` | string | *(none)* | Target for the `A` key in the TUI. Omit to disable archiving. Must not be excluded or read-only. Created on the server on first archive if it doesn't exist. |
+| `trash_folder` | string | `Trash` | Target for the `D` key. Deleting is a **move** into this folder, so it cannot be switched off — the only alternative to a destination is expunging. Must not be excluded or read-only, or `D` refuses. Created on the server on first delete if it doesn't exist. Set it for a server that names the folder differently, such as Exchange's `Deleted Items`. Mail here is expunged after `mirror.trash_retention_days`, or when deleted again from inside the folder and confirmed. |
 | `markdown_compose` | bool | inherits global | Default Markdown mode for this account. |
 | `signature` | string | *(none)* | Text appended below the cursor on replies and forwards. |
 

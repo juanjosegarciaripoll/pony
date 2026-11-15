@@ -42,6 +42,8 @@ from . import urls
 from .actions import (
     Action,
     ActionContext,
+    Confirmation,
+    Reply,
     calendar_value,
     folder_value,
     parse_calendar,
@@ -1017,8 +1019,40 @@ def _archive(context: ActionContext) -> Outcome:
     )
 
 
-def _trash(context: ActionContext) -> Outcome:
-    return mailbox_actions.trash_messages(
+def _trash(context: ActionContext) -> Outcome | Reply:
+    """Delete: a move into the account's trash folder.
+
+    Nothing is expunged, so the message stays on the server and can be
+    moved back -- the browser does what `D` does in the terminal.  Mail
+    that is already *in* the trash folder is the one case that deletes
+    for good, so the page is made to ask first, the same question the
+    terminal's dialog puts.
+    """
+    folder = context.folder
+    trash = mailbox_actions.trash_folder_name(
+        context.services.mailboxes.config,
+        folder.account_name,
+    )
+    if folder.folder_name != trash:
+        return mailbox_actions.trash_messages(
+            context.services.mailboxes,
+            context.messages,
+            folder,
+            now=context.now,
+        )
+    if not context.first("confirm_delete"):
+        return Reply(
+            outcome=Outcome(),
+            confirm=Confirmation(
+                question=(
+                    f"Mail in {folder.folder_name} is already deleted."
+                    " Delete it from the server for good? This cannot be"
+                    " undone."
+                ),
+                fields={"confirm_delete": "1"},
+            ),
+        )
+    return mailbox_actions.delete_messages_permanently(
         context.services.mailboxes,
         context.messages,
         now=context.now,
