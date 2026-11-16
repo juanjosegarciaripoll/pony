@@ -573,6 +573,12 @@ def _extract_body_and_attachments(
     return body, styled_body, links, attachments
 
 
+# `white-space: pre`, `pre-wrap` and `pre-line` all keep the newlines a
+# browser would otherwise collapse.  Pony's own replies carry `pre-wrap`,
+# and so does every other client's quoted code.
+_PRE_STYLE_RE = re.compile(r"white-space\s*:\s*pre", re.IGNORECASE)
+
+
 class _HTMLStripper(HTMLParser):
     """Minimal tag stripper that preserves line structure.
 
@@ -592,6 +598,12 @@ class _HTMLStripper(HTMLParser):
     # separated by whitespace do not insert blank lines between items.
     _END_ONLY_TAGS = frozenset(("li", "tr"))
     _BLOCK_TAGS = _PARA_TAGS | _BR_TAGS | _END_ONLY_TAGS
+    # A quoted level.  Text marks a quote with `>` per level; HTML marks
+    # it with an element, and the reader has to turn one into the other.
+    # Without this a quoted HTML message arrives in the terminal with no
+    # markers at all -- and a reply quotes *that*, which is how a thread
+    # comes to read as one undifferentiated wall.
+    _QUOTE_TAGS = frozenset(("blockquote",))
 
     # Inline formatting tags → sentinel letter used in \x00{letter}{1|0}\x00.
     _FORMAT_TAG_MAP: dict[str, str] = {
@@ -609,6 +621,13 @@ class _HTMLStripper(HTMLParser):
         super().__init__()
         self._lines: list[str] = []
         self._current: list[str] = []
+        self._quote_depth = 0
+        # Tags that opened a pre-formatted context, innermost last.  An
+        # end tag closes one only when it matches the tag that opened
+        # it, so mismatched nesting degrades to collapsed whitespace --
+        # what every element did before this existed -- rather than
+        # leaking preformatting into the rest of the message.
+        self._pre_tags: list[str] = []
         self._links: list[tuple[str, str]] = []
         self._in_anchor = False
         self._anchor_kind = ""
@@ -620,6 +639,17 @@ class _HTMLStripper(HTMLParser):
         # Normalize whitespace like a browser: collapse runs (incl. newlines from
         # HTML source line-wrapping) to a single space.  Strip NUL bytes so that
         # &#0; entities cannot inject internal format sentinels.
+        if self._pre_tags and not self._in_anchor:
+            # Inside `<pre>` or `white-space:pre*`, a newline *is* a line
+            # break and leading spaces are the shape of the text -- an
+            # indented quote, a table, a snippet of code.  Collapsing them
+            # is what turned a quoted function body into one long line.
+            chunks = data.replace("\x00", "").split("\n")
+            self._current.append(chunks[0])
+            for chunk in chunks[1:]:
+                self._emit_literal_line()
+                self._current.append(chunk)
+            return
         normalized = _WHITESPACE_RE.sub(" ", data).replace("\x00", "")
         if self._in_anchor:
             self._anchor_text.append(normalized)
@@ -627,13 +657,23 @@ class _HTMLStripper(HTMLParser):
             self._current.append(normalized)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self._PARA_TAGS:
+        attr_dict = dict(attrs)
+        if tag in self._QUOTE_TAGS:
+            self._flush(paragraph=True)
+            self._quote_depth += 1
+        if tag == "pre" or _PRE_STYLE_RE.search(attr_dict.get("style") or ""):
+            self._flush(paragraph=True)
+            self._pre_tags.append(tag)
+        elif self._pre_tags and tag in self._BR_TAGS:
+            # A `<br>` inside preformatted text ends the line without
+            # giving up its indentation, which `_flush` would strip.
+            self._emit_literal_line()
+        elif tag in self._PARA_TAGS:
             self._flush(paragraph=True)
         elif tag in self._BR_TAGS:
             self._flush(add_blank_if_empty=True)
         # _END_ONLY_TAGS: no flush on start tag
         if tag == "a":
-            attr_dict = dict(attrs)
             href = (attr_dict.get("href") or "").strip()
             # Case-folded, like the `mailto:` arm below and the three
             # other spellings of this test in this module: RFC 3986
@@ -658,10 +698,17 @@ class _HTMLStripper(HTMLParser):
                 self._current.append(f"\x00{fmt}1\x00")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in self._PARA_TAGS:
+        if self._pre_tags and self._pre_tags[-1] == tag:
+            self._emit_literal_line()
+            self._pre_tags.pop()
+            self._flush(paragraph=True)
+        elif tag in self._PARA_TAGS:
             self._flush(paragraph=True)
         elif tag in self._END_ONLY_TAGS:
             self._flush()
+        if tag in self._QUOTE_TAGS and self._quote_depth:
+            self._flush(paragraph=True)
+            self._quote_depth -= 1
         # _BR_TAGS: no flush on end tag
         if tag == "a" and self._in_anchor:
             anchor_text = "".join(self._anchor_text).strip()
@@ -693,27 +740,47 @@ class _HTMLStripper(HTMLParser):
                 if depth == 1:
                     self._current.append(f"\x00{fmt}0\x00")
 
+    @staticmethod
+    def _is_blank(line: str) -> bool:
+        """Whether *line* carries no text of its own.
+
+        A blank line inside a quote is not empty -- it is the markers
+        and nothing else -- so emptiness cannot be tested with ``!= ""``
+        any more.
+        """
+        return not line.strip("> \t")
+
+    def _prefixed(self, text: str) -> str:
+        return ("> " * self._quote_depth + text).rstrip()
+
+    def _emit_literal_line(self) -> None:
+        """End the current line, keeping its spacing exactly as written."""
+        self._lines.append(self._prefixed("".join(self._current)))
+        self._current.clear()
+
     def _flush(
         self, *, paragraph: bool = False, add_blank_if_empty: bool = False
     ) -> None:
         text = "".join(self._current).strip()
         if text:
-            self._lines.append(text)
+            self._lines.append(self._prefixed(text))
             if paragraph:
-                self._lines.append("")
+                self._lines.append(self._prefixed(""))
         elif (
-            (add_blank_if_empty or paragraph) and self._lines and self._lines[-1] != ""
+            (add_blank_if_empty or paragraph)
+            and self._lines
+            and not self._is_blank(self._lines[-1])
         ):
             # Empty boundary after non-empty content → blank separator.
             # <br/><br/> produces this via add_blank_if_empty; paragraph-tag
             # boundaries (</ul>, </div> etc.) produce it via paragraph=True.
-            self._lines.append("")
+            self._lines.append(self._prefixed(""))
         self._current.clear()
 
     def result(self) -> str:
         self._flush()
         # Strip any trailing blank separator lines added by paragraph flushes.
-        while self._lines and not self._lines[-1]:
+        while self._lines and self._is_blank(self._lines[-1]):
             self._lines.pop()
         return "\n".join(self._lines)
 

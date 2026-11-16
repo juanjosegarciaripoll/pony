@@ -272,6 +272,49 @@ def test_sending_reaches_smtp_with_what_the_form_said() -> None:
     assert any(row.uid is None and row.subject == "Lunch" for row in rows)
 
 
+def test_a_reply_sent_from_the_browser_quotes_with_elements() -> None:
+    """The browser and the terminal must quote a reply the same way.
+
+    Neither front end owns the rule: both hand the body to
+    `pony.mail.compose_utils.build_email_message`, which is where the
+    text half's `>` markers become real `blockquote` elements in the
+    HTML half.  This is that path walked through the browser's own form,
+    so a front end that grew its own quoting would fail here.
+    """
+    services, _index = _services("compose-quote-html")
+    sent: list[dict[str, object]] = []
+
+    with (
+        patch.object(delivery, "smtp_send", lambda **kwargs: sent.append(kwargs)),
+        _client(services) as client,
+    ):
+        client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "cc": "",
+                "bcc": "",
+                "subject": "Re: Lunch",
+                "body": "At one.\n\nOn Mon wrote:\n\n> Where?\n> > Earlier still.",
+                "markdown": "on",
+            },
+            follow_redirects=False,
+        )
+
+    (call,) = sent
+    message = cast("EmailMessage", call["msg"])
+    html = next(
+        part for part in message.walk() if part.get_content_type() == "text/html"
+    ).get_content()
+    assert isinstance(html, str)
+    assert html.count("<blockquote") == 2
+    assert [line for line in html.split("\n") if line.startswith("&gt;")] == []
+    plain = message.get_body(preferencelist=("plain",))
+    assert plain is not None
+    assert "> Where?" in plain.get_content()
+
+
 def test_a_failed_send_keeps_the_form_and_the_text() -> None:
     from pony.mail.smtp_sender import SMTPError
 

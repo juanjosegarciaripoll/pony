@@ -8,6 +8,7 @@ import re
 from email import message_from_bytes as _email_from_bytes
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+from html import escape as _escape
 from pathlib import Path
 
 from .contact_actions import normalize_address
@@ -40,6 +41,86 @@ def _add_blockquote_hardbreaks(text: str) -> str:
     Without this, consecutive '> ' lines render as a single merged paragraph.
     """
     return _BLOCKQUOTE_LINE_RE.sub(lambda m: m.group(1).rstrip() + "  ", text)
+
+
+_QUOTE_MARK_RE = re.compile(r"^(?:>[ \t]?)+")
+
+# A quoted level is drawn the way every other client draws it: an
+# element, with the bar as its border.  `white-space:pre-wrap` keeps the
+# original's own line breaks and indentation -- what a quoted table or a
+# quoted snippet of code is made of -- while still wrapping long lines.
+_QUOTE_FRAME = (
+    'blockquote type="cite" '
+    'style="margin:0 0 0 0.4em;border-left:2px solid #ccc;padding-left:0.8em"'
+)
+_QUOTE_TEXT = 'div style="white-space:pre-wrap"'
+
+
+def _quote_level(line: str) -> tuple[int, str]:
+    """Split a text-quoted *line* into its depth and the text under it."""
+    mark = _QUOTE_MARK_RE.match(line)
+    if mark is None:
+        return 0, line
+    return mark.group(0).count(">"), line[mark.end() :]
+
+
+def quoted_html(quoted: str) -> str:
+    """Render reply/forward text as nested HTML blockquotes.
+
+    The text half of a reply marks a quote with ``>`` per level, which is
+    how plain text has always done it.  The HTML half must not: the
+    ``>`` characters belong to the *text* encoding of a quote, and an
+    HTML part that carries them is quoting twice -- the reader sees a bar
+    and a column of ``>`` inside it.
+
+    Worse, it does not survive the next hop.  A client that replies to
+    such a part converts the HTML back to text, and the ``>`` it finds
+    are content, so they get reflowed into the middle of the lines while
+    the real structure -- one ``blockquote`` per level -- is not there to
+    be preserved.  That is a thread where everything older than the last
+    message arrives as a wall of ``> ... > ... >``.  Real elements
+    convert back to real ``>`` markers at the right depth.
+
+    The first line is the attribution (``On ... wrote:``) or the forward
+    separator, and stays outside the quote, as a client's cite line does.
+    """
+    lines = _normalize_newlines(quoted).split("\n")
+    attribution = ""
+    if lines and _QUOTE_BOUNDARY_RE.match(lines[0]):
+        attribution = lines[0]
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    # Consecutive lines at one depth are one block of text.  A line with
+    # no marker inside the quoted region -- a forwarded body, which is
+    # quoted by position and not by ``>`` -- belongs to the outermost
+    # level rather than outside the quote.
+    runs: list[tuple[int, list[str]]] = []
+    for line in lines:
+        depth, text = _quote_level(line)
+        depth = max(1, depth)
+        if runs and runs[-1][0] == depth:
+            runs[-1][1].append(text)
+        else:
+            runs.append((depth, [text]))
+
+    out: list[str] = []
+    if attribution:
+        out.append(f"<p>{_escape(attribution)}</p>")
+    level = 0
+    for depth, block in runs:
+        while level < depth:
+            out.append(f"<{_QUOTE_FRAME}>")
+            level += 1
+        while level > depth:
+            out.append("</blockquote>")
+            level -= 1
+        out.append(f"<{_QUOTE_TEXT}>{_escape(chr(10).join(block))}</div>")
+    out.extend(["</blockquote>"] * level)
+    return "\n".join(out)
 
 
 def format_display_address(name: str, addr: str) -> str:
@@ -364,8 +445,6 @@ def build_email_message(
         msg["References"] = references
 
     if markdown_mode:
-        import html as _html_mod
-
         from markdown_it import MarkdownIt
 
         md = MarkdownIt()
@@ -385,12 +464,7 @@ def build_email_message(
         if user_part.strip():
             html_sections.append(md.render(_add_blockquote_hardbreaks(user_part)))
         if quoted_part.strip():
-            escaped = _html_mod.escape(quoted_part).replace("\n", "<br>\n")
-            html_sections.append(
-                '<blockquote style="white-space:pre-wrap;'
-                'border-left:2px solid #ccc;margin:0;padding-left:1em">'
-                f"{escaped}</blockquote>"
-            )
+            html_sections.append(quoted_html(quoted_part))
         if sig_part is not None:
             sig_md = sig_part.replace("\n", "  \n")
             html_sections.append(md.render(f"---\n\n{sig_md}"))

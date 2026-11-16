@@ -302,6 +302,27 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A reply quotes with HTML, not with `>` characters inside HTML.** The
+  text half of a reply marks each quoted level with `>`, which is how
+  plain text has always done it. The HTML half escaped that same text,
+  markers and all, into a single `blockquote`: the reader saw a quote
+  bar with a column of `>` inside it, and — because the markers were
+  content and not structure — the next client in the thread reflowed
+  them into the middle of the lines when it quoted back. Two hops in and
+  everything older than the newest message arrived as a wall of
+  `> ... > ... >`. The HTML half now nests one `blockquote` per level,
+  the way every other client does, and keeps the original's own line
+  breaks and indentation, so a quoted table or a quoted snippet of code
+  survives.
+- **A quote written in HTML now reads as a quote in the terminal.** The
+  reader knew nothing about `blockquote`, so an HTML-only message
+  arrived with its quoted levels flattened into the surrounding text,
+  with nothing to tell the sender's words from the ones they were
+  answering. Each level is now `>` per level, as the text half of the
+  same message would have been, and `<pre>` or `white-space: pre`
+  content keeps its line breaks and spacing instead of being collapsed
+  into one line. A reply quotes what the reader shows, so this is also
+  what a reply to an HTML-only message now carries.
 - **A search no longer reads every hit's message body**: `search`
   selects every column and one of them is the whole body, so a hit list
   — which shows the correspondent, the subject and the date — pulled

@@ -527,6 +527,96 @@ class HtmlOnlyRenderTest(unittest.TestCase):
         self.assertNotIn("font-size", rendered.body)
 
 
+class HtmlQuoteReadingTest(unittest.TestCase):
+    """A quote written in HTML must read as a quote in the terminal.
+
+    The reader knew nothing about `blockquote`, so an HTML-only message
+    arrived with its quoted levels flattened into the surrounding text --
+    no markers, no indentation, nothing to tell the sender's words from
+    the quoted ones.  `build_reply_body` quotes exactly that text, which
+    is how one reply turned a whole thread into a wall of prose.
+
+    The terminal and the browser show the same message two ways: the
+    browser renders the message's own HTML, where a `blockquote` is
+    already a bar, and the terminal converts it to text, where a quote is
+    `>` per level.  This is that conversion.
+    """
+
+    def _rendered(self, html_body: str) -> str:
+        from email.message import EmailMessage
+
+        from pony.mail.message_renderer import render_message
+
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["Subject"] = "HTML only"
+        msg.set_content(html_body, subtype="html")
+        return render_message(msg.as_bytes()).body
+
+    def test_a_blockquote_becomes_a_quote_marker(self) -> None:
+        body = self._rendered("<p>Mine.</p><blockquote><p>Theirs.</p></blockquote>")
+
+        self.assertIn("Mine.", body)
+        self.assertIn("> Theirs.", body)
+
+    def test_each_level_adds_a_marker(self) -> None:
+        body = self._rendered(
+            "<blockquote><p>One.</p>"
+            "<blockquote><p>Two.</p>"
+            "<blockquote><p>Three.</p></blockquote></blockquote></blockquote>"
+        )
+
+        self.assertIn("> One.", body)
+        self.assertIn("> > Two.", body)
+        self.assertIn("> > > Three.", body)
+
+    def test_text_after_a_closed_level_drops_back(self) -> None:
+        body = self._rendered(
+            "<blockquote><p>Outer.</p><blockquote><p>Inner.</p></blockquote>"
+            "<p>Outer again.</p></blockquote><p>Mine.</p>"
+        )
+
+        self.assertIn("> Outer again.", body)
+        self.assertNotIn("> > Outer again.", body)
+        self.assertIn("Mine.", body.splitlines()[-1])
+        self.assertFalse(body.splitlines()[-1].startswith(">"))
+
+    def test_preformatted_text_keeps_its_line_breaks(self) -> None:
+        """Quoted code is the case the collapsing rule destroyed."""
+        body = self._rendered(
+            "<blockquote><div style='white-space:pre-wrap'>"
+            "def f():\n    return 1</div></blockquote>"
+        )
+
+        self.assertIn(">     return 1", body)
+        self.assertIn("> def f():", body)
+
+    def test_a_break_inside_preformatted_text_keeps_the_indentation(self) -> None:
+        body = self._rendered(
+            "<div style='white-space:pre-wrap'>    def f():<br>        return 1</div>"
+        )
+
+        self.assertEqual(["    def f():", "        return 1"], body.splitlines())
+
+    def test_a_pre_element_keeps_its_line_breaks(self) -> None:
+        body = self._rendered("<pre>one\n  two\n    three</pre>")
+
+        self.assertEqual(["one", "  two", "    three"], body.splitlines())
+
+    def test_ordinary_html_still_collapses_its_source_newlines(self) -> None:
+        """Only preformatted elements keep newlines; a browser is the rule."""
+        body = self._rendered("<p>One\nsentence\nwrapped by the sender.</p>")
+
+        self.assertEqual("One sentence wrapped by the sender.", body)
+
+    def test_a_blank_line_inside_a_quote_is_still_marked(self) -> None:
+        body = self._rendered(
+            "<blockquote><p>One.</p><p>Two.</p></blockquote>",
+        )
+
+        self.assertEqual(["> One.", ">", "> Two."], body.splitlines())
+
+
 class MessageIdFallbackProjectionTest(unittest.TestCase):
     """Exchange-style bare Message-ID fold triggers stdlib fallback.
 

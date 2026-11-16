@@ -23,13 +23,14 @@ from pony.mail.compose_utils import (
     forward_subject,
     new_compose_body,
     parse_draft_fields,
+    quoted_html,
     reply_subject,
     reply_thread_headers,
     split_address_list,
     split_trailing_address,
 )
 from pony.mail.domain import AccountConfig, MirrorConfig, SmtpConfig
-from pony.mail.message_renderer import RenderedMessage
+from pony.mail.message_renderer import RenderedMessage, render_message
 from pony.mail.smtp_sender import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     SMTPError,
@@ -349,20 +350,22 @@ class MarkdownModeTest(unittest.TestCase):
         assert "> line two" in text
         assert "> line three" in text
 
-    def test_forwarded_headers_have_html_line_breaks(self) -> None:
+    def test_forwarded_headers_keep_their_own_line_breaks(self) -> None:
         body = build_forward_body(_rendered(body="Forwarded body."))
         html = self._html_part(body)
 
-        assert "---------- Forwarded message ----------<br" in html
-        assert "From: Alice &lt;alice@example.com&gt;<br" in html
-        assert "Subject: Hello<br" in html
+        assert "<p>---------- Forwarded message ----------</p>" in html
+        assert "From: Alice &lt;alice@example.com&gt;\n" in html
+        assert "Subject: Hello\n" in html
+        assert "white-space:pre-wrap" in html
 
     def test_short_forward_separator_is_not_rendered_as_markdown(self) -> None:
         body = "\n---- Forwarded ----\nFrom: Alice\nDate: Today\n\nBody"
         html = self._html_part(body)
 
-        assert "---- Forwarded ----<br" in html
-        assert "From: Alice<br" in html
+        assert "<p>---- Forwarded ----</p>" in html
+        assert "From: Alice\n" in html
+        assert "<hr" not in html
 
 
 def _make_account(
@@ -442,6 +445,140 @@ class SmtpSenderTest(unittest.TestCase):
                 password="secret",
                 msg=EmailMessage(),
             )
+
+
+class QuotedHtmlTest(unittest.TestCase):
+    """The HTML half of a reply must quote with elements, not with ``>``.
+
+    What the user reported: a thread where everything older than the
+    newest message arrived as a wall of ``> ... > ... >`` run together
+    mid-line.  The HTML part escaped the *text* quoting -- ``>`` markers
+    and all -- into one `blockquote`, so the markers were content.  The
+    next client in the thread converted that part back to text, reflowed
+    the content, and had no element structure left to turn into markers
+    of its own.  One `blockquote` per level is what every other client
+    emits, and what survives the hop.
+    """
+
+    def _html_part(self, body: str) -> str:
+        msg = build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="",
+            subject="Test",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+        )
+        html = next(
+            p for p in msg.walk() if p.get_content_type() == "text/html"
+        ).get_content()
+        assert isinstance(html, str)
+        return html
+
+    def test_the_attribution_stays_outside_the_quote(self) -> None:
+        html = quoted_html("On Mon wrote:\n\n> Hello.")
+
+        self.assertTrue(html.startswith("<p>On Mon wrote:</p>"))
+        self.assertIn("<blockquote", html[len("<p>On Mon wrote:</p>") :])
+
+    @staticmethod
+    def _marker_lines(html: str) -> list[str]:
+        """Lines quoted the text way -- the thing the HTML half must not do.
+
+        An escaped ``&gt;`` mid-line is an address (``&lt;a@b&gt;``) and
+        is fine; one at the start of a line is a quote marker.
+        """
+        return [line for line in html.split("\n") if line.startswith("&gt;")]
+
+    def test_a_quote_level_is_an_element_and_not_a_marker(self) -> None:
+        html = quoted_html("On Mon wrote:\n\n> Hello.")
+
+        self.assertIn("Hello.", html)
+        self.assertEqual([], self._marker_lines(html))
+
+    def test_each_level_nests_one_blockquote_deeper(self) -> None:
+        html = quoted_html("On Mon wrote:\n\n> Outer.\n> > Inner.\n> > > Deepest.")
+
+        self.assertEqual(html.count("<blockquote"), 3)
+        self.assertEqual(html.count("</blockquote>"), 3)
+        self.assertLess(html.index("Outer."), html.index("Inner."))
+        self.assertLess(html.index("Inner."), html.index("Deepest."))
+
+    def test_a_level_that_closes_reopens_at_the_outer_one(self) -> None:
+        """A signature after a nested quote belongs to the outer level."""
+        html = quoted_html("On Mon wrote:\n\n> > Nested.\n> Signature.")
+
+        self.assertLess(html.index("Nested."), html.index("</blockquote>"))
+        self.assertLess(html.index("</blockquote>"), html.index("Signature."))
+
+    def test_indentation_inside_a_quote_is_preserved(self) -> None:
+        """Quoting a snippet of code must not reflow or de-indent it."""
+        html = quoted_html("On Mon wrote:\n\n>     def f():\n>         return 1")
+
+        self.assertIn("white-space:pre-wrap", html)
+        self.assertIn("    def f():\n        return 1", html)
+
+    def test_blank_lines_inside_a_quote_survive(self) -> None:
+        html = quoted_html("On Mon wrote:\n\n> One.\n>\n> Two.")
+
+        self.assertIn("One.\n\nTwo.", html)
+
+    def test_a_forwarded_body_is_quoted_without_markers(self) -> None:
+        body = build_forward_body(_rendered(body="Line one.\nLine two."))
+
+        html = quoted_html(_split_at_quote_boundary(body)[1])
+
+        self.assertIn("<p>---------- Forwarded message ----------</p>", html)
+        self.assertEqual(html.count("<blockquote"), 1)
+        self.assertEqual([], self._marker_lines(html))
+
+    def test_nothing_but_an_attribution_opens_no_quote(self) -> None:
+        self.assertEqual(quoted_html("On Mon wrote:\n\n"), "<p>On Mon wrote:</p>")
+
+    def test_a_reply_sent_in_markdown_mode_carries_no_markers(self) -> None:
+        """End to end: the text half keeps ``>``, the HTML half does not."""
+        body = build_reply_body(_rendered(body="Original.\n\n> Older still."))
+
+        html = self._html_part(body)
+
+        self.assertEqual([], self._marker_lines(html))
+        self.assertEqual(html.count("<blockquote"), 2)
+        plain = build_email_message(
+            from_address="alice@example.com",
+            to="bob@example.com",
+            cc="",
+            bcc="",
+            subject="Test",
+            body=body,
+            attachment_paths=[],
+            markdown_mode=True,
+        ).get_body(preferencelist=("plain",))
+        assert plain is not None
+        self.assertIn("> Original.", plain.get_content())
+
+    def test_what_the_html_half_says_reads_back_as_the_text_half(self) -> None:
+        """The two halves of a reply have to mean the same thing.
+
+        The next client in the thread quotes whichever half it prefers,
+        and Pony's own reader converts the HTML half back to text.  That
+        conversion is the check: levels that went out as elements come
+        back as markers at the same depth, and indentation -- a quoted
+        snippet of code -- comes back as it was written.
+        """
+        body = build_reply_body(
+            _rendered(body="Original.\n\n    def f():\n        return 1"),
+        )
+
+        message = EmailMessage()
+        message["From"] = "alice@example.com"
+        message.set_content(self._html_part(body), subtype="html")
+        read_back = render_message(message.as_bytes()).body
+
+        self.assertIn("> Original.", read_back)
+        self.assertIn(">     def f():", read_back)
+        self.assertIn(">         return 1", read_back)
 
 
 class SplitAtQuoteBoundaryTest(unittest.TestCase):
@@ -680,7 +817,7 @@ class CrlfBodyTest(unittest.TestCase):
 
         assert crlf_html == self._html_part(body)
         assert "white-space:pre-wrap" in crlf_html
-        assert "---------- Forwarded message ----------<br" in crlf_html
+        assert "<p>---------- Forwarded message ----------</p>" in crlf_html
 
     def test_crlf_signature_block_is_still_split_off(self) -> None:
         body = build_forward_body(_rendered(body="Quoted."), signature="Alice\nCSIC")
