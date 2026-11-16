@@ -4533,6 +4533,25 @@ class ProgressCadenceTestCase(unittest.TestCase):
         self.assertFalse(gate.due())
         self.assertTrue(gate.due(final=True))
 
+    def test_the_first_report_does_not_wait_out_the_machine_s_uptime(self) -> None:
+        """A gate started on a freshly booted machine reported nothing.
+
+        `time.monotonic()` counts from boot on every platform Pony runs
+        on, and the gate began with `_last = 0.0` -- which reads as "the
+        last report was at boot".  On a runner whose uptime was under
+        `interval`, the first `due()` was refused, which is why the CI
+        failed here and no developer machine ever did.
+        """
+        from unittest.mock import patch
+
+        from pony.outcome import ProgressGate
+
+        gate = ProgressGate(interval=60.0)
+
+        with patch("pony.outcome.time.monotonic", return_value=0.5):
+            self.assertTrue(gate.due(1))
+            self.assertFalse(gate.due(2))
+
     def test_the_stride_is_derived_from_the_work(self) -> None:
         from pony.outcome import PROGRESS_REPORTS_PER_UNIT, progress_stride
 

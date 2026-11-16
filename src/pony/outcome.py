@@ -153,7 +153,13 @@ class ProgressGate:
     ) -> None:
         self._interval = interval
         self._stride = max(1, stride)
-        self._last = 0.0
+        # `None`, not `0.0`: `time.monotonic()` counts from boot on
+        # every platform Pony runs on, so zero reads as "already
+        # reported, at boot" and a gate built on a machine that has been
+        # up for less than `interval` refuses its first report.  A CI
+        # runner is a machine that has just booted.  The first call has
+        # nothing to wait for.
+        self._last: float | None = None
         self._last_item = 0
 
     def due(self, done: int | None = None, *, final: bool = False) -> bool:
@@ -174,7 +180,7 @@ class ProgressGate:
         if done - self._last_item < self._stride:
             return False
         now = time.monotonic()
-        if now - self._last < self._interval:
+        if self._last is not None and now - self._last < self._interval:
             return False
         self._last = now
         self._last_item = done
