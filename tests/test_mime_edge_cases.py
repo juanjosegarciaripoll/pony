@@ -205,3 +205,87 @@ class MalformedMessagesSurviveRenderingTests(unittest.TestCase):
                 render_message_markdown(rendered)
                 build_browser_html(raw)
                 _project(raw)
+
+
+def _plain_part_message(body: str) -> bytes:
+    """A `multipart/alternative` whose `text/plain` part holds *body*."""
+    return (
+        b"From: sender@example.test\r\n"
+        b"To: you@example.test\r\n"
+        b"Subject: Election\r\n"
+        b'Content-Type: multipart/alternative; boundary="bnd"\r\n'
+        b"\r\n"
+        b"--bnd\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n" + body.encode() + b"\r\n"
+        b"--bnd\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"\r\n"
+        b"<p>The real HTML alternative.</p>\r\n"
+        b"--bnd--\r\n"
+    )
+
+
+class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
+    """A `text/plain` part whose content is HTML.
+
+    Observed in the wild: one generator fills both alternatives of a
+    `multipart/alternative` and labels the first wrongly.  Pony took the
+    header at its word and showed the reader raw `<div>`s -- and because
+    a plain part suppresses collecting the HTML one, there was no
+    alternative left to fall back to either.  What the part *is* decides
+    how it is read; the header only says what the sender believed.
+    """
+
+    def test_a_mislabelled_part_is_read_as_html(self) -> None:
+        raw = _plain_part_message(
+            "<div>Dear member:&nbsp;</div><div>&nbsp;</div>"
+            "<div>Vote <a href='https://ballot.test/x'>here</a>.</div><br/>"
+        )
+        rendered = render_message(raw)
+
+        self.assertNotIn("<div>", rendered.body)
+        self.assertNotIn("&nbsp;", rendered.body)
+        self.assertIn("Dear member:", rendered.body)
+        # And its links are found, which raw tags had hidden.
+        self.assertEqual(rendered.links, (("web", "https://ballot.test/x"),))
+
+    def test_an_ordinary_plain_body_is_left_alone(self) -> None:
+        raw = _plain_part_message(
+            "Compare a < b and b > c.\nMy home page is <https://example.test/~me>.\n"
+        )
+        rendered = render_message(raw)
+
+        self.assertIn("a < b", rendered.body)
+        self.assertIn("b > c", rendered.body)
+        self.assertEqual(rendered.links, (("web", "https://example.test/~me"),))
+
+    def test_one_stray_tag_does_not_reclassify_a_message(self) -> None:
+        """Two pieces of markup are wanted, not one.
+
+        A signature with a single `<br>` in it is still a plain-text
+        message, and stripping it would eat anything else in angle
+        brackets.
+        """
+        raw = _plain_part_message("Thanks,<br>\nAlex\nThe tag <foo> stays.\n")
+        rendered = render_message(raw)
+
+        self.assertIn("<br>", rendered.body)
+        self.assertIn("<foo>", rendered.body)
+
+    def test_a_plain_body_quoting_html_is_read_as_html(self) -> None:
+        """The known cost of the heuristic, written down.
+
+        A message whose plain text *quotes* two or more closing tags --
+        someone mailing a snippet of markup -- is re-read as HTML and
+        the snippet is rendered rather than shown.  That is the price of
+        rescuing the mislabelled messages, and it is the lesser harm:
+        this way the words are readable either way, where the old
+        behaviour made every mislabelled message unreadable.
+        """
+        raw = _plain_part_message("Try <div>one</div> then <span>two</span>.\n")
+        rendered = render_message(raw)
+
+        self.assertNotIn("<div>", rendered.body)
+        self.assertIn("one", rendered.body)
+        self.assertIn("two", rendered.body)

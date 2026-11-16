@@ -40,6 +40,31 @@ _IS_URL_RE = re.compile(r"^https?://|^mailto:", re.IGNORECASE)
 # Collapses runs of whitespace to a single space (HTML text normalization).
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Markup that gives away a `text/plain` part which is really HTML.  One
+# generator fills both alternatives of a `multipart/alternative` and
+# mislabels the first, and because a plain part suppresses collecting
+# the HTML one, the reader was handed raw `<div>`s with no alternative
+# left to fall back to.
+#
+# Closing and void tags only: prose says "a < b" and quotes
+# `<https://example.test>`, but it does not say `</div>`.  Two of them
+# are wanted before the part is re-read as HTML, so that one `<br>` in
+# a signature does not reclassify a message.
+_HTML_IN_PLAIN_RE = re.compile(
+    r"</(?:div|p|span|td|tr|table|tbody|body|html|a|b|i|u|strong|em|ul|ol|li|h[1-6])>"
+    r"|<(?:br|img|hr)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_html(text: str) -> bool:
+    """Whether a part labelled ``text/plain`` is in fact HTML."""
+    for found, _match in enumerate(_HTML_IN_PLAIN_RE.finditer(text), start=1):
+        if found == 2:
+            return True
+    return False
+
+
 # One already-injected sentinel, from its opening NUL to its closing one.
 # NUL reaches the body from nowhere else: `handle_data` strips it out of
 # the message's own text.
@@ -560,11 +585,16 @@ def _extract_body_and_attachments(
                     html_parts.append(payload.decode(charset, errors="replace"))
 
     links: list[tuple[str, str]] = []
-    if body_parts:
-        styled_body = _inject_plaintext_links("\n".join(body_parts), links)
+    plain = "\n".join(body_parts)
+    if body_parts and not _looks_like_html(plain):
+        styled_body = _inject_plaintext_links(plain, links)
         body = _sentinels_to_plain(styled_body, links)
-    elif html_parts:
-        styled_raw, links = _strip_html("\n".join(html_parts))
+    elif body_parts or html_parts:
+        # Either a real `text/html` body, or a `text/plain` one that is
+        # HTML in all but its label -- which is read the same way,
+        # because what the part *is* decides how to read it and the
+        # header only says what the sender believed.
+        styled_raw, links = _strip_html(plain if body_parts else "\n".join(html_parts))
         styled_body = _inject_plaintext_links(styled_raw, links)
         body = _sentinels_to_plain(styled_body, links)
     else:
