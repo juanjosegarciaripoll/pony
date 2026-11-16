@@ -307,12 +307,17 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   was full of `<div>`s — one generator filling both alternatives and
   mislabelling the first — and Pony took the header at its word and showed
   the reader raw markup. Worse, a plain part suppresses collecting the HTML
-  one, so there was no alternative left to fall back to. What the part *is*
-  now decides how it is read: two or more closing or void tags and it goes
-  through the HTML stripper, entities and all, which also recovers the links
-  the raw tags had hidden. Closing tags only, and two of them, so that
-  `a < b`, `<https://example.test>` and a lone `<br>` in a signature are
-  still plain text.
+  one, so the only correctly-labelled copy of the message had already been
+  thrown away by the time anyone noticed.
+
+  The HTML half is now always collected, and a plain part carrying two or
+  more closing or void tags hands over to it — the part labelled
+  `text/html` is HTML by agreement rather than by guess, so misjudging a
+  plain body costs nothing where an alternative exists. A message with no
+  HTML half at all is read against its label instead, which is the only
+  case the guess can get wrong. Closing and void tags only, and two of
+  them, so that `a < b`, `<https://example.test>` and a lone `<br>` in a
+  signature are still plain text.
 
 - **A reply quotes with HTML, not with `>` characters inside HTML.** The
   text half of a reply marks each quoted level with `>`, which is how

@@ -577,8 +577,14 @@ def _extract_body_and_attachments(
                 )
 
         elif content_type == "text/html":
-            # Collect as HTML fallback only when we have no plain text yet.
-            if not body_parts and not in_nested:
+            # Collected even when a plain part was already found, because
+            # that part may turn out to be HTML wearing the wrong label
+            # and this is the alternative to fall back to.  While this
+            # was conditional on there being no plain text, a
+            # mislabelled message had already thrown away the only
+            # correctly-labelled copy of itself by the time anyone
+            # noticed.
+            if not in_nested:
                 payload = part.get_payload(decode=True)
                 if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
@@ -590,11 +596,16 @@ def _extract_body_and_attachments(
         styled_body = _inject_plaintext_links(plain, links)
         body = _sentinels_to_plain(styled_body, links)
     elif body_parts or html_parts:
-        # Either a real `text/html` body, or a `text/plain` one that is
-        # HTML in all but its label -- which is read the same way,
-        # because what the part *is* decides how to read it and the
-        # header only says what the sender believed.
-        styled_raw, links = _strip_html(plain if body_parts else "\n".join(html_parts))
+        # A real `text/html` body, or a `text/plain` one that is HTML in
+        # all but its label.  The part the sender labelled `text/html`
+        # is preferred whenever there is one, even when it was the plain
+        # part that gave the message away: that part is HTML by
+        # agreement rather than by guess, so a misjudged plain body
+        # costs nothing here -- the alternative carries the same words
+        # and is what a mislabelling sender meant to be read.  Only a
+        # message with no HTML alternative at all falls back to reading
+        # the plain part against its label.
+        styled_raw, links = _strip_html("\n".join(html_parts) if html_parts else plain)
         styled_body = _inject_plaintext_links(styled_raw, links)
         body = _sentinels_to_plain(styled_body, links)
     else:

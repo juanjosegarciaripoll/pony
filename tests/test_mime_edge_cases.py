@@ -207,21 +207,33 @@ class MalformedMessagesSurviveRenderingTests(unittest.TestCase):
                 _project(raw)
 
 
-def _plain_part_message(body: str) -> bytes:
-    """A `multipart/alternative` whose `text/plain` part holds *body*."""
+_THE_ALTERNATIVE = "<p>The real HTML alternative, with a <b>bold</b> word.</p>"
+
+
+def _plain_part_message(body: str, *, html: str | None = _THE_ALTERNATIVE) -> bytes:
+    """A message whose `text/plain` part holds *body*.
+
+    With *html*, a `multipart/alternative` carrying that as the other
+    half; with ``html=None``, a single `text/plain` part and no
+    alternative to fall back to.
+    """
+    headers = (
+        b"From: sender@example.test\r\nTo: you@example.test\r\nSubject: Election\r\n"
+    )
+    if html is None:
+        return (
+            headers + b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n" + body.encode() + b"\r\n"
+        )
     return (
-        b"From: sender@example.test\r\n"
-        b"To: you@example.test\r\n"
-        b"Subject: Election\r\n"
-        b'Content-Type: multipart/alternative; boundary="bnd"\r\n'
+        headers + b'Content-Type: multipart/alternative; boundary="bnd"\r\n'
         b"\r\n"
         b"--bnd\r\n"
         b"Content-Type: text/plain; charset=utf-8\r\n"
         b"\r\n" + body.encode() + b"\r\n"
         b"--bnd\r\n"
         b"Content-Type: text/html; charset=utf-8\r\n"
-        b"\r\n"
-        b"<p>The real HTML alternative.</p>\r\n"
+        b"\r\n" + html.encode() + b"\r\n"
         b"--bnd--\r\n"
     )
 
@@ -237,10 +249,35 @@ class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
     how it is read; the header only says what the sender believed.
     """
 
-    def test_a_mislabelled_part_is_read_as_html(self) -> None:
+    def test_a_mislabelled_part_hands_over_to_the_html_alternative(self) -> None:
+        """The correctly-labelled half is preferred once the lie shows.
+
+        The plain part gives the message away, but it is the part
+        labelled `text/html` that gets read: that one is HTML by
+        agreement rather than by guess.
+        """
         raw = _plain_part_message(
             "<div>Dear member:&nbsp;</div><div>&nbsp;</div>"
             "<div>Vote <a href='https://ballot.test/x'>here</a>.</div><br/>"
+        )
+        rendered = render_message(raw)
+
+        self.assertNotIn("<div>", rendered.body)
+        self.assertNotIn("&nbsp;", rendered.body)
+        self.assertIn("The real HTML alternative", rendered.body)
+        self.assertIn("bold", rendered.body)
+
+    def test_a_mislabelled_part_with_no_alternative_is_read_as_html(self) -> None:
+        """With nothing to hand over to, the part is read against its label.
+
+        A single `text/plain` part carrying HTML has no second copy of
+        itself, so the choice is between rendering it and showing the
+        reader raw tags.
+        """
+        raw = _plain_part_message(
+            "<div>Dear member:&nbsp;</div><div>&nbsp;</div>"
+            "<div>Vote <a href='https://ballot.test/x'>here</a>.</div><br/>",
+            html=None,
         )
         rendered = render_message(raw)
 
@@ -273,17 +310,36 @@ class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
         self.assertIn("<br>", rendered.body)
         self.assertIn("<foo>", rendered.body)
 
-    def test_a_plain_body_quoting_html_is_read_as_html(self) -> None:
-        """The known cost of the heuristic, written down.
+    def test_misjudging_a_plain_body_costs_nothing_when_an_alternative_exists(
+        self,
+    ) -> None:
+        """The heuristic's false positives are absorbed by the hand-over.
 
-        A message whose plain text *quotes* two or more closing tags --
-        someone mailing a snippet of markup -- is re-read as HTML and
-        the snippet is rendered rather than shown.  That is the price of
-        rescuing the mislabelled messages, and it is the lesser harm:
-        this way the words are readable either way, where the old
-        behaviour made every mislabelled message unreadable.
+        A plain-text message that *quotes* two tags of markup is judged
+        HTML by this rule.  Where the sender supplied a `text/html`
+        half, that is simply what gets read -- the same words the
+        message was always going to show -- so a wrong guess has no
+        victim.
         """
         raw = _plain_part_message("Try <div>one</div> then <span>two</span>.\n")
+        rendered = render_message(raw)
+
+        self.assertIn("The real HTML alternative", rendered.body)
+
+    def test_misjudging_a_plain_body_with_no_alternative_renders_the_markup(
+        self,
+    ) -> None:
+        """The one case the heuristic can actually get wrong.
+
+        Someone mailing a snippet of markup as plain text, with no HTML
+        half, has the snippet rendered rather than shown.  That is the
+        price of rescuing the mislabelled messages, and it is the lesser
+        harm: the words stay readable, where the old behaviour made
+        every mislabelled message unreadable entirely.
+        """
+        raw = _plain_part_message(
+            "Try <div>one</div> then <span>two</span>.\n", html=None
+        )
         rendered = render_message(raw)
 
         self.assertNotIn("<div>", rendered.body)
