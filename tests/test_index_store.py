@@ -1958,3 +1958,77 @@ class SearchFolderScopeTest(unittest.TestCase):
         # What it does now.
         self.assertEqual(1, len(scoped))
         self.assertEqual("INBOX", scoped[0].message_ref.folder_name)
+
+    def test_the_summary_search_is_scoped_the_same_way(self) -> None:
+        """The path both front ends take has to narrow identically."""
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        self._message(folder="INBOX", uid=1, when=base)
+        for n in range(520):
+            self._message(
+                folder="Archive",
+                uid=100 + n,
+                when=base + timedelta(minutes=n + 1),
+            )
+
+        query = parse_query("needle")
+        scoped = self.index.search_message_summaries(
+            query=query, account_name="personal", folder_name="INBOX"
+        )
+
+        self.assertEqual(1, len(scoped))
+        self.assertEqual("INBOX", scoped[0].message_ref.folder_name)
+
+    def test_the_summary_search_finds_what_the_full_one_finds(self) -> None:
+        """Same hits, same order -- one of them just carries less.
+
+        The two queries are separate SQL, so nothing but a test keeps
+        them answering alike.
+        """
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        for n in range(5):
+            self._message(folder="Archive", uid=200 + n, when=base + timedelta(hours=n))
+
+        query = parse_query("needle")
+        full = self.index.search(query=query, account_name="personal")
+        narrow = self.index.search_message_summaries(
+            query=query, account_name="personal"
+        )
+
+        self.assertEqual([m.message_ref for m in full], [s.message_ref for s in narrow])
+        self.assertEqual([m.subject for m in full], [s.subject for s in narrow])
+
+    def test_the_summary_search_does_not_read_the_body(self) -> None:
+        """The whole point: *limit* bodies are not pulled out of SQLite.
+
+        A hit list draws the correspondent, the subject and the date, so
+        reading each message's body in order to drop it was most of what
+        a search in a folder of large mail cost -- 85 % of it at 40 KB a
+        message, and the same cost whether the term matched three
+        messages or three thousand.
+
+        Asserted on the width of the row the reader is handed, because a
+        projection with no body field cannot show the column in its
+        result: twelve columns is the summary select, and a thirteenth
+        is the body finding its way back in.
+        """
+        import unittest.mock
+
+        from pony.mail import index_store
+
+        widths: list[int] = []
+        original = index_store._summary_from_row  # noqa: SLF001
+
+        def _spy(row: sqlite3.Row) -> object:
+            widths.append(len(tuple(row)))
+            return original(row)
+
+        self._message(folder="Archive", uid=300, when=datetime(2026, 1, 1, tzinfo=UTC))
+        with unittest.mock.patch.object(index_store, "_summary_from_row", _spy):
+            hits = self.index.search_message_summaries(
+                query=parse_query("needle"),
+                account_name="personal",
+                folder_name="Archive",
+            )
+
+        self.assertEqual(1, len(hits))
+        self.assertEqual([12], widths)

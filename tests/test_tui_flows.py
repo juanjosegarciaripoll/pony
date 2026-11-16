@@ -2008,7 +2008,8 @@ async def test_search_q_from_list_closes_the_reader_before_exiting() -> None:
         panel = app.screen.query_one(MessageListPanel)
         view = app.screen.query_one(MessageViewPanel)
         panel.load_search(
-            "x", fetch=lambda: list(index.list_folder_messages(folder=folder))
+            "x",
+            fetch=lambda: list(index.list_folder_message_summaries(folder=folder)),
         )
         await panel.wait_for_load_complete()
         panel.focus()

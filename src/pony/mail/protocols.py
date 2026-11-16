@@ -422,6 +422,26 @@ class IndexRepository(Protocol):
         *folder_name* narrows it; the narrowing belongs here rather than
         in a caller, because *limit* is applied before a caller could
         filter and the hits it wanted may all be past it.
+
+        Selects every column, the message body among them.  A caller
+        drawing a list of hits wants `search_message_summaries`
+        instead.
+        """
+        ...
+
+    def search_message_summaries(
+        self,
+        *,
+        query: SearchQuery,
+        account_name: str | None,
+        folder_name: str | None = None,
+        limit: int = 500,
+    ) -> Sequence[FolderMessageSummary]:
+        """Run the same search, narrowed to what a list of hits draws.
+
+        What `list_folder_message_summaries` is to the folder list.  The
+        body is the expensive column and no hit list shows it, so this
+        is the path both front ends search through.
         """
         ...
 

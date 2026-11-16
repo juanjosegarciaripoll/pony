@@ -1425,7 +1425,11 @@ def run_search(*, paths: AppPaths, config_path: Path | None, query: str | None) 
     ]
     total_hits = 0
     for account in config.accounts:
-        hits = repository.search(query=compiled_query, account_name=account.name)
+        # Summaries: this prints a count and five subjects, and the
+        # full search would read every hit's body to get there.
+        hits = repository.search_message_summaries(
+            query=compiled_query, account_name=account.name
+        )
         total_hits += len(hits)
         lines.append(f"Account {account.name}: {len(hits)} hit(s)")
         for hit in hits[:5]:

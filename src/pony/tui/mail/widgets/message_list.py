@@ -317,7 +317,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self,
         query_raw: str,
         *,
-        fetch: Callable[[], list[IndexedMessage]],
+        fetch: Callable[[], list[FolderMessageSummary]],
         restore_row: int | None = None,
         restore_key: str | None = None,
     ) -> None:
@@ -332,9 +332,11 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         screen and nothing to say why.  Now the panel empties, says it
         is searching, and fills when the hits arrive.
 
-        Search returns full ``IndexedMessage`` objects; they are
-        projected down to summaries in the worker, so the panel state
-        is uniform and the projection is off the loop too.
+        *fetch* answers with summaries, which is all the panel keeps.
+        It used to answer with whole ``IndexedMessage`` objects and this
+        projected them down -- so every hit's message body was read out
+        of SQLite and decoded to be dropped one line later, which is
+        most of what a search in a folder of large mail cost.
 
         *restore_row* and *restore_key* mean what they do in
         :meth:`load_folder`: they are what lets the screen re-run a
@@ -359,7 +361,7 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         # something.
         self._set_correspondent_column(False)
         self._load_worker = self._load_rows(
-            lambda: [summary_of(message) for message in fetch()],
+            fetch,
             titles=titles,
             restore_row=restore_row,
             restore_key=restore_key,

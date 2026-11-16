@@ -36,7 +36,6 @@ from ..mail.views import (
     build_folder_tree,
     correspondent_label,
     message_row,
-    summary_of,
 )
 from . import urls
 from .actions import (
@@ -525,12 +524,15 @@ def _search(
     # materialises, so filtering the result dropped the hits that were
     # past the bound -- one match in INBOX behind 500 in Archive showed
     # as "Nothing found."
-    found = services.index.search(
-        query=parse_query(raw_query),
-        account_name=folder.account_name,
-        folder_name=folder.folder_name,
+    # Summaries, not whole messages: `search` selects the body too, and
+    # a list of hits never shows one.
+    return list(
+        services.index.search_message_summaries(
+            query=parse_query(raw_query),
+            account_name=folder.account_name,
+            folder_name=folder.folder_name,
+        )
     )
-    return [summary_of(message) for message in found]
 
 
 def _row(

@@ -235,7 +235,7 @@ async def test_q_leaves_search_mode_and_restores_the_border_title() -> None:
     async with app.run_test() as pilot:
         await _boot(pilot)
         panel = _panel(app)
-        hits = list(index.list_folder_messages(folder=_INBOX))
+        hits = list(index.list_folder_message_summaries(folder=_INBOX))
         panel.load_search("subject", fetch=lambda: hits)
         await pilot.pause()
         assert "Search:" in str(panel.border_title)
@@ -551,7 +551,9 @@ async def test_the_search_runs_off_the_event_loop_and_says_it_is_running() -> No
         screen = _main(app)
         panel = _panel(app)
         loop_thread = threading.current_thread()
-        ran_on = _watch_thread(index, "search")
+        # The method the screen actually calls: a hit list wants
+        # summaries, not whole messages with their bodies.
+        ran_on = _watch_thread(index, "search_message_summaries")
 
         screen._run_search("subject")
 
@@ -949,7 +951,7 @@ async def test_search_results_show_senders_even_from_a_sent_folder() -> None:
         await pilot.pause()
         assert "To" in _header_text(panel)
 
-        results = list(index.list_folder_messages(folder=_SENT))
+        results = list(index.list_folder_message_summaries(folder=_SENT))
         panel.load_search("outbound", fetch=lambda: results)
         await panel.wait_for_load_complete()
         await pilot.pause()
@@ -1200,7 +1202,7 @@ async def test_search_results_keep_the_order_they_arrive_in() -> None:
     async with app.run_test() as pilot:
         await _boot(pilot)
         panel = _panel(app)
-        hits = list(index.list_folder_messages(folder=_INBOX))
+        hits = list(index.list_folder_message_summaries(folder=_INBOX))
         # Deliberately not newest-first: whatever the caller hands over.
         reordered = sorted(hits, key=lambda m: m.received_at)
         panel.load_search("subject", fetch=lambda: reordered)

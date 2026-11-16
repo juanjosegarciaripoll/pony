@@ -1007,7 +1007,7 @@ class MainScreen(Screen[None]):
             # that were past the bound -- one match in INBOX behind 500
             # in Archive came back as nothing at all.
             fetch=lambda: list(
-                self._index.search(
+                self._index.search_message_summaries(
                     query=query,
                     account_name=search.account_name,
                     folder_name=(

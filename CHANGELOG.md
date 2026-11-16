@@ -302,6 +302,19 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A search no longer reads every hit's message body**: `search`
+  selects every column and one of them is the whole body, so a hit list
+  — which shows the correspondent, the subject and the date — pulled
+  *limit* bodies out of SQLite and decoded them to drop them. The cost
+  is set by the size of the mail rather than by how well the query
+  narrows: measured on 500 hits, the body was 30 % of the search at
+  1.2 KB a message and 85 % at 40 KB, the same either way whether the
+  term matched three messages or three thousand. A folder of large
+  archived mail is where that lands, which is why searching one felt
+  slower than searching anywhere else. Both front ends and `pony
+  search` now go through `search_message_summaries`, the projection the
+  folder list already had.
+
 - **A link's own words answer a click**: a message reading
   `Please <a href="mailto:ada@example.test">Contact Ada</a>` drew the
   anchor's words as ordinary text and a two-cell ✉ token after them, and
