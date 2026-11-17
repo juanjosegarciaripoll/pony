@@ -349,7 +349,10 @@ def test_no_widget_or_screen_shadows_a_reader_key_with_another_action() -> None:
 #: in a field belongs to the thing asking, and has no browser meaning to
 #: keep in step with.
 _LOCAL_BINDINGS = {
-    # The terminal's own interrupt conventions, which no page has.
+    # The terminal's own interrupt conventions, which no page has.  Both
+    # carry Textual's `App` defaults; the first subclass of `App` in the
+    # module is where the scan meets them.
+    "PasteMeansFocus": "ctrl+c and ctrl+q, as a terminal program ends",
     "QuitAsksTheScreen": "ctrl+c and ctrl+q, as a terminal program ends",
     # Answers to a question, not operations.
     "ConfirmScreen": "y / n answer the question it asks",

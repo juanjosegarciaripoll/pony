@@ -14,8 +14,8 @@ from uuid import uuid4
 
 import pytest
 from textual.containers import Horizontal, Vertical
-from textual.events import Paste
-from textual.widgets import Button, Input
+from textual.events import AppBlur, AppFocus, Paste
+from textual.widgets import Button, Input, TextArea
 from textual.widgets.input import Selection
 from tui_helpers import build_compose_app, make_tmp_paths
 
@@ -262,6 +262,57 @@ async def test_pasting_ordinary_text_attaches_nothing() -> None:
         assert screen._attachment_paths == []
 
     assert any("Not a file:" in n for n in notifications)
+
+
+async def test_a_paste_that_arrives_while_the_window_is_blurred_still_lands() -> None:
+    """Windows Terminal's large-paste warning swallowed every long paste.
+
+    A paste over 5 KiB opens a confirmation dialog, which takes focus
+    from the terminal: Windows Terminal reports the blur, and Textual
+    takes focus off the body.  On "Paste anyway" the text is sent ahead
+    of the report that focus came back, so it reached a screen with no
+    focused widget and was dropped.  A paste is input, as a key is, and
+    brings focus back the way a key does.
+
+    The paste is posted to the app, as the terminal driver delivers it.
+    """
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-blurred")
+    pasted = "A long message the user copied from elsewhere.\n" * 200
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        body = _screen(app).query_one("#body-area", TextArea)
+        body.focus()
+        await pilot.pause()
+
+        app.post_message(AppBlur())
+        await pilot.pause()
+        assert app.focused is None
+
+        app.post_message(Paste(pasted))
+        await pilot.pause()
+
+        assert pasted in body.text
+        assert app.focused is body
+
+
+async def test_a_paste_with_the_window_focused_is_not_disturbed() -> None:
+    """The ordinary path: no blur, the paste goes where focus already is."""
+    app, _cfg, _paths, _index, _mirrors = build_compose_app(label="paste-focused")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        body = _screen(app).query_one("#body-area", TextArea)
+        body.focus()
+        await pilot.pause()
+        app.post_message(AppFocus())
+        await pilot.pause()
+
+        app.post_message(Paste("short"))
+        await pilot.pause()
+
+        assert "short" in body.text
+        assert app.focused is body
 
 
 # ---------------------------------------------------------------------------

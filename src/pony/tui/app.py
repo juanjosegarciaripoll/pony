@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -78,7 +78,38 @@ class AnswersQuitKey(Protocol):
         ...
 
 
-class QuitAsksTheScreen(App[None]):
+class PasteMeansFocus(App[None]):
+    """An application that takes a paste as proof it has focus again.
+
+    When the terminal window loses focus it says so (``CSI O``), and
+    Textual takes focus off every widget until it hears the window has it
+    back: a ``CSI I``, a key press or a click.  A paste is not on that
+    list, so a paste that arrives *before* the ``CSI I`` finds no widget
+    focused, goes to the screen, and nothing there takes it.
+
+    Windows Terminal does exactly that.  A paste over 5 KiB opens its
+    "large paste" warning, which takes focus from the terminal, and the
+    paste is sent the moment the user confirms -- ahead of the report
+    that focus came back.  The composer's body regained its cursor and
+    stayed empty.  A short paste opens no dialog, which is why the
+    failure began at a size.
+
+    A paste is user input, like a key, so it brings focus back the way a
+    key does: the widget that had it before the blur gets it again, and
+    the paste lands there.
+    """
+
+    async def on_event(self, event: events.Event) -> None:
+        if (
+            isinstance(event, events.Paste)
+            and not event.is_forwarded
+            and not self.app_focus
+        ):
+            self.app_focus = True
+        await super().on_event(event)
+
+
+class QuitAsksTheScreen(PasteMeansFocus):
     """An application whose ++shift+q++ asks the screen in front first.
 
     ``Q`` is ``priority=True``, which it has to be — quit must work with

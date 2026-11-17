@@ -302,6 +302,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A long paste into the terminal no longer disappears in Windows
+  Terminal.** A paste over 5 KiB opens Windows Terminal's large-paste
+  warning, which takes focus from the terminal; Textual hears the blur
+  and takes focus off every widget until the window reports focus back.
+  Confirming the dialog sends the paste *before* that report, so it
+  reached a screen with nothing focused and was dropped: the composer's
+  body got its cursor back and stayed empty. A key press or a click
+  already counted as proof the window had focus again; a paste now does
+  too, so it lands in the widget that had focus before the dialog.
+
 - **A message whose `text/plain` part is really HTML is read as HTML**: an
   APS election mail arrived as a `multipart/alternative` whose plain part
   was full of `<div>`s — one generator filling both alternatives and
