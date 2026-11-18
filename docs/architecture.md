@@ -400,7 +400,8 @@ which is the only part of it that means anything in a terminal.
 
 Alongside the modal `g` sync flow there is a non-blocking background sync that
 shows a spinner on the `FolderPanel` border title. It has nobody to ask, so it
-confirms every folder that is safe and skips one that tripped a safety halt
+applies a mass deletion and holds back only a folder whose uploads would
+rewrite a large share of it
 (see [Synchronization → Safety halts](synchronization.md#safety-halts)). It
 does not belong to the screen: `PonyApp` owns a `PeriodicSync`
 (see [Periodic sync](#periodic-sync)) that runs it on a thread of its own,

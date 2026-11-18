@@ -27,11 +27,11 @@ All v1 capabilities implemented and tested:
 - PyInstaller standalone builds with platform installers.
 - TUI flow tests: 13 Pilot-driven tests in `tests/test_tui_flows.py`.
 - Textual theme selection via `theme` in `config.toml`, `--theme` CLI flag, and `--list-themes`.
-- Two per-folder safety halts surfaced in the CLI, TUI and browser plans: mass deletion (`>20%` of known UIDs gone server-side) and mass upload (`APPEND`s over half the folder, or 50 outright). `--yes` / `Y` / the browser's confirm applies them; the paths with nobody to ask skip a halted folder.
+- Two per-folder safety halts surfaced in the CLI, TUI and browser plans: mass deletion (`>20%` of known UIDs gone server-side) and mass upload (`APPEND`s over half the folder, or 50 outright). `--yes` / `Y` / the browser's confirm applies them; the paths with nobody to ask apply the deletion halt and hold only the upload one.
 - Local-mirror rescan with mtime sidecar cache and a lean storage-key projection on cold scans.
 - Scoped `pony reset --account NAME` rebuild path.
 - `pony reindex`: index rows and folder watermarks rebuilt from the mirror on disk, with no server, by reading each message's handle out of its Maildir filename (`,V=,U=`). A file whose name carries no handle, or one from a superseded epoch, is indexed as local-only, which is what makes the next sync upload it; a duplicate handle in one folder is reported and left unindexed.
-- Background/periodic sync: non-blocking `ctrl+g` run that confirms every safe folder and skips one that tripped a safety halt, plus a config-gated periodic thread (`background_sync_enabled` / `background_sync_interval_seconds`). Both halves schedule themselves through `pony.scheduler.PeriodicSync`, owned by the application rather than by a screen, so the cadence does not depend on which subsystem is in front.
+- Background/periodic sync: non-blocking `ctrl+g` run that applies a mass deletion and holds back only a folder whose uploads would rewrite a large share of it, plus a config-gated periodic thread (`background_sync_enabled` / `background_sync_interval_seconds`). Both halves schedule themselves through `pony.scheduler.PeriodicSync`, owned by the application rather than by a screen, so the cadence does not depend on which subsystem is in front.
 - RFC 5322 threading on replies (`In-Reply-To` / `References`), carried through a draft round-trip.
 - Sending resolves credentials through the same provider as sync, so every `credentials_source` works from the composer; local accounts with `[smtp]` included.
 - Backend/presentation split: `accounts.py`, `mailbox_ops.py`, `composer.py` are headless and enforced as such by `tests/test_layering.py`.

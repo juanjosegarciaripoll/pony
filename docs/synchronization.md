@@ -389,9 +389,9 @@ wastes bandwidth and storage. The sync engine handles the duplicates safely
 
 In the TUI, ++ctrl+g++ starts a non-blocking background sync immediately. It
 shows a spinner on the Folders panel title while it runs. There is nobody to
-ask on this path, so it confirms every folder that is safe and **skips** any
-folder that tripped a safety halt, reporting it rather than waiving it. A
-halted folder therefore keeps being skipped until one of the paths that can
+ask on this path, so it applies a mass deletion (C-6) and holds back only a
+folder whose plan would upload a large share of it (C-7), reporting what it
+held. Such a folder stays unsynced until one of the paths that can
 ask confirms it once — see [Safety halts](#safety-halts).
 
 Periodic sync runs on a thread the application owns, not on a timer belonging

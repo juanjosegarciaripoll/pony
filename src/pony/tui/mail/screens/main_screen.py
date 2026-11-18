@@ -809,8 +809,9 @@ class MainScreen(Screen[None]):
         """Run a non-blocking sync of what is safe (``ctrl+g``).
 
         Unlike ``action_sync`` it shows no modal, so there is nobody to
-        ask: ``sync()`` confirms every folder that tripped no safety
-        halt and *skips* the ones that did, reporting them as skipped.
+        ask: ``sync()`` applies a mass deletion and holds back only a
+        folder whose uploads would rewrite a large share of it,
+        reporting what it held.
         A spinner on the FolderPanel border title is the only visual
         clue.
 
