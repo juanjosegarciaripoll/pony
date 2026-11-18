@@ -15,6 +15,7 @@ imported Textual.
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
 import unittest
@@ -427,5 +428,40 @@ class OneWiringPerEngineTest(unittest.TestCase):
             sorted(offenders),
             [],
             "wire the engine with build_sync_service instead: "
+            + ", ".join(sorted(offenders)),
+        )
+
+    def test_only_one_loop_runs_the_calendar_engine(self) -> None:
+        """The same rule for the other half, which had the same problem.
+
+        `pony calendar sync` wrote out its own per-account loop beside
+        the one behind the terminal and the browser, and the two tables
+        of what a per-account failure can be drifted: `OAuthError` is a
+        `RuntimeError` and not a `CalDAVError`, so a revoked refresh
+        token abandoned the command line's remaining accounts while the
+        same accounts synced from the reader. One loop, in
+        `services.sync_accounts`, and this fails on a second.
+        """
+        # `sync_accounts(` does not match: what follows `sync_account`
+        # there is an `s`, not a paren.
+        calls = re.compile(r"\bsync_account\(")
+        allowed = {
+            # The one caller.
+            "pony.calendar.services",
+            # Where it is defined, and where the protocol declares a
+            # method of the same name.
+            "pony.calendar.sync",
+            "pony.calendar.protocols",
+        }
+        offenders = [
+            module
+            for module, path in _source_files()
+            if module not in allowed and calls.search(path.read_text(encoding="utf-8"))
+        ]
+
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "run the engine through services.sync_accounts instead: "
             + ", ".join(sorted(offenders)),
         )

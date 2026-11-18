@@ -264,7 +264,8 @@ class SyncCommandTest(CliTestCase):
 
         ctx = self._ctx(session_factory=factory)
         with patch(
-            "pony.cli.calendar.sync_account",
+            # The engine is called from one place now, and this is it.
+            "pony.calendar.services.sync_account",
             side_effect=OAuthError("refresh token rejected"),
         ):
             code = self._run(["sync"], context=ctx)

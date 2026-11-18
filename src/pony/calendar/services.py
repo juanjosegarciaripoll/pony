@@ -65,65 +65,110 @@ class CalendarServices:
     session_factory: SessionFactory | None = None
 
 
+@dataclass(frozen=True, kw_only=True)
+class AccountSyncOutcome:
+    """What one account's turn in a sync produced."""
+
+    result: SyncResult
+    #: True when the account did not sync at all: its credential, its
+    #: session or its whole run failed.  A result that carries
+    #: `errors` and is *not* a failure is an account that synced with
+    #: one of its calendars reporting a problem, which is why the two
+    #: are not the same question.
+    failed: bool
+
+
+def sync_accounts(
+    services: CalendarServices,
+    *,
+    accounts: Sequence[AccountConfig] | None = None,
+    cancel_event: threading.Event | None = None,
+    on_account: Callable[[AccountSyncOutcome], None] | None = None,
+) -> Sequence[AccountSyncOutcome]:
+    """Run `sync_account` over *accounts*, surviving one failure at a time.
+
+    The one per-account loop, for every front end.  The terminal, the
+    browser and the command line each had their own, and they drifted:
+    `OAuthError` was caught in one and not the other, so a revoked
+    refresh token abandoned a `pony calendar sync` after the failing
+    account while the same accounts synced fine from the reader.
+
+    *on_account* is called as each account finishes, which is what lets
+    the command line print a line per account as it goes instead of
+    waiting for the whole run.  Nothing else differs between the
+    callers.
+
+    This does **not** take the sync lock.  The caller decides: the
+    runner behind the terminal and the browser holds it for one run,
+    while `pony calendar sync` holds it around work of its own
+    (—-force clears sync state under it) and calls straight in here.
+    """
+    factory = services.session_factory or default_session_factory
+    chosen = services.config.accounts if accounts is None else accounts
+    outcomes: list[AccountSyncOutcome] = []
+
+    def record(result: SyncResult, *, failed: bool) -> None:
+        outcome = AccountSyncOutcome(result=result, failed=failed)
+        outcomes.append(outcome)
+        if on_account is not None:
+            on_account(outcome)
+
+    for account in chosen:
+        if cancel_event is not None and cancel_event.is_set():
+            record(_failure_result(account.name, "sync cancelled"), failed=True)
+            continue
+        try:
+            auth = services.creds.build_auth(account)
+            session = factory(account, auth)
+            result = sync_account(
+                account=account,
+                session=session,
+                mirror=services.mirror,
+                index=services.index,
+                now=services.now,
+                cancel_event=cancel_event,
+            )
+        except SyncCancelled:
+            record(_failure_result(account.name, "sync cancelled"), failed=True)
+            continue
+        except ACCOUNT_SYNC_ERRORS as exc:
+            record(
+                _failure_result(account.name, describe_account_failure(exc)),
+                failed=True,
+            )
+            continue
+        if auth.on_commit is not None:
+            auth.on_commit()
+        record(result, failed=False)
+    return tuple(outcomes)
+
+
 def build_sync_runner(
     services: CalendarServices,
 ) -> Callable[..., Sequence[SyncResult]]:
-    """Closure that runs `sync_account` over every configured account.
+    """Closure that syncs every configured account, under the sync lock.
 
     Returns the per-account `SyncResult`s rather than reporting
     anything: every front end has its own way of saying what happened.
-    Per-account exceptions are caught
-    and reported in the result's `errors` tuple so a single bad
-    credential doesn't take the whole sync down.
 
     The runner accepts an optional `cancel_event` keyword. The TUI
     sets this event from another thread to interrupt a long-running
     sync; `sync_account` checks it at calendar boundaries and raises
-    `SyncCancelled`, which the runner translates into a per-account
-    error rather than letting it tear through the worker.
+    `SyncCancelled`, which `sync_accounts` translates into a
+    per-account error rather than letting it tear through the worker.
     """
-    factory = services.session_factory or default_session_factory
 
     def run(*, cancel_event: threading.Event | None = None) -> Sequence[SyncResult]:
         try:
             with acquire_sync_lock(services.paths.lock_file):
-                return _run_locked(cancel_event)
+                return tuple(
+                    outcome.result
+                    for outcome in sync_accounts(services, cancel_event=cancel_event)
+                )
         except SyncLockError as exc:
             # Surface the lock contention as a SyncResult so the TUI's
             # banner shows the message instead of crashing the worker.
             return (_failure_result("(sync)", str(exc)),)
-
-    def _run_locked(
-        cancel_event: threading.Event | None,
-    ) -> Sequence[SyncResult]:
-        results: list[SyncResult] = []
-        for account in services.config.accounts:
-            if cancel_event is not None and cancel_event.is_set():
-                results.append(_failure_result(account.name, "sync cancelled"))
-                continue
-            try:
-                auth = services.creds.build_auth(account)
-                session = factory(account, auth)
-                result = sync_account(
-                    account=account,
-                    session=session,
-                    mirror=services.mirror,
-                    index=services.index,
-                    now=services.now,
-                    cancel_event=cancel_event,
-                )
-            except SyncCancelled:
-                results.append(_failure_result(account.name, "sync cancelled"))
-                continue
-            except ACCOUNT_SYNC_ERRORS as exc:
-                results.append(
-                    _failure_result(account.name, describe_account_failure(exc))
-                )
-                continue
-            if auth.on_commit is not None:
-                auth.on_commit()
-            results.append(result)
-        return tuple(results)
 
     return run
 

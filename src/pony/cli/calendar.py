@@ -70,16 +70,16 @@ from pony.calendar.protocols import (
     MirrorRepository,
 )
 from pony.calendar.services import (
-    ACCOUNT_SYNC_ERRORS,
+    AccountSyncOutcome,
     CalendarServices,
     ProgressFn,
     SessionFactory,
     default_session_factory,
-    describe_account_failure,
     format_report,
     run_doctor,
+    sync_accounts,
 )
-from pony.calendar.sync import describe_account_sync, sync_account
+from pony.calendar.sync import describe_account_sync
 from pony.scope import SyncScope
 from pony.shell import pick_editor, split_command
 
@@ -956,41 +956,31 @@ def cmd_sync(
 
 
 def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> int:
-    factory = ctx.session_factory or default_session_factory
-    fails = 0
-    for account in accounts:
-        # One table of what a per-account failure can be, shared with
-        # the runner the terminal and the browser use, so this loop
-        # cannot survive a failure the other abandons the run on.  The
-        # three arms are one `try` for the same reason.
-        try:
-            auth = ctx.creds.build_auth(account)
-            session = factory(account, auth)
-            result = sync_account(
-                account=account,
-                session=session,
-                mirror=ctx.mirror,
-                index=ctx.index,
-                now=ctx.now,
-            )
-        except ACCOUNT_SYNC_ERRORS as exc:
-            ctx.stderr.write(f"[{account.name}] {describe_account_failure(exc)}\n")
-            fails += 1
-            continue
-        # Give the auth strategy a chance to persist rotated state
-        # (OAuth access tokens refreshed during sync). Basic auth
-        # leaves this unset.
-        if auth.on_commit is not None:
-            auth.on_commit()
-        ctx.stdout.write(f"{describe_account_sync(result)}\n")
-        for note in result.notes:
-            # A resolved collision is not a failure, so it goes to stdout
-            # and does not change the exit status — but it is never
-            # silent: one side's version of an event was discarded.
-            ctx.stdout.write(f"[{account.name}] {note}\n")
+    """Sync *accounts*, reporting each one as it finishes.
+
+    The loop itself is `services.sync_accounts`, the one every front end
+    runs; this adds what a command line adds, which is saying so on the
+    way past rather than at the end.  The lock is already held by the
+    caller, which is why this calls `sync_accounts` and not the runner
+    that takes it.
+    """
+
+    def report(outcome: AccountSyncOutcome) -> None:
+        result = outcome.result
+        name = result.account_name
+        if not outcome.failed:
+            ctx.stdout.write(f"{describe_account_sync(result)}\n")
+            for note in result.notes:
+                # A resolved collision is not a failure, so it goes to
+                # stdout and does not change the exit status — but it is
+                # never silent: one side's version of an event was
+                # discarded.
+                ctx.stdout.write(f"[{name}] {note}\n")
         for err in result.errors:
-            ctx.stderr.write(f"[{account.name}] {err}\n")
-    return 1 if fails else 0
+            ctx.stderr.write(f"[{name}] {err}\n")
+
+    outcomes = sync_accounts(ctx.services(), accounts=accounts, on_account=report)
+    return 1 if any(outcome.failed for outcome in outcomes) else 0
 
 
 def cmd_reset(

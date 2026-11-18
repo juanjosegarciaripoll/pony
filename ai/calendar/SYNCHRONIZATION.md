@@ -115,6 +115,18 @@ Per-account configuration supplies three regex lists (Python `re.fullmatch`):
 The rule is `pony.scope`'s, shared with the mail half: one reading for
 the three keys wherever they appear in the file.
 
+## 4b. One per-account loop
+
+`services.sync_accounts` is the only loop that runs `sync_account`, for
+every front end: the terminal, the browser and `pony calendar sync`
+alike. It resolves the credential, opens the session, syncs, commits any
+rotated token, and catches `ACCOUNT_SYNC_ERRORS` around all three so one
+account's failure costs only that account. A front end that wants to
+report as it goes passes `on_account`; the lock is the caller's, because
+`pony calendar sync --force` holds it around work of its own.
+`tests/test_layering.py` fails on a second caller — there were two, and
+their exception tables had already drifted.
+
 ## 5. Account pre-phase: calendar discovery
 
 1. `PROPFIND` against the principal URL, collect `calendar-home-set`.

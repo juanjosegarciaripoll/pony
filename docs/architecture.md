@@ -705,7 +705,7 @@ src/pony/calendar/
   storage.py index_store.py storage_indexing.py locking.py
   ical_parser.py recurrence.py mutations.py ingest.py
   event_actions.py     # save / reschedule / trash / import, over the stores
-  services.py          # what an operation works over, the sync runner, the doctor
+  services.py          # what an operation works over, the one per-account sync loop, the doctor
   keymap.py            # the keyboard vocabulary, and the calendar's keys
   views.py             # what each view is of, grids included, before drawing
   caldav/ http/ oauth.py credentials.py authorization.py sync.py
