@@ -201,9 +201,13 @@ A halt is answered where there is somebody to ask: the TUI's confirmation
 screen highlights the folder and **Proceed** applies it, the browser's Sync
 button turns the halt into a question and applies it on confirm, and on the
 command line `pony sync --yes`, or `y` at the interactive prompt, does the
-same. The paths with nobody to ask — periodic sync in either front end, and
-++ctrl+g++ — **skip** a halted folder and report it, so it stays unsynced
-until one of the paths above answers the question once.
+same.
+
+The paths with nobody to ask — periodic sync in either front end, and
+++ctrl+g++ — **apply C-6 and hold C-7**. A mass deletion mirrors what the
+server has already done; a mass upload writes duplicates into a mailbox
+other clients read, with no undo. So only a C-7 folder stays unsynced until
+one of the paths above answers for it.
 
 ---
 
@@ -588,7 +592,7 @@ UIDPLUS.
 | **C-1** | UID in `gone_uids` and `local_flags != base_flags` | `ReUploadOp` |
 | **C-2** | Locally trashed, server has it in a read-only folder | Restore `ACTIVE`, pull flags |
 | **C-4** | UIDVALIDITY reset | Reset op clears the UID epoch; rows re-keyed from the headers where a `Message-ID` names one, the rest refetched |
-| **C-6** | More than 20% of UIDs gone | Confirmation required |
+| **C-6** | More than 20% of UIDs gone | Confirmation where something can ask |
 | **C-7** | Uploads would rewrite over half the folder, or 50 messages | Confirmation required |
 
 ### mbox storage keys

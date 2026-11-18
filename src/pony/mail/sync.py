@@ -399,6 +399,23 @@ class SyncPlan:
             if f.needs_confirmation
         )
 
+    def folders_held_for_upload(self) -> frozenset[tuple[str, str]]:
+        """The held folders whose halt is C-7, a mass *upload*.
+
+        The two halts guard opposite directions and only one of them is
+        still worth holding an unattended run for.  A mass deletion
+        applies what the server already did, locally; a mass upload
+        *puts* thousands of duplicates on a server other people read,
+        and `uid IS NULL` cannot tell "composed here" from "on the
+        server, handle lost", so that one keeps its halt everywhere.
+        """
+        return frozenset(
+            (a.account_name, f.folder_name)
+            for a in self.accounts
+            for f in a.folders
+            if f.needs_confirmation and f.pending_push_count
+        )
+
 
 # ---------------------------------------------------------------------------
 # Plan formatting
@@ -584,8 +601,16 @@ def _merge_flags(
 
 
 # C-6 mass-deletion safety threshold: if more than this fraction of
-# locally-known UIDs disappear server-side in one sync, the folder
-# requires explicit confirmation before the deletes are applied.
+# locally-known UIDs disappear server-side in one sync, the folder is
+# flagged, and the paths that can ask -- `pony sync`, the reader's `g`
+# dialog, the browser's Sync button -- show the count and offer to
+# apply it.
+#
+# It does *not* hold an unattended run back any more: see
+# `ImapSyncService.sync`.  A fifth of a folder disappearing is what an
+# afternoon of deleting mail on a phone looks like, so holding it there
+# left the folder unsynced with nobody able to answer, which is worse
+# than applying what the server has already done.
 _MASS_DELETE_THRESHOLD = 0.20
 _MASS_DELETE_MIN = 5
 
@@ -880,26 +905,29 @@ class ImapSyncService:
     def sync(self, *, account_name: str | None = None) -> SyncResult:
         """Plan and execute in one call, confirming only what is safe.
 
-        Callers here have nobody to ask -- the periodic sync and
-        ++ctrl+g++ -- so a folder that tripped a safety halt is skipped
-        and reported rather than waived.  Everything that *can* ask
-        calls :meth:`plan` and :meth:`execute` itself and passes the
-        halted folders as confirmed: `pony sync`, the terminal's sync
-        dialog, and the browser's Sync button, which holds the plan
-        across the question.  That is the whole difference between
-        ++ctrl+g++ and `pony sync --yes` on a held folder.
+        This is the path ++ctrl+g++ and the periodic sync take, and the
+        one most mail actually arrives through, so it applies the
+        mass-deletion halt (C-6) rather than holding a folder back for
+        it.  That threshold -- a fifth of a folder gone from the server
+        -- dates from before the sync engine was trusted, and a fifth of
+        a folder is reached by an afternoon of deleting mail on a phone.
+        Held, it could never converge: nothing here can put the
+        question, so the folder stayed unsynced until somebody noticed
+        and ran an interactive sync, which made the quiet key useless
+        for the case it exists for.
+
+        The mass-upload halt (C-7) still holds, because the risk is not
+        symmetrical: see :meth:`SyncPlan.folders_held_for_upload`.
+        `pony sync`, the terminal's ++g++ dialog and the browser's Sync
+        button all put the question and can waive that one.
         """
         plan = self.plan(account_name=account_name)
-        halted = plan.folders_needing_confirmation()
-        safe = (
-            frozenset(
-                (a.account_name, f.folder_name)
-                for a in plan.accounts
-                for f in a.folders
-            )
-            - halted
+        everything = frozenset(
+            (a.account_name, f.folder_name) for a in plan.accounts for f in a.folders
         )
-        return self.execute(plan, confirmed_folders=safe)
+        return self.execute(
+            plan, confirmed_folders=everything - plan.folders_held_for_upload()
+        )
 
     # ------------------------------------------------------------------
     # Planning

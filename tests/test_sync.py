@@ -1628,6 +1628,84 @@ class MassDeletionThresholdTestCase(unittest.TestCase):
         )
         self.assertNotIn("INBOX", applied.accounts[0].skipped_folders)
 
+    def test_an_unattended_sync_applies_a_mass_deletion(self) -> None:
+        """++ctrl+g++ and the periodic sync no longer hold C-6 back.
+
+        The threshold is a fifth of a folder, which an afternoon of
+        deleting mail on a phone reaches.  Nothing on this path can put
+        the question, so a held folder stayed unsynced until somebody
+        ran an interactive sync -- the quiet key could not finish the
+        job it exists for.  The halt is still *flagged*, for the paths
+        that can ask.
+        """
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<unatt{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<unatt{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+        for uid in range(1, 6):
+            del session.folders["INBOX"][uid]
+
+        # Still flagged, and still described, for whoever can answer.
+        plan = service.plan()
+        self.assertEqual(
+            plan.folders_needing_confirmation(),
+            frozenset({("personal", "INBOX")}),
+        )
+        self.assertEqual(plan.folders_held_for_upload(), frozenset())
+
+        result = service.sync()
+
+        self.assertNotIn("INBOX", result.accounts[0].skipped_folders)
+        self.assertEqual(result.accounts[0].held_folders, ())
+        # And the deletions actually landed, so a second pass has nothing
+        # left to confirm.
+        self.assertEqual(service.plan().folders_needing_confirmation(), frozenset())
+        # A server-side deletion trashes the row rather than dropping
+        # it, so count what the folder still shows.
+        active = index.list_folder_message_summaries(
+            folder=FolderRef(account_name="personal", folder_name="INBOX")
+        )
+        self.assertEqual(len(active), 5)
+
+    def test_an_unattended_sync_still_refuses_a_mass_upload(self) -> None:
+        """C-7 is the halt that stays: it writes to a shared server.
+
+        A mass deletion applies what the server already did.  A mass
+        upload puts duplicates *on* it, and `uid IS NULL` cannot tell
+        "composed here" from "handle lost", so this one keeps its halt
+        on every path.
+        """
+        raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {
+            uid: (
+                f"<up{uid}@example.com>",
+                frozenset(),
+                _make_raw_message(f"Msg {uid}", f"<up{uid}@example.com>"),
+            )
+            for uid in range(1, 11)
+        }
+        service, index, _, session = _setup(server_folders={"INBOX": dict(raws)})
+        service.sync()
+        index.clear_uids_for_folder(account_name="personal", folder_name="INBOX")
+        session.call_log.clear()
+
+        plan = service.plan()
+        self.assertEqual(
+            plan.folders_held_for_upload(),
+            frozenset({("personal", "INBOX")}),
+        )
+
+        result = service.sync()
+
+        self.assertNotIn("append:INBOX", session.call_log)
+        self.assertEqual(result.accounts[0].held_folders, ("INBOX",))
+        self.assertEqual(len(session.folders["INBOX"]), 10)
+
     def test_confirmed_folder_executes_deletes(self) -> None:
         """Passing the flagged folder via confirmed_folders applies deletes."""
         raws: dict[int, tuple[str, frozenset[MessageFlag], bytes]] = {

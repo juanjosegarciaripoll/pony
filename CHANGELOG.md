@@ -200,6 +200,18 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Changed
 
+- **++ctrl+g++ and the periodic sync now apply a mass deletion instead of
+  skipping the folder.** A folder is flagged when more than a fifth of the
+  messages it is known to hold have gone from the server, and an unattended
+  run used to leave such a folder unsynced — but nothing on that path can
+  put the question, so it stayed unsynced until somebody noticed and ran an
+  interactive sync. A fifth of a folder is an afternoon of deleting mail on
+  a phone, and the threshold predates trusting the sync engine. Those paths
+  now apply it, which is all it ever meant: the server has already deleted
+  the mail, and the local rows are trashed rather than destroyed. The paths
+  that *can* ask still show the count first. The mass-upload halt is
+  unchanged on every path — it writes duplicates into a mailbox other
+  clients read, with no undo.
 - **One rule for `include` / `exclude` / `read_only`**: `pony/scope.py`
   answers what a sync covers for both halves, where each had written
   its own reading of the same three keys and they came out opposite.
