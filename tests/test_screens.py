@@ -718,6 +718,72 @@ async def test_eml_viewer_screen_action_harvest_contact_noop() -> None:
         await pilot.pause()
 
 
+async def test_eml_viewer_saves_the_text_body_with_ctrl_t(tmp_path) -> None:
+    """``t`` and ++ctrl+t++ send ``'T'``, which `int()` could not read.
+
+    `MessageViewPanel` binds both and the viewer mounts that panel, so
+    pressing either in a `.eml` opened with `pony view` raised
+    ``ValueError: invalid literal for int()``.  The numbering lives in
+    `message_export.part_key`, and this screen was reading it itself.
+    """
+    from textual.app import App, ComposeResult
+
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+
+    raw = corpus.plain_text()
+
+    class _TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        def on_mount(self) -> None:
+            self.push_screen(EmlViewerScreen(raw, downloads_dir=tmp_path))
+
+    app = _TestApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_save_attachment("T")
+        await pilot.pause()
+
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1, written
+    assert written[0].suffix == ".txt", written[0].name
+
+
+async def test_eml_viewer_saves_the_whole_message_for_zero(tmp_path) -> None:
+    """``0`` is the message, as it is everywhere else.
+
+    This screen took it for "every attachment", which is the meaning
+    `0` lost when the parts were numbered in one place.
+    """
+    from textual.app import App, ComposeResult
+
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+
+    raw = corpus.plain_text()
+
+    class _TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        def on_mount(self) -> None:
+            self.push_screen(EmlViewerScreen(raw, downloads_dir=tmp_path))
+
+    app = _TestApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
+        screen.action_save_attachment("0")
+        await pilot.pause()
+
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1, written
+    assert written[0].suffix == ".eml", written[0].name
+
+
 async def test_eml_viewer_screen_action_open_attachment_out_of_range() -> None:
     """action_open_attachment with out-of-range index notifies."""
     from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
@@ -759,10 +825,15 @@ async def test_eml_viewer_screen_action_save_attachment_out_of_range(
         await pilot.pause()
 
 
-async def test_eml_viewer_screen_save_attachment_index_0_all(
+async def test_eml_viewer_screen_saves_a_numbered_attachment(
     tmp_path,
 ) -> None:
-    """action_save_attachment(0) saves ALL attachments."""
+    """``1`` is the first attachment, here as everywhere else.
+
+    This used to assert that ``0`` saved every attachment, which is a
+    meaning `0` has nowhere else: it is the message. See
+    `test_eml_viewer_saves_the_whole_message_for_zero`.
+    """
     from textual.app import App, ComposeResult
 
     from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
@@ -781,11 +852,10 @@ async def test_eml_viewer_screen_save_attachment_index_0_all(
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, EmlViewerScreen)
-        screen.action_save_attachment("0")
+        screen.action_save_attachment("1")
         await pilot.pause()
-    # q1-report.pdf should have been saved
     saved = list(tmp_path.glob("*.pdf"))
-    assert len(saved) >= 1
+    assert len(saved) == 1, list(tmp_path.iterdir())
 
 
 async def test_eml_viewer_app_saves_where_it_was_told(tmp_path) -> None:
@@ -832,10 +902,15 @@ async def test_eml_viewer_asks_message_export_where_downloads_go(tmp_path) -> No
     assert list(tmp_path.glob("*.pdf"))
 
 
-async def test_eml_viewer_screen_open_attachment_0_opens_all(
+async def test_eml_viewer_screen_opens_a_numbered_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """action_open_attachment(0) opens ALL attachments."""
+    """``1`` launches the first attachment in whatever shows it.
+
+    This used to assert that ``0`` opened every attachment. ``0`` is the
+    message, and opening it from here nests another viewer rather than
+    launching anything.
+    """
     from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
 
     launch_mock = MagicMock()
@@ -849,9 +924,32 @@ async def test_eml_viewer_screen_open_attachment_0_opens_all(
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, EmlViewerScreen)
+        screen.action_open_attachment("1")
+        await pilot.pause()
+    assert launch_mock.call_count == 1
+
+
+async def test_eml_viewer_screen_nests_a_viewer_for_the_message_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``0`` is the message, and a message goes to this screen."""
+    from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
+
+    launch_mock = MagicMock()
+    monkeypatch.setattr(
+        "pony.tui.mail.screens.eml_viewer_screen.launch_file", launch_mock
+    )
+
+    app = EmlViewerApp(raw_bytes=corpus.multipart_mixed_attachment())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EmlViewerScreen)
         screen.action_open_attachment("0")
         await pilot.pause()
-    assert launch_mock.call_count >= 1
+        assert isinstance(app.screen, EmlViewerScreen)
+        assert app.screen is not screen
+    launch_mock.assert_not_called()
 
 
 async def test_eml_viewer_screen_quit_action() -> None:
@@ -1017,10 +1115,9 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
 ) -> None:
     """Opening and saving filesystem failures are reported without escaping."""
     from pony.tui.mail.screens.eml_viewer_screen import EmlViewerScreen
-    from pony.tui.mail.widgets.message_view import MessageViewPanel
 
     monkeypatch.setattr(
-        "pony.tui.mail.screens.eml_viewer_screen.handoff_path",
+        "pony.tui.mail.screens.eml_viewer_screen.launch_file",
         MagicMock(side_effect=OSError("fictional open failure")),
     )
     app = _make_host(
@@ -1042,14 +1139,15 @@ async def test_eml_viewer_screen_reports_attachment_io_errors(
         screen = app.screen
         assert isinstance(screen, EmlViewerScreen)
         screen.action_open_attachment("1")
-        panel = screen.query_one(MessageViewPanel)
-        panel.save_attachment = MagicMock(side_effect=OSError("fictional save failure"))
-        screen.action_save_attachment("1")
+        # Where the bytes are written and which part is missing are the
+        # model's answers now, and arrive as notices; what is left for
+        # this screen to fail at is the launch itself.
+        screen.action_save_attachment("7")
         await pilot.pause()
 
     # The test is named for reporting them, so it checks that it did.
     assert any("fictional open failure" in note for note in notifications)
-    assert any("fictional save failure" in note for note in notifications)
+    assert any("7" in note for note in notifications), notifications
 
 
 # ===========================================================================

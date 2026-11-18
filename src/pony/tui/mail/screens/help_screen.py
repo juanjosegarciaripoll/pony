@@ -144,8 +144,8 @@ _RIGHT_ORDER = ("Messages", "Mail & calendar", "This program", "Other")
 _WIDGET_KEYS: tuple[tuple[str, str], ...] = (
     ("Enter", "Open the row under the cursor"),
     ("Esc / q", "Leave a search, with no message open"),
-    ("1-9 / 0", "Open attachment N / open all"),
-    ("Ctrl+1-9 / Ctrl+0", "Save attachment N / save all"),
+    ("1-9 / 0 / t", "Open attachment N / the message / its text"),
+    ("Ctrl+1-9 / Ctrl+0 / Ctrl+t", "Save attachment N / the message / its text"),
     ("Drag border", "Resize a pane with the mouse"),
 )
 

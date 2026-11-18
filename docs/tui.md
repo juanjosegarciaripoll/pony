@@ -474,12 +474,21 @@ Attachments are listed between the header block and the message body:
 
 | Key | Action |
 |---|---|
+A message's parts are numbered in one place, and every key, prompt and
+URL reads that numbering: **++0++ is the message as it arrived**, ++t++
+is its body as text with no HTML in it, and ++1++..++n++ are its
+attachments.
+
+| Key | Action |
+|---|---|
 | ++1++ / ++2++ / ++3++ | Open attachment 1, 2, or 3 in the default application |
-| ++0++ | Open all attachments |
+| ++0++ | Open the whole message — the `.eml` as it arrived |
+| ++t++ | Open the body as text |
 | ++ctrl+1++ / ++ctrl+2++ / ++ctrl+3++ | Save attachment 1, 2, or 3 to `~/Downloads` |
-| ++ctrl+0++ | Save all attachments |
-| ++shift+o++ | Open every attachment (same as ++0++, for when the digits are taken) |
-| ++shift+s++ | Save every attachment (same as ++ctrl+0++) |
+| ++ctrl+0++ | Save the whole message as an `.eml` |
+| ++ctrl+t++ | Save the body as a `.txt` |
+| ++shift+o++ | Ask which part to open, listing them with sizes; ++asterisk++ opens every one |
+| ++shift+s++ | Ask which part to save, same list and same ++asterisk++ |
 | ++w++ | Open the full raw message as HTML in the default browser |
 
 !!! tip

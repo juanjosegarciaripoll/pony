@@ -10,10 +10,15 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from ....mail.domain import ViewerRule
-from ....mail.handoff import handoff_path
+from ....mail.message_export import (
+    PartKey,
+    part_key,
+    parts_to_open,
+    save_parts,
+)
 from ....mail.message_export import downloads_dir as resolve_downloads_dir
-from ....mail.message_export import viewer_command
-from ....mail.message_renderer import extract_attachment
+from ....mail.message_renderer import render_message
+from ...reporting import report
 from ...terminal import (
     launch_file,
     suspend_for_external_program,
@@ -155,72 +160,59 @@ class EmlViewerScreen(Screen[None]):
     # ------------------------------------------------------------------
 
     def action_open_attachment(self, index: str) -> None:
-        idx = int(index)
-        if idx == 0:
-            count = self.query_one(MessageViewPanel).attachment_count
-            self._open_indices(list(range(1, count + 1)))
-        else:
-            self._open_indices([idx])
+        """Open part *index*: 0 the message, T its text, 1..N attachments.
+
+        Through `part_key`, which is where the numbering lives.  This
+        screen read the index with `int()` and took ``0`` for "every
+        attachment", so the ``t`` and ++ctrl+t++ that the panel it mounts
+        binds — both of which send ``'T'`` — crashed it, and ``0`` meant
+        something here that it means nowhere else.
+        """
+        key = part_key(index)
+        if key is None:
+            return
+        self._open_parts([key])
 
     def action_save_attachment(self, index: str) -> None:
-        idx = int(index)
-        if idx == 0:
-            count = self.query_one(MessageViewPanel).attachment_count
-            self._save_indices(list(range(1, count + 1)))
-        else:
-            self._save_indices([idx])
+        """Save part *index*: 0 the message, T its text, 1..N attachments."""
+        key = part_key(index)
+        if key is None:
+            return
+        self._save_parts([key])
 
-    def _open_indices(self, indices: list[int]) -> None:
-        for idx in indices:
-            payload = extract_attachment(self._raw_bytes, idx)
-            if payload is None:
-                self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Attachment {idx} not found.", severity="warning"
+    def _open_parts(self, keys: list[PartKey]) -> None:
+        """Launch each chosen part, the way the mail reader launches it.
+
+        `parts_to_open` makes every decision — where the bytes go, which
+        viewer a content type gets, that a nested message opens in this
+        screen rather than in whatever the desktop opens an ``.eml``
+        with — and the launching is all that is left here.  This screen
+        had its own copy of the whole thing, down to its own wording for
+        a part that was not there.
+        """
+        dest = self._downloads_dir
+        parts, outcome = parts_to_open(
+            render_message(self._raw_bytes), keys, dest, viewers=self._viewers
+        )
+        report(self.app, outcome)
+        for part in parts:
+            if part.path is None:
+                self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+                    EmlViewerScreen(part.data, dest, viewers=self._viewers)
                 )
                 continue
-            if payload.content_type == "message/rfc822":
-                self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-                    EmlViewerScreen(
-                        payload.data, self._downloads_dir, viewers=self._viewers
-                    )
-                )
-            else:
-                suffix = Path(payload.filename).suffix
-                try:
-                    # Under the data directory, in a directory emptied
-                    # once per run: a viewer needs a real file, and the
-                    # ones this used to leave in the system temporary
-                    # directory were never removed by anything.
-                    path = handoff_path(suffix)
-                    path.write_bytes(payload.data)
-                    # The default viewer may run in this terminal and alter
-                    # input modes.  Textual's suspend context restores them.
-                    with suspend_for_external_program(self.app):
-                        launch_file(
-                            path,
-                            viewer_command(self._viewers, payload.content_type),
-                        )
-                except OSError as exc:
-                    self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                        f"Could not open attachment {idx}: {exc}", severity="error"
-                    )
-
-    def _save_indices(self, indices: list[int]) -> None:
-        dest = self._downloads_dir
-        dest.mkdir(parents=True, exist_ok=True)
-        panel = self.query_one(MessageViewPanel)
-        saved: list[str] = []
-        for idx in indices:
             try:
-                name = panel.save_attachment(idx, dest)
+                # The default viewer may run in this terminal and alter
+                # input modes.  Textual's suspend context restores them.
+                with suspend_for_external_program(self.app):
+                    launch_file(part.path, part.command)
             except OSError as exc:
                 self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                    f"Could not save attachment {idx}: {exc}", severity="error"
+                    f"Could not open {part.path.name}: {exc}", severity="error"
                 )
-                continue
-            if name:
-                saved.append(name)
-        if saved:
-            self.app.notify(  # pyright: ignore[reportUnknownMemberType]
-                f"Saved to {dest}: {', '.join(saved)}"
-            )
+
+    def _save_parts(self, keys: list[PartKey]) -> None:
+        report(
+            self.app,
+            save_parts(render_message(self._raw_bytes), keys, self._downloads_dir),
+        )
