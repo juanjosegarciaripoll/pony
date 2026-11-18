@@ -169,7 +169,7 @@ def _parse_calendar_query(body: bytes, *, base_url: str) -> tuple[tuple[str, str
         href_elem = response.find("d:href", ns)
         if href_elem is None or href_elem.text is None:
             continue
-        href = _absolute_href(href_elem.text.strip(), base_url=base_url)
+        href = canonical_href(href_elem.text.strip(), base_url=base_url)
         if not href:
             continue
         etag = ""
@@ -205,7 +205,7 @@ def _parse_multiget(body: bytes, *, base_url: str) -> list[tuple[str, str, bytes
         href_elem = response.find("d:href", ns)
         if href_elem is None or href_elem.text is None:
             continue
-        href = _absolute_href(href_elem.text.strip(), base_url=base_url)
+        href = canonical_href(href_elem.text.strip(), base_url=base_url)
         if not href:
             continue
         etag = ""
@@ -255,7 +255,7 @@ def _parse_calendars_propfind(
         href_elem = response.find("d:href", ns)
         if href_elem is None or href_elem.text is None:
             continue
-        href = _absolute_href(href_elem.text.strip(), base_url=base_url)
+        href = canonical_href(href_elem.text.strip(), base_url=base_url)
         if not href:
             continue
         is_calendar = False
@@ -350,7 +350,7 @@ def _parse_sync_collection(
         href_elem = response.find("d:href", ns)
         if href_elem is None or href_elem.text is None:
             continue
-        href = _absolute_href(href_elem.text.strip(), base_url=base_url)
+        href = canonical_href(href_elem.text.strip(), base_url=base_url)
         if not href:
             continue
         if _reports_removal(response, ns):
@@ -412,7 +412,7 @@ def _parse_current_user_principal(body: bytes, *, base_url: str) -> str | None:
             continue
         href_elem = propstat.find("d:prop/d:current-user-principal/d:href", ns)
         if href_elem is not None and href_elem.text:
-            return _absolute_href(href_elem.text.strip(), base_url=base_url)
+            return canonical_href(href_elem.text.strip(), base_url=base_url)
     return None
 
 
@@ -431,21 +431,48 @@ def _parse_calendar_home_set(body: bytes, *, base_url: str) -> str | None:
             continue
         href_elem = propstat.find("d:prop/c:calendar-home-set/d:href", ns)
         if href_elem is not None and href_elem.text:
-            return _absolute_href(href_elem.text.strip(), base_url=base_url)
+            return canonical_href(href_elem.text.strip(), base_url=base_url)
     return None
 
 
 # ---- Helpers ---------------------------------------------------------------
 
 
-def _absolute_href(href: str, *, base_url: str) -> str:
-    """Resolve `href` against `base_url` and URL-decode the path."""
+def canonical_href(href: str, *, base_url: str) -> str:
+    """*href* reduced to the one spelling that names its resource.
+
+    A ``DAV:href`` is a URI, so the same resource arrives spelled more
+    than one way: relative or absolute, and with any path character
+    either literal or percent-encoded.  ``@`` is the one that bites.
+    It is a legal path character, so a server may echo
+    ``/cal/a%40b.ics`` or ``/cal/a@b.ics`` for the same resource -- and
+    an href is compared against the index as a *string*, where every
+    UID this program mints ends in ``@chronos``.  A resource whose two
+    spellings disagree reads as deleted from the server.
+
+    So an href is absolutized and each path segment is decoded and
+    re-encoded with nothing left safe.  That is idempotent, and unlike
+    a plain ``unquote`` it does not collapse ``%2F`` into a path
+    separator: a segment whose decoded value holds a ``/`` encodes back
+    to ``%2F`` and stays one segment.
+
+    A relative href is taken as root-relative, which is what a DAV
+    server returns; any path in *base_url* is not a prefix for it.
+    """
     if not href:
         return href
     if href.startswith(("http://", "https://")):
-        return unquote(href)
-    parsed = urlsplit(base_url)
-    return urlunsplit((parsed.scheme, parsed.netloc, unquote(href), "", ""))
+        parsed = urlsplit(href)
+        scheme, netloc, path = parsed.scheme, parsed.netloc, parsed.path
+    else:
+        base = urlsplit(base_url)
+        scheme, netloc, path = base.scheme, base.netloc, href
+    return urlunsplit((scheme, netloc, _canonical_path(path), "", ""))
+
+
+def _canonical_path(path: str) -> str:
+    """Each segment of *path* decoded, then encoded with nothing safe."""
+    return "/".join(quote(unquote(segment), safe="") for segment in path.split("/"))
 
 
 def _content_etag(ics: bytes) -> str:
@@ -455,10 +482,18 @@ def _content_etag(ics: bytes) -> str:
 
 
 def _path_for_request(href: str) -> str:
-    """Strip the scheme+host from `href` and percent-encode the path."""
+    """The request path of *href*, percent-encoded.
+
+    Canonicalizing rather than quoting, because this is reached with an
+    href that has already been through `canonical_href` as well as with
+    one spelled by hand: a plain ``quote`` would turn the first one's
+    ``%40`` into ``%2540``.  A Google CalDAV path carries the account's
+    address in it (``/caldav/v2/me@x.com/events/``), so the ``@`` has to
+    come out encoded either way.
+    """
     parsed = urlsplit(href)
     path = parsed.path if parsed.scheme and parsed.netloc else href
-    return quote(path, safe="/:")
+    return _canonical_path(path)
 
 
 def _default_components() -> frozenset[ComponentKind]:

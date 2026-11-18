@@ -329,6 +329,28 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **An event created in the calendar is no longer deleted from it, or the
+  calendar stuck, on the next full sync.** A `DAV:href` is a URI, so the
+  same resource can be spelled with a path character either literal or
+  percent-encoded. The href the push computed encoded the `@` that ends
+  every UID the calendar mints, and the href a response parsed back
+  decoded it — two strings for one resource, compared as strings. So
+  every locally created event read as *deleted from the server*: below
+  the mass-deletion threshold its row and mirror file were removed and
+  re-fetched, losing that row's local flags and trash state, and at or
+  above the threshold the safety halt stopped that calendar syncing for
+  good, with nothing able to answer the confirmation it asked for. A
+  five-event calendar with two new events reached it. Every href now
+  goes through one canonicalizer, on both sides, and a row holding
+  another spelling is re-written the first time a sync sees it rather
+  than migrated. The guard's own note that tripping it at 100 % "is
+  almost always an href-format mismatch" was describing this.
+- **A component the server dropped no longer fails its whole calendar
+  when its mirror file is already gone.** `MirrorRepository.delete`
+  raises `ResourceNotFoundError`, which is a `MirrorError` and not an
+  `OSError`, and all four callers that meant "already gone is fine"
+  suppressed `FileNotFoundError` — which it never raises. The protocol
+  now says what `delete` raises.
 - **The automatic reset offered after a schema change no longer deletes a
   local account's archive.** When the index database predates the running
   version, Pony explains the three steps to move to the new schema and

@@ -612,6 +612,107 @@ class PushPendingTest(SyncTestCase):
         self.assertEqual(len(pending), 1)
 
 
+class HrefSpellingTest(SyncTestCase):
+    """One resource, two legal spellings of its href, one identity.
+
+    `generate_uid` ends every UID this program mints with ``@chronos``.
+    ``@`` is a legal path character, so the href a push computes and the
+    href a server reports for the same resource could be spelled
+    differently -- and an href is compared against the index as a
+    string.  When they disagreed, every locally created event read as
+    deleted from the server on the next slow-path sync: deleted here and
+    re-fetched as new below the mass-deletion threshold, and above it the
+    calendar halted with no way to answer the halt.
+    """
+
+    def _seed_local_only(self, uid: str) -> None:
+        local = VEvent(
+            ref=ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid),
+            href=None,
+            etag=None,
+            raw_ics=corpus.simple_event(),
+            summary="Local only",
+            description=None,
+            location=None,
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+            status=None,
+            local_flags=frozenset(),
+            server_flags=frozenset(),
+            local_status=LocalStatus.ACTIVE,
+            trashed_at=None,
+            synced_at=None,
+        )
+        self.index.upsert_component(local)
+
+    def test_a_pushed_event_is_not_deleted_on_the_next_sync(self) -> None:
+        """The event is still there, and no deletion was applied."""
+        uid = "a1b2c3d4e5f6a7b8@chronos"
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+        self._seed_local_only(uid)
+        first = self._run()
+        self.assertEqual(first.components_removed, 0, first.errors)
+
+        # A second pass forced down the slow path, the way
+        # `pony calendar sync --force` forces it.  The sync-collection
+        # delta says nothing about a resource nobody touched, so only a
+        # full calendar-query compares every stored href against the
+        # server's.
+        self.index.clear_all_sync_state()
+        second = self._run()
+        self.assertEqual(second.errors, ())
+        self.assertEqual(
+            second.components_removed,
+            0,
+            "the event this program pushed is not gone from the server",
+        )
+        self.assertIsNotNone(self.index.get_component(ref))
+
+    def test_a_missing_mirror_file_does_not_fail_the_calendar(self) -> None:
+        """A component the server dropped, whose file is already gone.
+
+        `mirror.delete` raises `ResourceNotFoundError`, which is not an
+        `OSError`, so the `suppress(FileNotFoundError)` that stood here
+        caught nothing and one missing file failed the whole calendar.
+        """
+        uid = "a1b2c3d4e5f6a7b8@chronos"
+        self._seed_local_only(uid)
+        self._run()
+        stored = self.index.get_component(
+            ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+        )
+        assert stored is not None and stored.href is not None
+        # A pushed row that was never written to the mirror: the index
+        # row is the whole of it, which is what a pending create seeded
+        # straight into the index looks like.
+        self.session.remove_resource(CALENDAR_URL, stored.href)
+
+        self.index.clear_all_sync_state()
+        result = self._run()
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.components_removed, 1)
+
+    def test_a_legacy_row_is_re_spelled_rather_than_deleted(self) -> None:
+        """A row written before the two agreed heals on the next sync."""
+        uid = "a1b2c3d4e5f6a7b8@chronos"
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, uid)
+        self._seed_local_only(uid)
+        self._run()
+        row = self.index.get_component(ref)
+        assert row is not None and row.href is not None
+        canonical = row.href
+        # What the old code stored: the server's spelling, decoded.
+        self.index.upsert_component(replace(row, href=canonical.replace("%40", "@")))
+
+        self.index.clear_all_sync_state()
+        result = self._run()
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.components_removed, 0)
+        healed = self.index.get_component(ref)
+        assert healed is not None
+        self.assertEqual(healed.href, canonical)
+
+
 class PushUpdatesTest(SyncTestCase):
     def test_dirty_synced_row_is_pushed_with_if_match(self) -> None:
         href = f"{CALENDAR_URL}up.ics"

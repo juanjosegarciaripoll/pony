@@ -17,7 +17,7 @@ from pony.calendar.caldav.errors import (
     CalDAVError,
     SyncTokenExpiredError,
 )
-from pony.calendar.caldav.xml import MULTIGET_BATCH_SIZE
+from pony.calendar.caldav.xml import MULTIGET_BATCH_SIZE, canonical_href
 from pony.calendar.domain import (
     LOCAL_FLAG_DIRTY,
     AccountConfig,
@@ -43,6 +43,7 @@ from pony.calendar.ical_parser import (
 )
 from pony.calendar.protocols import CalDAVSession, IndexRepository, MirrorRepository
 from pony.calendar.recurrence import rebuild_caches
+from pony.calendar.storage import ResourceNotFoundError
 from pony.calendar.storage_indexing import synthetic_uid
 
 logger = logging.getLogger(__name__)
@@ -483,11 +484,9 @@ def _slow_path_reconcile(
     server_resources = session.calendar_query(calendar.url)
     server_map: dict[str, str] = dict(server_resources)
 
-    local_components = index.list_calendar_components(calendar_ref)
-    local_by_href: dict[str, StoredComponent] = {}
-    for component in local_components:
-        if component.href is not None:
-            local_by_href.setdefault(component.href, component)
+    local_components, local_by_href = _components_by_href(
+        calendar_ref=calendar_ref, calendar_url=calendar.url, index=index
+    )
 
     removed_hrefs = set(local_by_href) - set(server_map)
     _guard_mass_deletion(
@@ -632,11 +631,9 @@ def _medium_path_reconcile(
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     changed, deleted, new_token = session.sync_collection(calendar.url, sync_token)
 
-    local_components = index.list_calendar_components(calendar_ref)
-    local_by_href: dict[str, StoredComponent] = {}
-    for component in local_components:
-        if component.href is not None:
-            local_by_href.setdefault(component.href, component)
+    local_components, local_by_href = _components_by_href(
+        calendar_ref=calendar_ref, calendar_url=calendar.url, index=index
+    )
 
     locally_deleted = {h for h in deleted if h in local_by_href}
     _guard_mass_deletion(
@@ -793,6 +790,57 @@ def _best_sync_token(
     return _acquire_sync_token(session, calendar_url)
 
 
+def _components_by_href(
+    *,
+    calendar_ref: CalendarRef,
+    calendar_url: str,
+    index: IndexRepository,
+) -> tuple[Sequence[StoredComponent], dict[str, StoredComponent]]:
+    """A calendar's stored components, keyed by canonical href.
+
+    Any row whose stored href is not in canonical form is re-spelled on
+    the way through, index and all.  An href is compared against the
+    server's as a string, so a row holding another spelling of the same
+    resource matches nothing the server reports and reads as deleted
+    from it -- which is what rows written before `_compute_href` and the
+    response parser agreed hold, since every UID this program mints ends
+    in ``@chronos`` and the two disagreed about ``@``.
+
+    Healing rather than migrating is what keeps this from being a
+    one-way door: a row is re-spelled the first time a sync sees it, and
+    every sync after that finds nothing to do.  It also costs nothing on
+    an index that was always right.
+    """
+    components = index.list_calendar_components(calendar_ref)
+    rewrites: list[StoredComponent] = []
+    healed: list[StoredComponent] = []
+    for component in components:
+        if component.href is None:
+            healed.append(component)
+            continue
+        canonical = canonical_href(component.href, base_url=calendar_url)
+        if canonical == component.href:
+            healed.append(component)
+            continue
+        updated = replace(component, href=canonical)
+        rewrites.append(updated)
+        healed.append(updated)
+    if rewrites:
+        logger.info(
+            "  %s: re-spelled %d stored href(s) in canonical form",
+            calendar_ref.calendar_name,
+            len(rewrites),
+        )
+        with index.connection():
+            for component in rewrites:
+                index.upsert_component(component)
+    by_href: dict[str, StoredComponent] = {}
+    for component in healed:
+        if component.href is not None:
+            by_href.setdefault(component.href, component)
+    return healed, by_href
+
+
 def _guard_mass_deletion(
     *,
     calendar_ref: CalendarRef,
@@ -920,7 +968,7 @@ def _apply_server_deletions(
                 index.delete_component(component.ref)
                 removed += 1
         if resource not in seen_resources:
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(ResourceNotFoundError):
                 mirror.delete(resource)
             seen_resources.add(resource)
             # Say what went, not only how much.  A count cannot answer
@@ -1391,7 +1439,7 @@ def _push_trashed(
             if component.href in hrefs_done:
                 if component.ref.resource in resources_cleared:
                     continue
-                with contextlib.suppress(FileNotFoundError):
+                with contextlib.suppress(ResourceNotFoundError):
                     mirror.delete(component.ref.resource)
                 resources_cleared.add(component.ref.resource)
 
@@ -1444,7 +1492,7 @@ def _purge_expired_trash(
             index.delete_component(component.ref)
             if component.ref.resource in resources_cleared:
                 continue
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(ResourceNotFoundError):
                 mirror.delete(component.ref.resource)
             resources_cleared.add(component.ref.resource)
     logger.info(
@@ -1712,9 +1760,21 @@ def _with_server_metadata(
 
 
 def _compute_href(calendar_url: str, uid: str) -> str:
-    safe = urllib.parse.quote(uid, safe="")
+    """Where a resource for *uid* goes in *calendar_url*.
+
+    Through `canonical_href`, because this href is stored and then
+    compared against what the server reports for the same resource.
+    Computing it one way and parsing the reply another is what made
+    every locally created event read as deleted from the server on the
+    next slow-path sync: `quote` encodes the ``@`` that ends every UID
+    this program mints, and the parser used to decode it back.
+    """
     base = calendar_url.rstrip("/")
-    return f"{base}/{safe}.ics"
+    # The UID is encoded into one path segment before the canonicalizer
+    # sees it: a UID holding a ``/`` names a resource, not a directory,
+    # and interpolating it raw would make it two segments.
+    segment = urllib.parse.quote(f"{uid}.ics", safe="")
+    return canonical_href(f"{base}/{segment}", base_url=calendar_url)
 
 
 def _scoped_calendars(

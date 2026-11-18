@@ -55,6 +55,7 @@ from pony.calendar.ical_parser import (
 from pony.calendar.mutations import trashed_copy
 from pony.calendar.protocols import IndexRepository, MirrorRepository
 from pony.calendar.recurrence import rebuild_caches
+from pony.calendar.storage import ResourceNotFoundError
 from pony.calendar.storage_indexing import build_stored_component
 
 # icalendar ships without type stubs; interactions with its API use
@@ -419,7 +420,7 @@ def _apply_cancellation(
         # Never reached the server, so there is nothing to DELETE remotely;
         # drop the mirror file directly.  (Synced events keep their file
         # until `_push_trashed` confirms the server DELETE.)
-        with contextlib.suppress(FileNotFoundError):
+        with contextlib.suppress(ResourceNotFoundError):
             mirror.delete(res_ref)
     counts["cancelled"] += 1
     details.append(f"{uid}: cancelled in {target.calendar_name}")

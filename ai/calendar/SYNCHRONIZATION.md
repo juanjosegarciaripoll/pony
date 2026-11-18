@@ -15,6 +15,7 @@ The CalDAV sync algorithm for the calendar. This is the load-bearing specificati
 
 - **`UID`** (RFC 5545 property) is stable across copies and moves. Within `(account, calendar)`, `(UID, RECURRENCE-ID)` is the primary key.
 - **`href`** is the WebDAV URL at which the resource currently lives. Ephemeral: servers may rewrite it on MOVE, on calendar renames, or across UIDVALIDITY-like epoch boundaries.
+- **`href` has one spelling.** A `DAV:href` is a URI, so the same path arrives spelled more than one way: relative or absolute, and with any path character either literal or percent-encoded. `@` is the one that matters — it is a legal path character and `generate_uid` ends every UID the calendar mints with `@chronos`. An href is compared against the index as a *string*, so every href is reduced by `caldav.xml.canonical_href` to one form: absolute, with each path segment decoded and re-encoded with nothing left safe. Every response parser and `sync._compute_href` go through it, and a stored href in another spelling is re-written on the next sync rather than migrated. Unlike a plain decode this keeps `%2F` out of the path structure: a segment whose name holds a `/` stays one segment.
 - **`etag`** is the server's per-resource version tag. Changes on any server-side write.
 - Master and overrides share `UID`. Overrides are distinguished by their `RECURRENCE-ID`.
 - **Duplicate UID** within a calendar → the second ingested resource gets a synthetic UID (see §C-7).
@@ -206,6 +207,7 @@ Numbered the same way pony's conflicts are, so cross-project discussions line up
 - No write-barrier analogue of IMAP's UIDPLUS: a PUT succeeded + crash before index update can leave a duplicate mirror file on next sync (self-corrects through C-1/C-3; harmless but logged).
 - Per-calendar sync is committed as one transaction only at its tail — not a single transaction across the whole reconciliation.
 - **A halt has no way out.** C-6 and C-12 both say they require user confirmation, and nothing offers it: `SyncHaltError` is caught per calendar, turned into an error string and the calendar is skipped, so a tripped guard stops that calendar syncing on every subsequent run with no `--yes` to answer it. The mail half converges through `pony sync --yes` or an interactive `y`; the calendar has no equivalent. Both thresholds are therefore set where ordinary use does not reach them, which is a workaround for the missing path and not a substitute for it.
+- `MirrorRepository.delete` raises `ResourceNotFoundError`, a `MirrorError` and not an `OSError`. A caller that means "already gone is fine" suppresses that, not `FileNotFoundError`.
 - No exclusive write lock during sync; the TUI can enqueue new `href IS NULL` rows concurrently. SQLite's `busy_timeout` handles contention; there is no fairness guarantee.
 - `sync-collection` REPORT is not universally supported (Radicale older versions, some small servers). We fall back to the slow path silently.
 - Components appearing in multiple calendars via server-side links (Google's "primary + secondary" model) are treated as independent resources. Full multi-calendar label support is deferred.

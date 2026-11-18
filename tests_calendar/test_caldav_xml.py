@@ -16,6 +16,7 @@ from pony.calendar.caldav.xml import (
     _parse_multiget,
     _parse_sync_collection,
     _parse_sync_token_propfind,
+    canonical_href,
 )
 from pony.calendar.domain import ComponentKind
 
@@ -439,6 +440,72 @@ class BuildMultigetBodyTest(unittest.TestCase):
         hrefs = ["https://apidata.googleusercontent.com/caldav/v2/me@x.com/a.ics"]
         body = _build_multiget_body(hrefs)
         self.assertIn(b"me%40x.com", body)
+
+
+class CanonicalHrefTest(unittest.TestCase):
+    """Two legal spellings of one path reduce to one string.
+
+    This is the layer that absorbs a server's spelling choice, so a
+    resource's identity does not depend on it.  ``@`` is the one that
+    matters: it is a legal path character, and every UID the calendar
+    mints ends in ``@chronos``.
+    """
+
+    def test_an_encoded_and_a_literal_at_sign_agree(self) -> None:
+        encoded = canonical_href("/dav/cal/x%40chronos.ics", base_url=_BASE)
+        literal = canonical_href("/dav/cal/x@chronos.ics", base_url=_BASE)
+        self.assertEqual(encoded, literal)
+
+    def test_it_is_idempotent(self) -> None:
+        once = canonical_href("/dav/cal/x@chronos.ics", base_url=_BASE)
+        self.assertEqual(canonical_href(once, base_url=_BASE), once)
+
+    def test_an_absolute_href_keeps_its_own_host(self) -> None:
+        href = canonical_href("https://other.example.com/dav/a.ics", base_url=_BASE)
+        self.assertTrue(href.startswith("https://other.example.com/"))
+
+    def test_an_encoded_separator_stays_one_segment(self) -> None:
+        """``%2F`` is part of a name, not a path separator."""
+        href = canonical_href("/dav/cal/a%2Fb.ics", base_url=_BASE)
+        self.assertIn("a%2Fb.ics", href)
+        self.assertNotIn("a/b.ics", href)
+
+    def test_a_parsed_response_matches_a_computed_href(self) -> None:
+        """What the engine computes and what a server reports agree."""
+        from pony.calendar.sync import _compute_href
+
+        calendar_url = "https://cal.example.com/dav/cal/work/"
+        computed = _compute_href(calendar_url, "a1b2c3d4e5f6a7b8@chronos")
+        body = (
+            b'<?xml version="1.0"?>'
+            b'<d:multistatus xmlns:d="DAV:">'
+            b"<d:response>"
+            b"<d:href>/dav/cal/work/a1b2c3d4e5f6a7b8%40chronos.ics</d:href>"
+            b'<d:propstat><d:prop><d:getetag>"e1"</d:getetag></d:prop>'
+            b"<d:status>HTTP/1.1 200 OK</d:status></d:propstat>"
+            b"</d:response>"
+            b"</d:multistatus>"
+        )
+        parsed = _parse_calendar_query(body, base_url=calendar_url)
+        self.assertEqual(parsed[0][0], computed)
+
+    def test_a_server_that_reports_the_literal_at_sign_also_matches(self) -> None:
+        from pony.calendar.sync import _compute_href
+
+        calendar_url = "https://cal.example.com/dav/cal/work/"
+        computed = _compute_href(calendar_url, "a1b2c3d4e5f6a7b8@chronos")
+        body = (
+            b'<?xml version="1.0"?>'
+            b'<d:multistatus xmlns:d="DAV:">'
+            b"<d:response>"
+            b"<d:href>/dav/cal/work/a1b2c3d4e5f6a7b8@chronos.ics</d:href>"
+            b'<d:propstat><d:prop><d:getetag>"e1"</d:getetag></d:prop>'
+            b"<d:status>HTTP/1.1 200 OK</d:status></d:propstat>"
+            b"</d:response>"
+            b"</d:multistatus>"
+        )
+        parsed = _parse_calendar_query(body, base_url=calendar_url)
+        self.assertEqual(parsed[0][0], computed)
 
 
 class ParseCurrentUserPrincipalTest(unittest.TestCase):

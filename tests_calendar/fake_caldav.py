@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pony.calendar.caldav.errors import SyncTokenExpiredError
+from pony.calendar.caldav.xml import canonical_href
 from pony.calendar.domain import ComponentKind, RemoteCalendar
 
 
@@ -66,17 +67,19 @@ class FakeCalDAVSession:
     def put_resource(
         self, *, calendar_url: str, href: str, ics: bytes, etag: str
     ) -> None:
-        action = "changed" if href in self._resources.get(calendar_url, {}) else "added"
-        self._resources[calendar_url][href] = ics
-        self._etags[href] = etag
+        key = self._key(href)
+        action = "changed" if key in self._resources.get(calendar_url, {}) else "added"
+        self._resources[calendar_url][key] = ics
+        self._etags[key] = etag
         self._bump_ctag(calendar_url)
-        self._bump_tok(calendar_url, href, action)
+        self._bump_tok(calendar_url, key, action)
 
     def remove_resource(self, calendar_url: str, href: str) -> None:
-        self._resources[calendar_url].pop(href, None)
-        self._etags.pop(href, None)
+        key = self._key(href)
+        self._resources[calendar_url].pop(key, None)
+        self._etags.pop(key, None)
         self._bump_ctag(calendar_url)
-        self._bump_tok(calendar_url, href, "deleted")
+        self._bump_tok(calendar_url, key, "deleted")
 
     def set_ctag(self, calendar_url: str, ctag: str) -> None:
         self._ctags[calendar_url] = ctag
@@ -96,7 +99,7 @@ class FakeCalDAVSession:
         return tuple(self._resources.get(calendar_url, {}).keys())
 
     def etag_for(self, href: str) -> str | None:
-        return self._etags.get(href)
+        return self._etags.get(self._key(href))
 
     # --- internal ------------------------------------------------------------
 
@@ -114,10 +117,23 @@ class FakeCalDAVSession:
         self._tok_log.setdefault(calendar_url, []).append((counter, href, action))
 
     def _owning_calendar(self, href: str) -> str | None:
+        key = self._key(href)
         for cal_url, resources in self._resources.items():
-            if href in resources:
+            if key in resources:
                 return cal_url
         return None
+
+    def _key(self, href: str) -> str:
+        """The identity of the resource *href* names.
+
+        A server resolves two spellings of one path to one resource, so
+        this fake keys on the canonical form rather than on the string
+        it was given.  Keying on the string is what let the sync engine
+        compute a percent-encoded href, store it, and still pass every
+        test while a real server reported the decoded spelling back.
+        """
+        base = next(iter(self._calendars), "https://dav.test/")
+        return canonical_href(href, base_url=base)
 
     # --- CalDAVSession protocol ----------------------------------------------
 
@@ -154,10 +170,11 @@ class FakeCalDAVSession:
     ) -> Sequence[tuple[str, str, bytes]]:
         self.calls.append(("calendar_multiget", calendar_url, tuple(hrefs)))
         resources = self._resources.get(calendar_url, {})
+        keys = [(href, self._key(href)) for href in hrefs]
         return tuple(
-            (href, self._etags[href], resources[href])
-            for href in hrefs
-            if href in resources
+            (key, self._etags[key], resources[key])
+            for _href, key in keys
+            if key in resources
         )
 
     def put(self, href: str, ics: bytes, etag: str | None) -> str:
@@ -170,20 +187,22 @@ class FakeCalDAVSession:
             target = self._calendar_for_new_href(href)
             if target is None:
                 raise FakeCalDAVNotFoundError(f"no calendar matches href {href}")
-            new_etag = self._next_etag(href)
-            self._resources[target][href] = ics
-            self._etags[href] = new_etag
+            key = self._key(href)
+            new_etag = self._next_etag(key)
+            self._resources[target][key] = ics
+            self._etags[key] = new_etag
             self._bump_ctag(target)
-            self._bump_tok(target, href, "added")
+            self._bump_tok(target, key, "added")
             return new_etag
         # If-Match: <etag>
         if owner is None:
             raise FakeCalDAVNotFoundError(f"PUT If-Match on missing href {href}")
-        if self._etags.get(href) != etag:
+        key = self._key(href)
+        if self._etags.get(key) != etag:
             raise FakeCalDAVConflictError(f"PUT If-Match etag mismatch for {href}")
-        new_etag = self._next_etag(href)
-        self._resources[owner][href] = ics
-        self._etags[href] = new_etag
+        new_etag = self._next_etag(key)
+        self._resources[owner][key] = ics
+        self._etags[key] = new_etag
         self._bump_ctag(owner)
         self._bump_tok(owner, href, "changed")
         return new_etag
@@ -193,10 +212,11 @@ class FakeCalDAVSession:
         owner = self._owning_calendar(href)
         if owner is None:
             raise FakeCalDAVNotFoundError(f"DELETE on missing href {href}")
-        if self._etags.get(href) != etag:
+        key = self._key(href)
+        if self._etags.get(key) != etag:
             raise FakeCalDAVConflictError(f"DELETE etag mismatch for {href}")
-        del self._resources[owner][href]
-        del self._etags[href]
+        del self._resources[owner][key]
+        del self._etags[key]
         self._bump_ctag(owner)
         self._bump_tok(owner, href, "deleted")
 
@@ -260,8 +280,9 @@ class FakeCalDAVSession:
             return f"{current}+1"
 
     def _calendar_for_new_href(self, href: str) -> str | None:
+        key = self._key(href)
         best: str | None = None
         for url in self._calendars:
-            if href.startswith(url) and (best is None or len(url) > len(best)):
+            if key.startswith(url) and (best is None or len(url) > len(best)):
                 best = url
         return best

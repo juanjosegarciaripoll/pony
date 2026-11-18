@@ -67,7 +67,17 @@ class MirrorRepository(Protocol):
 
     def write(self, ref: ResourceRef, data: bytes) -> None: ...
 
-    def delete(self, ref: ResourceRef) -> None: ...
+    def delete(self, ref: ResourceRef) -> None:
+        """Remove *ref* from the mirror.
+
+        Raises `pony.calendar.storage.ResourceNotFoundError` when there
+        is nothing there.  It is a `MirrorError` and *not* an
+        `OSError`, so a caller that means "gone already is fine" has to
+        suppress that -- four of them suppressed `FileNotFoundError`,
+        which this never raises, and a sync died on a component whose
+        mirror file had already gone.
+        """
+        ...
 
     def move(self, source: ResourceRef, target: ResourceRef) -> None: ...
 
