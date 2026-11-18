@@ -45,9 +45,18 @@ from pony.calendar.protocols import CalDAVSession, IndexRepository, MirrorReposi
 from pony.calendar.recurrence import rebuild_caches
 from pony.calendar.storage import ResourceNotFoundError
 from pony.calendar.storage_indexing import synthetic_uid
+from pony.sync_guards import MASS_UPLOAD_MIN, holds_mass_upload
 
 logger = logging.getLogger(__name__)
 
+# When a removal is large enough to be worth a log line.  Deliberately
+# *not* shared with the mail half's `_MASS_DELETE_THRESHOLD`, which
+# carries the same value and answers a different question: there it
+# decides whether a folder's deletions wait for a confirmation, while
+# here nothing waits and this only decides whether the run says so.
+# `pony.sync_guards` holds what the two halves genuinely share — the
+# upload rule — and sharing this as well would assert an equivalence
+# that is not there.
 _MASS_DELETION_RATIO = 0.2
 _MASS_DELETION_MIN_BASELINE = 5
 
@@ -65,9 +74,6 @@ _MASS_DELETION_MIN_BASELINE = 5
 # morning's planning -- and a halt here is *terminal*, because nothing
 # offers the confirmation this guard asks for (see §13).  Half a
 # calendar arriving as new resources is the shape of a lost index.
-_MASS_PUSH_RATIO = 0.5
-_MASS_PUSH_MIN = 5
-_MASS_PUSH_ABSOLUTE = 50
 
 
 class SyncError(Exception):
@@ -917,11 +923,13 @@ def _guard_mass_push(
     sync in the direction that cannot duplicate anything, and the rows
     wait rather than going out as duplicates.
     """
-    if push_count < _MASS_PUSH_MIN:
+    # The floor is checked here as well as inside `holds_mass_upload`,
+    # and only to keep the PROPFIND below off a pass with a handful of
+    # uploads waiting — which is most of them.
+    if push_count < MASS_UPLOAD_MIN:
         return None
     known = len(session.calendar_query(calendar.url))
-    over_ratio = bool(known) and push_count > known * _MASS_PUSH_RATIO
-    if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
+    if not holds_mass_upload(push_count=push_count, known=known):
         return None
     logger.warning(
         "%s: holding %d upload(s) against %d on the server",

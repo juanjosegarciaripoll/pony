@@ -55,6 +55,7 @@ _BACKEND_MODULES = (
     "pony.outcome",
     "pony.sqlite",
     "pony.keys",
+    "pony.sync_guards",
     "pony.shell",
     "pony.atomic",
     "pony.calendar.event_actions",

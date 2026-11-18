@@ -44,6 +44,7 @@ src/pony/
   scheduler.py         # the periodic sync both halves run on
   keys.py              # the vocabulary a keyboard is described with
   scope.py             # which names a sync covers, and which it may write to
+  sync_guards.py       # when an upload is a lost index rather than a busy user
   shell.py             # splitting a command line, and running one for a secret
   notifications.py     # the notification space mail and calendar share
 
@@ -548,10 +549,9 @@ with `X-Content-Type-Options: nosniff`.
 **The cursor travels in the URL.** Which row the cursor is on is the
 page's own state and nothing else carries it, so every link back to a
 list names it: `id` on a folder URL selects a row, as the same parameter
-on `/message` opens one. Without it a folder URL opens the list at the
-top of the folder, which is where closing a message and leaving the
-composer both used to land. The composer carries where it was opened
-from — `came_from`, beside the reply's `answering` and the forward's
+on `/message` opens one. A folder URL without it opens the list at the
+top of the folder. The composer carries where it was opened from
+— `came_from`, beside the reply's `answering` and the forward's
 `forward_of` — because a new message names no message at all, and
 Discard, Send and Save draft all return there.
 
@@ -611,8 +611,8 @@ reason, not for the phone's convenience.
 A front end like the terminal and the browser: tools over the same
 models, built on `tinymcp` rather than the MCP SDK's HTTP stack.
 `pony.mcp.mail` registers the mail tools and `pony.mcp.calendar` the
-calendar's; neither lives in the model it reads, which is where the
-calendar's used to be.
+calendar's. Neither lives in the model it reads: a model does not import
+a front end.
 
 **One server.** `pony.mcp.server.build_server` puts both halves' tools
 on one `McpServer` — the calendar's only when a `[calendar]` table is

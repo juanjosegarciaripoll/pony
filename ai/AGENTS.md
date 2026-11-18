@@ -9,7 +9,8 @@ Both front ends offer the same operations, because the operations are
 not in either of them: see **Where an operation lives** below.
 
 One package, four tiers: what both halves share (`pony.outcome`,
-`pony.paths`, `pony.sqlite`, `pony.keys`, `pony.scope`, ...), the two models
+`pony.paths`, `pony.sqlite`, `pony.keys`, `pony.scope`,
+`pony.sync_guards`, ...), the two models
 (`pony.mail`, `pony.calendar`), the three front ends over them
 (`pony.tui`, `pony.web`, `pony.cli` + `pony.cli.calendar`), and the few
 modules where the halves meet (`pony.config`, `pony.invitation`,
@@ -156,7 +157,7 @@ with no mail code in the way.
 
 ## Coverage requirements
 
-The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.34 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
+The CI gate is **85 % combined statement+branch** (see `pyproject.toml → [tool.pytest.ini_options]`). The current figure is **93.36 %** over both suites. Regenerate it rather than trusting this line: every figure recorded here drifts within a release or two, and a stale number reads as a regression against an honest run.
 
 **Every new function or branch must have a corresponding test.** Coverage is measured per commit in the release workflow; a drop below 85 % fails the build.
 
@@ -299,28 +300,29 @@ CI: every uncovered line is inside `_dpapi_encrypt` / `_dpapi_decrypt`
 converter and `action_edit_external` spawns an editor.
 
 **Verified unreachable** — each of these was attempted and found to be dead or
-defensive, so re-deriving it is wasted effort:
+defensive, so re-deriving it is wasted effort. Named by the symbol and not by
+a line number: every number here had drifted by dozens of lines within two
+releases, and a stale citation sends a reader to whatever now sits there.
 
-- `cli/program.py:827` — `parser.error("Unhandled command.")`. Every subcommand
+- `cli/program.py`, `parser.error("Unhandled command.")`. Every subcommand
   argparse accepts is handled above it.
-- `cli/mail.py:799` — `folder list`'s `(no folders)` arm. Both mirror
+- `cli/mail.py`, `folder list`'s `(no folders)` arm. Both mirror
   backends always synthesize INBOX, so the list is never empty.
-- `sync.py:1267-1272` — the `suppress_delete_ids` arm. The parameter has a
+- `mail/sync.py`, the `suppress_delete_ids` arm. The parameter has a
   default and **no call site ever passes it**, so the set is always empty.
-- `sync.py:1958` — `return False` after the `match` in `_execute_one`. The
+- `mail/sync.py`, the fall-through after the `match` in `_execute_one`. The
   branch data shows no op ever fails every `case`.
-- `sync.py:486` — `_default_factory` constructs a real network `ImapSession`;
+- `mail/sync.py`, `_default_factory` constructs a real network `ImapSession`;
   tests always inject a session factory.
-- `main_screen.py:724` — the cursor-restore after `_reload_folder`.
-  `load_folder` streams rows from a worker, so `row_count` is still 0 on the
-  next line and the guard never passes. **The cursor jumps to the top after
-  trash/archive instead of holding its place — a real bug the comment above
-  it says should not happen.**
-- `message_renderer.py` — the `message/rfc822` branches assuming a non-list
-  payload, and the `get_payload(decode=True)` non-bytes guards.
+- `mail/message_renderer.py` — the `message/rfc822` branches assuming a
+  non-list payload, and the `get_payload(decode=True)` non-bytes guards.
   `email.policy.default` always parses `message/rfc822` into a sub-message
   list, including when the part is base64-encoded (see
   `corpus.base64_rfc822_attachment`).
+
+Check a claim here against the code before trusting it. A list headed
+*verified* reads as settled, so a stale entry misdirects exactly the work it
+exists to save.
 
 ## Where an operation lives
 
@@ -348,9 +350,9 @@ add a fourth list or a second reading; `tests/test_scope.py` holds both
 loaders against each other.
 
 **A key goes in `keymap.py`, not in a `BINDINGS` list.** `pony.mail.keymap`
-is the mail reader's table and `pony.calendar.keymap` is the calendar's, which
-also holds the vocabulary both share (`KeyBinding`, `for_surface`,
-`web_key`) because the dependency arrow points that way. Each front end
+is the mail reader's table and `pony.calendar.keymap` is the calendar's.
+The vocabulary both share (`KeyBinding`, `for_surface`, `web_key`) is in
+`pony.keys`, with the rest of what the two halves share. Each front end
 converts: `to_textual` for the terminal, `/keymap.json` for the browser,
 one entry per page surface. A key written straight into a screen's
 `BINDINGS` exists in the terminal and nowhere else, and

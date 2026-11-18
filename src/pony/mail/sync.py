@@ -34,6 +34,7 @@ from queue import Empty, Full, Queue
 from pony.outcome import ProgressGate, progress_stride
 from pony.scheduler import PeriodicSync, SyncOutcome
 from pony.scope import SyncScope
+from pony.sync_guards import holds_mass_upload
 
 from .accounts import build_mirror, find_imap_account, select_imap_accounts
 from .domain import (
@@ -628,9 +629,6 @@ _MASS_DELETE_MIN = 5
 # would leave those copies unuploaded until someone ran an interactive
 # sync.  The state this halt exists for is a folder that lost its
 # epoch, where the share is near all of it.
-_MASS_PUSH_THRESHOLD = 0.50
-_MASS_PUSH_MIN = 5
-_MASS_PUSH_ABSOLUTE = 50
 
 
 def _pending_move_is_pushable(
@@ -716,8 +714,6 @@ def _adoptions_after_reset(
 def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
     """Flag a folder plan whose uploads would rewrite much of the folder."""
     push_count = sum(1 for op in plan.ops if isinstance(op, (PushAppendOp, ReUploadOp)))
-    if push_count < _MASS_PUSH_MIN:
-        return plan
     # What the folder is known to hold: rows already carrying a UID,
     # plus whatever this pass will fetch or re-key.  A message re-keyed
     # after a UIDVALIDITY change is one the folder holds as surely as a
@@ -725,8 +721,7 @@ def _with_push_guard(plan: FolderSyncPlan) -> FolderSyncPlan:
     # look like a folder with nothing in it.
     fetches = sum(1 for op in plan.ops if isinstance(op, (FetchNewOp, AdoptUidOp)))
     known = plan.known_total + fetches
-    over_ratio = bool(known) and push_count > known * _MASS_PUSH_THRESHOLD
-    if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
+    if not holds_mass_upload(push_count=push_count, known=known):
         return plan
     logger.warning(
         "Mass upload in %s: %d message(s) would be APPENDed against %d"
