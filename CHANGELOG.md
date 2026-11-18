@@ -327,8 +327,34 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   month; its typed-count prompt is the explicit confirmation the
   principle asks for.
 
+### Changed
+
+- **A calendar no longer stops syncing because too much of it changed.**
+  Two safety halts asked for a confirmation nothing in the calendar
+  could give: they were caught per calendar, turned into an error
+  string, and that calendar then failed the same way on every later run
+  with no `--yes` to answer. The mass-deletion halt is gone — the server
+  is what a mirror mirrors, which is the reading the mail half settled
+  on for the same guard, and a large removal is now applied and logged
+  with a sample of hrefs from each side. The mass-push guard now holds
+  only that calendar's *uploads*, so the calendar keeps pulling, which
+  is the direction that cannot duplicate anything; the rows wait rather
+  than going out as duplicates of resources already on the server.
+
 ### Fixed
 
+- **A calendar whose collection URL moves is re-keyed, not deleted and
+  re-added.** What is gone from the server was decided by comparing
+  hrefs, and the spec's own §2 calls the href ephemeral and the UID the
+  identity. So editing an account's CalDAV address, or a server
+  migration, answered with a wholly new set of hrefs for the same events
+  and read as the entire calendar being deleted — 100 % of it, which
+  tripped the mass-deletion halt and stopped that calendar syncing for
+  good. The slow path now fetches what the server has and the index does
+  not *before* deciding what is gone, and compares UIDs: a resource whose
+  UID is already here is re-keyed in place, keeping that row's local
+  flags and trash state. A row with no href is never a candidate, since
+  it is a local create waiting to be pushed.
 - **A calendar account whose OAuth token cannot be refreshed no longer
   abandons the accounts after it.** `OAuthError` is a `RuntimeError`,
   not a `CalDAVError`, so a per-account loop that caught `CalDAVError`

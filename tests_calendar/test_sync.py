@@ -23,7 +23,7 @@ from pony.calendar.domain import (
 )
 from pony.calendar.index_store import SqliteIndexRepository
 from pony.calendar.storage import VdirMirrorRepository
-from pony.calendar.sync import SyncCancelled, SyncHaltError, sync_account
+from pony.calendar.sync import SyncCancelled, sync_account
 from pony.scope import SyncScope
 from tests_calendar import corpus
 from tests_calendar.fake_caldav import FakeCalDAVSession
@@ -387,8 +387,17 @@ class ServerDeletionTest(SyncTestCase):
         self.assertEqual(fetched.etag, "etag-2")
 
 
-class MassDeletionGuardTest(SyncTestCase):
-    def test_halts_on_more_than_twenty_percent_deletion(self) -> None:
+class MassDeletionTest(SyncTestCase):
+    """A large server-side deletion is applied, not refused.
+
+    It used to halt the calendar and ask for a confirmation nothing in
+    the calendar could offer, so the calendar stopped syncing for good.
+    The server is what a mirror mirrors, and the guard was mostly
+    catching this program's own mechanics -- an href spelled two ways,
+    a collection that had moved.
+    """
+
+    def test_a_large_deletion_is_applied(self) -> None:
         for i in range(10):
             self.session.put_resource(
                 calendar_url=CALENDAR_URL,
@@ -401,11 +410,30 @@ class MassDeletionGuardTest(SyncTestCase):
         for i in range(5):
             self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}{i}.ics")
         result = self._run()
-        # Sync did not raise, but the calendar was skipped and errored.
-        self.assertEqual(result.calendars_synced, 0)
-        self.assertTrue(any("50%" in e or "/10" in e for e in result.errors))
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertEqual(result.components_removed, 5)
         rows = self.index.list_calendar_components(self.calendar_ref)
-        self.assertEqual(len(rows), 10)  # untouched because we halted
+        self.assertEqual(len(rows), 5)
+
+    def test_a_whole_calendar_emptied_on_the_server_is_emptied_here(self) -> None:
+        """Nothing is left to confirm with, so nothing waits on one."""
+        for i in range(5):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}{i}.ics",
+                ics=_ics_with_uid(f"five-{i}@example.com"),
+                etag=f"etag-{i}",
+            )
+        self._run()
+        for i in range(5):
+            self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}{i}.ics")
+
+        result = self._run()
+
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.components_removed, 5)
+        self.assertEqual(self.index.list_calendar_components(self.calendar_ref), ())
 
     def test_small_calendar_allows_large_percentage(self) -> None:
         # Under baseline threshold: deletions allowed even if ratio is high.
@@ -424,38 +452,16 @@ class MassDeletionGuardTest(SyncTestCase):
         rows = self.index.list_calendar_components(self.calendar_ref)
         self.assertEqual(len(rows), 1)
 
-    def test_the_minimum_baseline_is_not_itself_exempt(self) -> None:
-        """Five components losing all five used to pass unflagged.
-
-        The guard read ``baseline <= _MASS_DELETION_MIN_BASELINE``,
-        where the mail half's equivalent is ``total_known >=
-        _MASS_DELETE_MIN``: at exactly the minimum the calendar's guard
-        was off and the mail's was on.
-        """
-        for i in range(5):
-            self.session.put_resource(
-                calendar_url=CALENDAR_URL,
-                href=f"{CALENDAR_URL}{i}.ics",
-                ics=_ics_with_uid(f"five-{i}@example.com"),
-                etag=f"etag-{i}",
-            )
-        self._run()
-        for i in range(5):
-            self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}{i}.ics")
-
-        result = self._run()
-
-        self.assertEqual(result.calendars_synced, 0)
-        self.assertTrue(any("5/5" in e for e in result.errors), result.errors)
-        self.assertEqual(len(self.index.list_calendar_components(self.calendar_ref)), 5)
-
 
 class MassPushGuardTest(SyncTestCase):
-    """C-12: a pass that would upload a whole calendar halts first.
+    """C-12: a pass that would upload a whole calendar holds first.
 
     ``href IS NULL`` cannot tell "created here" from "on the server,
-    handle lost", which is the mail half's reason for the same halt.
-    The calendar had none at all: every such row went out as a PUT.
+    handle lost", which is the mail half's reason for the same guard.
+    Only the uploads are held: the guard used to raise and take the
+    whole calendar with it, so a calendar that tripped it stopped
+    pulling too, and nothing could answer the confirmation it asked
+    for.
     """
 
     def _local_only(self, uid: str) -> None:
@@ -503,8 +509,10 @@ class MassPushGuardTest(SyncTestCase):
 
         result = self._run()
 
-        self.assertEqual(result.calendars_synced, 0)
-        self.assertTrue(any("would be" in e for e in result.errors), result.errors)
+        # The calendar still synced -- the pull side cannot duplicate
+        # anything -- and nothing went out.
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertTrue(any("holding" in e for e in result.errors), result.errors)
         self.assertNotIn("put", [call[0] for call in self.session.calls])
 
     def test_half_a_calendar_is_the_line_and_not_over_it(self) -> None:
@@ -555,8 +563,21 @@ class MassPushGuardTest(SyncTestCase):
 
         result = self._run()
 
-        self.assertEqual(result.calendars_synced, 0)
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertTrue(any("holding" in e for e in result.errors), result.errors)
         self.assertNotIn("put", [call[0] for call in self.session.calls])
+
+    def test_a_held_upload_leaves_the_rows_waiting(self) -> None:
+        """Held, not dropped: the next pass can still send them."""
+        self._on_the_server(10)
+        self._run()
+        for n in range(8):
+            self._local_only(f"mine-{n}@example.com")
+
+        self._run()
+
+        pending = self.index.list_pending_pushes(self.calendar_ref)
+        self.assertEqual(len(pending), 8)
 
 
 class PushPendingTest(SyncTestCase):
@@ -711,6 +732,73 @@ class HrefSpellingTest(SyncTestCase):
         healed = self.index.get_component(ref)
         assert healed is not None
         self.assertEqual(healed.href, canonical)
+
+
+class DeletionIsKeyedOnUidTest(SyncTestCase):
+    """What is gone from the server is decided by UID, not by href.
+
+    §2 of the spec says the UID is the identity and the href is
+    ephemeral, and the slow path compared hrefs: a calendar whose
+    collection URL moved therefore read as *entirely* deleted and
+    re-added, losing every row's local flags and trash state -- or, at
+    or above the mass-deletion threshold, halting the calendar with
+    nothing able to answer the halt.  Editing the account's CalDAV
+    address, or a server migration, is all it takes.
+    """
+
+    def _seed_server(self, url: str, *, count: int) -> None:
+        self.session.add_calendar(url=url, name=CALENDAR_NAME)
+        for i in range(count):
+            self.session.put_resource(
+                calendar_url=url,
+                href=f"{url}e{i}.ics",
+                ics=_ics_with_uid(f"uid-{i}@example.com"),
+                etag=f"etag-{i}",
+            )
+
+    def test_a_moved_collection_is_re_keyed_not_deleted(self) -> None:
+        self._seed_server(CALENDAR_URL, count=6)
+        first = self._run()
+        self.assertEqual(first.components_added, 6, first.errors)
+
+        # The same six events, now served from another collection URL.
+        moved = "https://caldav.example.com/dav/cal/work-2/"
+        self.session = FakeCalDAVSession()
+        self._seed_server(moved, count=6)
+        account = replace(
+            _account(),
+            url="https://caldav.example.com/dav/",
+        )
+        result = sync_account(
+            account=account,
+            session=self.session,
+            mirror=self.mirror,
+            index=self.index,
+            now=datetime(2026, 4, 22, 12, 0, tzinfo=UTC),
+        )
+        self.assertEqual(result.errors, ())
+        self.assertEqual(
+            result.components_removed,
+            0,
+            "the events did not go anywhere; the collection moved",
+        )
+        rows = self.index.list_calendar_components(self.calendar_ref)
+        self.assertEqual(len(rows), 6)
+        for row in rows:
+            assert row.href is not None
+            self.assertTrue(row.href.startswith(moved), row.href)
+
+    def test_a_real_deletion_is_still_applied(self) -> None:
+        """The guard must not become "never delete"."""
+        self._seed_server(CALENDAR_URL, count=6)
+        self._run()
+        self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}e0.ics")
+        self.index.clear_all_sync_state()
+        result = self._run()
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.components_removed, 1)
+        rows = self.index.list_calendar_components(self.calendar_ref)
+        self.assertEqual(len(rows), 5)
 
 
 class PushUpdatesTest(SyncTestCase):
@@ -1539,13 +1627,6 @@ class MirrorMirrorsIndexTest(SyncTestCase):
         self.assertEqual(resources_after, ())
 
 
-class SyncHaltUnusedSanityTest(unittest.TestCase):
-    """SyncHaltError is emitted only from the guard; keep import live."""
-
-    def test_halt_error_is_sync_error_subclass(self) -> None:
-        self.assertTrue(issubclass(SyncHaltError, Exception))
-
-
 class ResourceRefConstructionTest(unittest.TestCase):
     """Sanity: ResourceRef is importable where sync tests expect it."""
 
@@ -2121,8 +2202,8 @@ class MediumPathTest(SyncTestCase):
         self.assertNotIn("sync_collection", method_names)
         self.assertNotIn("calendar_query", method_names)
 
-    def test_medium_path_mass_deletion_guard_fires(self) -> None:
-        # Seed 10 resources so the guard baseline is above the minimum.
+    def test_medium_path_applies_a_large_deletion(self) -> None:
+        # Above the minimum baseline, where the guard used to halt.
         for i in range(10):
             self.session.put_resource(
                 calendar_url=CALENDAR_URL,
@@ -2135,11 +2216,11 @@ class MediumPathTest(SyncTestCase):
         for i in range(6):
             self.session.remove_resource(CALENDAR_URL, f"{CALENDAR_URL}{i}.ics")
         result = self._run()
-        self.assertEqual(result.calendars_synced, 0)
-        self.assertTrue(any("60%" in e or "/10" in e for e in result.errors))
-        # Local rows must be untouched because we halted.
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.calendars_synced, 1)
+        self.assertEqual(result.components_removed, 6)
         rows = self.index.list_calendar_components(self.calendar_ref)
-        self.assertEqual(len(rows), 10)
+        self.assertEqual(len(rows), 4)
 
     def test_acquire_sync_token_returns_none_on_caldav_error(self) -> None:
         from pony.calendar.caldav import CalDAVError

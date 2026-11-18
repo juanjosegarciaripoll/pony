@@ -148,6 +148,22 @@ For each in-scope calendar, compare the CTag returned by `list_calendars` to `ca
 
 The fast path must stay zero-I/O beyond the CTag `PROPFIND`. Any regression that adds I/O on the fast path is a bug.
 
+## 6b. What counts as gone from the server
+
+Keyed on **UID**, not on href. A `calendar-query` answers with hrefs
+and §2 calls the href ephemeral, so the slow path fetches what the
+server has and this index does not *before* deciding what is gone: a
+UID is accounted for when a local row for it still matches a reported
+href, or when this pass has just ingested a resource carrying it. A row
+with no href is never a candidate — it is a local create waiting to be
+pushed.
+
+Comparing hrefs instead meant a collection that moved — the account's
+CalDAV address edited, a server migration — read as the whole calendar
+being deleted, and tripped C-6 at 100 %. The medium path still compares
+hrefs, because there the server names the ones it dropped, and a changed
+URL drops the stored sync-token and sends the run down the slow path.
+
 ## 7. Per-calendar reconciliation (slow path, six steps)
 
 1. **Server-side deletions.** Local hrefs not in the server's REPORT → candidate deletions. Before deleting, attempt move-detection: search for the same UID in other calendars of the same account. If found elsewhere, treat as a move; otherwise trash or delete per `local_status`.
@@ -193,13 +209,13 @@ Numbered the same way pony's conflicts are, so cross-project discussions line up
   URL-change detection is concrete: `calendar_sync_state` stores the resolved collection URL alongside the ctag/sync-token. When the URL discovered this run differs from the stored one (e.g. the account's CalDAV address was edited in `config.toml`), the stored ctag/sync-token are dropped before path selection, so the run takes the slow path instead of trusting tokens that belong to a different server. A `NULL` stored URL (rows written before the column existed) is treated as "unknown" and does not trigger invalidation.
 - **C-5 — Partial sync interrupted.** All operations are individually idempotent. On resume: re-run path selection from scratch; PUTs and DELETEs use `If-Match` to avoid clobbering; calendar_sync_state commits only after §7 step 6 succeeds, so an interrupted run leaves the old state.
   During large multiget fetches, the consumer polls the producer queue so a cancel request can stop waiting even if one network batch is still blocked. The producer thread is asked to stop and joined briefly; if it is still inside the outstanding HTTP call, it is abandoned as a daemon and the account run returns cancelled without committing sync state.
-- **C-6 — Mass deletion (>20% of a calendar's components gone).** Halt the reconciliation for that calendar and require explicit user confirmation before proceeding.
+- **C-6 — Mass deletion (>20% of a calendar's components gone).** Applied, and logged with a sample of hrefs from each side. It used to halt the calendar and ask for a confirmation nothing could give, so the calendar stopped syncing for good. The server is what a mirror mirrors — the reading the mail half settled on for the same guard — and what this one mostly caught was this program's own mechanics: an href spelled one way when stored and another when reported, and a collection that had moved. Both are fixed where they arise.
 - **C-7 — Duplicate UID within a calendar.** The second resource gets a synthetic UID, prefixed `chronos-dup-` followed by a stable hash of the href, so the duplicate remains distinguishable across syncs.
 - **C-8 — Missing UID.** Synthetic UID from `SHA-256(account || calendar || href || DTSTAMP || SUMMARY)`, prefixed `chronos-syn-`. Deterministic across syncs so we don't create duplicates.
 - **C-9 — Local move pending.** `href IS NULL` in the target calendar; the source calendar still holds the real resource. Reconciled on the next sync (§8). If the source has been deleted server-side between local move and next sync, fall through to C-1.
 - **C-10 — Recurring override drift.** The master's RRULE is trimmed so a server-side RECURRENCE-ID override now falls outside the new recurrence range. Keep the override as a standalone non-recurring component and surface a notification. Do not delete the override silently.
 - **C-11 — VTIMEZONE changed on server.** Accept the server's VTIMEZONE. Invalidate the `occurrences` cache for any component referencing that TZID; repopulate lazily on next view.
-- **C-12 — Mass push (a large share of a calendar would be uploaded).** `href IS NULL` cannot tell "created here" from "on the server, and the handle was lost", so a pass that would PUT most of a calendar is an index that lost its hrefs rather than a user who wrote that many events — and each PUT would duplicate a resource that is already there. Halt the calendar. The threshold is more than half the calendar, or 50 components outright, and never fewer than 5. The baseline comes from the **server** (one `calendar-query`, and only on a pass that already has an unusual number of uploads waiting), not from the index: the case worth catching is the one where no local row remembers its href, and an index-side count of hrefs is then zero — exactly when a ratio cannot fire. A calendar with nothing on the server falls to the absolute ceiling, so writing a new calendar offline still works. This is the mail half's C-7 counted in UIDs; the numbers do **not** line up across the two projects for this conflict.
+- **C-12 — Mass push (a large share of a calendar would be uploaded).** *Only the uploads are held; the calendar keeps pulling.* `href IS NULL` cannot tell "created here" from "on the server, and the handle was lost", so a pass that would PUT most of a calendar is an index that lost its hrefs rather than a user who wrote that many events — and each PUT would duplicate a resource that is already there. The threshold is more than half the calendar, or 50 components outright, and never fewer than 5. The baseline comes from the **server** (one `calendar-query`, and only on a pass that already has an unusual number of uploads waiting), not from the index: the case worth catching is the one where no local row remembers its href, and an index-side count of hrefs is then zero — exactly when a ratio cannot fire. A calendar with nothing on the server falls to the absolute ceiling, so writing a new calendar offline still works. This is the mail half's C-7 counted in UIDs; the numbers do **not** line up across the two projects for this conflict.
 
 ## 11. Trash workflow
 
@@ -218,7 +234,7 @@ Numbered the same way pony's conflicts are, so cross-project discussions line up
 
 - No write-barrier analogue of IMAP's UIDPLUS: a PUT succeeded + crash before index update can leave a duplicate mirror file on next sync (self-corrects through C-1/C-3; harmless but logged).
 - Per-calendar sync is committed as one transaction only at its tail — not a single transaction across the whole reconciliation.
-- **A halt has no way out.** C-6 and C-12 both say they require user confirmation, and nothing offers it: `SyncHaltError` is caught per calendar, turned into an error string and the calendar is skipped, so a tripped guard stops that calendar syncing on every subsequent run with no `--yes` to answer it. The mail half converges through `pony sync --yes` or an interactive `y`; the calendar has no equivalent. Both thresholds are therefore set where ordinary use does not reach them, which is a workaround for the missing path and not a substitute for it.
+- **A held upload has no way out.** C-12 holds a calendar's uploads and the calendar keeps pulling, but nothing in the calendar offers the confirmation it is waiting for: the rows stay pending until the condition passes. The mail half answers the same hold with `g`, the browser's Sync button or `pony sync`; the calendar has no equivalent yet.
 - `MirrorRepository.delete` raises `ResourceNotFoundError`, a `MirrorError` and not an `OSError`. A caller that means "already gone is fine" suppresses that, not `FileNotFoundError`.
 - No exclusive write lock during sync; the TUI can enqueue new `href IS NULL` rows concurrently. SQLite's `busy_timeout` handles contention; there is no fairness guarantee.
 - `sync-collection` REPORT is not universally supported (Radicale older versions, some small servers). We fall back to the slow path silently.

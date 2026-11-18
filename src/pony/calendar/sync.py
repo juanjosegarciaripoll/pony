@@ -74,10 +74,6 @@ class SyncError(Exception):
     pass
 
 
-class SyncHaltError(SyncError):
-    """Raised when the engine refuses to proceed without user confirmation."""
-
-
 class SyncCancelled(SyncError):  # noqa: N818 — describes an event, not an error condition
     """Raised when the caller's `cancel_event` was set mid-sync.
 
@@ -165,11 +161,6 @@ def sync_account(
                 server_ctag=remote.ctag,
                 server_sync_token=remote.sync_token,
             )
-        except SyncHaltError as exc:
-            # The guard's message already includes the calendar name,
-            # so don't double-prefix it ("X: X: missing from server…").
-            errors.append(str(exc))
-            continue
         except CalDAVError as exc:
             # One bad calendar (e.g. a server quirk on a single
             # resource) shouldn't take down the rest of the account's
@@ -488,19 +479,6 @@ def _slow_path_reconcile(
         calendar_ref=calendar_ref, calendar_url=calendar.url, index=index
     )
 
-    removed_hrefs = set(local_by_href) - set(server_map)
-    _guard_mass_deletion(
-        calendar_ref=calendar_ref,
-        baseline=len(local_by_href),
-        removed=len(removed_hrefs),
-        local_hrefs=local_by_href.keys(),
-        server_hrefs=server_map.keys(),
-    )
-
-    # Collect UIDs before any index mutations so local_by_href is intact.
-    deleted_uids = frozenset(
-        local_by_href[h].ref.uid for h in removed_hrefs if h in local_by_href
-    )
     changed_hrefs = [
         href
         for href, etag in server_map.items()
@@ -512,14 +490,15 @@ def _slow_path_reconcile(
 
     errors: list[str] = []
     notes: list[str] = []
-    removed = _apply_server_deletions(
-        removed_hrefs=removed_hrefs,
-        local_by_href=local_by_href,
-        local_components=local_components,
-        mirror=mirror,
-        index=index,
-    )
 
+    # Fetch what the server has and this index does not *before* deciding
+    # what is gone.  A `calendar-query` answers with hrefs, and §2 of the
+    # spec says the href is ephemeral while the UID is the identity: a
+    # collection that moved — the account's CalDAV address edited, a
+    # server migration — answers with a wholly new set of hrefs for the
+    # same events, and comparing hrefs read that as the whole calendar
+    # being deleted.  Fetching first is what turns those hrefs into UIDs,
+    # and the UIDs are what the comparison below uses.
     new_hrefs = [h for h in server_map if h not in local_by_href]
     added = _fetch_and_ingest(
         account=account,
@@ -532,6 +511,37 @@ def _slow_path_reconcile(
         errors=errors,
         notes=notes,
         cancel_event=cancel_event,
+    )
+
+    # UIDs for newly ingested resources (unknown before ingestion).
+    new_uids: frozenset[str]
+    if new_hrefs:
+        new_href_set = set(new_hrefs)
+        new_uids = frozenset(
+            c.ref.uid
+            for c in index.list_calendar_components(calendar_ref)
+            if c.href in new_href_set
+        )
+    else:
+        new_uids = frozenset()
+
+    gone = _components_gone_from_server(
+        local_components=local_components,
+        server_hrefs=set(server_map),
+        ingested_uids=new_uids,
+    )
+    _note_mass_deletion(
+        calendar_ref=calendar_ref,
+        baseline=len({c.ref.uid for c in local_components if c.href is not None}),
+        removed=len({c.ref.uid for c in gone}),
+        local_hrefs=local_by_href.keys(),
+        server_hrefs=server_map.keys(),
+    )
+    deleted_uids = frozenset(c.ref.uid for c in gone)
+    removed = _apply_server_deletions(
+        gone=gone,
+        mirror=mirror,
+        index=index,
     )
 
     # When the server returns an empty etag (CalDAV gateways that omit
@@ -551,18 +561,6 @@ def _slow_path_reconcile(
         notes=notes,
         cancel_event=cancel_event,
     )
-
-    # UIDs for newly ingested resources (unknown before ingestion).
-    new_uids: frozenset[str]
-    if new_hrefs:
-        new_href_set = set(new_hrefs)
-        new_uids = frozenset(
-            c.ref.uid
-            for c in index.list_calendar_components(calendar_ref)
-            if c.href in new_href_set
-        )
-    else:
-        new_uids = frozenset()
 
     affected_uids: frozenset[str] = deleted_uids | changed_uids | new_uids
 
@@ -636,7 +634,7 @@ def _medium_path_reconcile(
     )
 
     locally_deleted = {h for h in deleted if h in local_by_href}
-    _guard_mass_deletion(
+    _note_mass_deletion(
         calendar_ref=calendar_ref,
         baseline=len(local_by_href),
         removed=len(locally_deleted),
@@ -659,10 +657,16 @@ def _medium_path_reconcile(
 
     errors: list[str] = []
     notes: list[str] = []
+    # Here the server named the hrefs it dropped, so there is nothing to
+    # infer: an href it says is gone is gone, and a collection that moved
+    # does not reach this path at all -- a changed URL drops the stored
+    # sync-token and sends the run down the slow one.
     removed = _apply_server_deletions(
-        removed_hrefs=locally_deleted,
-        local_by_href=local_by_href,
-        local_components=local_components,
+        gone=tuple(
+            component
+            for component in local_components
+            if component.href is not None and component.href in locally_deleted
+        ),
         mirror=mirror,
         index=index,
     )
@@ -841,7 +845,7 @@ def _components_by_href(
     return healed, by_href
 
 
-def _guard_mass_deletion(
+def _note_mass_deletion(
     *,
     calendar_ref: CalendarRef,
     baseline: int,
@@ -849,35 +853,35 @@ def _guard_mass_deletion(
     local_hrefs: Iterable[str],
     server_hrefs: Iterable[str],
 ) -> None:
+    """Log a run that removes a large share of a calendar.
+
+    It used to refuse instead, and ask for a confirmation nothing in the
+    calendar could offer: the halt was caught per calendar and turned
+    into an error string, so a calendar that tripped it stopped syncing
+    on every later run with no way to answer.  Two things made that the
+    wrong trade.  The server is what a mirror mirrors, which is the
+    reading the mail half settled on for the same guard.  And the guard
+    was mostly catching this program's own mechanics — an href spelled
+    one way when stored and another when reported, or a collection that
+    had moved — neither of which is a deletion, and both of which are
+    fixed where they arise rather than here.
+
+    What is left is worth saying out loud, because a count in a sync
+    summary does not explain itself: a large removal goes to the log
+    with a sample of hrefs from each side.
+    """
     if baseline < _MASS_DELETION_MIN_BASELINE:
-        # Strictly below, as the mail half's `total_known >=
-        # _MASS_DELETE_MIN` is: at exactly the minimum baseline a
-        # five-component calendar losing all five went through
-        # unflagged.
         return
     if removed <= _MASS_DELETION_RATIO * baseline:
         return
-    # Hitting the guard at 100% (or close to it) is almost always an
-    # href-format mismatch — local and server hrefs are equivalent
-    # URLs but stringify differently (URL encoding, trailing slash,
-    # scheme/host, …). Log a small sample of each so the user can
-    # diagnose without rummaging through SQLite, and so we have
-    # something to look at when the report comes back.
-    local_sample = sorted(local_hrefs)[:5]
-    server_sample = sorted(server_hrefs)[:5]
     logger.warning(
-        "%s: mass-deletion guard tripped (%d/%d). Local sample: %s. Server sample: %s",
+        "%s: removing %d of %d resources the server no longer holds."
+        " Local sample: %s. Server sample: %s",
         calendar_ref.calendar_name,
         removed,
         baseline,
-        local_sample,
-        server_sample,
-    )
-    raise SyncHaltError(
-        f"{calendar_ref.calendar_name}: {removed}/{baseline} resources "
-        f"missing from server (>{int(_MASS_DELETION_RATIO * 100)}%). "
-        "Refusing to delete locally without confirmation. "
-        "See `tui.log` for sample hrefs."
+        sorted(local_hrefs)[:5],
+        sorted(server_hrefs)[:5],
     )
 
 
@@ -887,8 +891,8 @@ def _guard_mass_push(
     calendar: CalendarConfig,
     session: CalDAVSession,
     push_count: int,
-) -> None:
-    """C-12: refuse to upload a large share of a calendar unprompted.
+) -> str | None:
+    """C-12: hold an upload of a large share of a calendar.
 
     Every `href IS NULL` row is a PUT, and nothing in the row says
     whether it was composed locally or lost its href — an index rebuilt
@@ -904,24 +908,32 @@ def _guard_mass_push(
     only on a pass that already has an unusual number of uploads
     waiting.  A calendar with nothing on the server is left to the
     absolute ceiling, so writing a new calendar offline still works.
+
+    Returns the reason to hold the uploads, or None to go ahead.  It
+    used to raise and take the whole calendar with it, so a calendar
+    that tripped this stopped *pulling* too — and nothing could answer
+    the confirmation it asked for, so it never pulled again.  Holding
+    only the uploads is the mail half's shape: the calendar stays in
+    sync in the direction that cannot duplicate anything, and the rows
+    wait rather than going out as duplicates.
     """
     if push_count < _MASS_PUSH_MIN:
-        return
+        return None
     known = len(session.calendar_query(calendar.url))
     over_ratio = bool(known) and push_count > known * _MASS_PUSH_RATIO
     if push_count < _MASS_PUSH_ABSOLUTE and not over_ratio:
-        return
+        return None
     logger.warning(
-        "%s: mass-push guard tripped (%d to upload against %d on the server)",
+        "%s: holding %d upload(s) against %d on the server",
         calendar_ref.calendar_name,
         push_count,
         known,
     )
-    raise SyncHaltError(
-        f"{calendar_ref.calendar_name}: {push_count} component(s) would be "
-        f"uploaded against {known} already on the server. Refusing to push "
-        "without confirmation — an index that lost its hrefs looks exactly "
-        "like this. See `tui.log`."
+    return (
+        f"{calendar_ref.calendar_name}: holding {push_count} upload(s) against "
+        f"{known} already on the server — an index that lost its hrefs looks "
+        "exactly like this. Nothing was uploaded; the pull side is "
+        "unaffected. See `tui.log`."
     )
 
 
@@ -945,28 +957,51 @@ def _removal_description(component: StoredComponent) -> str:
     return f'"{summary}" {start} (uid {component.ref.uid})'
 
 
+def _components_gone_from_server(
+    *,
+    local_components: Sequence[StoredComponent],
+    server_hrefs: set[str],
+    ingested_uids: frozenset[str],
+) -> tuple[StoredComponent, ...]:
+    """The stored components the server no longer holds.
+
+    Keyed on UID, which §2 of the spec calls the identity, and not on
+    href, which it calls ephemeral.  A UID is accounted for when some
+    local row for it still matches an href the server reported, or when
+    this pass has just ingested a resource carrying it — the second arm
+    is what a moved collection needs, since every one of its hrefs is
+    new and every one of its UIDs is already here.
+
+    A row with no href is never a candidate: it is a local create
+    waiting to be pushed, and the server has never heard of it.
+    """
+    accounted: set[str] = set(ingested_uids)
+    for component in local_components:
+        if component.href is not None and component.href in server_hrefs:
+            accounted.add(component.ref.uid)
+    return tuple(
+        component
+        for component in local_components
+        if component.href is not None and component.ref.uid not in accounted
+    )
+
+
 def _apply_server_deletions(
     *,
-    removed_hrefs: set[str],
-    local_by_href: dict[str, StoredComponent],
-    local_components: Sequence[StoredComponent],
+    gone: Sequence[StoredComponent],
     mirror: MirrorRepository,
     index: IndexRepository,
 ) -> int:
-    if not removed_hrefs:
+    if not gone:
         return 0
     removed = 0
     seen_resources: set[ResourceRef] = set()
     unnamed = 0
     # Sorted so a run's log reads the same way twice over the same set.
-    for href in sorted(removed_hrefs):
-        anchor = local_by_href[href]
-        resource = anchor.ref.resource
-        # Delete every index row whose href matches (master + overrides share href).
-        for component in local_components:
-            if component.href == href:
-                index.delete_component(component.ref)
-                removed += 1
+    for component in sorted(gone, key=lambda c: (c.ref.uid, c.href or "")):
+        resource = component.ref.resource
+        index.delete_component(component.ref)
+        removed += 1
         if resource not in seen_resources:
             with contextlib.suppress(ResourceNotFoundError):
                 mirror.delete(resource)
@@ -980,7 +1015,7 @@ def _apply_server_deletions(
                     "  removed %s/%s: %s",
                     resource.account_name,
                     resource.calendar_name,
-                    _removal_description(anchor),
+                    _removal_description(component),
                 )
             else:
                 unnamed += 1
@@ -1528,12 +1563,14 @@ def _push_pending(
     by_uid: dict[str, list[StoredComponent]] = {}
     for component in pending:
         by_uid.setdefault(component.ref.uid, []).append(component)
-    _guard_mass_push(
+    held = _guard_mass_push(
         calendar_ref=calendar_ref,
         calendar=calendar,
         session=session,
         push_count=len(by_uid),
     )
+    if held is not None:
+        return 0, [held]
 
     pushed = 0
     for uid, rows in by_uid.items():
@@ -1831,7 +1868,6 @@ __all__ = [
     "CalendarSyncStats",
     "SyncCancelled",
     "SyncError",
-    "SyncHaltError",
     "describe_account_sync",
     "describe_sync_result",
     "sync_account",
