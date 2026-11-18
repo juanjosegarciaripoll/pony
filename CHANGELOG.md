@@ -302,6 +302,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **The sync countdown no longer freezes at `0:00` after a sync by hand.**
+  ++ctrl+g++ syncs now and arms the repeating timer from that point, and
+  both front ends repaint their countdown when a run finishes by reading
+  the next deadline off the scheduler. The scheduler set that deadline
+  *after* telling its listeners the run was over, so what they read was
+  the deadline of the run that had just finished — a moment already
+  past, which a countdown renders as `0:00` and has no later reason to
+  repaint. The cadence kept running throughout; only the indicator said
+  otherwise, which is indistinguishable from a sync that stopped trying.
+  The next deadline is now set before the listeners are told.
 - **A long paste into the terminal no longer disappears in Windows
   Terminal.** A paste over 5 KiB opens Windows Terminal's large-paste
   warning, which takes focus from the terminal; Textual hears the blur

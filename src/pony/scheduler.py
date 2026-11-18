@@ -258,10 +258,15 @@ class PeriodicSync[T]:
                 with self._state:
                     manual = self._manual_requested
                     self._manual_requested = False
-                self._run_once(manual=manual)
+                # The next deadline is set inside the run, before the
+                # finished listener is told -- see `_run_once`. Counting
+                # it from the end of the run is what makes "I have just
+                # synced by hand" mean a full interval of quiet.
+                self._run_once(
+                    manual=manual, rearm=lambda: self._postpone(self._interval)
+                )
             finally:
                 self._busy.release()
-                self._postpone(self._interval)
 
     def _run_detached(self) -> None:
         """One run with no cadence behind it, for an unstarted scheduler.
@@ -278,26 +283,41 @@ class PeriodicSync[T]:
         finally:
             self._busy.release()
 
-    def _run_once(self, *, manual: bool) -> None:
+    def _run_once(
+        self, *, manual: bool, rearm: Callable[[], None] | None = None
+    ) -> None:
         """One run, start to finish, swallowing everything it can.
 
         Neither a failing runner nor a failing listener may end the
         thread: a listener that marshals onto a UI thread raises once the
         application is gone, which is ordinary at shutdown and never a
         reason to stop syncing.
+
+        *rearm* sets the next deadline, and is called before the finished
+        listener rather than after it.  That listener is where both front
+        ends repaint their countdown, and they read the deadline off
+        :attr:`next_run_at`; reached while that still held the deadline
+        of the run just finished -- a moment now past -- they painted
+        `0:00` and had no later reason to paint again, so the display
+        claimed the cadence had died while this thread was still keeping
+        it.
         """
-        if self._on_started is not None:
-            try:
-                self._on_started()
-            except Exception as exc:  # noqa: BLE001 — a listener is not worth the thread
-                logger.warning("%s start listener failed: %s", self._name, exc)
         result: T | None = None
         error: BaseException | None = None
         try:
-            result = self._runner(cancel_event=self._stop)
-        except BaseException as exc:  # noqa: BLE001 — one bad run must not end the thread
-            error = exc
-            logger.warning("%s failed: %s", self._name, exc)
+            if self._on_started is not None:
+                try:
+                    self._on_started()
+                except Exception as exc:  # noqa: BLE001 — a listener is not worth the thread
+                    logger.warning("%s start listener failed: %s", self._name, exc)
+            try:
+                result = self._runner(cancel_event=self._stop)
+            except BaseException as exc:  # noqa: BLE001 — one bad run must not end the thread
+                error = exc
+                logger.warning("%s failed: %s", self._name, exc)
+        finally:
+            if rearm is not None:
+                rearm()
         if self._on_finished is not None:
             try:
                 self._on_finished(

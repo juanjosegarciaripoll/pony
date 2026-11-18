@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from time import monotonic
 
 from pony.scheduler import PeriodicSync, SyncOutcome
 
@@ -100,6 +101,38 @@ class PeriodicSyncTest(unittest.TestCase):
         # The deadline moved: a full interval from the manual run, not
         # from when the scheduler happened to start.
         self.assertGreater(second_deadline, first_deadline)
+
+    def test_the_finished_listener_sees_the_deadline_already_re_armed(self) -> None:
+        """The countdown is painted from inside this listener.
+
+        Both front ends repaint in `on_finished` by reading
+        `next_run_at`.  Re-arming the deadline *after* the listener hands
+        them the moment the finished run was due at -- already past,
+        which every countdown renders as `0:00` and nothing repaints
+        again, so the display claims the cadence died while the thread
+        is still keeping it.
+        """
+        seen: list[float | None] = []
+        reported = threading.Event()
+        holder: list[PeriodicSync[str]] = []
+
+        def on_finished(_outcome: SyncOutcome[str]) -> None:
+            seen.append(holder[0].next_run_at)
+            reported.set()
+
+        runner = _Recorder()
+        scheduler = self._scheduler(runner, interval=_NEVER, on_finished=on_finished)
+        holder.append(scheduler)
+        scheduler.start()
+        armed_at_start = scheduler.next_run_at
+        self.assertTrue(scheduler.request_now())
+        assert reported.wait(_WAIT), "the finished listener never ran"
+        deadline = seen[0]
+        assert deadline is not None and armed_at_start is not None
+        # Still in the future, so the countdown reads an interval and not
+        # `0:00`, and a full interval past where `start` had put it.
+        self.assertGreater(deadline, monotonic())
+        self.assertGreater(deadline, armed_at_start)
 
     def test_the_runner_is_given_the_cancel_event(self) -> None:
         runner = _Recorder()

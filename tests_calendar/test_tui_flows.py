@@ -2523,6 +2523,35 @@ class BackgroundSyncTest(TuiFlowTestCase):
             )
             self.assertFalse(self._main(app)._sync_in_progress())
 
+    async def test_the_countdown_restarts_once_a_manual_sync_finishes(self) -> None:
+        """A sync by hand leaves a countdown to the next one, not `0:00`.
+
+        The screen repaints in `on_sync_finished`, reading the deadline
+        off the scheduler.  While the scheduler re-armed only after
+        telling its listeners, the deadline it read was the one the run
+        just finished was due at, so the indicator stuck at `0:00` for
+        good and the cadence looked dead while the thread was still
+        keeping it.
+        """
+        from pony.tui.calendar.widgets.sync_status import (
+            SCHEDULED_SYNC_MARK,
+            SyncStatus,
+        )
+
+        services = self.services(sync_runner=lambda **_: ())
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+g")
+            await self._until(
+                pilot,
+                lambda: not self._main(app)._sync_in_progress(),
+                "the sync never finished",
+            )
+            shown = str(self._main(app).query_one(SyncStatus).render())
+            self.assertIn(SCHEDULED_SYNC_MARK, shown)
+            self.assertNotIn("0:00", shown)
+
     async def test_g_opens_the_dialog_as_it_does_in_the_mail_reader(self) -> None:
         """One key, one meaning, in both halves of the program.
 
