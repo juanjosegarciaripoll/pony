@@ -32,9 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TextIO
 
-from pony.calendar.caldav import CalDAVError
 from pony.calendar.config import ConfigDocument, ConfigError
-from pony.calendar.credentials import CredentialResolutionError
 from pony.calendar.domain import (
     CALENDAR_CONFIG_VERSION,
     GOOGLE_CALDAV_URL,
@@ -72,10 +70,12 @@ from pony.calendar.protocols import (
     MirrorRepository,
 )
 from pony.calendar.services import (
+    ACCOUNT_SYNC_ERRORS,
     CalendarServices,
     ProgressFn,
     SessionFactory,
     default_session_factory,
+    describe_account_failure,
     format_report,
     run_doctor,
 )
@@ -959,26 +959,13 @@ def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> i
     factory = ctx.session_factory or default_session_factory
     fails = 0
     for account in accounts:
+        # One table of what a per-account failure can be, shared with
+        # the runner the terminal and the browser use, so this loop
+        # cannot survive a failure the other abandons the run on.  The
+        # three arms are one `try` for the same reason.
         try:
             auth = ctx.creds.build_auth(account)
-        except CredentialResolutionError as exc:
-            ctx.stderr.write(f"[{account.name}] {exc}\n")
-            fails += 1
-            continue
-        try:
             session = factory(account, auth)
-        except NotImplementedError as exc:
-            ctx.stderr.write(f"[{account.name}] {exc}\n")
-            fails += 1
-            continue
-        except CalDAVError as exc:
-            # The default factory may raise CalDAVError when constructing
-            # the session — e.g. Google email discovery failing — so the
-            # per-account loop must keep going instead of crashing.
-            ctx.stderr.write(f"[{account.name}] CalDAV error: {exc}\n")
-            fails += 1
-            continue
-        try:
             result = sync_account(
                 account=account,
                 session=session,
@@ -986,8 +973,8 @@ def _cmd_sync_locked(ctx: CliContext, *, accounts: Sequence[AccountConfig]) -> i
                 index=ctx.index,
                 now=ctx.now,
             )
-        except CalDAVError as exc:
-            ctx.stderr.write(f"[{account.name}] CalDAV error: {exc}\n")
+        except ACCOUNT_SYNC_ERRORS as exc:
+            ctx.stderr.write(f"[{account.name}] {describe_account_failure(exc)}\n")
             fails += 1
             continue
         # Give the auth strategy a chance to persist rotated state

@@ -225,6 +225,52 @@ class SyncCommandTest(CliTestCase):
         self.assertIn("personal:", self.stdout.getvalue())
         self.assertIn("+1", self.stdout.getvalue())
 
+    def test_a_token_refresh_failure_leaves_the_other_accounts_synced(self) -> None:
+        """`OAuthError` is a RuntimeError, not a CalDAVError.
+
+        The per-account loop caught `CalDAVError` only, so a token that
+        could not be refreshed mid-sync escaped it and abandoned every
+        account after the failing one.  The runner behind the terminal
+        and the browser had always caught it.
+        """
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.oauth import OAuthError
+
+        self._seed_server()
+        config = _config(_account(name="broken"), _account(name="personal"))
+
+        def factory(account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
+            if account.name == "broken":
+                raise OAuthError("refresh token rejected")
+            return self.session
+
+        ctx = self._ctx(config=config, session_factory=factory)
+        code = self._run(["sync"], context=ctx)
+        self.assertEqual(code, 1)
+        self.assertIn("broken", self.stderr.getvalue())
+        self.assertIn("personal:", self.stdout.getvalue())
+
+    def test_a_token_refresh_failure_during_sync_is_reported(self) -> None:
+        """The same, raised from `sync_account` rather than the factory."""
+        from unittest.mock import patch
+
+        from pony.calendar.authorization import Authorization
+        from pony.calendar.oauth import OAuthError
+
+        self._seed_server()
+
+        def factory(_account: AccountConfig, _auth: Authorization) -> FakeCalDAVSession:
+            return self.session
+
+        ctx = self._ctx(session_factory=factory)
+        with patch(
+            "pony.cli.calendar.sync_account",
+            side_effect=OAuthError("refresh token rejected"),
+        ):
+            code = self._run(["sync"], context=ctx)
+        self.assertEqual(code, 1)
+        self.assertIn("refresh token rejected", self.stderr.getvalue())
+
     def test_reset_deletes_index_and_mirror_with_yes_flag(self) -> None:
         # Seed the mirror + index so there's something to delete.
         self._seed_server()

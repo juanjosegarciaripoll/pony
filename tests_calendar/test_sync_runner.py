@@ -194,6 +194,31 @@ class SyncRunnerTest(ServicesTestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("session construction blew up", results[0].errors[0])
 
+    def test_a_failed_token_refresh_lands_in_errors(self) -> None:
+        """`build_auth` raises `OAuthError`, which no arm used to catch.
+
+        It is a `RuntimeError`, not a `CalDAVError`, and this is where a
+        Google account fails first -- a refresh token the server has
+        revoked.  The runner caught it only around `sync_account`, so a
+        refresh that failed while resolving the credential took the
+        whole run down instead of one account.
+        """
+        from unittest.mock import patch
+
+        from pony.calendar.oauth import OAuthError
+
+        services = self._services()
+        with patch.object(
+            services.creds,
+            "build_auth",
+            side_effect=OAuthError("personal: re-authorization failed"),
+        ):
+            runner = build_sync_runner(services)
+            results = runner()
+        self.assertEqual(len(results), 1)
+        self.assertIn("re-authorization failed", results[0].errors[0])
+        self.assertIn("OAuth error", results[0].errors[0])
+
     def test_oauth_on_commit_called_on_success(self) -> None:
         self._seed_server()
 

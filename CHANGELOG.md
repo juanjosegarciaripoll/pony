@@ -329,6 +329,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A calendar account whose OAuth token cannot be refreshed no longer
+  abandons the accounts after it.** `OAuthError` is a `RuntimeError`,
+  not a `CalDAVError`, so a per-account loop that caught `CalDAVError`
+  did not catch it. `pony calendar sync` caught it nowhere and stopped
+  on the first account that failed; neither front end caught it where
+  `build_auth` raises it, which is where a Google account fails first
+  — a refresh token the server has revoked. The command line and the
+  runner behind the terminal and the browser now share one table of
+  what a per-account failure can be, and one wording for it, so one
+  cannot survive what the other dies on.
 - **An event created in the calendar is no longer deleted from it, or the
   calendar stuck, on the next full sync.** A `DAV:href` is a URI, so the
   same resource can be spelled with a path character either literal or

@@ -103,18 +103,7 @@ def build_sync_runner(
                 continue
             try:
                 auth = services.creds.build_auth(account)
-            except CredentialResolutionError as exc:
-                results.append(_failure_result(account.name, str(exc)))
-                continue
-            try:
                 session = factory(account, auth)
-            except NotImplementedError as exc:
-                results.append(_failure_result(account.name, str(exc)))
-                continue
-            except CalDAVError as exc:
-                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
-                continue
-            try:
                 result = sync_account(
                     account=account,
                     session=session,
@@ -126,11 +115,10 @@ def build_sync_runner(
             except SyncCancelled:
                 results.append(_failure_result(account.name, "sync cancelled"))
                 continue
-            except CalDAVError as exc:
-                results.append(_failure_result(account.name, f"CalDAV: {exc}"))
-                continue
-            except OAuthError as exc:
-                results.append(_failure_result(account.name, f"OAuth: {exc}"))
+            except ACCOUNT_SYNC_ERRORS as exc:
+                results.append(
+                    _failure_result(account.name, describe_account_failure(exc))
+                )
                 continue
             if auth.on_commit is not None:
                 auth.on_commit()
@@ -149,6 +137,37 @@ def _failure_result(account_name: str, message: str) -> SyncResult:
         components_removed=0,
         errors=(message,),
     )
+
+
+#: Every failure one account's sync can raise that the next account
+#: should survive.  Three arms of a per-account loop can raise them
+#: — resolving the credential, building the session, and the sync
+#: itself — and each arm used to name its own subset.  `OAuthError` is
+#: a `RuntimeError` and not a `CalDAVError`, so it was the one that got
+#: left out: the command line caught it nowhere and abandoned every
+#: remaining account when a token could not be refreshed, and neither
+#: loop caught it where `build_auth` raises it, which is where a Google
+#: account fails first.
+ACCOUNT_SYNC_ERRORS = (
+    CredentialResolutionError,
+    NotImplementedError,
+    CalDAVError,
+    OAuthError,
+)
+
+
+def describe_account_failure(exc: Exception) -> str:
+    """One line saying what went wrong for one account.
+
+    Both front ends word it the same way, because the wording is part of
+    what a reader compares between a terminal run and a `pony calendar
+    sync` in another window.
+    """
+    if isinstance(exc, CalDAVError):
+        return f"CalDAV error: {exc}"
+    if isinstance(exc, OAuthError):
+        return f"OAuth error: {exc}"
+    return str(exc)
 
 
 def default_session_factory(
