@@ -4536,9 +4536,13 @@ class ReindexCommandTest(unittest.TestCase):
         self.assertIn("0 with a server handle", output)
         self.assertIn("will be uploaded by the next sync", output)
         self.assertIn("No message carried a handle", output)
-        # And which command converges: every unattended path skips a
-        # held folder, so "sync" on its own is not the answer.
-        self.assertIn("Answer the halt with 'pony sync'", output)
+        # And where the halt can be answered: the paths that can put the
+        # question, and the ones that cannot.  Named, because a reindexed
+        # mirror of local-only rows converges nowhere else.
+        self.assertIn("'pony sync'", output)
+        self.assertIn("Sync button", output)
+        self.assertIn("ctrl+g", output)
+        self.assertIn("skip a held folder", output)
         self.assertIn("nobody to ask", output)
 
     def test_two_files_with_one_handle_are_reported_not_fatal(self) -> None:

@@ -776,8 +776,8 @@ class ImapSyncService:
         the loss is per-connection rather than total, retrying recovers the
         account and the breaker must not fire on the first failure.  Only
         an exhausted connect marks the host unreachable and fails the rest
-        of this sync run fast.  The service is rebuilt per run, so the next
-        run retries from scratch.
+        of this sync run fast.  :meth:`plan` clears the record, so the
+        next run retries from scratch.
         """
         host = account.imap_host
         if host in self._unreachable_hosts:
@@ -807,6 +807,20 @@ class ImapSyncService:
         account_name: str | None = None,
         progress: ProgressCallback | None = None,
     ) -> SyncPlan:
+        """Survey every account, and start a fresh run while doing it.
+
+        The connect breaker (:meth:`_connect`) is scoped to one run, and
+        a run begins here.  It used to be scoped to the service object
+        instead, on the reasoning that one is built per run -- true of
+        `pony sync`, which constructs the service inside the command, and
+        false of both long-lived front ends: the terminal builds one at
+        startup for its scheduler and the browser one per server.  A
+        host that timed out once -- a laptop that slept, a VPN that
+        dropped -- was therefore skipped without being tried again for
+        the rest of the session, so ++ctrl+g++ went on reporting nothing
+        to sync while `pony sync` in another window worked.
+        """
+        self._unreachable_hosts.clear()
         accounts = select_imap_accounts(self._config, account_name)
         account_plans: list[AccountSyncPlan] = []
         errors: list[str] = []
@@ -866,9 +880,14 @@ class ImapSyncService:
     def sync(self, *, account_name: str | None = None) -> SyncResult:
         """Plan and execute in one call, confirming only what is safe.
 
-        Callers here have nobody to ask (background sync, the browser's
-        sync button), so a folder that tripped a safety halt is skipped
-        and reported rather than waived.
+        Callers here have nobody to ask -- the periodic sync and
+        ++ctrl+g++ -- so a folder that tripped a safety halt is skipped
+        and reported rather than waived.  Everything that *can* ask
+        calls :meth:`plan` and :meth:`execute` itself and passes the
+        halted folders as confirmed: `pony sync`, the terminal's sync
+        dialog, and the browser's Sync button, which holds the plan
+        across the question.  That is the whole difference between
+        ++ctrl+g++ and `pony sync --yes` on a held folder.
         """
         plan = self.plan(account_name=account_name)
         halted = plan.folders_needing_confirmation()

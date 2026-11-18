@@ -8,8 +8,9 @@ observed failure was four accounts on one host each burning the kernel's
 
 ``ImapSyncService._connect`` therefore records a host the first time a
 connect times out and fails the rest of that run's accounts on it
-immediately.  The service is rebuilt per sync run, so the next run
-retries the host from scratch.
+immediately.  ``plan()`` clears the record, so the next run retries the
+host from scratch -- which is what makes the breaker a property of a
+run and not of however long the caller happens to keep the service.
 """
 
 from __future__ import annotations
@@ -135,6 +136,42 @@ class ConnectBreakerTestCase(unittest.TestCase):
 
         self.assertEqual(attempts, ["dead.example.com", "live.example.com"])
         self.assertEqual([a.account_name for a in plan.accounts], ["reachable"])
+
+    def test_a_later_run_tries_the_host_again(self) -> None:
+        """A service that outlives one run must not outlive its breaker.
+
+        `pony sync` builds a service inside the command, so its breaker
+        could never leak past a run.  Both long-lived front ends keep
+        one -- the terminal builds it at startup for the scheduler, the
+        browser one per server -- and there a host that timed out once
+        was never tried again: ++ctrl+g++ reported nothing to sync for
+        the rest of the session while `pony sync` in another window
+        worked, which is how this was found.
+        """
+        accounts = (_account("one", "imap.example.com", self.root),)
+        reachable = False
+        attempts: list[str] = []
+
+        def _factory(acc: AccountConfig, _pw: str) -> ImapClientSession:
+            attempts.append(acc.imap_host)
+            if not reachable:
+                raise TimeoutError("[Errno 110] Connection timed out")
+            return FakeImapSession(folders={"INBOX": _one_message()})
+
+        service = self._service(accounts, _factory)
+
+        # Run one: the host is dead, and the breaker records it.
+        with self.assertRaises(RuntimeError):
+            service.plan()
+        self.assertEqual(attempts, ["imap.example.com"])
+
+        # Run two, on the *same* service, with the host back.
+        reachable = True
+        attempts.clear()
+        plan = service.plan()
+
+        self.assertEqual(attempts, ["imap.example.com"])
+        self.assertEqual([a.account_name for a in plan.accounts], ["one"])
 
     def test_a_refused_connection_does_not_trip_the_breaker(self) -> None:
         """Only timeouts are expensive; a refusal fails fast on its own."""

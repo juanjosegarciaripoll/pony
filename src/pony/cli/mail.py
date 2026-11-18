@@ -712,14 +712,18 @@ def run_reindex(
                 " this; 'pony sync --dry-run' says what would happen.",
             )
         # Which command, and why it has to be that one: a folder of
-        # local-only rows trips the mass-upload halt, and every
-        # unattended path -- background sync, ctrl+g, the browser's
-        # Sync button -- skips a halted folder rather than waiving it.
-        # Only a `pony sync` that can put the question converges.
+        # local-only rows trips the mass-upload halt, and the unattended
+        # paths -- the periodic sync and ctrl+g, both of which go through
+        # `ImapSyncService.sync` -- skip a halted folder rather than
+        # waiving it.  The browser's Sync button does put the question
+        # (`pony.web.syncing` holds the plan and asks "Apply the sync
+        # anyway?"), so it converges too; it is `pony sync` and that
+        # button, not `pony sync` alone.
         print(
-            "Answer the halt with 'pony sync' (or 'pony sync --yes'):"
-            " background sync, ctrl+g and the browser's Sync button have"
-            " nobody to ask, so they skip a held folder every time.",
+            "Answer the halt where something can ask: 'pony sync' (or"
+            " 'pony sync --yes'), or the browser's Sync button, which"
+            " offers to apply it anyway. The periodic sync and ctrl+g"
+            " have nobody to ask, so they skip a held folder every time.",
         )
     return 0
 

@@ -310,6 +310,21 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **++ctrl+g++ no longer stops syncing an account for the rest of the
+  session.** When every connection attempt to a host times out, the sync
+  engine records that host and fails the remaining accounts on it fast,
+  so one dead server cannot cost one timeout per account. The record was
+  kept on the service object and never cleared, on the reasoning that one
+  service is built per run — true of `pony sync`, which constructs it
+  inside the command, and of the reader's ++g++ dialog, which builds one
+  per press, but false of the two paths that matter here: the terminal
+  builds one at startup for its periodic sync and ++ctrl+g++, and the
+  browser one per server. So a single timeout — a laptop that slept, a
+  VPN that dropped, a moment of bad wifi — put the host on the list and
+  kept it there: every later ++ctrl+g++ skipped the account *without
+  trying it*, reporting nothing to sync, while `pony sync` in another
+  window worked. The record now belongs to a run, cleared when planning
+  starts, which is what its own documentation always claimed.
 - **Searching inside a large folder is no longer measured in minutes.**
   Narrowing a search to one folder hands SQLite an index that also
   satisfies the date ordering for free, so it drove the query from
