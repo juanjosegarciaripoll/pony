@@ -229,6 +229,32 @@ async def test_a_range_adds_marks_rather_than_toggling_them() -> None:
         assert len(panel.marked_summaries()) == 4
 
 
+async def test_a_range_leaves_no_reload_target_behind() -> None:
+    """The cursor the user moved is the one that stays.
+
+    A reload records the row it is heading for in `_pending_cursor`, and
+    `effective_cursor_row` answers with that until the row arrives.  A
+    range that moved the real cursor and left it set would report the old
+    row to everything that asks which message is selected, and
+    `_stream_rows` would snap the cursor back as soon as that row landed.
+    """
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-pending", count=5)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        panel.move_cursor(row=1)
+        # What a reload in flight looks like to this code.
+        panel._pending_cursor = 1  # noqa: SLF001
+        await pilot.pause()
+
+        await _press(pilot, panel, "shift+end")
+
+        assert panel._pending_cursor is None  # noqa: SLF001
+        assert panel.effective_cursor_row == 4
+        assert len(panel.marked_summaries()) == 4
+
+
 async def test_a_range_over_an_empty_list_is_a_noop() -> None:
     """No rows, no cursor to take a range from."""
     app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mlist-mark-range-empty")
@@ -236,8 +262,8 @@ async def test_a_range_over_an_empty_list_is_a_noop() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         panel = _panel(app)
-        panel.action_mark_to_end()
-        panel.action_mark_to_start()
+        await panel.action_mark_to_end()
+        await panel.action_mark_to_start()
         await pilot.pause()
 
         assert panel.marked_summaries() == []

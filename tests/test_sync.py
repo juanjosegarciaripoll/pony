@@ -4254,8 +4254,8 @@ class MassPushGuardTestCase(unittest.TestCase):
         from pony.mail.sync import describe_sync_result
 
         said = describe_sync_result(result)
-        self.assertIn("Held for confirmation: personal/INBOX.", said)
-        self.assertIn("Run `pony sync`", said)
+        self.assertIn("Uploads held for confirmation: personal/INBOX.", said)
+        self.assertIn("the browser's Sync button", said)
 
     def test_the_halt_is_described_in_the_plan_summary(self) -> None:
         service, index, _, _ = self._folder_of(6)
@@ -5166,3 +5166,27 @@ class BuildSyncServiceTest(unittest.TestCase):
         )
 
         self.assertIs(service._mirror_factory(account), opened)  # noqa: SLF001
+
+    def test_a_mirror_built_on_demand_is_built_once(self) -> None:
+        """One object per account, which the engine needs, not prefers.
+
+        The factory is consulted at five points in a run, and an mbox
+        mirror defers its deletions in memory per object -- a second
+        object over the same directory holds marks nothing flushes until
+        its finalizer runs, and can read back a message the first has
+        already marked deleted.
+        """
+        account = self._account("personal")
+        index = SqliteIndexRepository(database_path=self.root / "index3.sqlite3")
+        index.initialize()
+        self.addCleanup(index.close)
+
+        service = build_sync_service(
+            config=AppConfig(accounts=(account,)),
+            index=index,
+            mirrors={},
+            credentials=self._Credentials(),
+        )
+
+        first = service._mirror_factory(account)  # noqa: SLF001
+        self.assertIs(service._mirror_factory(account), first)  # noqa: SLF001

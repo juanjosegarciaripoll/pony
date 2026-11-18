@@ -1615,6 +1615,21 @@ async def test_contact_browser_marks_a_range() -> None:
         assert len(screen._marked) == 3  # noqa: SLF001
         assert table.cursor_row == 3
 
+        # The glyph is the projection's, so it survives a redraw: the
+        # table is rebuilt from `views.contact_row`, which draws
+        # `MARKED_MARK`.  A mark painted with any other character
+        # silently changed on the next refresh.
+        from textual.coordinate import Coordinate
+
+        from pony.mail.views import MARKED_MARK
+
+        painted = str(table.get_cell_at(Coordinate(1, 0)))
+        screen._refresh_list()  # noqa: SLF001
+        await pilot.pause()
+        self_marked = str(table.get_cell_at(Coordinate(1, 0)))
+        assert painted == MARKED_MARK
+        assert self_marked == MARKED_MARK
+
         # And back the other way, over rows already marked.
         await pilot.press("shift+home")
         await pilot.pause()

@@ -679,13 +679,30 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
                 self._marked.add(mid)
                 self._update_row(summary)
         self.move_cursor(row=target_row)
+        # The cursor is where the user put it, so the row a reload was
+        # heading for is no longer wanted: left set, `effective_cursor_row`
+        # would keep answering with the old row and `_stream_rows` would
+        # snap the cursor back to it as soon as that row arrived.
+        self._pending_cursor = None
 
-    def action_mark_to_end(self) -> None:
-        """Mark from the cursor to the last row (++shift+end++)."""
+    async def action_mark_to_end(self) -> None:
+        """Mark from the cursor to the last row (++shift+end++).
+
+        Awaits the load for the reason `action_cursor_last` does: the
+        end of the folder is not the end of what has streamed so far,
+        and marking to a row count still growing would both stop short
+        and leave the cursor somewhere the next batch moves.
+        """
+        await self.wait_for_load_complete()
         self._mark_through(len(self._summaries) - 1)
 
-    def action_mark_to_start(self) -> None:
-        """Mark from the cursor back to the first row (++shift+home++)."""
+    async def action_mark_to_start(self) -> None:
+        """Mark from the cursor back to the first row (++shift+home++).
+
+        Row zero exists as soon as anything does, but the cursor this
+        counts back *from* is only final once the load is.
+        """
+        await self.wait_for_load_complete()
         self._mark_through(0)
 
     def marked_summaries(self) -> list[FolderMessageSummary]:

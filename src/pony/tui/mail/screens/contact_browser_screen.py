@@ -21,7 +21,7 @@ from ....mail.contact_actions import (
 from ....mail.domain import Contact
 from ....mail.keymap import MAIL_KEYMAP, Surface
 from ....mail.protocols import ContactRepository
-from ....mail.views import contact_row
+from ....mail.views import MARKED_MARK, NO_MARK, contact_row
 from ...bindings import to_textual
 from ..bindings import MARK_BINDINGS
 
@@ -173,10 +173,10 @@ class ContactBrowserScreen(Screen[None]):
             return
         if contact.id in self._marked:
             self._marked.discard(contact.id)
-            mark = " "
+            mark = NO_MARK
         else:
             self._marked.add(contact.id)
-            mark = "●"
+            mark = MARKED_MARK
         table.update_cell_at(Coordinate(row, 0), mark)
 
     def action_mark_down(self) -> None:
@@ -208,7 +208,7 @@ class ContactBrowserScreen(Screen[None]):
             if contact.id is None or contact.id in self._marked:
                 continue
             self._marked.add(contact.id)
-            table.update_cell_at(Coordinate(row, 0), "●")
+            table.update_cell_at(Coordinate(row, 0), MARKED_MARK)
         table.move_cursor(row=target_row)
 
     def action_mark_to_end(self) -> None:

@@ -3218,11 +3218,13 @@ def describe_sync_result(result: SyncResult | None) -> str:
         return done
     # A run with nobody to ask skips a halted folder, and saying only
     # "Sync complete" of a run that left a whole folder unsynced is the
-    # kind of true that misleads.  `pony sync` is the one path that can
-    # put the question.
+    # kind of true that misleads.  Only C-7 reaches here now -- `sync()`
+    # applies C-6 -- so the sentence can name what is held and every
+    # path that can answer for it, rather than sending a browser user
+    # to a command line when their own Sync button asks the question.
     return (
-        f"{done}  Held for confirmation: {', '.join(held)}."
-        " Run `pony sync` to see what they would do and answer for them."
+        f"{done}  Uploads held for confirmation: {', '.join(held)}."
+        " Answer with `g` here, the browser's Sync button, or `pony sync`."
     )
 
 
@@ -3248,15 +3250,31 @@ def build_sync_service(
     The mirrors are passed in rather than built here because the
     long-lived callers have already opened them, and two mirror objects
     over one directory is one too many.  *mirrors* need not be complete:
-    an account it does not name gets one built for it, so a caller
-    holding the mirrors it happens to have open is not quietly handing
-    the engine a `KeyError` for the rest.  A mapping is reused rather
-    than rebuilt, which is the whole point of passing one.
+    an account it does not name gets one built on first use and kept,
+    so a caller that has opened none -- `pony sync` -- is not handing
+    the engine a `KeyError`, and a caller that has opened some is not
+    forced to open the rest up front.
+
+    One object per account either way, which the engine needs rather
+    than merely prefers: the factory is consulted at five points in a
+    run (planning, execution, re-upload, compaction, trash purge), and
+    an mbox mirror defers deletions in memory per object
+    (`storage.MboxMirrorRepository._deleted_keys`).  A second object
+    over the same directory would hold marks nothing flushes until its
+    finalizer runs, and could read back a message the first has already
+    marked deleted.
     """
+    built: dict[str, MirrorRepository] = {}
 
     def mirror_for(account: AccountConfig) -> MirrorRepository:
         opened = mirrors.get(account.name)
-        return opened if opened is not None else build_mirror(account)
+        if opened is not None:
+            return opened
+        made = built.get(account.name)
+        if made is None:
+            made = build_mirror(account)
+            built[account.name] = made
+        return made
 
     return ImapSyncService(
         config=config,

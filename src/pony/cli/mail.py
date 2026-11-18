@@ -102,7 +102,14 @@ def run_sync(
     service = build_sync_service(
         config=config,
         index=index,
-        mirrors=build_mirrors(config),
+        # None opened yet, and none opened for an account this run does
+        # not touch: the factory builds one on first use and keeps it.
+        # `build_mirrors(config)` here would construct a repository per
+        # configured account before planning, and both backends make
+        # directories in their constructor -- so `pony sync one-account
+        # --dry-run` would create `cur/new/tmp` under every *other*
+        # account's mirror path.
+        mirrors={},
         credentials=credentials,
     )
 

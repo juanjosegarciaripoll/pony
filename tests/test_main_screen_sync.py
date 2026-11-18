@@ -136,8 +136,10 @@ def test_a_run_that_held_a_folder_says_so_and_says_what_to_do() -> None:
 
     said = describe_sync_result(result)
 
-    assert "Held for confirmation: fictional/INBOX." in said
-    assert "Run `pony sync`" in said
+    assert "Uploads held for confirmation: fictional/INBOX." in said
+    # Every path that can answer, not just the command line: the
+    # browser shows this same sentence and its own button asks.
+    assert "Answer with `g` here, the browser's Sync button, or `pony sync`." in said
     # The folder configuration excludes is not held, and is not named.
     assert "Spam" not in said
 
