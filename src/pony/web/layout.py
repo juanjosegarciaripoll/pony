@@ -186,6 +186,19 @@ def page(
                         data_action="sync",
                         id="sync",
                     ),
+                    # ++f3++, for the same screen that has no keys — and
+                    # a phone has no function keys at all, so this
+                    # button is the only way to reach it there.  Beside
+                    # Sync, because the difference between them is how
+                    # much they sync.
+                    element(
+                        "button",
+                        "Sync all",
+                        type="button",
+                        class_="action",
+                        data_action="sync_all",
+                        id="sync-all",
+                    ),
                     # ++shift+q++, for the same screen that has no keys.
                     # It asks first: a tap is easier to do by accident,
                     # and nothing on a phone can start the server again.

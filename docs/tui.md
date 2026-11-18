@@ -77,6 +77,7 @@ does nothing.
 | ++ctrl+left++ / ++ctrl+right++ | Narrow / widen the folder pane |
 | ++ctrl+up++ / ++ctrl+down++ | Shrink / grow the message list |
 | ++f2++ | Switch between mail and the calendar |
+| ++f3++ | Sync both mail and the calendar |
 
 ### Message list
 
@@ -392,6 +393,14 @@ the periodic background-sync timer, so the next background run happens after
 
 Set `background_sync_enabled = true` to arm that periodic timer as soon as the
 TUI starts, without waiting for the first ++ctrl+g++.
+
+++ctrl+g++ syncs the half in front of you: mail in the reader, the calendar in
+the agenda. ++f3++ syncs **both**, from either, and arms or restarts both
+cadences. It is a function key because no terminal without the kitty keyboard
+protocol can encode `ctrl+shift+g` — such a terminal reports plain ++ctrl+g++,
+so the binding would fire on the wrong press. In the browser the chrome's
+**Sync all** button beside **Sync** is the same thing, which is how a phone
+reaches it.
 
 ---
 

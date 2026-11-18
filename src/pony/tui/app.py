@@ -428,6 +428,43 @@ class PonyApp(QuitAsksTheScreen):
         )
         self._calendar_sync = services.sync_scheduler
 
+    def action_sync_all(self) -> None:
+        """Sync both halves at once, from wherever the user is.
+
+        ++ctrl+g++ syncs the half in front of you — mail in the reader,
+        the calendar in the agenda — and there was no way to ask for
+        both.  This is that key.  It lives on `Surface.APPLICATION` and
+        on the application, which is the one object holding both
+        schedulers; a screen has only its own.
+
+        Each half is started and asked to run now, exactly as its own
+        key does, so the cadence restarts and the next automatic run
+        counts from here.  Nothing new reports: both halves already
+        route a finished run back to whichever screen is on the stack,
+        so the spinners, toasts and countdowns are the ones already
+        there.
+        """
+        asked: list[str] = []
+        busy: list[str] = []
+        for label, scheduler in (
+            ("Mail", self._mail_sync),
+            ("Calendar", self._calendar_sync),
+        ):
+            if scheduler is None:
+                continue
+            scheduler.start()
+            (asked if scheduler.request_now() else busy).append(label)
+        if not asked and not busy:
+            self.notify("Nothing to sync: neither half is wired in this build.")
+            return
+        if not asked:
+            self.notify(f"Sync already running: {', '.join(busy)}.")
+            return
+        said = f"Syncing {' and '.join(asked).lower()}."
+        if busy:
+            said += f" Already running: {', '.join(busy).lower()}."
+        self.notify(said)
+
     def _stop_schedulers(self) -> None:
         for scheduler in (self._mail_sync, self._calendar_sync):
             if scheduler is not None:

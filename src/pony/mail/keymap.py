@@ -69,6 +69,13 @@ APPLICATION_KEYS: tuple[KeyBinding, ...] = (
     # names the pair rather than the destination: "Calendar" reads wrong
     # from inside the calendar.
     KeyBinding("f2", "toggle_calendar", "Mail / Calendar", Surface.APPLICATION),
+    # Both halves at once, from either of them.  ++ctrl+g++ syncs the
+    # half in front of you and there was no key for both; this is it.
+    # A function key because `ctrl+shift+g` is not a key a terminal
+    # without the kitty protocol can encode — it reports plain
+    # ++ctrl+g++, so the binding would fire on the wrong press — and
+    # because above ++f2++ is the clear ground (see `ai/AGENTS.md`).
+    KeyBinding("f3", "sync_all", "Sync all", Surface.APPLICATION),
 )
 
 # Marking rows, then acting on the marks in bulk: the contacts

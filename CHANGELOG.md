@@ -327,6 +327,18 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   month; its typed-count prompt is the explicit confirmation the
   principle asks for.
 
+### Added
+
+- **++f3++ syncs both halves at once.** ++ctrl+g++ syncs the half in
+  front of you — mail in the reader, the calendar in the agenda — and
+  there was no way to ask for both. ++f3++ is that key, live wherever
+  you are, and it arms or restarts both cadences exactly as each half's
+  own key does. A function key because no terminal without the kitty
+  keyboard protocol can encode `ctrl+shift+g`: such a terminal reports
+  plain ++ctrl+g++, so the binding would fire on the wrong press. In the
+  browser the chrome carries a **Sync all** button beside **Sync**,
+  which is how a phone reaches it.
+
 ### Changed
 
 - **A calendar no longer stops syncing because too much of it changed.**

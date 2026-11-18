@@ -602,6 +602,74 @@ async def test_the_calendar_sync_runs_while_the_mail_reader_is_in_front() -> Non
             await _until(pilot, ran.is_set, "the calendar never synced")
 
 
+async def test_f3_syncs_both_halves_from_the_mail_reader() -> None:
+    """++ctrl+g++ syncs the half in front of you; ++f3++ syncs both.
+
+    There was no key for both: pressing ++ctrl+g++ in the reader fetched
+    mail and left the calendar alone, and in the agenda the reverse.
+    """
+    from pony.mail.sync import ImapSyncService
+
+    runtime = make_calendar_runtime(make_tmp_paths("sync-all-mail"))
+    app, *_ = build_pony_app(label="sync-all-mail", calendar=runtime)
+    mail_ran = threading.Event()
+    calendar_ran = threading.Event()
+
+    def _mail(_self: ImapSyncService, **_kwargs: object) -> object:
+        mail_ran.set()
+        raise RuntimeError("stop here: the sync ran, which is the point")
+
+    def _calendar(**_kwargs: object) -> tuple[object, ...]:
+        calendar_ran.set()
+        return ()
+
+    with (
+        unittest.mock.patch(
+            "pony.tui.calendar_host.build_sync_runner", return_value=_calendar
+        ),
+        unittest.mock.patch.object(ImapSyncService, "sync", _mail),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, MainScreen)
+            await pilot.press("f3")
+            await _until(pilot, mail_ran.is_set, "mail did not sync")
+            await _until(pilot, calendar_ran.is_set, "the calendar did not sync")
+
+
+async def test_f3_syncs_both_halves_from_the_agenda_too() -> None:
+    """The key is on the application, so it reaches both from either."""
+    from pony.mail.sync import ImapSyncService
+
+    runtime = make_calendar_runtime(make_tmp_paths("sync-all-agenda"))
+    app, *_ = build_pony_app(label="sync-all-agenda", calendar=runtime)
+    mail_ran = threading.Event()
+    calendar_ran = threading.Event()
+
+    def _mail(_self: ImapSyncService, **_kwargs: object) -> object:
+        mail_ran.set()
+        raise RuntimeError("stop here: the sync ran, which is the point")
+
+    def _calendar(**_kwargs: object) -> tuple[object, ...]:
+        calendar_ran.set()
+        return ()
+
+    with (
+        unittest.mock.patch(
+            "pony.tui.calendar_host.build_sync_runner", return_value=_calendar
+        ),
+        unittest.mock.patch.object(ImapSyncService, "sync", _mail),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, CalendarScreen)
+            await pilot.press("f3")
+            await _until(pilot, mail_ran.is_set, "mail did not sync from the agenda")
+            await _until(pilot, calendar_ran.is_set, "the calendar did not sync")
+
+
 async def test_a_failing_background_sync_does_not_reach_the_user() -> None:
     runtime = make_calendar_runtime(make_tmp_paths("bg-sync-fail"))
     app, *_ = build_pony_app(label="bg-sync-fail", calendar=runtime)

@@ -1091,6 +1091,24 @@ def _sync_calendar(context: ActionContext) -> Outcome:
     return context.services.sync.calendars()
 
 
+def _sync_all(context: ActionContext) -> Reply:
+    """Sync both halves, whichever page asked (++f3++).
+
+    The calendar first, because it is the quick one and its notices are
+    then already in hand if the mail half comes back with a question to
+    ask.  Mail's reply is the one returned, so a question it raises is
+    asked exactly as it is for `sync` alone — with the calendar's
+    notices in front of it, since that half has already run.
+    """
+    calendar = context.services.sync.calendars()
+    reply = context.services.sync.mail(confirmed=bool(context.first("confirm")))
+    merged = Outcome(
+        changed=calendar.changed + reply.outcome.changed,
+        notices=calendar.notices + reply.outcome.notices,
+    )
+    return Reply(merged, confirm=reply.confirm)
+
+
 SERVER_ACTIONS: dict[str, Action] = {
     **mail_view.MAIL_ACTIONS,
     **contacts_view.CONTACT_ACTIONS,
@@ -1101,6 +1119,7 @@ SERVER_ACTIONS: dict[str, Action] = {
     "sync": _sync_mail,
     "background_sync": _sync_mail,
     "sync_calendar": _sync_calendar,
+    "sync_all": _sync_all,
     "quit": _quit,
 }
 
