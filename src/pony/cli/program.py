@@ -881,18 +881,27 @@ def run_schema_reset_prompt(
     resync) and offers to perform the first two automatically.  The
     default answer is ``No`` — nothing is deleted unless the user types
     ``y`` / ``yes``.
+
+    What may be deleted is decided by :func:`~pony.cli.mail.plan_reset`,
+    the same planner ``pony reset`` uses.  This handler used to build its
+    own target list — every configured account's mirror, no guards — so
+    it offered to delete a local account's archive that nothing can
+    restore, and a mistyped ``mirror.path`` of ``/etc`` wholesale.
     """
     from datetime import UTC, datetime
 
     from ..mail.bbdb import write_bbdb
+    from .mail import plan_reset, print_reset_refusals
 
     config = try_load_config(config_path)
     timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = paths.data_dir / f"contacts-backup-{timestamp}.bbdb"
 
-    targets: list[Path] = [error.database_path]
-    if config is not None:
-        targets.extend(account.mirror.path for account in config.accounts)
+    plan = plan_reset(
+        database_path=error.database_path,
+        config=config,
+        data_dir=paths.data_dir,
+    )
 
     print("=" * 66)
     print(
@@ -900,13 +909,24 @@ def run_schema_reset_prompt(
         f"(found v{error.found}, needs v{error.expected})."
     )
     print()
+    if plan.refused:
+        print_reset_refusals(plan.refused)
+        return 2
     print("To move to the new schema, the following three steps are needed:")
     print(f"  1. Export your contacts to {backup_path}")
     print("  2. Delete the index database and all local mirror directories:")
-    for t in targets:
+    for t in plan.targets:
         exists = "(exists)" if t.exists() else "(not found)"
         print(f"       {t}  {exists}")
     print("  3. Run `pony sync` to redownload mail from IMAP.")
+    if plan.kept_local:
+        print()
+        print(
+            "Kept — a local account has no server to re-fetch from, so its"
+            " mirror is the only copy of that mail:"
+        )
+        for name, path in plan.kept_local:
+            print(f"       {name}: {path}")
     print()
     print("Steps 1 and 2 can be performed automatically now; step 3 is yours.")
     print("The backup file lets you re-import contacts afterwards with:")
@@ -926,7 +946,7 @@ def run_schema_reset_prompt(
     else:
         print("No contacts to export.")
 
-    for t in targets:
+    for t in plan.targets:
         if not t.exists():
             continue
         if t.is_dir():
@@ -940,6 +960,14 @@ def run_schema_reset_prompt(
     print("  1. Run `pony sync` to redownload mail.")
     if contacts:
         print(f"  2. Run `pony contacts import {backup_path}` to restore contacts.")
+    if plan.kept_local:
+        # `pony sync` skips local accounts, so the line above is not the
+        # whole answer for the mirrors this just kept: their mail is
+        # still on disk and needs indexing, not downloading.
+        print(
+            "Run `pony rescan` to re-index the kept local account(s) from the"
+            " mail already on disk."
+        )
     return 0
 
 

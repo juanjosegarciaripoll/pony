@@ -329,6 +329,20 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **The automatic reset offered after a schema change no longer deletes a
+  local account's archive.** When the index database predates the running
+  version, Pony explains the three steps to move to the new schema and
+  offers to perform the first two. Its list of what to delete was built
+  on the spot — every configured account's mirror directory, handed
+  straight to `rmtree` — rather than through the planner `pony reset`
+  uses, so it lost all three of that planner's guards. A local account
+  has no server to re-fetch from, which is why `pony reset` keeps its
+  mirror; this path deleted it and then said to run `pony sync`, which
+  skips local accounts entirely. A mistyped `mirror.path` naming a
+  directory that holds no mirror was deleted the same way. Both ways in
+  now share one planner: a local mirror is listed as kept, with the
+  `pony rescan` that re-indexes it, and anything that does not look like
+  a mirror Pony wrote aborts the reset before the prompt.
 - **++ctrl+g++ no longer stops syncing an account for the rest of the
   session.** When every connection attempt to a host times out, the sync
   engine records that host and fails the remaining accounts on it fast,

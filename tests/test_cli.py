@@ -592,7 +592,11 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
         app_paths = isolated_paths()
         app_paths.ensure_runtime_dirs()
         account.mirror.path.mkdir(parents=True, exist_ok=True)
-        (account.mirror.path / "INBOX").mkdir(exist_ok=True)
+        # What `MaildirMirrorRepository.__init__` leaves at the root, and
+        # what `not_a_mirror` looks for before anything is handed to
+        # rmtree.  A fixture without them is not a mirror.
+        for leaf in ("cur", "new", "tmp", "INBOX"):
+            (account.mirror.path / leaf).mkdir(exist_ok=True)
 
         db = app_paths.index_db_file
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -689,6 +693,83 @@ class SchemaMismatchRecoveryTests(unittest.TestCase):
             self.assertEqual(loaded[0].first_name, "María")
             self.assertIn("pony sync", captured)
             self.assertIn("contacts import", captured)
+
+    def _write_config(self, config_path: Path, extra: str) -> None:
+        """Append *extra* to the sample config at *config_path*."""
+        config_path.write_text(
+            sample_config_toml() + "\n" + resolve_fixture(extra), encoding="utf-8"
+        )
+
+    def test_a_local_account_archive_survives_the_automatic_reset(self) -> None:
+        """The reset keeps a local mirror: nothing can re-fetch it."""
+        with isolated_app_env(), temporary_config() as config_path:
+            self._write_config(
+                config_path,
+                """
+[[accounts]]
+account_type  = "local"
+name          = "Archive"
+email_address = "user@example.com"
+
+[accounts.mirror]
+path   = "mirrors/archive"
+format = "mbox"
+""",
+            )
+            db, mirror = self._seed_legacy_db_and_mirror(config_path)
+            archive = isolated_paths().data_dir / "mirrors" / "archive"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / "INBOX.mbox").write_text("From a@b\n\nkept\n")
+
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("y\n")
+            try:
+                captured, rc = run_cli_capture(
+                    "--config", str(config_path), "search", "anything"
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+            self.assertEqual(rc, 0, captured)
+            self.assertFalse(db.exists(), captured)
+            self.assertFalse(mirror.exists(), captured)
+            self.assertTrue(
+                (archive / "INBOX.mbox").exists(),
+                f"the local archive is the only copy of that mail\n{captured}",
+            )
+            self.assertIn("Kept", captured)
+            self.assertIn("pony rescan", captured)
+
+    def test_a_mirror_path_that_holds_no_mirror_aborts_the_reset(self) -> None:
+        """A mistyped mirror.path is refused before anything is deleted."""
+        with isolated_app_env() as env_root, temporary_config() as config_path:
+            db, _mirror = self._seed_legacy_db_and_mirror(config_path)
+            # Point mirror.path somewhere that holds no mirror, the way a
+            # typo does, *after* seeding -- the seed builds a real mirror
+            # root wherever the config says.
+            stranger = env_root / "not-a-mirror"
+            stranger.mkdir(parents=True, exist_ok=True)
+            (stranger / "passwd").write_text("root:x:0:0\n")
+            config_path.write_text(
+                sample_config_toml().replace(
+                    'path = "mirrors/personal"', f"path = '{stranger}'"
+                ),
+                encoding="utf-8",
+            )
+
+            stdin_backup = sys.stdin
+            sys.stdin = io.StringIO("y\n")
+            try:
+                captured, rc = run_cli_capture(
+                    "--config", str(config_path), "search", "anything"
+                )
+            finally:
+                sys.stdin = stdin_backup
+
+            self.assertEqual(rc, 2, captured)
+            self.assertIn("Refusing to delete", captured)
+            self.assertTrue((stranger / "passwd").exists(), captured)
+            self.assertTrue(db.exists(), "nothing is deleted after a refusal")
 
 
 def _seed_one_message(

@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from pony.atomic import write_atomically
@@ -1746,6 +1747,75 @@ def not_a_mirror(path: Path) -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class ResetPlan:
+    """What a reset would delete, what it keeps, and what it refuses.
+
+    Deleting the index and the mirrors is the one operation in Pony that
+    destroys mail, and there are two ways in: ``pony reset``, and the
+    schema-mismatch handler that offers the same thing when the database
+    cannot be opened.  Both go through here, because a second reading of
+    "what is safe to delete" is a second set of guards to forget -- the
+    handler had already lost all three of them.
+    """
+
+    targets: tuple[Path, ...]
+    kept_local: tuple[tuple[str, Path], ...]
+    refused: tuple[tuple[Path, str], ...]
+
+
+def plan_reset(
+    *,
+    database_path: Path,
+    config: AppConfig | None,
+    data_dir: Path,
+) -> ResetPlan:
+    """Decide what a whole-config reset may delete.
+
+    The index database always goes.  A remote account's mirror goes once
+    it passes both guards: ``unsafe_to_delete`` for the shapes no path
+    handed to ``rmtree`` may have, and ``not_a_mirror`` for the positive
+    question of whether the directory holds a mirror Pony wrote.  A
+    local account's mirror never goes -- it is the only copy of that
+    mail, with no server to re-fetch it from.
+    """
+    targets: list[Path] = [database_path]
+    kept_local: list[tuple[str, Path]] = []
+    if config is not None:
+        for acc in config.accounts:
+            if isinstance(acc, LocalAccountConfig):
+                kept_local.append((acc.name, acc.mirror.path))
+                continue
+            targets.append(acc.mirror.path)
+
+    refused: list[tuple[Path, str]] = []
+    safe: list[Path] = []
+    for t in targets:
+        reason = unsafe_to_delete(t, data_dir=data_dir)
+        if reason is None and t != database_path:
+            # Every other target is a mirror directory, and a mirror
+            # directory has to look like one before it is handed to
+            # rmtree.
+            reason = not_a_mirror(t)
+        if reason is None:
+            safe.append(t)
+        else:
+            refused.append((t, reason))
+    return ResetPlan(
+        targets=tuple(safe),
+        kept_local=tuple(kept_local),
+        refused=tuple(refused),
+    )
+
+
+def print_reset_refusals(refused: Sequence[tuple[Path, str]]) -> None:
+    """Report the paths a reset will not touch, and why."""
+    print("Refusing to delete:")
+    for t, reason in refused:
+        print(f"  {t}  -- {reason}")
+    print("Fix the mirror.path in your config first.", file=sys.stderr)
+
+
 def run_reset(
     *,
     paths: AppPaths,
@@ -1769,41 +1839,16 @@ def run_reset(
         )
 
     config = try_load_config(config_path)
-
-    targets: list[Path] = [paths.index_db_file]
-    kept_local: list[tuple[str, Path]] = []
-    if config is not None:
-        for acc in config.accounts:
-            if isinstance(acc, LocalAccountConfig):
-                # A local account has no server to re-fetch from: its
-                # mirror *is* the mail.  "Delete it all and re-sync"
-                # means nothing here, so a reset of the whole config
-                # leaves it alone.  `--account <name>` still removes it,
-                # because then it was asked for by name.
-                kept_local.append((acc.name, acc.mirror.path))
-                continue
-            targets.append(acc.mirror.path)
-
-    refused: list[tuple[Path, str]] = []
-    safe_targets: list[Path] = []
-    for t in targets:
-        reason = unsafe_to_delete(t, data_dir=paths.data_dir)
-        if reason is None and t != paths.index_db_file:
-            # Every other target is a mirror directory, and a mirror
-            # directory has to look like one before it is handed to
-            # rmtree.
-            reason = not_a_mirror(t)
-        if reason is None:
-            safe_targets.append(t)
-        else:
-            refused.append((t, reason))
-    if refused:
-        print("Refusing to delete:")
-        for t, reason in refused:
-            print(f"  {t}  -- {reason}")
-        print("Fix the mirror.path in your config first.", file=sys.stderr)
+    plan = plan_reset(
+        database_path=paths.index_db_file,
+        config=config,
+        data_dir=paths.data_dir,
+    )
+    if plan.refused:
+        print_reset_refusals(plan.refused)
         return 2
-    targets = safe_targets
+    targets = list(plan.targets)
+    kept_local = list(plan.kept_local)
 
     print("The following will be permanently deleted:")
     for t in targets:
