@@ -35,7 +35,7 @@ from pony.outcome import ProgressGate, progress_stride
 from pony.scheduler import PeriodicSync, SyncOutcome
 from pony.scope import SyncScope
 
-from .accounts import find_imap_account, select_imap_accounts
+from .accounts import build_mirror, find_imap_account, select_imap_accounts
 from .domain import (
     AccountConfig,
     AppConfig,
@@ -3247,12 +3247,20 @@ def build_sync_service(
 
     The mirrors are passed in rather than built here because the
     long-lived callers have already opened them, and two mirror objects
-    over one directory is one too many; a caller that has none builds
-    them with `build_mirrors`.
+    over one directory is one too many.  *mirrors* need not be complete:
+    an account it does not name gets one built for it, so a caller
+    holding the mirrors it happens to have open is not quietly handing
+    the engine a `KeyError` for the rest.  A mapping is reused rather
+    than rebuilt, which is the whole point of passing one.
     """
+
+    def mirror_for(account: AccountConfig) -> MirrorRepository:
+        opened = mirrors.get(account.name)
+        return opened if opened is not None else build_mirror(account)
+
     return ImapSyncService(
         config=config,
-        mirror_factory=lambda account: mirrors[account.name],
+        mirror_factory=mirror_for,
         index=index,
         credentials=credentials,
     )

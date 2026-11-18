@@ -33,7 +33,7 @@ from pony.mail.mailbox_actions import Mailboxes
 from pony.mail.message_projection import project_rfc822_message
 from pony.mail.protocols import ImapClientSession, MirrorRepository
 from pony.mail.storage import MaildirMirrorRepository
-from pony.mail.sync import ImapSyncService, format_plan_detail
+from pony.mail.sync import ImapSyncService, build_sync_service, format_plan_detail
 from pony.scope import SyncScope
 
 # ---------------------------------------------------------------------------
@@ -2922,6 +2922,7 @@ class SyncPlanUtilityTestCase(unittest.TestCase):
         SyncPlan,
         UidValidityResetOp,
         _categorize_ops,
+        build_sync_service,
         format_plan_detail,
         format_plan_summary,
     )
@@ -5095,3 +5096,73 @@ class TrashIsAMoveTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].message_id, "<flight@example.com>")
         self.assertEqual(list(index.list_folder_messages(folder=inbox)), [])
+
+
+class BuildSyncServiceTest(unittest.TestCase):
+    """The one assembly point, and what it tolerates being handed.
+
+    `build_sync_service` takes the mirrors its caller already has open,
+    because two mirror objects over one directory is one too many.  It
+    used to index straight into that mapping, so an account the caller
+    had not opened one for became a `KeyError` inside planning --
+    reported as that account having failed, with nothing saying why.
+    """
+
+    def setUp(self) -> None:
+        self.root = TMP_ROOT / "build-service" / uuid4().hex
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _account(self, name: str) -> AccountConfig:
+        return AccountConfig(
+            name=name,
+            email_address=f"{name}@example.com",
+            imap_host="imap.example.com",
+            smtp=SmtpConfig(host="smtp.example.com"),
+            username=name,
+            credentials_source="plaintext",
+            mirror=MirrorConfig(path=self.root / name, format="maildir"),
+        )
+
+    class _Credentials:
+        def get_password(self, *, account_name: str = "") -> str:  # noqa: ARG002
+            return "test-password"
+
+    def test_an_account_absent_from_the_mapping_still_gets_a_mirror(self) -> None:
+        account = self._account("personal")
+        index = SqliteIndexRepository(database_path=self.root / "index.sqlite3")
+        index.initialize()
+        self.addCleanup(index.close)
+
+        service = build_sync_service(
+            config=AppConfig(accounts=(account,)),
+            index=index,
+            # Deliberately empty: the caller opened none.
+            mirrors={},
+            credentials=self._Credentials(),
+        )
+        service._session_factory = lambda _a, _p: FakeImapSession(  # noqa: SLF001
+            folders={"INBOX": {}}
+        )
+
+        plan = service.plan()
+
+        self.assertEqual([a.account_name for a in plan.accounts], ["personal"])
+
+    def test_a_mirror_the_caller_opened_is_the_one_used(self) -> None:
+        """Reuse is the point of passing a mapping at all."""
+        account = self._account("personal")
+        index = SqliteIndexRepository(database_path=self.root / "index2.sqlite3")
+        index.initialize()
+        self.addCleanup(index.close)
+        opened = MaildirMirrorRepository(
+            account_name="personal", root_dir=self.root / "personal"
+        )
+
+        service = build_sync_service(
+            config=AppConfig(accounts=(account,)),
+            index=index,
+            mirrors={"personal": opened},
+            credentials=self._Credentials(),
+        )
+
+        self.assertIs(service._mirror_factory(account), opened)  # noqa: SLF001
