@@ -393,6 +393,47 @@ def test_saving_a_draft_files_it_without_sending() -> None:
     )
 
 
+def test_saving_a_draft_whose_attachment_vanished_says_so() -> None:
+    """The same refusal `send` gives, not a 500.
+
+    A staged file can go between the moment its path is resolved and the
+    moment the message is built -- a cleanup, another process -- which is
+    why `send` catches `FileNotFoundError` and refuses. Saving a draft
+    let it out of the route instead, so the identical form was a notice
+    one way and a server error the other. Driven by making the build
+    raise, because that window is a race and not something a request can
+    walk into on purpose.
+    """
+    from pony.web import compose as compose_view
+
+    services, index = _services("compose-draft-vanished")
+
+    def _gone(**_kwargs: object) -> object:
+        raise FileNotFoundError("/staged/report.pdf")
+
+    with (
+        patch.object(compose_view, "build_email_message", _gone),
+        _client(services) as client,
+    ):
+        response = client.post(
+            "/compose",
+            data={
+                "account": "acct",
+                "to": "you@example.test",
+                "subject": "Later",
+                "body": "Half written",
+                "save_draft": "1",
+            },
+            follow_redirects=True,
+        )
+
+    assert response.status_code == 200
+    assert "gone" in response.text.lower(), response.text[:400]
+    assert not any(
+        row.subject == "Later" for row in index.list_folder_messages(folder=INBOX)
+    )
+
+
 def test_sending_a_reply_returns_to_the_folder_it_was_read_in() -> None:
     """A reply carries its message as `answering`, not as `source`.
 

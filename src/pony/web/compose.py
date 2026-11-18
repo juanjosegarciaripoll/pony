@@ -631,18 +631,26 @@ def save_draft(services: WebServices, form: Form) -> Outcome:
     if extra is not None:
         return Outcome.refused(extra)
     try:
-        message = build_email_message(
-            from_address=_from_address(services, account),
-            to=form.to,
-            cc=form.cc,
-            bcc=form.bcc,
-            subject=form.subject,
-            body=form.body,
-            attachment_paths=list(attachments.paths),
-            markdown_mode=form.markdown,
-            in_reply_to=form.in_reply_to,
-            references=form.references,
-        )
+        try:
+            message = build_email_message(
+                from_address=_from_address(services, account),
+                to=form.to,
+                cc=form.cc,
+                bcc=form.bcc,
+                subject=form.subject,
+                body=form.body,
+                attachment_paths=list(attachments.paths),
+                markdown_mode=form.markdown,
+                in_reply_to=form.in_reply_to,
+                references=form.references,
+            )
+        except FileNotFoundError as missing:
+            # The same refusal `send` gives, and for the same reason: a
+            # file chosen a while ago may be gone by now, which is the
+            # user's news to hear and not a 500.  Saving a draft let it
+            # out of the route while sending the identical form said so
+            # politely.
+            return Outcome.refused(warn(f"Attachment is gone: {missing}"))
     finally:
         _let_go(services, attachments, sent=False)
     outcome = file_draft(
