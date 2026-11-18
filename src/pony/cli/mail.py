@@ -116,6 +116,14 @@ def run_sync(
 
     if account and not any(a.name == account for a in config.accounts):
         raise SystemExit(f"No account named {account!r} in config.")
+    if account and find_imap_account(config, account) is None:
+        # A local account is in the config and has no server, so this
+        # command has nothing to do for it.  Saying so beats the empty
+        # plan's "already up to date", which claims a sync happened.
+        raise SystemExit(
+            f"{account!r} is a local account — there is no server to sync it"
+            " with. Use `pony rescan` to index the mail already on disk."
+        )
 
     def _cli_progress(info: ProgressInfo) -> None:
         # \r returns to column 0; \033[K clears from cursor to end of

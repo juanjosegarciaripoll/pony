@@ -203,6 +203,35 @@ class RunSyncTestCase(unittest.TestCase):
         self.assertIn("does-not-exist", str(ctx.exception))
         self.assertIn("No account named", str(ctx.exception))
 
+    def test_sync_a_local_account_says_there_is_no_server(self) -> None:
+        """Naming a local account said "already up to date".
+
+        `pony sync` skips local accounts, so the plan came back empty and
+        the command reported a sync that had not happened. There is no
+        server to sync that account with, and `pony rescan` is what
+        indexes what is already on disk.
+        """
+        extra = (
+            "\n[[accounts]]\n"
+            'account_type = "local"\n'
+            'name = "archive"\n'
+            'email_address = "archive@example.com"\n'
+            "\n[accounts.mirror]\n"
+            'path = "mirrors/archive"\n'
+            'format = "mbox"\n'
+        )
+        with (
+            isolated_app_env(),
+            temporary_config() as cfg,
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
+        ):
+            cfg.write_text(cfg.read_text(encoding="utf-8") + extra, encoding="utf-8")
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli_capture("--config", str(cfg), "sync", "archive")
+        said = str(ctx.exception)
+        self.assertIn("local account", said)
+        self.assertIn("pony rescan", said)
+
     def test_sync_auth_failure_surfaces_as_systemexit(self) -> None:
         """A connection that raises is reported as a planning failure.
 
