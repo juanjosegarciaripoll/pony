@@ -556,9 +556,9 @@ In the event form:
 !!! note "Why ++f8++ and not a chord"
     Textual's text input binds ++ctrl+d++ to delete-character and resolves
     it before the form does, and a browser takes ++ctrl+d++ for "bookmark
-    this page", so the chord this key used to be was shadowed on both
-    front ends: it edited the field, and the footer could not show it.
-    Function keys above ++f2++ are the ground no one else has claimed.
+    this page", so a ++ctrl+d++ here reaches neither front end: it edits
+    the field, and the footer cannot show it. Function keys above
+    ++f2++ are the ground no one else has claimed.
 
 In the event detail dialog, ++e++ edits, ++shift+d++ deletes after
 confirmation and ++escape++ closes. In the search box, ++enter++ opens

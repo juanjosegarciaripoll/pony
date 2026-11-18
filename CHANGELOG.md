@@ -327,6 +327,23 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   month; its typed-count prompt is the explicit confirmation the
   principle asks for.
 
+### Fixed
+
+- **++t++ and ++ctrl+t++ no longer crash the `.eml` viewer.** The message
+  panel binds both, and the panel is what `pony view` mounts, but the
+  viewer read the part index with `int()` — and both keys send `'T'`.
+  It also took ``0`` for "every attachment", a meaning ``0`` has nowhere
+  else: it is the message as it arrived. The viewer now reads the index
+  with `message_export.part_key` and opens and saves through the same
+  two functions the reader uses, so one numbering covers both.
+- **Saving a draft whose attachment has gone says so instead of
+  returning a server error.** `send` caught `FileNotFoundError` and
+  refused politely; saving the identical form let it out of the route.
+- **`pony sync <local-account>` says there is no server to sync with.**
+  It reported "Nothing to sync — already up to date", which claims a
+  sync that cannot happen: the command skips local accounts, so the plan
+  came back empty. It now names the account and points at `pony rescan`.
+
 ### Added
 
 - **++f3++ syncs both halves at once.** ++ctrl+g++ syncs the half in

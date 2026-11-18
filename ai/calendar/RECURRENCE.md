@@ -4,7 +4,7 @@ RRULE / RDATE / EXDATE expansion and the `occurrences` cache. Load-bearing for a
 
 ## 1. Principles
 
-1. **Expansion is a read-time concern.** We never materialise occurrences eagerly on write. Writes update the master (and overrides) and invalidate the cache.
+1. **Expansion happens on write.** A write invalidates the master's occurrence rows and then re-expands them, through `recurrence.rebuild_caches`. Nothing expands on read: a view queries the cache and shows what is in it, so a write that did not rebuild would leave the agenda, the day and the grid views, and the alarms, silently showing the state before it. The three writers — sync, ingest, and the TUI's create/edit — all funnel through that one function, which is also where the window and the occurrences-before-alarms ordering are pinned.
 2. **The master stores recurrence rules verbatim.** The `components` row for a master VEVENT / VTODO keeps the original `RRULE`, `RDATE`, and `EXDATE` properties untouched in the file's `raw_ics` -- which belongs to the resource, one copy for the master and every override of it -- and in projected columns.
 3. **Overrides are separate rows.** An override is a `components` row sharing the master's `UID` with a non-null `recurrence_id`. It carries the full override VEVENT / VTODO, not a patch.
 4. **The `occurrences` table is a rebuildable cache.** It holds pre-expanded rows for a bounded window. It can be dropped and rebuilt at any time without data loss.
@@ -32,13 +32,13 @@ For non-recurring components, `expand` returns a single `Occurrence` if the comp
 
 ## 4. Cache policy
 
-- `occurrences` rows are populated lazily on view. Each view computes its needed window and asks the index for expanded occurrences; missing ones are expanded and inserted.
-- Default cached window: **current month ± 12 months**. Configurable per deployment later; out of scope for v1.
+- `occurrences` rows are written by `rebuild_caches`, from whichever write touched the master. A view reads the cache and expands nothing itself.
+- Cached window: `recurrence.OCCURRENCE_WINDOW_PAST` back and `OCCURRENCE_WINDOW_FUTURE` forward of the moment the rebuild runs — 30 years and 5 years. Read them from the module rather than from here.
 - Invalidation:
   - Any write to a master row → delete all `occurrences` rows for that `component_id`.
   - Any write to an override row → delete the single `occurrences` row at its `recurrence_id`.
   - VTIMEZONE change on the server (§C-11) → delete all `occurrences` rows for components referencing that TZID.
-- Rebuild is lazy. We never rebuild the whole cache on startup.
+- Nothing rebuilds the whole cache on startup. A full rebuild happens when a sync passes `uids=None` for a calendar, which is what a full resync does; otherwise a rebuild is restricted to the UIDs the write touched.
 
 ## 5. Edge cases
 

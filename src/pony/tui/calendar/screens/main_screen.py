@@ -383,7 +383,7 @@ class MainScreen(Screen[None]):
         self.app.push_screen(HelpScreen(bindings))  # pyright: ignore[reportUnknownMemberType]
 
     def action_sync(self) -> None:
-        """Sync every account now, in the background (`g`).
+        """Sync every account now, in the background (++ctrl+g++).
 
         Hands the request to the application's scheduler, which restarts
         the countdown so the next automatic sync falls one full interval
@@ -401,7 +401,7 @@ class MainScreen(Screen[None]):
         self._show_next_sync()
 
     def action_sync_dialog(self) -> None:
-        """Confirm, then sync in the foreground progress dialog (`G`).
+        """Confirm, then sync in the foreground progress dialog (++g++).
 
         The slot is claimed before the confirmation goes up and returned
         when the progress dialog finishes, so the periodic thread cannot

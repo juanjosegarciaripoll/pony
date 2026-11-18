@@ -181,8 +181,12 @@ class AppConfig:
     # Composer: global default for Markdown composition mode.
     # Overridden per-account by AccountConfig.markdown_compose.
     markdown_compose: bool = False
-    # Path to a BBDB v3 file.  When set, the contacts database is
-    # exported to this file after every sync.
+    # Path to a BBDB v3 file, for Emacs interop.  Read by `pony contacts
+    # import` when it is given no path, and never written to: the export
+    # cannot represent phone numbers, postal addresses or record ids, so
+    # `pony contacts export` with no path writes <data_dir>/contacts.bbdb
+    # instead.  Nothing is imported or exported automatically — a sync
+    # does not touch this file.
     bbdb_path: Path | None = None
     # Target directory for attachments opened/saved from the TUI.  When
     # None, resolves to ``~/Downloads`` at use time.

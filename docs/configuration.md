@@ -206,7 +206,7 @@ trash_retention_days = 30
 | `use_utf8` | bool | `false` | Enable Unicode symbols in the TUI. |
 | `editor` | string | *(none)* | External editor for the composer (++alt+e++). |
 | `markdown_compose` | bool | `false` | Global default for Markdown composition mode. |
-| `bbdb_path` | string | *(none)* | BBDB v3 file imported/exported on each sync. Supports `~`, `$VAR`, `%VAR%`. |
+| `bbdb_path` | string | *(none)* | BBDB v3 file `pony contacts import` reads when given no path. Never written to, and never read automatically. Supports `~`, `$VAR`, `%VAR%`. |
 | `downloads_path` | string | `~/Downloads` | Directory for the TUI's open/save attachment keys. |
 | `theme` | string | *(textual default)* | Textual theme name. `--theme` overrides per-session. |
 

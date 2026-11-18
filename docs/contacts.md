@@ -179,9 +179,8 @@ and Emacs. The format is plain-text Lisp vector notation, UTF-8 encoded.
 
 The contacts database is the single store. **BBDB is a format you move data
 through when you ask, not a second copy kept in step** — nothing is imported or
-exported unless you run the command. Earlier versions imported from `bbdb_path`
-and rewrote an export on every launch and every sync, which meant contacts
-appeared and files changed as a side effect of reading mail.
+exported unless you run the command, so no file changes and no contact appears
+as a side effect of reading mail.
 
 ### `bbdb_path`
 

@@ -1,11 +1,11 @@
 """Which key does what, with no user interface attached.
 
-This module holds two things: the vocabulary both halves of the program
-describe a keyboard with, and the calendar's own table written in it.
-The mail reader's table is :mod:`pony.mail.keymap`, which imports the
-vocabulary from here — the same arrangement as :mod:`pony.outcome`,
-and for the same reason: the dependency arrow runs from ``pony`` to
-the calendar, so the vocabulary both halves share lives here.
+This module holds the calendar's own table.  The vocabulary both halves
+describe a keyboard with — :class:`pony.keys.KeyBinding`,
+:func:`pony.keys.for_surface`, :func:`pony.keys.web_key` — is in
+:mod:`pony.keys`, with the rest of what the two halves share, and both
+tables import it from there.  The mail reader's table is
+:mod:`pony.mail.keymap`.
 
 A front end converts the table it needs:
 :func:`pony.tui.calendar.bindings.to_textual` for the terminal, and
@@ -14,9 +14,9 @@ neither can advertise a key the other does not have, and a key cannot
 mean one thing in the terminal and another in a browser.
 
 The calendar's keys deliberately echo the mail reader's: ``c`` creates
-(compose / new event), ``g`` syncs, ``G`` goes somewhere, ``Q`` quits,
-``B`` browses contacts, ``/`` searches.  One table each, two tables that
-rhyme.
+(compose / new event), ``g`` opens the sync dialog and ``ctrl+g`` syncs
+quietly, ``G`` goes somewhere, ``Q`` quits, ``B`` browses contacts,
+``/`` searches.  One table each, two tables that rhyme.
 """
 
 from __future__ import annotations
