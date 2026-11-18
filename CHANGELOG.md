@@ -200,6 +200,13 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Changed
 
+- **`pony sync` is wired like every other front end.** It built its own
+  copy of the sync engine, with a session factory duplicating the one the
+  engine makes for itself and a mirror factory that did not match the
+  other callers'. Two wirings are two sets of defaults to keep in step,
+  and they had already drifted. It now goes through `build_sync_service`,
+  as the reader, the periodic sync and the browser always did, and a
+  layering test fails on a second one.
 - **++ctrl+g++ and the periodic sync now apply a mass deletion instead of
   skipping the folder.** A folder is flagged when more than a fifth of the
   messages it is known to hold have gone from the server, and an unattended

@@ -397,3 +397,35 @@ class ArchitectureListingTest(unittest.TestCase):
             [],
             "docs/architecture.md does not mention: " + ", ".join(missing),
         )
+
+
+class OneWiringPerEngineTest(unittest.TestCase):
+    """The sync engine is assembled in exactly one place.
+
+    `pony sync` used to construct its own `ImapSyncService` beside
+    `build_sync_service`, with a `session_factory` that duplicated the
+    one the engine makes for itself and a `mirror_factory` that did not
+    match the other callers'.  Two wirings are two sets of defaults to
+    keep in step, and these drifted: the connect breaker's lifetime
+    ended up tied to how long each caller happened to hold its service,
+    so a host that timed out once disabled an account for the rest of a
+    terminal session while `pony sync` kept working.
+
+    A second constructor call is how that happens, so this fails on one.
+    """
+
+    def test_only_the_factory_constructs_the_sync_service(self) -> None:
+        offenders: list[str] = []
+        for module, path in _source_files():
+            if module == "pony.mail.sync":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "ImapSyncService(" in text:
+                offenders.append(module)
+
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "wire the engine with build_sync_service instead: "
+            + ", ".join(sorted(offenders)),
+        )

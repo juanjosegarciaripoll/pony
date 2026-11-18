@@ -3235,12 +3235,20 @@ def build_sync_service(
 ) -> ImapSyncService:
     """Assemble the IMAP sync engine over already-opened repositories.
 
-    Both things that sync mail from the TUI need one: the screen's
-    foreground plan-and-confirm flow, and the application's periodic
-    scheduler, which runs on a thread of its own and so cannot reach into
-    a screen for it.  The mirrors are passed in rather than built here
-    because the application has already opened them and two mirror
-    objects over one directory is one too many.
+    **The one place the engine is wired.**  Everything that syncs mail
+    comes through here -- `pony sync`, the reader's ++g++ dialog, the
+    periodic sync behind ++ctrl+g++, and the browser -- because the
+    alternative is what this function was introduced too late to
+    prevent: `pony sync` hand-built its own engine with a
+    `session_factory` that duplicated the one `ImapSyncService` makes
+    for itself and a `mirror_factory` that did not match, and the two
+    paths drifted until they answered the same question differently.
+    A second wiring is a second set of defaults to keep in step.
+
+    The mirrors are passed in rather than built here because the
+    long-lived callers have already opened them, and two mirror objects
+    over one directory is one too many; a caller that has none builds
+    them with `build_mirrors`.
     """
     return ImapSyncService(
         config=config,

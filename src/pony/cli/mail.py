@@ -47,13 +47,11 @@ from ..mail.index_store import (
 )
 from ..mail.message_renderer import AttachmentInfo  # noqa: TC002
 from ..mail.protocols import (
-    ImapClientSession,
     MirrorRepository,
 )
 from ..mail.search_parser import parse_query
 from ..mail.storage_indexing import RescanResult, ScanState, rescan_local_account
 from ..mail.sync import (
-    ImapSyncService,
     MergeFlagsOp,
     ProgressInfo,
     PushDeleteOp,
@@ -61,6 +59,7 @@ from ..mail.sync import (
     RestoreOp,
     ServerDeleteOp,
     SyncPlan,
+    build_sync_service,
     describe_halt,
     format_plan_detail,
     format_plan_summary,
@@ -94,23 +93,17 @@ def run_sync(
     config = require_config(config_path)
     index = open_index(paths)
     credentials = build_credentials_provider(config, index)
-
-    def session_factory(acc: AccountConfig, password: str) -> ImapClientSession:
-        return ImapSession(
-            host=acc.imap_host,
-            port=acc.imap_port,
-            ssl=acc.imap_ssl,
-            username=acc.username,
-            password=password,
-            connect_timeout=config.imap_connect_timeout_seconds,
-        )
-
-    service = ImapSyncService(
+    # The same assembly point every other front end uses, rather than a
+    # second hand-wired engine.  This command used to build its own,
+    # with a `session_factory` that was a verbatim copy of the one
+    # `ImapSyncService` makes for itself and a `mirror_factory` that
+    # differed -- which is how `pony sync` and ++ctrl+g++ came to behave
+    # differently at all, and the kind of drift a second wiring invites.
+    service = build_sync_service(
         config=config,
-        mirror_factory=build_mirror,
         index=index,
+        mirrors=build_mirrors(config),
         credentials=credentials,
-        session_factory=session_factory,
     )
 
     if account and not any(a.name == account for a in config.accounts):

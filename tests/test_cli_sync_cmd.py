@@ -2,7 +2,10 @@
 
 These tests drive the ``sync`` subcommand through the CLI entry point
 ``main(["--config", cfg, "sync", ...])`` while patching the
-``pony.cli.mail.ImapSession`` symbol so no real network connection is made.
+``pony.mail.imap_client.ImapSession`` symbol so no real network connection
+is made.  That is where the engine itself reaches for a session: every
+front end is wired by `build_sync_service`, so there is one seam to
+patch rather than one per command.
 The fake server is provided by :class:`tests.test_sync.FakeImapSession`.
 """
 
@@ -122,7 +125,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--yes")
         self.assertEqual(rc, 0)
@@ -137,7 +140,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
             paths = isolated_paths()
@@ -158,7 +161,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory({"INBOX": {}})),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory({"INBOX": {}})),
         ):
             _seed_local_rows(cfg, 5)
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--dry-run")
@@ -171,7 +174,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory({"INBOX": {}})),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory({"INBOX": {}})),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync", "--yes")
         self.assertEqual(rc, 0)
@@ -182,7 +185,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync", "personal", "--yes")
         self.assertEqual(rc, 0)
@@ -193,7 +196,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             self.assertRaises(SystemExit) as ctx,
         ):
             run_cli_capture("--config", str(cfg), "sync", "does-not-exist")
@@ -214,7 +217,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", raising_factory),
+            patch("pony.mail.imap_client.ImapSession", raising_factory),
             self.assertRaises(SystemExit) as ctx,
         ):
             run_cli_capture("--config", str(cfg), "sync", "--yes")
@@ -225,7 +228,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", return_value="y"),
         ):
@@ -238,7 +241,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", return_value="n"),
         ):
@@ -253,7 +256,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=EOFError),
         ):
@@ -266,7 +269,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=KeyboardInterrupt),
         ):
@@ -284,7 +287,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=True),
             patch("pony.cli.mail._run_pager") as pager,
             patch("builtins.input", side_effect=_answer),
@@ -299,7 +302,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory({"INBOX": {}})),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory({"INBOX": {}})),
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", return_value="y"),
         ):
@@ -326,7 +329,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory({"INBOX": {}})),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory({"INBOX": {}})),
             patch("sys.stdin.isatty", return_value=True),
             patch("pony.cli.mail._run_pager", side_effect=_capture_pager),
             patch("builtins.input", side_effect=_answer),
@@ -344,7 +347,7 @@ class RunSyncTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as cfg,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
             patch("sys.stdin.isatty", return_value=False),
         ):
             out, rc = run_cli_capture("--config", str(cfg), "sync")
@@ -375,7 +378,7 @@ class SyncSummaryTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            patch("pony.cli.mail.ImapSession", _factory),
+            patch("pony.mail.imap_client.ImapSession", _factory),
             self.assertRaises(SystemExit),
         ):
             run_cli_capture("--config", str(config_path), "sync", "--yes")
@@ -385,7 +388,7 @@ class SyncSummaryTestCase(unittest.TestCase):
         with (
             isolated_app_env(),
             temporary_config() as config_path,
-            patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())),
+            patch("pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())),
         ):
             run_cli_capture("--config", str(config_path), "sync", "--yes")
             output, rc = run_cli_capture("--config", str(config_path), "sync", "--yes")
@@ -414,7 +417,9 @@ class SyncSummaryTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("pony.cli.mail.ImapSession", _fake_factory(_seeded_inbox())):
+            with patch(
+                "pony.mail.imap_client.ImapSession", _fake_factory(_seeded_inbox())
+            ):
                 _output, rc = run_cli_capture(
                     "--config", str(config_path), "sync", "--yes"
                 )
