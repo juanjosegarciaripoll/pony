@@ -63,6 +63,8 @@ _WEB_KEY_NAMES = {
     "delete": "Delete",
     "pagedown": "PageDown",
     "pageup": "PageUp",
+    "home": "Home",
+    "end": "End",
     "colon": ":",
     # Every function key, not the two that happen to be bound: the DOM
     # spells them "F8" where Textual spells them "f8", and a key added

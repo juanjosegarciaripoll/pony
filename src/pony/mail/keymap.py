@@ -77,6 +77,17 @@ MARK_KEYS: tuple[KeyBinding, ...] = (
     KeyBinding("m", "mark_down", "Mark", Surface.LIST),
     KeyBinding("shift+down", "mark_down", "Mark ↓", Surface.LIST, show=False),
     KeyBinding("shift+up", "mark_up", "Mark ↑", Surface.LIST, show=False),
+    # Marking a run in one press, where shift+down marks one row at a
+    # time.  A range *adds* rather than toggles: flipping whatever each
+    # row already was makes "mark the rest of the folder" depend on what
+    # the user happened to mark before, which is not what either key
+    # says.  Home and End are the clear ground for this -- unbound
+    # everywhere else, and every terminal encodes them with the shift
+    # (`tests/test_key_encoding.py`).
+    KeyBinding("shift+end", "mark_to_end", "Mark to end", Surface.LIST, show=False),
+    KeyBinding(
+        "shift+home", "mark_to_start", "Mark to start", Surface.LIST, show=False
+    ),
 )
 
 # Row-cursor motion, shared by every list.

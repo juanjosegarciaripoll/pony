@@ -88,6 +88,7 @@ does nothing.
 | ++greater++ | Jump to last message |
 | ++m++ | Mark the current row and move down (marked rows become the target of flag, move and copy actions) |
 | ++shift+down++ / ++shift+up++ | Mark and move without leaving the keyboard home row |
+| ++shift+end++ / ++shift+home++ | Mark every row from here to the end of the list, or back to its start |
 | ++enter++ | Open message in the preview pane |
 
 ### Message preview

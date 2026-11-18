@@ -104,6 +104,14 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Added
 
+- **++shift+end++ and ++shift+home++ mark a run of messages.** ++m++ and
+  ++shift+down++ mark one row per press, which is a long way through a
+  folder; these mark every row from the cursor to the end of the list, or
+  back to its start, and leave the cursor there. A range *adds* marks
+  rather than toggling them, so sweeping the rest of a folder does not
+  depend on what was marked inside it. The contacts browser gets both
+  keys as well, because the two lists share one marking vocabulary, and
+  the browser front end implements them too.
 - **Dedupe a folder from the reader** (++shift+f8++): the duplicate rule
   `pony folder dedup` applies is now available on the folder in front of you.
   It names how many copies it would trash and requires that number to be typed

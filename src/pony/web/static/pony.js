@@ -80,6 +80,23 @@ function toggleMark(row) {
   }
 }
 
+// Mark every row between the selected one and `target`, inclusive, and
+// leave the selection there. Adds rather than toggles, which is what
+// the terminal's `_mark_through` does and for the same reason: a toggle
+// would clear whatever was already marked inside the run.
+function markThrough(target) {
+  const all = rows();
+  if (all.length === 0) return;
+  const stop = Math.min(all.length - 1, Math.max(0, target));
+  const from = Math.max(all.indexOf(selectedRow()), 0);
+  for (let i = Math.min(from, stop); i <= Math.max(from, stop); i += 1) {
+    const row = all[i];
+    state.marked.add(row.dataset.id);
+    row.classList.add("marked");
+  }
+  select(all[stop]);
+}
+
 // What an action applies to: every marked row, the open message, or the
 // selected row.
 //
@@ -900,6 +917,11 @@ const clientActions = {
     toggleMark(selectedRow());
     moveSelection(-1);
   },
+  // A run in one press. Adds rather than toggles, as the terminal's
+  // does: "the rest of this folder as well" must not clear what was
+  // already marked inside the run.
+  mark_to_end: () => markThrough(rows().length - 1),
+  mark_to_start: () => markThrough(0),
 
   // Everywhere
   show_help: showHelp,

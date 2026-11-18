@@ -173,6 +173,76 @@ async def test_mark_up_toggles_then_moves_the_cursor_up() -> None:
         assert panel.cursor_row == 1
 
 
+async def test_shift_end_marks_the_rest_of_the_folder() -> None:
+    """``shift+end`` marks from the cursor to the last row, and goes there."""
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-to-end", count=5)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        panel.move_cursor(row=2)
+        await pilot.pause()
+
+        await _press(pilot, panel, "shift+end")
+
+        assert len(panel.marked_summaries()) == 3
+        assert panel.cursor_row == 4
+
+
+async def test_shift_home_marks_back_to_the_start() -> None:
+    """``shift+home`` runs the other way, and the cursor follows."""
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-to-start", count=5)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        panel.move_cursor(row=3)
+        await pilot.pause()
+
+        await _press(pilot, panel, "shift+home")
+
+        assert len(panel.marked_summaries()) == 4
+        assert panel.cursor_row == 0
+
+
+async def test_a_range_adds_marks_rather_than_toggling_them() -> None:
+    """The whole run ends up marked, including what already was.
+
+    A toggle would have cleared the row marked by hand first, so
+    "mark the rest of the folder" would depend on what the user had
+    marked inside it -- which is not what the key says.
+    """
+    app, _cfg, _paths, _index, _mirrors = _app_with_rows("mlist-mark-adds", count=4)
+
+    async with app.run_test() as pilot:
+        await _boot(pilot)
+        panel = _panel(app)
+        # Mark row 2 on its own, then sweep the whole folder.
+        panel.move_cursor(row=2)
+        await pilot.pause()
+        await _press(pilot, panel, "m")
+        panel.move_cursor(row=0)
+        await pilot.pause()
+
+        await _press(pilot, panel, "shift+end")
+
+        assert len(panel.marked_summaries()) == 4
+
+
+async def test_a_range_over_an_empty_list_is_a_noop() -> None:
+    """No rows, no cursor to take a range from."""
+    app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mlist-mark-range-empty")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = _panel(app)
+        panel.action_mark_to_end()
+        panel.action_mark_to_start()
+        await pilot.pause()
+
+        assert panel.marked_summaries() == []
+
+
 async def test_marking_an_empty_list_is_a_noop() -> None:
     """No cursor row means nothing to toggle."""
     app, _cfg, _paths, _index, _mirrors = build_pony_app(label="mlist-mark-empty")

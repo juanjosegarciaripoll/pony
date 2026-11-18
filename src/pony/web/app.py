@@ -947,6 +947,8 @@ CLIENT_ACTIONS = frozenset(
         "cursor_last",
         "mark_down",
         "mark_up",
+        "mark_to_end",
+        "mark_to_start",
         "show_help",
         "toggle_calendar",
         "search",

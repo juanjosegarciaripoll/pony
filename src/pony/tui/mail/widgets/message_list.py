@@ -656,6 +656,38 @@ class MessageListPanel(DraggableEdgeMixin, DataTable[Text | str]):
         self._toggle_mark_current()
         self.action_cursor_up()
 
+    def _mark_through(self, target_row: int) -> None:
+        """Mark every row between the cursor and *target_row*, and go there.
+
+        Inclusive at both ends, and it *adds* marks rather than toggling
+        them: what ++shift+end++ means is "the rest of this folder as
+        well", and a toggle would instead clear whatever the user had
+        already marked inside the run.
+
+        Read off :attr:`effective_cursor_row` for the same reason
+        :meth:`move_cursor_by` is -- during a reload the real cursor is
+        still at row 0, so a range taken from it would start at the top
+        of the folder instead of the row the user is looking at.
+        """
+        if not self._summaries:
+            return
+        target_row = max(0, min(target_row, len(self._summaries) - 1))
+        first, last = sorted((self.effective_cursor_row, target_row))
+        for summary in self._summaries[first : last + 1]:
+            mid = str(summary.message_ref.id)
+            if mid not in self._marked:
+                self._marked.add(mid)
+                self._update_row(summary)
+        self.move_cursor(row=target_row)
+
+    def action_mark_to_end(self) -> None:
+        """Mark from the cursor to the last row (++shift+end++)."""
+        self._mark_through(len(self._summaries) - 1)
+
+    def action_mark_to_start(self) -> None:
+        """Mark from the cursor back to the first row (++shift+home++)."""
+        self._mark_through(0)
+
     def marked_summaries(self) -> list[FolderMessageSummary]:
         """Summaries currently marked, ordered as they appear in the list."""
         return [s for s in self._summaries if str(s.message_ref.id) in self._marked]

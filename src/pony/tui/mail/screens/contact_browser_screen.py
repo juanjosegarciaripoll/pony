@@ -189,6 +189,36 @@ class ContactBrowserScreen(Screen[None]):
         table = self.query_one("#contact-table", DataTable)
         table.action_cursor_up()
 
+    def _mark_through(self, target_row: int) -> None:
+        """Mark every row between the cursor and *target_row*, and go there.
+
+        The message list's :meth:`_mark_through` in the same words: the
+        marking vocabulary is one table (`pony.mail.keymap.MARK_KEYS`),
+        so a key that marks a run there marks one here too.
+        """
+        from textual.coordinate import Coordinate
+
+        if not self._displayed:
+            return
+        table = self.query_one("#contact-table", DataTable)
+        target_row = max(0, min(target_row, len(self._displayed) - 1))
+        first, last = sorted((max(table.cursor_row, 0), target_row))
+        for row in range(first, last + 1):
+            contact = self._displayed[row]
+            if contact.id is None or contact.id in self._marked:
+                continue
+            self._marked.add(contact.id)
+            table.update_cell_at(Coordinate(row, 0), "●")
+        table.move_cursor(row=target_row)
+
+    def action_mark_to_end(self) -> None:
+        """Mark from the cursor to the last row (++shift+end++)."""
+        self._mark_through(len(self._displayed) - 1)
+
+    def action_mark_to_start(self) -> None:
+        """Mark from the cursor back to the first row (++shift+home++)."""
+        self._mark_through(0)
+
     # ------------------------------------------------------------------
     # New / Edit
     # ------------------------------------------------------------------

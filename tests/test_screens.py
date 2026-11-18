@@ -1572,6 +1572,56 @@ async def test_contact_browser_mark_contact() -> None:
         assert isinstance(screen, ContactBrowserScreen)
 
 
+async def test_contact_browser_marks_a_range() -> None:
+    """++shift+end++ marks the rest of the list here too.
+
+    The marking vocabulary is one table (`pony.mail.keymap.MARK_KEYS`),
+    bound by the message list and this screen alike, so a key added
+    there has to do something here rather than raise.
+    """
+    from tui_helpers import make_index, make_tmp_paths
+
+    from pony.mail.domain import Contact
+
+    paths = make_tmp_paths("cb-mark-range")
+    index = make_index(paths)
+    for name in ("Ada", "Bob", "Cy", "Dee"):
+        index.upsert_contact(
+            contact=Contact(
+                id=None,
+                first_name=name,
+                last_name="Lee",
+                emails=(f"{name.lower()}@x.com",),
+            )
+        )
+
+    app = ContactsApp(contacts=index)
+    async with app.run_test() as pilot:
+        from textual.widgets import DataTable
+
+        from pony.tui.mail.screens.contact_browser_screen import ContactBrowserScreen
+
+        await pilot.pause()
+        table = app.screen.query_one("#contact-table", DataTable)
+        table.focus()
+        table.move_cursor(row=1)
+        await pilot.pause()
+
+        await pilot.press("shift+end")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ContactBrowserScreen)
+        assert len(screen._marked) == 3  # noqa: SLF001
+        assert table.cursor_row == 3
+
+        # And back the other way, over rows already marked.
+        await pilot.press("shift+home")
+        await pilot.pause()
+        assert len(screen._marked) == 4  # noqa: SLF001
+        assert table.cursor_row == 0
+
+
 # ===========================================================================
 # ContactSuggester unit tests
 # ===========================================================================

@@ -132,3 +132,33 @@ class AltKeyEncodingTests(unittest.TestCase):
             with self.subTest(key=key):
                 code = ord(letter)
                 self.assertEqual(_keys(f"\x1b[{code};3;{code}u"), [key])
+
+
+class MarkRangeKeyEncodingTests(unittest.TestCase):
+    """++shift+home++ and ++shift+end++, as the terminals spell them.
+
+    Chosen for the range-marking keys because, unlike every
+    ``ctrl+shift+<letter>``, they survive the trip: a terminal without
+    the kitty protocol still reports the shift on Home and End.  The
+    sequences below are the three families in use -- xterm's
+    ``CSI 1;2H``, the ``CSI <n>;2~`` form the Linux console and PuTTY
+    send, and rxvt's ``CSI <n>$`` -- and all of them have to arrive as
+    the key the table binds, or the marks are bound to nothing.
+    """
+
+    def test_the_xterm_form_carries_the_shift(self) -> None:
+        self.assertEqual(_keys("\x1b[1;2H"), ["shift+home"])
+        self.assertEqual(_keys("\x1b[1;2F"), ["shift+end"])
+
+    def test_the_tilde_form_carries_the_shift(self) -> None:
+        self.assertEqual(_keys("\x1b[1;2~"), ["shift+home"])
+        self.assertEqual(_keys("\x1b[4;2~"), ["shift+end"])
+
+    def test_the_rxvt_form_carries_the_shift(self) -> None:
+        self.assertEqual(_keys("\x1b[7$"), ["shift+home"])
+        self.assertEqual(_keys("\x1b[8$"), ["shift+end"])
+
+    def test_without_the_shift_they_are_a_different_key(self) -> None:
+        """So the range keys cannot be reached by Home or End alone."""
+        self.assertEqual(_keys("\x1b[H"), ["home"])
+        self.assertEqual(_keys("\x1b[F"), ["end"])
