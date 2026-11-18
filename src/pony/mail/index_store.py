@@ -642,15 +642,45 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
                 ON messages (account_name, folder_name)
                 """
             )
-            # Covers the folder list view: equality on (account_name,
-            # folder_name) plus ORDER BY received_at DESC without a
-            # separate sort step.  See list_folder_message_summaries.
+            # Covers the folder list view *and* carries what it draws:
+            # equality on (account_name, folder_name), ORDER BY
+            # received_at DESC with no sort step, and every column
+            # `list_folder_message_summaries` selects, so the scan is
+            # served from the index alone.  Without the payload each row
+            # of a folder cost a heap read into a table whose rows carry
+            # the message body -- 632 MB of a 1.28 GB index here -- and
+            # a 14 618-message archive took 687 ms cold against 30 ms
+            # index-only.  Omitting `body_text` from the projection does
+            # not help on its own: the row still has to be reached.
+            # Only worth saying on an index that already holds mail:
+            # building it over 130k rows is seconds of silence, while on
+            # a database being created it is instant and a sentence
+            # about it is noise.
+            if (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='index' AND name='ix_messages_folder_list'"
+                ).fetchone()
+                is None
+                and conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
+                is not None
+            ):
+                report.milestone("Building the folder list index")
             conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS ix_messages_folder_received
-                ON messages (account_name, folder_name, received_at DESC)
+                CREATE INDEX IF NOT EXISTS ix_messages_folder_list
+                ON messages (
+                    account_name, folder_name, received_at DESC, local_status,
+                    id, message_id, storage_key, sender, recipients, subject,
+                    has_attachments, local_flags
+                )
                 """
             )
+            # Superseded by the covering index above, which begins with
+            # the same three columns: everything that used this one has
+            # the same access path through that, and one index to
+            # maintain per write is cheaper than two.
+            conn.execute("DROP INDEX IF EXISTS ix_messages_folder_received")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS ix_messages_message_id
@@ -1197,7 +1227,7 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
 
         *limit* caps the result in SQL.  A caller that wants the newest
         hundred and slices the answer in Python has already paid for
-        every row in the folder; ``ix_messages_folder_received`` serves
+        every row in the folder; ``ix_messages_folder_list`` serves
         the order, so the capped query stops after the rows it returns.
         """
         sql = (
@@ -1320,42 +1350,15 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         of *limit*: one matching message in INBOX behind 500 in Archive
         came back as "nothing found".
         """
-        match_expr = _build_fts_match(query)
-        # Trashed rows stay in the table until retention reaps them, so
-        # without this the duplicates `pony folder dedup` just hid come
-        # straight back in every search hit.  Same statuses the folder
-        # list shows: PENDING_MOVE rows are real mail awaiting a push.
-        clauses: list[str] = ["m.local_status IN (?, ?)"]
-        params: list[object] = [
-            MessageStatus.ACTIVE.value,
-            MessageStatus.PENDING_MOVE.value,
-        ]
-
-        if match_expr:
-            clauses.append("messages_fts MATCH ?")
-            params.append(match_expr)
-        if account_name is not None:
-            clauses.append("m.account_name = ?")
-            params.append(account_name)
-        if folder_name is not None:
-            clauses.append("m.folder_name = ?")
-            params.append(folder_name)
-        where_sql = " AND ".join(clauses)
-        join_sql = "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
-
-        select_cols = ", ".join(f"m.{c}" for c in _FULL_COLS)
+        sql, params = build_search_sql(
+            query=query,
+            account_name=account_name,
+            folder_name=folder_name,
+            select_cols=", ".join(f"m.{c}" for c in _FULL_COLS),
+            limit=limit,
+        )
         with self._use() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT {select_cols}
-                FROM messages m
-                {join_sql}
-                WHERE {where_sql}
-                ORDER BY m.received_at DESC
-                LIMIT ?
-                """,  # noqa: S608
-                [*params, limit],
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
 
         return tuple(_indexed_message_from_row(row) for row in rows)
 
@@ -1389,41 +1392,27 @@ class SqliteIndexRepository(IndexRepository, ContactRepository):
         the query narrows: it is *limit* bodies either way.  Measured on
         500 hits, the body was 30 % of the search at 1.2 KB a message
         and 85 % at 40 KB -- 185 ms of a 219 ms search, unchanged
-        whether the term matched three messages or three thousand.  A
-        folder of large archived mail is where that lands, and it is
-        why searching one felt slower than searching anywhere else.
-        """
-        match_expr = _build_fts_match(query)
-        clauses: list[str] = ["m.local_status IN (?, ?)"]
-        params: list[object] = [
-            MessageStatus.ACTIVE.value,
-            MessageStatus.PENDING_MOVE.value,
-        ]
-        if match_expr:
-            clauses.append("messages_fts MATCH ?")
-            params.append(match_expr)
-        if account_name is not None:
-            clauses.append("m.account_name = ?")
-            params.append(account_name)
-        if folder_name is not None:
-            clauses.append("m.folder_name = ?")
-            params.append(folder_name)
-        where_sql = " AND ".join(clauses)
-        join_sql = "JOIN messages_fts f ON f.rowid = m.rowid" if match_expr else ""
+        whether the term matched three messages or three thousand.
 
-        select_cols = ", ".join(f"m.{c}" for c in self._SUMMARY_COLS.split(", "))
+        It is not, though, why searching a large archive felt slow:
+        that was the join order, and dropping the body off the
+        projection hid none of it.  A folder-narrowed search ran the
+        full-text query once per row of the folder -- 71.8 s over 19 000
+        archived messages, against 10 ms once the match is a rowid
+        subquery.  See the MATCH clause below.  Measured on this
+        projection, the whole folder read 145 ms with the body and
+        57 ms without: worth having, and a fortieth of the other
+        problem.
+        """
+        sql, params = build_search_sql(
+            query=query,
+            account_name=account_name,
+            folder_name=folder_name,
+            select_cols=", ".join(f"m.{c}" for c in self._SUMMARY_COLS.split(", ")),
+            limit=limit,
+        )
         with self._use() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT {select_cols}
-                FROM messages m
-                {join_sql}
-                WHERE {where_sql}
-                ORDER BY m.received_at DESC
-                LIMIT ?
-                """,  # noqa: S608
-                [*params, limit],
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
 
         return tuple(_summary_from_row(row) for row in rows)
 
@@ -2309,6 +2298,60 @@ def _fts5_terms(text: str) -> list[str]:
 def _fts5_field_match(column: str, text: str) -> str:
     """``AND`` every term in *text* against one FTS column."""
     return " AND ".join(f"{column}:{term}" for term in _fts5_terms(text))
+
+
+def build_search_sql(
+    *,
+    query: SearchQuery,
+    account_name: str | None,
+    folder_name: str | None,
+    select_cols: str,
+    limit: int,
+) -> tuple[str, list[object]]:
+    """The one statement both search projections run, and its parameters.
+
+    Public so a test can put it through ``EXPLAIN QUERY PLAN``: what
+    matters about this query is not the rows it returns but its join
+    order, and nothing in the rows shows that.
+
+    The full-text query appears as a rowid subquery rather than as a
+    join.  Narrowing by folder hands the planner an index that satisfies
+    the ``ORDER BY`` for free, so given a join it drove from `messages`
+    and asked the FTS table whether each row of the folder matched --
+    one whole full-text query per row.  Measured on a 19 000-message
+    archive: 71.8 s, against 10 ms for the same search account-wide,
+    where the planner happens to drive from the FTS side anyway.  SQLite
+    cannot estimate a virtual table's selectivity, so the shape of the
+    query is what settles the order.
+
+    Trashed rows stay in the table until retention reaps them, so
+    without the status filter the duplicates `pony folder dedup` just
+    hid come straight back in every hit.  Same statuses the folder list
+    shows: PENDING_MOVE rows are real mail awaiting a push.
+    """
+    match_expr = _build_fts_match(query)
+    clauses: list[str] = ["m.local_status IN (?, ?)"]
+    params: list[object] = [
+        MessageStatus.ACTIVE.value,
+        MessageStatus.PENDING_MOVE.value,
+    ]
+    if match_expr:
+        clauses.append(
+            "m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)"
+        )
+        params.append(match_expr)
+    if account_name is not None:
+        clauses.append("m.account_name = ?")
+        params.append(account_name)
+    if folder_name is not None:
+        clauses.append("m.folder_name = ?")
+        params.append(folder_name)
+    where_sql = " AND ".join(clauses)
+    sql = (
+        f"SELECT {select_cols} FROM messages m "  # noqa: S608 — module's own columns
+        f"WHERE {where_sql} ORDER BY m.received_at DESC LIMIT ?"
+    )
+    return sql, [*params, limit]
 
 
 def _build_fts_match(query: SearchQuery) -> str:

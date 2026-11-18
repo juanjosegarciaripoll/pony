@@ -302,6 +302,27 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **Searching inside a large folder is no longer measured in minutes.**
+  Narrowing a search to one folder hands SQLite an index that also
+  satisfies the date ordering for free, so it drove the query from
+  `messages` and asked the full-text index whether each row of the
+  folder matched — one whole full-text query per message. On a
+  19 000-message archive that was **71.8 s**, against 10 ms for the
+  same search account-wide, where the planner happens to drive from the
+  full-text side anyway. The match is now a rowid subquery, which is
+  evaluated once: the same search runs in **47.7 ms cold, 11.6 ms
+  warm**, and an account-wide one is unchanged. Leaving the message
+  body out of the hit list, which came earlier, saved a useful 2.5× on
+  the projection but could not touch this — the cost was the join
+  order, not the payload.
+- **Opening a large folder no longer waits on the message bodies.** The
+  folder list reads a dozen narrow columns, but they are stored after
+  the body in the row, so reaching them meant pulling the row — and the
+  message table is 632 MB of a 1.28 GB index here. The index that
+  serves the folder list now carries those columns itself, so the list
+  is built from the index alone: **687 ms down to 76 ms** for a
+  14 600-message folder. Existing indexes gain the new one on first
+  open, which takes a few seconds once and says so.
 - **The sync countdown no longer freezes at `0:00` after a sync by hand.**
   ++ctrl+g++ syncs now and arms the repeating timer from that point, and
   both front ends repaint their countdown when a run finishes by reading

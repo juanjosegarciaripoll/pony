@@ -481,8 +481,13 @@ CREATE UNIQUE INDEX ux_messages_uid
     WHERE uid IS NOT NULL;
 CREATE INDEX ix_messages_account_folder
     ON messages (account_name, folder_name);
-CREATE INDEX ix_messages_folder_received          -- the folder list view
-    ON messages (account_name, folder_name, received_at DESC);
+CREATE INDEX ix_messages_folder_list              -- the folder list view,
+    ON messages (                                 -- covering: served from
+        account_name, folder_name,                -- the index alone
+        received_at DESC, local_status,
+        id, message_id, storage_key, sender,
+        recipients, subject, has_attachments, local_flags
+    );
 CREATE INDEX ix_messages_message_id
     ON messages (account_name, message_id)
     WHERE message_id != '';

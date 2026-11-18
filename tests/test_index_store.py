@@ -25,7 +25,11 @@ from pony.mail.domain import (
     MessageStatus,
     SearchQuery,
 )
-from pony.mail.index_store import _BATCH_COMMIT_ROWS, SqliteIndexRepository
+from pony.mail.index_store import (
+    _BATCH_COMMIT_ROWS,
+    SqliteIndexRepository,
+    build_search_sql,
+)
 from pony.mail.search_parser import parse_query
 
 
@@ -883,9 +887,11 @@ class V3ToV4MigrationTestCase(unittest.TestCase):
     def test_a_caller_that_reports_nothing_still_leaves_a_trace(self) -> None:
         """The reader, the browser and the MCP server pass no reporter.
 
-        They must not be silent either, so for them the two milestones
-        go to the log.  Only the milestones: a hundred running counts
-        belong on one overwritten line, not in a log file.
+        They must not be silent either, so for them the milestones go to
+        the log -- a migration beginning and ending, and a one-time
+        index build between them.  Only the milestones: a hundred
+        running counts belong on one overwritten line, not in a log
+        file.
         """
         path = TMP_ROOT / "v3-migration-log" / f"{uuid4().hex}.sqlite3"
         self._build_v3_db(path)
@@ -894,9 +900,12 @@ class V3ToV4MigrationTestCase(unittest.TestCase):
         with self.assertLogs("pony.mail.index_store", level="WARNING") as captured:
             repo.initialize()
 
-        self.assertEqual(len(captured.records), 2, captured.output)
         self.assertIn("schema v3 to v4", captured.output[0])
-        self.assertIn("Index migrated to schema v4", captured.output[1])
+        self.assertIn("Index migrated to schema v4", captured.output[-1])
+        # No running count reached the log: those carry "of N messages".
+        self.assertEqual(
+            [], [line for line in captured.output if " of 2 messages" in line]
+        )
 
     def test_a_reported_migration_is_not_also_logged_as_a_warning(self) -> None:
         """Said once.  A terminal shows stderr and stdout in one stream."""
@@ -1694,6 +1703,45 @@ class UtcNormalisationTest(unittest.TestCase):
         self.assertEqual([r.subject for r in rows], ["UTC", "East"])
 
 
+class FolderListIndexTest(unittest.TestCase):
+    """The folder list is served from the index, without heap reads.
+
+    `messages` carries the message body, so a row of it is large and
+    spread over overflow pages.  Narrowing the projection to what the
+    list draws does not avoid that -- the row still has to be reached
+    for columns stored after the body -- so the index has to carry the
+    payload instead.  Measured on a real 1.28 GB index whose table was
+    632 MB of it: a 14 618-message folder read in 687 ms cold against
+    30 ms index-only.
+    """
+
+    def test_the_folder_listing_needs_no_heap_reads(self) -> None:
+        repo = _fresh_repo()
+        repo.insert_message(message=_make_message("<a@x>", subject="A"))
+
+        sql = (
+            f"SELECT {SqliteIndexRepository._SUMMARY_COLS} "  # noqa: SLF001
+            "FROM messages WHERE account_name = ? AND folder_name = ? "
+            "AND local_status IN (?, ?) ORDER BY received_at DESC"
+        )
+        with contextlib.closing(sqlite3.connect(repo._database_path)) as conn:  # noqa: SLF001
+            plan = [
+                str(row[-1])
+                for row in conn.execute(
+                    f"EXPLAIN QUERY PLAN {sql}",
+                    ("personal", "INBOX", "active", "pending_move"),
+                )
+            ]
+
+        self.assertTrue(
+            any("COVERING INDEX" in step for step in plan),
+            f"the folder list is not served from the index alone: {plan}",
+        )
+        self.assertEqual(
+            [], [step for step in plan if "TEMP B-TREE" in step], f"a sort: {plan}"
+        )
+
+
 class OneConnectionPerThreadTest(unittest.TestCase):
     """A thread's transaction is its own, and reaches no other thread.
 
@@ -1958,6 +2006,46 @@ class SearchFolderScopeTest(unittest.TestCase):
         # What it does now.
         self.assertEqual(1, len(scoped))
         self.assertEqual("INBOX", scoped[0].message_ref.folder_name)
+
+    def test_a_folder_narrowed_search_matches_once_not_once_per_row(self) -> None:
+        """The scoping above is what made this go wrong.
+
+        Giving the planner a folder equality hands it an index that also
+        satisfies the ``ORDER BY`` for free, so with the match written
+        as a join it drove from `messages` and asked the FTS table
+        whether each row of the folder matched -- a whole full-text
+        query per row.  On a 19 000-message archive that was 71.8 s,
+        against 10 ms for the same search account-wide, where the
+        planner drives from the FTS side anyway.
+
+        The result is identical either way, so only the plan can show
+        it: the full-text query has to be evaluated once, into a rowid
+        list, which `EXPLAIN QUERY PLAN` reports as a subquery.
+        """
+        sql, params = build_search_sql(
+            query=parse_query("needle"),
+            account_name="personal",
+            folder_name="INBOX",
+            select_cols="m.id",
+            limit=500,
+        )
+        with contextlib.closing(sqlite3.connect(self.index._database_path)) as conn:  # noqa: SLF001
+            plan = [
+                str(row[-1])
+                for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}", params)
+            ]
+
+        self.assertTrue(
+            any("SUBQUERY" in step for step in plan),
+            f"the full-text query is not evaluated on its own: {plan}",
+        )
+        # The shape that was slow: the virtual table reached with a
+        # constraint, which is SQLite saying it is asked per outer row.
+        self.assertEqual(
+            [],
+            [step for step in plan if "VIRTUAL TABLE INDEX 0:=" in step],
+            f"the full-text query is the inner loop of a join: {plan}",
+        )
 
     def test_the_summary_search_is_scoped_the_same_way(self) -> None:
         """The path both front ends take has to narrow identically."""
