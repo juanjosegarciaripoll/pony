@@ -16,7 +16,7 @@ from textual.app import App
 from textual.events import MouseEvent
 from textual.pilot import Pilot
 from textual.widget import Widget
-from textual.widgets import Input, Label, Select
+from textual.widgets import Input, Label
 
 from pony.calendar.credentials import DefaultCredentialsProvider
 from pony.calendar.domain import (
@@ -92,6 +92,7 @@ from pony.tui.calendar.widgets.date_picker import (
 )
 from pony.tui.calendar.widgets.event_list import EventList, component_ref_for_row
 from pony.tui.calendar.widgets.event_view import EventView
+from pony.tui.calendar.widgets.time_picker import TimePicker
 from pony.tui.reporting import on_ui_thread
 from tests_calendar import corpus
 from tests_calendar.zones import local_zone, requires_tzset
@@ -1535,7 +1536,7 @@ class NewEventFlowTest(TuiFlowTestCase):
             edit = pilot.app.screen
             edit.query_one("#edit-summary").value = "Brand new event"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-start-time", TimePicker).value = "10:00"
             # Pin both ends. Left alone they keep the defaults the form
             # derived from `NOW` and rendered in the *local* zone, which
             # makes the save depend on where the suite runs: under UTC the
@@ -1545,7 +1546,7 @@ class NewEventFlowTest(TuiFlowTestCase):
             # with "the event ends before it starts" and the save
             # silently does nothing.
             edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-end-time", Select).value = "11:00"
+            edit.query_one("#edit-end-time", TimePicker).value = "11:00"
             edit.action_save()
             await pilot.pause()
 
@@ -1577,7 +1578,7 @@ class NewEventFlowTest(TuiFlowTestCase):
             self.assertFalse(checkbox.value)
             checkbox.value = True
             await pilot.pause()
-            self.assertTrue(edit.query_one("#edit-end-time", Select).disabled)
+            self.assertTrue(edit.query_one("#edit-end-time", TimePicker).disabled)
             edit.query_one("#edit-summary").value = "Holiday"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
             edit.query_one("#edit-end-date", DatePicker).value = ""
@@ -1651,10 +1652,10 @@ class NewEventFlowTest(TuiFlowTestCase):
             edit = pilot.app.screen
             edit.query_one("#edit-summary").value = "Planning"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-start-time", TimePicker).value = "10:00"
             # Pinned, for the reason given in the test above.
             edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-end-time", Select).value = "11:00"
+            edit.query_one("#edit-end-time", TimePicker).value = "11:00"
             edit.query_one("#edit-attendees").value = (  # type: ignore[attr-defined]
                 "Alice <alice@example.com>, bob@example.com"
             )
@@ -1675,6 +1676,150 @@ class NewEventFlowTest(TuiFlowTestCase):
         self.assertEqual(
             extract_organizer(event.raw_ics, event.ref.uid), "user@example.com"
         )
+
+
+class EventFormTimeFieldTest(TuiFlowTestCase):
+    """The start and end times are typed, and step by half hours.
+
+    They were dropdowns over the day's forty-eight half-hour slots, so
+    an event could only begin and end where the grid draws a line --
+    while the same form in the browser is a ``datetime-local`` input and
+    took any minute of the hour.
+    """
+
+    async def _open_new_event_form(self, pilot: Pilot[None]) -> EventEditScreen:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+        edit = pilot.app.screen
+        assert isinstance(edit, EventEditScreen)
+        return edit
+
+    def _only_component(self, services: TuiServices, summary: str) -> VEvent:
+        found: list[StoredComponent] = []
+        for ref in all_calendar_refs(services.config, services.mirror):
+            found.extend(
+                component
+                for component in services.index.list_calendar_components(ref)
+                if component.summary == summary
+            )
+        self.assertEqual(len(found), 1)
+        event = found[0]
+        assert isinstance(event, VEvent)
+        return event
+
+    async def test_a_time_between_two_slots_can_be_typed_and_is_saved(self) -> None:
+        services = self.services()
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            edit.query_one("#edit-summary").value = "Odd minutes"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", TimePicker).value = "09:47"
+            # Pinned at both ends, for the reason `NewEventFlowTest`
+            # gives: a default derived from `NOW` makes the save depend
+            # on where the suite runs.
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-time", TimePicker).value = "10:13"
+            edit.action_save()
+            await pilot.pause()
+
+        event = self._only_component(services, "Odd minutes")
+        assert event.dtstart is not None
+        assert event.dtend is not None
+        # Compared in the local zone the form wrote them in, so the
+        # assertion holds from UTC-9:30 to UTC+14.
+        self.assertEqual(event.dtstart.astimezone().strftime("%H:%M"), "09:47")
+        self.assertEqual(event.dtend.astimezone().strftime("%H:%M"), "10:13")
+
+    async def test_a_shorthand_is_saved_as_the_time_it_means(self) -> None:
+        services = self.services()
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            edit.query_one("#edit-summary").value = "Typed short"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", TimePicker).value = "9"
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-end-time", TimePicker).value = "1015"
+            edit.action_save()
+            await pilot.pause()
+
+        event = self._only_component(services, "Typed short")
+        assert event.dtstart is not None
+        assert event.dtend is not None
+        self.assertEqual(event.dtstart.astimezone().strftime("%H:%M"), "09:00")
+        self.assertEqual(event.dtend.astimezone().strftime("%H:%M"), "10:15")
+
+    async def test_up_and_down_step_the_field_by_half_hours(self) -> None:
+        """What the dropdown was good for, from a time it could not hold."""
+        app = CalendarHostApp(self.services())
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            field = edit.query_one("#edit-start-time", TimePicker)
+            field.value = "14:17"
+            field.focus()
+            await pilot.pause()
+
+            await pilot.press("up")
+            self.assertEqual(field.value, "14:30")
+            await pilot.press("down")
+            self.assertEqual(field.value, "14:00")
+            await pilot.press("down")
+            self.assertEqual(field.value, "13:30")
+
+    async def test_a_field_that_holds_no_time_is_refused_by_name(self) -> None:
+        app = CalendarHostApp(self.services())
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            edit.query_one("#edit-summary").value = "Nonsense"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", TimePicker).value = "lunch"
+            edit.action_save()
+            await pilot.pause()
+
+            # Still on the form, with the complaint naming the field --
+            # the save must not crash, and must not drop the typo.
+            self.assertIs(pilot.app.screen, edit)
+            self.assertIn(
+                "start time",
+                str(edit.query_one("#edit-error", Label).render()),
+            )
+
+    async def test_an_event_with_no_end_time_has_no_end(self) -> None:
+        """The field is optional; blank means an event of no stated length."""
+        services = self.services()
+        app = CalendarHostApp(services)
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            edit.query_one("#edit-summary").value = "Open ended"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", TimePicker).value = "09:47"
+            edit.query_one("#edit-end-date", DatePicker).value = ""
+            edit.query_one("#edit-end-time", TimePicker).value = ""
+            edit.action_save()
+            await pilot.pause()
+
+        event = self._only_component(services, "Open ended")
+        self.assertIsNone(event.dtend)
+
+    async def test_an_end_date_with_no_end_time_is_refused(self) -> None:
+        app = CalendarHostApp(self.services())
+        async with app.run_test() as pilot:
+            edit = await self._open_new_event_form(pilot)
+            edit.query_one("#edit-summary").value = "Half an end"  # type: ignore[attr-defined]
+            edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
+            edit.query_one("#edit-start-time", TimePicker).value = "09:00"
+            edit.query_one("#edit-end-date", DatePicker).value = "2026-05-16"
+            edit.query_one("#edit-end-time", TimePicker).value = ""
+            edit.action_save()
+            await pilot.pause()
+
+            self.assertIs(pilot.app.screen, edit)
+            self.assertIn(
+                "end time is required",
+                str(edit.query_one("#edit-error", Label).render()),
+            )
 
 
 class EditExistingEventTest(TuiFlowTestCase):
@@ -1718,12 +1863,12 @@ class EditExistingEventTest(TuiFlowTestCase):
                 component.dtstart.astimezone().strftime("%Y-%m-%d"),
             )
             self.assertEqual(
-                edit.query_one("#edit-start-time", Select).value,
+                edit.query_one("#edit-start-time", TimePicker).value,
                 component.dtstart.astimezone().strftime("%H:%M"),
             )
             assert component.dtend is not None
             self.assertEqual(
-                edit.query_one("#edit-end-time", Select).value,
+                edit.query_one("#edit-end-time", TimePicker).value,
                 component.dtend.astimezone().strftime("%H:%M"),
             )
             edit.query_one("#edit-summary").value = "Edited summary"  # type: ignore[attr-defined]
@@ -2971,7 +3116,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
             assert isinstance(edit, EventEditScreen)
             edit.query_one("#edit-summary").value = ""  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-start-time", TimePicker).value = "10:00"
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
@@ -2991,7 +3136,7 @@ class EditScreenValidationTest(TuiFlowTestCase):
             assert isinstance(edit, EventEditScreen)
             edit.query_one("#edit-summary").value = "Anything"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "not-a-date"
-            edit.query_one("#edit-start-time", Select).value = "10:00"
+            edit.query_one("#edit-start-time", TimePicker).value = "10:00"
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
@@ -3007,8 +3152,8 @@ class EditScreenValidationTest(TuiFlowTestCase):
             assert isinstance(edit, EventEditScreen)
             edit.query_one("#edit-summary").value = "Backwards"  # type: ignore[attr-defined]
             edit.query_one("#edit-start-date", DatePicker).value = "2026-05-15"
-            edit.query_one("#edit-start-time", Select).value = "10:00"
-            edit.query_one("#edit-end-time", Select).value = "09:30"
+            edit.query_one("#edit-start-time", TimePicker).value = "10:00"
+            edit.query_one("#edit-end-time", TimePicker).value = "09:30"
             edit.action_save()
             await pilot.pause()
             self.assertIsInstance(pilot.app.screen, EventEditScreen)
@@ -4168,7 +4313,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 start.strftime("%Y-%m-%d"),
             )
             self.assertEqual(
-                edit.query_one("#edit-start-time", Select).value,
+                edit.query_one("#edit-start-time", TimePicker).value,
                 start.strftime("%H:%M"),
             )
             self.assertEqual(
@@ -4176,7 +4321,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 "",
             )
             self.assertEqual(
-                edit.query_one("#edit-end-time", Select).value,
+                edit.query_one("#edit-end-time", TimePicker).value,
                 (end_slot + timedelta(minutes=30)).strftime("%H:%M"),
             )
 
@@ -4274,7 +4419,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
             edit = pilot.app.screen
             assert isinstance(edit, EventEditScreen)
             self.assertTrue(edit.query_one("#edit-all-day", Checkbox).value)
-            self.assertTrue(edit.query_one("#edit-start-time", Select).disabled)
+            self.assertTrue(edit.query_one("#edit-start-time", TimePicker).disabled)
             self.assertEqual(
                 edit.query_one("#edit-start-date", DatePicker).value, "2026-06-15"
             )
@@ -4428,7 +4573,7 @@ class TimelineGridFlowTest(TuiFlowTestCase):
                 event_end.strftime("%Y-%m-%d"),
             )
             self.assertEqual(
-                edit.query_one("#edit-start-time", Select).value,
+                edit.query_one("#edit-start-time", TimePicker).value,
                 event_end.strftime("%H:%M"),
             )
             unchanged = services.index.get_component(component.ref)

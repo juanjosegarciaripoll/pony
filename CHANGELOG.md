@@ -214,6 +214,16 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Changed
 
+- **The event form's times are typed, not picked off a half-hour grid.**
+  Both fields were dropdowns over the forty-eight half-hour slots a day
+  view draws, so an event could only begin and end on a line the grid
+  draws — while the same form in the browser is a `datetime-local`
+  input and has always taken any minute of the hour. They now accept
+  `09:47`, and the shorthands a hand reaches for instead: `9:47`, `9.47`,
+  `0947`, and a bare `9` for nine o'clock. The half hours stay one press
+  away: ++up++ and ++down++ step to the next and previous slot from
+  wherever the value is, so 14:17 is one press from 14:30 rather than
+  twenty-nine rows down a list, and they wrap at midnight.
 - **`pony sync` is wired like every other front end.** It built its own
   copy of the sync engine, with a session factory duplicating the one the
   engine makes for itself and a mirror factory that did not match the

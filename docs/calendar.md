@@ -221,6 +221,12 @@ description, invitees and reminders. ++ctrl+s++ saves, ++escape++
 abandons. Only the summary and the start are required — leave the end
 empty for an event with no stated length.
 
+The two time fields are typed, and take any minute of the hour: `09:47`
+as the field writes it, or `9:47`, `9.47` and `0947` as a hand types it,
+and a bare `9` for nine o'clock. ++up++ and ++down++ step to the next and
+previous half hour from wherever the value is — so 14:17 is one press
+from 14:30 — and wrap at midnight.
+
 Saving writes the `.ics` file and the index row immediately, so the event
 is on screen (and in your backups) before the server has heard of it. The
 next sync uploads it.
@@ -256,7 +262,7 @@ because the text fields claim every obvious one.
 
 ### All-day events
 
-Tick **All day** in the form and the time selectors grey out. The *Ends*
+Tick **All day** in the form and the time fields grey out. The *Ends*
 field then holds the **last day** of the event, inclusive — an event on
 the 3rd and 4th is entered as 3rd to 4th, not 3rd to 5th. It is written
 as a date-valued event, which is what other calendar clients expect.
@@ -552,6 +558,7 @@ In the event form:
 | ++ctrl+s++ | Save |
 | ++f8++ | Delete this event *(only when editing an existing one)* |
 | ++escape++ | Cancel |
+| ++up++ / ++down++ | In a time field: the next or previous half hour |
 
 !!! note "Why ++f8++ and not a chord"
     Textual's text input binds ++ctrl+d++ to delete-character and resolves

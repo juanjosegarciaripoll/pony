@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime, time
+from datetime import date, datetime
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
@@ -29,16 +29,10 @@ from pony.calendar.ical_parser import extract_alarm_triggers, extract_attendees
 from pony.calendar.mutations import is_all_day_span
 from pony.tui.calendar.bindings import edit_bindings
 from pony.tui.calendar.widgets.date_picker import DatePicker, InvalidDateError
+from pony.tui.calendar.widgets.time_picker import TimePicker, parse_time_input
 
 if TYPE_CHECKING:
     from pony.tui.calendar.app import AttendeeCompleter
-
-_HALF_HOUR_OPTIONS = tuple(
-    (label, label)
-    for hour in range(24)
-    for minute in (0, 30)
-    if (label := f"{hour:02d}:{minute:02d}")
-)
 
 
 class EventEditScreen(Screen[None]):
@@ -151,10 +145,8 @@ class EventEditScreen(Screen[None]):
                     classes="event-date",
                     compact=True,
                 )
-                yield Select(
-                    _time_options(start_time),
-                    value=start_time if start_time else Select.NULL,
-                    prompt="Time",
+                yield TimePicker(
+                    value=start_time,
                     id="edit-start-time",
                     classes="event-time",
                     compact=True,
@@ -168,10 +160,9 @@ class EventEditScreen(Screen[None]):
                     classes="event-date",
                     compact=True,
                 )
-                yield Select(
-                    _time_options(end_time),
-                    value=end_time if end_time else Select.NULL,
-                    prompt="Optional",
+                yield TimePicker(
+                    value=end_time,
+                    placeholder="Optional",
                     id="edit-end-time",
                     classes="event-time",
                     compact=True,
@@ -232,9 +223,9 @@ class EventEditScreen(Screen[None]):
             self._sync_time_fields(event.value)
 
     def _sync_time_fields(self, all_day: bool) -> None:
-        """All-day events have no times: grey the time selectors out."""
+        """All-day events have no times: grey the time fields out."""
         for selector in ("#edit-start-time", "#edit-end-time"):
-            self.query_one(selector, Select).disabled = all_day
+            self.query_one(selector, TimePicker).disabled = all_day
         end_date = self.query_one("#edit-end-date", DatePicker)
         end_date.placeholder = "Last day" if all_day else "Same date"
 
@@ -299,19 +290,19 @@ class EventEditScreen(Screen[None]):
             # event there.
             first, end = all_day_form_bounds(start_date, last_day)
             return self._draft(target, summary, first, end, all_day=True)
-        start_time_select = self.query_one("#edit-start-time", Select)
-        start_time = _selected_time(start_time_select, "start time")
+        start_time = self.query_one("#edit-start-time", TimePicker).parsed(
+            "start time",
+        )
         dtstart = datetime.combine(start_date, start_time).astimezone()
 
-        end_time_select = self.query_one("#edit-end-time", Select)
-        selected_end_time = cast("object", end_time_select.value)
+        end_time_text = self.query_one("#edit-end-time", TimePicker).value.strip()
         dtend: datetime | None = None
-        if isinstance(selected_end_time, str):
+        if end_time_text:
             end_date = (
                 _parse_date(end_date_text, "end date") if end_date_text else start_date
             )
             dtend = datetime.combine(
-                end_date, _parse_time(selected_end_time, "end time")
+                end_date, parse_time_input(end_time_text, "end time")
             ).astimezone()
             if dtend <= dtstart:
                 raise ValueError(ENDS_BEFORE_IT_STARTS)
@@ -367,12 +358,6 @@ def _local_parts(dt: datetime | None) -> tuple[str, str]:
     return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
 
 
-def _time_options(value: str) -> tuple[tuple[str, str], ...]:
-    if not value or any(option == value for _, option in _HALF_HOUR_OPTIONS):
-        return _HALF_HOUR_OPTIONS
-    return ((value, value), *_HALF_HOUR_OPTIONS)
-
-
 def _parse_date(value: str, label: str) -> date:
     text = value.strip()
     if not text:
@@ -381,21 +366,6 @@ def _parse_date(value: str, label: str) -> date:
         return date.fromisoformat(text)
     except ValueError as exc:
         raise InvalidDateError(f"{label} must be YYYY-MM-DD") from exc
-
-
-def _parse_time(value: str, label: str) -> time:
-    try:
-        parsed = time.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(f"{label} must be HH:MM") from exc
-    return parsed.replace(second=0, microsecond=0)
-
-
-def _selected_time(select: Select[object], label: str) -> time:
-    selected = select.value
-    if not isinstance(selected, str):
-        raise ValueError(f"{label} is required")
-    return _parse_time(selected, label)
 
 
 __all__ = ["EditDraft", "EventEditScreen"]
