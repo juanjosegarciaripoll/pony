@@ -104,6 +104,20 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Added
 
+- **`format=flowed` plain text is wrapped to your pane, not the sender's.**
+  RFC 3676 lets a sender wrap its own paragraphs and mark each break it
+  made with a trailing space; Pony ignored the parameter, so a paragraph
+  arrived broken at the sender's width, mid-sentence, and a quoted block
+  read as a hard-wrapped slab. Those breaks are now undone, including
+  `DelSp=Yes` (the marker space is dropped rather than kept as a word
+  gap), the sender's space-stuffing (exactly one leading space removed,
+  which is what keeps a right-aligned header block aligned) and quote
+  depth (a reply never flows into the text it quotes). Thunderbird, Apple
+  Mail and Roundcube all send this, so it is most plain-text mail. A
+  message that does not declare the parameter is left exactly as it
+  arrived — a sender who wrapped a table or a poem on purpose said so by
+  staying silent.
+
 - **++shift+end++ and ++shift+home++ mark a run of messages.** ++m++ and
   ++shift+down++ mark one row per press, which is a long way through a
   folder; these mark every row from the cursor to the end of the list, or

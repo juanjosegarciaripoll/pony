@@ -14,7 +14,7 @@ import html as _html
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path, PurePath, PureWindowsPath
@@ -24,6 +24,7 @@ from .authentication import (
     MessageAuthentication,
     parse_authentication,
 )
+from .flowed import unflow
 from .html_sanitize import strip_invisible_blocks
 
 # Used by build_browser_html() to carry the original email's <style> blocks
@@ -413,6 +414,19 @@ def _header(msg: EmailMessage, name: str) -> str:
     return str(value).strip()
 
 
+def _param(part: Message, name: str) -> str:
+    """One Content-Type parameter as a string, empty when absent.
+
+    ``get_param`` answers a ``(charset, language, value)`` tuple for a
+    parameter encoded per RFC 2231, and a bare string otherwise, so a
+    caller that compares the result to a word has to narrow it first.
+    """
+    value = part.get_param(name)
+    if isinstance(value, tuple):
+        return str(value[2])
+    return "" if value is None else str(value)
+
+
 @dataclass(frozen=True, slots=True)
 class BodySegment:
     """One run of a styled body.
@@ -572,9 +586,13 @@ def _extract_body_and_attachments(
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
                 charset = part.get_content_charset() or "utf-8"
-                body_parts.append(
-                    payload.decode(charset, errors="replace").replace("\x00", "")
-                )
+                text = payload.decode(charset, errors="replace").replace("\x00", "")
+                if _param(part, "format").lower() == "flowed":
+                    # The sender wrapped its own paragraphs and marked
+                    # every break it made; rejoin them so the reader
+                    # wraps to its own width instead of the sender's.
+                    text = unflow(text, delsp=_param(part, "delsp").lower() == "yes")
+                body_parts.append(text)
 
         elif content_type == "text/html":
             # Collected even when a plain part was already found, because

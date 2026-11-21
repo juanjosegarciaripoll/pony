@@ -50,7 +50,7 @@ folder list on the left is collapsible per account.
 |---|---|
 | **Left** | Folder list grouped by account, with unread counts. Selecting a folder loads its messages in the top-right pane. |
 | **Top-right** | Message list for the selected folder, sorted newest-first. An unread indicator appears in the icon column. |
-| **Bottom-right** | Message preview. Renders `text/plain`; HTML-only messages have `<style>`, `<script>`, and tags stripped for a clean reading experience. |
+| **Bottom-right** | Message preview. Renders `text/plain`, rejoining the soft line breaks of a `format=flowed` sender; HTML-only messages have `<style>`, `<script>`, and tags stripped for a clean reading experience. |
 
 ### Screen-specific keybindings
 
@@ -105,6 +105,30 @@ When the message view is focused (after opening a message):
 | ++less++ | Scroll to top |
 | ++greater++ | Scroll to bottom |
 | ++i++ | Answer the invitation on this message |
+
+### How the body is wrapped
+
+A sender that declares `text/plain; format=flowed` (RFC 3676) has wrapped
+its own paragraphs to its own width and marked every break it made with a
+trailing space. Pony undoes those breaks, so the paragraph wraps to your
+pane instead of to the sender's window, and a quoted block reads as
+paragraphs rather than as a hard-wrapped slab. Thunderbird, Apple Mail and
+Roundcube all send this, so it is most plain-text mail.
+
+Three details of the standard that are visible if they go wrong:
+
+- `DelSp=Yes` says the trailing space is the break marker and nothing
+  else, so it is dropped when the lines are rejoined — a sender that
+  means a word gap writes two spaces. `DelSp=No` keeps it.
+- A sender adds one space in front of any line that would otherwise begin
+  with a space, a `>` or `From `; Pony removes exactly that one, which is
+  what keeps a right-aligned header block aligned.
+- `--` followed by a space is the signature separator and is never
+  rejoined, so you can still see where a message ends.
+
+A message that does **not** declare the parameter is left exactly as it
+arrived. Nothing is guessed: a sender who wrapped a table, a code block
+or a poem on purpose said so by staying silent.
 
 ### Who the message is from
 
