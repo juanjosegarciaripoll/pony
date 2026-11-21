@@ -130,6 +130,37 @@ A message that does **not** declare the parameter is left exactly as it
 arrived. Nothing is guessed: a sender who wrapped a table, a code block
 or a poem on purpose said so by staying silent.
 
+### HTML pasted into a plain-text message
+
+People paste HTML into plain text, and an institutional signature block
+is the usual way it arrives — a layout table of logos and links dropped
+at the bottom of a message that is otherwise prose and quoted replies.
+
+Pony reads such a block **as HTML, where it stands**, and leaves every
+byte around it alone. That is what keeps the paragraphs, the `>` quote
+markers and the sender's own column alignment, while the block itself
+comes out as the contact details it was always meant to show instead of
+tags and kilobytes of base64. A message whose text is markup from end to
+end is one such block and is read entire, which is the mislabelled-`text/plain`
+case some senders produce.
+
+The decision is made per block, not per message, because a message like
+the one above is genuinely both things — judging it either way as a whole
+is wrong about one half of it.
+
+A block counts as markup when its tags are actually *used*: a closing tag
+that matches an opener, a stray closing tag, an attribute, or a comment.
+Counting tags would not do, since
+
+```
+Use the <table> element for layout, not <div> soup.
+```
+
+carries as many as `<span>Madrid</span>`. That sentence is left exactly
+as written, and so are `a < b`, `<https://example.test>` and the
+`<someone@example.test>` in a forwarded header block — the scanner knows
+tag names, so an address in angle brackets is never mistaken for one.
+
 ### Who the message is from
 
 The `From` line carries one character — a padlock:

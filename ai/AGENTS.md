@@ -170,6 +170,7 @@ Key test infrastructure:
 | MIME rendering | `tests/test_attachment_extraction.py`, `tests/test_link_rendering.py` |
 | Malformed MIME | `tests/test_mime_edge_cases.py` + the hostile fixtures in `tests/corpus.py` |
 | `format=flowed` plain text | `tests/test_flowed.py` — RFC 3676 §4.1/§4.3/§4.4/§4.5, and that nothing is rejoined without the parameter |
+| HTML pasted into plain text | `tests/test_html_islands.py` — markup read where it stands, and prose that only *names* tags left alone |
 | Message projection | `tests/test_message_projection.py` |
 | Mailbox actions (archive/move/copy/trash/flags) | `tests/test_mailbox_actions.py` — real stores, no app |
 | Filing a draft or sent copy, contacts | `tests/test_contact_actions.py` |

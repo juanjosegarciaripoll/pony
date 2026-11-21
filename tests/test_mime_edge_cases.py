@@ -249,12 +249,13 @@ class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
     how it is read; the header only says what the sender believed.
     """
 
-    def test_a_mislabelled_part_hands_over_to_the_html_alternative(self) -> None:
-        """The correctly-labelled half is preferred once the lie shows.
+    def test_a_mislabelled_part_is_read_where_it_stands(self) -> None:
+        """A part that is markup throughout becomes one island.
 
-        The plain part gives the message away, but it is the part
-        labelled `text/html` that gets read: that one is HTML by
-        agreement rather than by guess.
+        No hand-over to the `text/html` half is needed, and none
+        happens: the markup is read in place, which gives the same
+        answer and works for the single-part messages that have no
+        half to hand over to.
         """
         raw = _plain_part_message(
             "<div>Dear member:&nbsp;</div><div>&nbsp;</div>"
@@ -264,8 +265,9 @@ class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
 
         self.assertNotIn("<div>", rendered.body)
         self.assertNotIn("&nbsp;", rendered.body)
-        self.assertIn("The real HTML alternative", rendered.body)
-        self.assertIn("bold", rendered.body)
+        self.assertIn("Dear member:", rendered.body)
+        self.assertNotIn("The real HTML alternative", rendered.body)
+        self.assertEqual(rendered.links, (("web", "https://ballot.test/x"),))
 
     def test_a_mislabelled_part_with_no_alternative_is_read_as_html(self) -> None:
         """With nothing to hand over to, the part is read against its label.
@@ -310,32 +312,16 @@ class PlainTextThatIsReallyHtmlTests(unittest.TestCase):
         self.assertIn("<br>", rendered.body)
         self.assertIn("<foo>", rendered.body)
 
-    def test_misjudging_a_plain_body_costs_nothing_when_an_alternative_exists(
+    def test_balanced_markup_quoted_in_prose_is_rendered_where_it_sits(
         self,
     ) -> None:
-        """The heuristic's false positives are absorbed by the hand-over.
+        """Markup that behaves like markup is read as markup.
 
-        A plain-text message that *quotes* two tags of markup is judged
-        HTML by this rule.  Where the sender supplied a `text/html`
-        half, that is simply what gets read -- the same words the
-        message was always going to show -- so a wrong guess has no
-        victim.
-        """
-        raw = _plain_part_message("Try <div>one</div> then <span>two</span>.\n")
-        rendered = render_message(raw)
-
-        self.assertIn("The real HTML alternative", rendered.body)
-
-    def test_misjudging_a_plain_body_with_no_alternative_renders_the_markup(
-        self,
-    ) -> None:
-        """The one case the heuristic can actually get wrong.
-
-        Someone mailing a snippet of markup as plain text, with no HTML
-        half, has the snippet rendered rather than shown.  That is the
-        price of rescuing the mislabelled messages, and it is the lesser
-        harm: the words stay readable, where the old behaviour made
-        every mislabelled message unreadable entirely.
+        `<div>one</div>` closes what it opens, so it is markup wherever
+        it appears and is rendered.  The cost is bounded to those
+        characters: see the prose cases in
+        `tests/test_html_islands.py`, where a sentence that *names*
+        tags without closing them is left exactly alone.
         """
         raw = _plain_part_message(
             "Try <div>one</div> then <span>two</span>.\n", html=None

@@ -500,22 +500,31 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
   already counted as proof the window had focus again; a paste now does
   too, so it lands in the widget that had focus before the dialog.
 
-- **A message whose `text/plain` part is really HTML is read as HTML**: an
-  APS election mail arrived as a `multipart/alternative` whose plain part
-  was full of `<div>`s — one generator filling both alternatives and
+- **HTML pasted into a plain-text body is read as HTML where it stands.**
+  Two kinds of message were unreadable, and they are opposites. An APS
+  election mail arrived as a `multipart/alternative` whose plain part was
+  markup from end to end — one generator filling both alternatives and
   mislabelling the first — and Pony took the header at its word and showed
-  the reader raw markup. Worse, a plain part suppresses collecting the HTML
-  one, so the only correctly-labelled copy of the message had already been
-  thrown away by the time anyone noticed.
+  raw `<div>`s. A reply from a colleague was 95 lines of prose and quoted
+  text followed by an institutional signature block pasted as markup, and
+  reading *that* as HTML threw away the line structure: 235 newlines and 75
+  `>` quote markers collapsed into one paragraph.
 
-  The HTML half is now always collected, and a plain part carrying two or
-  more closing or void tags hands over to it — the part labelled
-  `text/html` is HTML by agreement rather than by guess, so misjudging a
-  plain body costs nothing where an alternative exists. A message with no
-  HTML half at all is read against its label instead, which is the only
-  case the guess can get wrong. Closing and void tags only, and two of
-  them, so that `a < b`, `<https://example.test>` and a lone `<br>` in a
-  signature are still plain text.
+  No single verdict per message can be right about both, because the second
+  message is genuinely both. So the decision is made per island of markup
+  rather than per message: only the markup is handed to the HTML stripper,
+  and every byte outside it is passed through untouched, which is what
+  keeps the paragraphs, the quoting and the sender's own alignment. A part
+  that is markup throughout simply forms one island and is read entire.
+
+  Markup is told from prose that merely *names* tags by whether the tags
+  are used — a closing tag that matches an opener, a stray closer, an
+  attribute, or a comment — and not by counting them, because
+  `Use the <table> element, not <div> soup.` carries as many tags as
+  `<span>Madrid</span>`. The scanner knows tag names, so
+  `<comunicacion@iqf.csic.es>`, `a < b` and `<https://example.test>` are
+  text. When the test is wrong it can only spoil the few characters it was
+  judging, never the message around them.
 
 - **A reply quotes with HTML, not with `>` characters inside HTML.** The
   text half of a reply marks each quoted level with `>`, which is how

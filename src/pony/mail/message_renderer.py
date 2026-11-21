@@ -25,6 +25,7 @@ from .authentication import (
     parse_authentication,
 )
 from .flowed import unflow
+from .html_islands import strip_html_islands
 from .html_sanitize import strip_invisible_blocks
 
 # Used by build_browser_html() to carry the original email's <style> blocks
@@ -40,31 +41,6 @@ _IS_URL_RE = re.compile(r"^https?://|^mailto:", re.IGNORECASE)
 
 # Collapses runs of whitespace to a single space (HTML text normalization).
 _WHITESPACE_RE = re.compile(r"\s+")
-
-# Markup that gives away a `text/plain` part which is really HTML.  One
-# generator fills both alternatives of a `multipart/alternative` and
-# mislabels the first, and because a plain part suppresses collecting
-# the HTML one, the reader was handed raw `<div>`s with no alternative
-# left to fall back to.
-#
-# Closing and void tags only: prose says "a < b" and quotes
-# `<https://example.test>`, but it does not say `</div>`.  Two of them
-# are wanted before the part is re-read as HTML, so that one `<br>` in
-# a signature does not reclassify a message.
-_HTML_IN_PLAIN_RE = re.compile(
-    r"</(?:div|p|span|td|tr|table|tbody|body|html|a|b|i|u|strong|em|ul|ol|li|h[1-6])>"
-    r"|<(?:br|img|hr)\b[^>]*/?>",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_html(text: str) -> bool:
-    """Whether a part labelled ``text/plain`` is in fact HTML."""
-    for found, _match in enumerate(_HTML_IN_PLAIN_RE.finditer(text), start=1):
-        if found == 2:
-            return True
-    return False
-
 
 # One already-injected sentinel, from its opening NUL to its closing one.
 # NUL reaches the body from nowhere else: `handle_data` strips it out of
@@ -595,14 +571,12 @@ def _extract_body_and_attachments(
                 body_parts.append(text)
 
         elif content_type == "text/html":
-            # Collected even when a plain part was already found, because
-            # that part may turn out to be HTML wearing the wrong label
-            # and this is the alternative to fall back to.  While this
-            # was conditional on there being no plain text, a
-            # mislabelled message had already thrown away the only
-            # correctly-labelled copy of itself by the time anyone
-            # noticed.
-            if not in_nested:
+            # Only as the body when there is no plain text at all.  A
+            # mislabelled plain part no longer needs this as an
+            # alternative to fall back on: its markup is read where it
+            # stands, island by island, so the two parts no longer
+            # compete to be the body.
+            if not body_parts and not in_nested:
                 payload = part.get_payload(decode=True)
                 if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
@@ -610,20 +584,20 @@ def _extract_body_and_attachments(
 
     links: list[tuple[str, str]] = []
     plain = "\n".join(body_parts)
-    if body_parts and not _looks_like_html(plain):
-        styled_body = _inject_plaintext_links(plain, links)
+    if body_parts:
+        # Plain text, with any island of pasted HTML in it read as HTML
+        # where it stands.  The decision is per island, so a message
+        # that is prose and quoted replies with a signature block at the
+        # bottom keeps its line structure, its `>` markers and the
+        # sender's alignment, and only the block is stripped.  A part
+        # that is markup from end to end becomes one island and is read
+        # as HTML entire, which is the same answer as handing it to the
+        # stripper whole.
+        styled_raw = strip_html_islands(plain, _strip_html, links)
+        styled_body = _inject_plaintext_links(styled_raw, links)
         body = _sentinels_to_plain(styled_body, links)
-    elif body_parts or html_parts:
-        # A real `text/html` body, or a `text/plain` one that is HTML in
-        # all but its label.  The part the sender labelled `text/html`
-        # is preferred whenever there is one, even when it was the plain
-        # part that gave the message away: that part is HTML by
-        # agreement rather than by guess, so a misjudged plain body
-        # costs nothing here -- the alternative carries the same words
-        # and is what a mislabelling sender meant to be read.  Only a
-        # message with no HTML alternative at all falls back to reading
-        # the plain part against its label.
-        styled_raw, links = _strip_html("\n".join(html_parts) if html_parts else plain)
+    elif html_parts:
+        styled_raw, links = _strip_html("\n".join(html_parts))
         styled_body = _inject_plaintext_links(styled_raw, links)
         body = _sentinels_to_plain(styled_body, links)
     else:

@@ -93,6 +93,7 @@ src/pony/mail/         # the mail model
   folder_utils.py      # which folder is which, by configuration or by name
   html_sanitize.py     # shared HTML→text helpers (preview + renderer)
   flowed.py            # RFC 3676 format=flowed: undo a sender's soft breaks
+  html_islands.py      # HTML pasted into a plain-text body, read in place
   sync.py              # IMAP sync engine (plan/execute) + plan formatters
   imap_client.py       # ImapSession wrapper around imaplib
   smtp_sender.py       # SMTP submission
