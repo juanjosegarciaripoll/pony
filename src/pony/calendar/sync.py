@@ -271,9 +271,11 @@ def _sync_calendar(
     # Carry the existing sync_token forward by default; updated below
     # when the medium or slow path returns a new one.
     new_sync_token: str | None = prior_state.sync_token if prior_state else None
-    # UIDs whose masters need occurrence re-expansion. None means "all"
-    # (used on the fast path where we didn't track individual changes).
-    affected_uids: frozenset[str] | None = None
+    # Masters whose occurrence rows need rebuilding. Every path reports
+    # its own, including the fast one -- it used to leave this at None,
+    # which `rebuild_caches` reads as *every master in the calendar*, so
+    # pushing one edited event re-expanded all 13,000 of them.
+    affected_uids: frozenset[str] = frozenset()
 
     if _ctag_matches(prior_state, server_ctag):
         logger.info(
@@ -282,7 +284,7 @@ def _sync_calendar(
             calendar.calendar_name,
             server_ctag,
         )
-        stats = _fast_path_reconcile(
+        stats, affected_uids = _fast_path_reconcile(
             account=account,
             calendar=calendar,
             session=session,
@@ -380,22 +382,14 @@ def _sync_calendar(
 
     # Refresh the recurrence-expansion cache for this calendar.
     #
-    # When `affected_uids` is a non-None frozenset (slow / medium path),
-    # expansion is needed only when that set is non-empty — an empty set
-    # means the reconcile confirmed zero changes, so the cache is still
-    # valid.  When `affected_uids` is None (fast path), expansion is
-    # needed only if something was pushed or deleted, since we don't have
-    # per-UID change tracking for that path.
-    # First sync for a calendar (no prior sync state) must rebuild the
-    # full occurrence cache even if `affected_uids` is unexpectedly empty
-    # (e.g. href canonicalization mismatch while collecting new_uids).
+    # An empty `affected_uids` means the reconcile confirmed zero
+    # changes, so the cache is still valid and there is nothing to do.
+    # The first sync for a calendar (no prior sync state) rebuilds every
+    # master even if the set is unexpectedly empty -- an href
+    # canonicalization mismatch while collecting `new_uids` would
+    # otherwise leave the whole calendar with no occurrences at all.
     force_full_expand = prior_state is None
-    should_expand = (
-        force_full_expand
-        or bool(affected_uids)
-        or (affected_uids is None and (stats.pushed or stats.deleted_remote))
-    )
-    if should_expand:
+    if force_full_expand or affected_uids:
         rebuild_caches(
             index=index,
             calendar=calendar_ref,
@@ -428,10 +422,16 @@ def _fast_path_reconcile(
     mirror: MirrorRepository,
     index: IndexRepository,
     now: datetime,
-) -> CalendarSyncStats:
+) -> tuple[CalendarSyncStats, frozenset[str]]:
+    """Push what is waiting; the server collection is unchanged.
+
+    Returns the UIDs the pushes invalidated, which is the whole of what
+    this path can have changed -- nothing is fetched here, because the
+    CTag says the server has nothing new to give.
+    """
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     if calendar.read_only:
-        return CalendarSyncStats(calendar=calendar_ref, path="fast")
+        return CalendarSyncStats(calendar=calendar_ref, path="fast"), frozenset()
     deleted = _push_trashed(
         account=account,
         calendar=calendar,
@@ -439,26 +439,29 @@ def _fast_path_reconcile(
         mirror=mirror,
         index=index,
     )
-    pushed, push_errors = _push_pending(
+    pushed = _push_pending(
         account=account,
         calendar=calendar,
         session=session,
         index=index,
         now=now,
     )
-    updated, update_errors = _push_updates(
+    updated = _push_updates(
         account=account,
         calendar=calendar,
         session=session,
         index=index,
         now=now,
     )
-    return CalendarSyncStats(
-        calendar=calendar_ref,
-        path="fast",
-        pushed=pushed + updated,
-        deleted_remote=deleted,
-        errors=tuple(push_errors + update_errors),
+    return (
+        CalendarSyncStats(
+            calendar=calendar_ref,
+            path="fast",
+            pushed=pushed.count + updated.count,
+            deleted_remote=deleted.count,
+            errors=pushed.errors + updated.errors,
+        ),
+        deleted.uids | pushed.uids | updated.uids,
     )
 
 
@@ -573,7 +576,7 @@ def _slow_path_reconcile(
     pushed = 0
     deleted_remote = 0
     if not calendar.read_only:
-        deleted_remote = _push_trashed(
+        trashed_push = _push_trashed(
             account=account,
             calendar=calendar,
             session=session,
@@ -581,23 +584,27 @@ def _slow_path_reconcile(
             index=index,
             local_components=local_components,
         )
-        pushed, push_errors = _push_pending(
+        new_push = _push_pending(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        updated_remote, update_errors = _push_updates(
+        update_push = _push_updates(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        pushed += updated_remote
-        errors.extend(push_errors)
-        errors.extend(update_errors)
+        deleted_remote = trashed_push.count
+        pushed = new_push.count + update_push.count
+        errors.extend(new_push.errors)
+        errors.extend(update_push.errors)
+        # A push invalidates its own master too, and the server delta
+        # above cannot know about a change this side made.
+        affected_uids |= trashed_push.uids | new_push.uids | update_push.uids
 
     return (
         CalendarSyncStats(
@@ -718,7 +725,7 @@ def _medium_path_reconcile(
     pushed = 0
     deleted_remote = 0
     if not calendar.read_only:
-        deleted_remote = _push_trashed(
+        trashed_push = _push_trashed(
             account=account,
             calendar=calendar,
             session=session,
@@ -726,23 +733,27 @@ def _medium_path_reconcile(
             index=index,
             local_components=local_components,
         )
-        pushed, push_errors = _push_pending(
+        new_push = _push_pending(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        updated_remote, update_errors = _push_updates(
+        update_push = _push_updates(
             account=account,
             calendar=calendar,
             session=session,
             index=index,
             now=now,
         )
-        pushed += updated_remote
-        errors.extend(push_errors)
-        errors.extend(update_errors)
+        deleted_remote = trashed_push.count
+        pushed = new_push.count + update_push.count
+        errors.extend(new_push.errors)
+        errors.extend(update_push.errors)
+        # A push invalidates its own master too, and the server delta
+        # above cannot know about a change this side made.
+        affected_uids |= trashed_push.uids | new_push.uids | update_push.uids
 
     return (
         CalendarSyncStats(
@@ -1421,6 +1432,26 @@ def _build_stored(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _PushReport:
+    """What one push step did, and whose caches it owes a rebuild.
+
+    A count and a list of errors were all a caller got back, so a path
+    that *only* pushes could not say which UIDs it had changed -- and
+    asked for every master in the calendar to be re-expanded instead.
+    On a 13,000-component calendar that is the whole sync's cost, paid
+    to rebuild one event.
+    """
+
+    count: int = 0
+    errors: tuple[str, ...] = ()
+    #: Masters whose occurrence rows this step invalidated.  An upsert
+    #: clears them and a local trash does not rebuild them, so the UID
+    #: has to be named here or the event drops out of every view that
+    #: joins `components` against `occurrences`.
+    uids: frozenset[str] = frozenset()
+
+
 def _push_trashed(
     *,
     account: AccountConfig,
@@ -1429,7 +1460,7 @@ def _push_trashed(
     mirror: MirrorRepository,
     index: IndexRepository,
     local_components: Sequence[StoredComponent] | None = None,
-) -> int:
+) -> _PushReport:
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     components = (
         local_components
@@ -1494,7 +1525,13 @@ def _push_trashed(
         trashed=trashed,
         hrefs_done=hrefs_done,
     )
-    return deleted_remote
+    # Every trashed row, not only the ones the server accepted a DELETE
+    # for: the invalidation happened when the row was trashed, so a
+    # deferred delete still leaves a master needing re-expansion.
+    return _PushReport(
+        count=deleted_remote,
+        uids=frozenset(component.ref.uid for component in trashed),
+    )
 
 
 def _purge_expired_trash(
@@ -1555,8 +1592,8 @@ def _push_pending(
     session: CalDAVSession,
     index: IndexRepository,
     now: datetime,
-) -> tuple[int, list[str]]:
-    """Upload components that exist only locally.  Returns (pushed, errors).
+) -> _PushReport:
+    """Upload components that exist only locally.
 
     A PUT that fails is retried on the next sync, but it is reported:
     a push that silently never happens leaves the user looking at a
@@ -1565,7 +1602,7 @@ def _push_pending(
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     pending = index.list_pending_pushes(calendar_ref)
     if not pending:
-        return 0, []
+        return _PushReport()
     errors: list[str] = []
 
     by_uid: dict[str, list[StoredComponent]] = {}
@@ -1578,7 +1615,8 @@ def _push_pending(
         push_count=len(by_uid),
     )
     if held is not None:
-        return 0, [held]
+        # Nothing left the machine, so nothing was invalidated.
+        return _PushReport(errors=(held,))
 
     pushed = 0
     for uid, rows in by_uid.items():
@@ -1644,7 +1682,7 @@ def _push_pending(
                 )
                 index.upsert_component(updated)
         pushed += 1
-    return pushed, errors
+    return _PushReport(count=pushed, errors=tuple(errors), uids=frozenset(by_uid))
 
 
 def _push_updates(
@@ -1654,7 +1692,7 @@ def _push_updates(
     session: CalDAVSession,
     index: IndexRepository,
     now: datetime,
-) -> tuple[int, list[str]]:
+) -> _PushReport:
     """PUT locally-modified components that are already on the server.
 
     These carry ``LOCAL_FLAG_DIRTY`` (set by a local edit, or by `import`
@@ -1665,15 +1703,15 @@ def _push_updates(
     clobbering it. On success the dirty flag is cleared and the new etag
     recorded.
 
-    Returns (pushed, errors). Every failure is both logged and reported,
-    because the row keeps its dirty flag and is retried for ever: an edit
-    that cannot be uploaded would otherwise sit there indefinitely while
-    the user, and every sync summary, called the sync a success.
+    Every failure is both logged and reported, because the row keeps its
+    dirty flag and is retried for ever: an edit that cannot be uploaded
+    would otherwise sit there indefinitely while the user, and every
+    sync summary, called the sync a success.
     """
     calendar_ref = CalendarRef(account.name, calendar.calendar_name)
     pending = index.list_pending_updates(calendar_ref)
     if not pending:
-        return 0, []
+        return _PushReport()
     errors: list[str] = []
 
     by_uid: dict[str, list[StoredComponent]] = {}
@@ -1727,7 +1765,7 @@ def _push_updates(
         logger.info(
             "push update: %s/%s uid=%s", account.name, calendar.calendar_name, uid
         )
-    return pushed, errors
+    return _PushReport(count=pushed, errors=tuple(errors), uids=frozenset(by_uid))
 
 
 def _describe(component: StoredComponent) -> str:

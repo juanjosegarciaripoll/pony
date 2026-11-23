@@ -157,6 +157,82 @@ class FastPathTest(SyncTestCase):
         self.assertNotIn("calendar_query", method_names)
         self.assertNotIn("calendar_multiget", method_names)
 
+    def test_a_push_re_expands_only_what_it_pushed(self) -> None:
+        """A sync that pushes one event must not re-expand the calendar.
+
+        The fast path fetches nothing -- the CTag says the server has
+        nothing new -- so the only masters whose occurrence rows can
+        have moved are the ones it pushed.  It used to report "I do not
+        know", which `rebuild_caches` reads as *every master*, and a
+        13,000-component calendar re-expanded in full whenever a single
+        event was edited.
+        """
+        for name in ("a", "b"):
+            self.session.put_resource(
+                calendar_url=CALENDAR_URL,
+                href=f"{CALENDAR_URL}{name}.ics",
+                ics=_ics_with_uid(f"{name}@example.com"),
+                etag=f"etag-{name}",
+            )
+        self._run()  # slow path: both expanded
+
+        pushed_ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "a@example.com")
+        bystander_ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "b@example.com")
+        self.assertTrue(self._occurrence_count(bystander_ref))
+
+        # Empty the bystander's cache by hand. Nothing in this sync has
+        # any business refilling it, so whether it comes back is the
+        # whole question.
+        self.index.set_occurrences(bystander_ref, [])
+        self.assertEqual(self._occurrence_count(bystander_ref), 0)
+
+        row = self.index.get_component(pushed_ref)
+        assert row is not None
+        self.index.upsert_component(
+            replace(row, local_flags=row.local_flags | {LOCAL_FLAG_DIRTY})
+        )
+        self.assertEqual(self._occurrence_count(pushed_ref), 0)  # upsert invalidated
+
+        self.session.calls.clear()
+        self._run()
+
+        # It really was the fast path, and it really did push.
+        method_names = [call[0] for call in self.session.calls]
+        self.assertNotIn("calendar_query", method_names)
+        self.assertNotIn("sync_collection", method_names)
+        self.assertEqual(len([c for c in self.session.calls if c[0] == "put"]), 1)
+
+        # The pushed master is rebuilt; the bystander is left alone.
+        self.assertTrue(self._occurrence_count(pushed_ref))
+        self.assertEqual(self._occurrence_count(bystander_ref), 0)
+
+    def test_a_sync_with_nothing_to_push_expands_nothing(self) -> None:
+        """An idle fast path has no reason to touch the cache at all."""
+        self.session.put_resource(
+            calendar_url=CALENDAR_URL,
+            href=f"{CALENDAR_URL}a.ics",
+            ics=_ics_with_uid("a@example.com"),
+            etag="etag-a",
+        )
+        self._run()
+        ref = ComponentRef(ACCOUNT_NAME, CALENDAR_NAME, "a@example.com")
+        self.index.set_occurrences(ref, [])
+
+        self._run()
+
+        self.assertEqual(self._occurrence_count(ref), 0)
+
+    def _occurrence_count(self, ref: ComponentRef) -> int:
+        with self.index.connection() as conn:
+            return int(
+                conn.execute(
+                    "SELECT count(*) FROM occurrences o"
+                    " JOIN components c ON c.id = o.component_id"
+                    " WHERE c.uid = ? AND c.recurrence_id IS NULL",
+                    (ref.uid,),
+                ).fetchone()[0]
+            )
+
     def test_ctag_change_with_no_stored_token_forces_slow_path(self) -> None:
         self.session.put_resource(
             calendar_url=CALENDAR_URL,

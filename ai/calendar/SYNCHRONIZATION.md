@@ -196,7 +196,7 @@ Next sync:
 - Account-wide UID maps (for cross-calendar move detection) are built lazily, gated by whether any step-1 candidate deletion was found.
 - Server-side component counts come from CTag + sync-token comparisons, never from enumerating resources.
 - After a slow-path sync, the sync-token from `list_calendars` is stored directly (avoiding a `get_sync_token` round-trip per calendar) when the server included it in the discovery PROPFIND.
-- `populate_occurrences` receives the set of UIDs that actually changed so it only re-expands those masters, not the entire calendar.
+- `populate_occurrences` receives the set of UIDs that actually changed so it only re-expands those masters, not the entire calendar. **Every path reports its own set, the fast path included** — it has no server delta to read, but it knows exactly what it pushed, and the push helpers return those UIDs. A path that reports nothing is read as *every master*, which is the whole calendar's expansion cost paid to rebuild one event.
 
 ## 10. Conflict taxonomy
 

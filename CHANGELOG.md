@@ -353,6 +353,17 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A calendar sync that pushes one event no longer re-expands every
+  recurring event in the calendar.** When the CTag says the server has
+  nothing new, the sync takes the fast path and only pushes what is
+  waiting — but it reported the UIDs it had changed as "unknown", and
+  `rebuild_caches` reads that as *every master*. So editing a single
+  event made a 13,000-component calendar expand all 11,001 of its
+  masters, every sync, and a calendar of 397 did the same for one
+  pushed update. The three push helpers now return the UIDs they
+  touched and the fast path reports them, so the rebuild is the size of
+  the change. The spec already required this of every path
+  (`SYNCHRONIZATION.md` §9); the fast path was the one that did not.
 - **++t++ and ++ctrl+t++ no longer crash the `.eml` viewer.** The message
   panel binds both, and the panel is what `pony view` mounts, but the
   viewer read the part index with `int()` — and both keys send `'T'`.
