@@ -65,6 +65,22 @@ async def _boot(pilot: object) -> None:
     await pilot.pause()  # type: ignore[attr-defined]
 
 
+async def _settle_after_list_action(pilot: object, panel: MessageListPanel) -> None:
+    """Wait for the row reload a list action kicks off.
+
+    `MainScreen._refresh_after_list_action` reloads the folder in a
+    worker thread, so the panel holds *no* rows on the line after the
+    action returns and `get_selected_summary()` reads `None`. A
+    `pilot.pause()` usually lets the worker finish and so usually hides
+    that, which is the worst way for it to behave: CI starved the
+    worker and `test_marking_a_message_unread_repaints_the_row_as_unread`
+    failed there alone, green on every developer machine. Await the
+    panel's own barrier instead of guessing at a number of pauses.
+    """
+    await panel.wait_for_load_complete()
+    await pilot.pause()  # type: ignore[attr-defined]
+
+
 async def _press(pilot: object, panel: MessageListPanel, key: str) -> None:
     """Send *key* to *panel*, asserting the panel still owns the focus.
 
@@ -842,8 +858,7 @@ async def test_trashing_leaves_the_cursor_where_it_was() -> None:
         assert before is not None
 
         _main(app).trash_current_message()
-        await pilot.pause()
-        await pilot.pause()
+        await _settle_after_list_action(pilot, panel)
 
         assert panel.effective_cursor_row == before_row
         after = panel.get_selected_summary()
@@ -1116,7 +1131,7 @@ async def test_marking_a_message_unread_repaints_the_row_as_unread() -> None:
         opened = panel.get_selected_summary()
 
         _main(app).set_flag(MessageFlag.SEEN, present=False)
-        await pilot.pause()
+        await _settle_after_list_action(pilot, panel)
         after = panel.get_selected_summary()
 
     assert opened is not None
@@ -1149,8 +1164,7 @@ async def test_archiving_leaves_the_cursor_where_it_was() -> None:
         assert before is not None
 
         _main(app).archive_current_message()
-        await pilot.pause()
-        await pilot.pause()
+        await _settle_after_list_action(pilot, panel)
 
         assert panel.effective_cursor_row == before_row
         after = panel.get_selected_summary()
@@ -1260,8 +1274,7 @@ async def test_a_marked_multi_row_action_keeps_the_cursor_on_its_message() -> No
         assert before.message_ref.id not in marked
 
         _main(app).trash_current_message()
-        await pilot.pause()
-        await pilot.pause()
+        await _settle_after_list_action(pilot, panel)
 
         assert panel.marked_summaries() == []
         after = panel.get_selected_summary()
