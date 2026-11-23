@@ -330,6 +330,220 @@ class UntilBoundedRrule(unittest.TestCase):
         self.assertEqual(last.start, datetime(2026, 6, 26, 9, 0, tzinfo=UTC))
 
 
+class DateValuedUntilTest(unittest.TestCase):
+    """A date-only UNTIL bounds the series by a whole day.
+
+    `VALUE=DATE` DTSTART plus `UNTIL=YYYYMMDD` is what RFC 5545 §3.3.10
+    *requires*, so every bounded all-day series arrives this way, while
+    `dateutil` rejects the naive value beside the tz-aware anchor the
+    expansion builds. Nine events on a real calendar — five birthdays
+    and an anniversary among them — expanded to nothing because of it.
+    """
+
+    def _master(self, ics: bytes) -> VEvent:
+        return _event(
+            "all-day-until-date-1@example.com",
+            ics,
+            dtstart=datetime(2026, 5, 1, tzinfo=UTC),
+            dtend=datetime(2026, 5, 2, tzinfo=UTC),
+        )
+
+    def _expand(self, ics: bytes) -> list[datetime]:
+        return [
+            occurrence.start
+            for occurrence in expand(
+                master=self._master(ics),
+                window_start=datetime(2026, 1, 1, tzinfo=UTC),
+                window_end=datetime(2030, 1, 1, tzinfo=UTC),
+            )
+        ]
+
+    def test_all_day_series_bounded_by_a_date_expands(self) -> None:
+        self.assertEqual(
+            self._expand(corpus.recurring_all_day_until_date()),
+            [
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2027, 5, 1, tzinfo=UTC),
+            ],
+        )
+
+    def test_an_instance_on_the_until_day_is_kept(self) -> None:
+        # UNTIL names the day of an instance: bounding by the day's last
+        # second keeps it, where reading the date as midnight would drop
+        # it and leave a one-instance birthday with nothing at all.
+        ics = corpus.recurring_all_day_until_date().replace(
+            b"UNTIL=20280430", b"UNTIL=20270501"
+        )
+        self.assertEqual(
+            self._expand(ics),
+            [
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2027, 5, 1, tzinfo=UTC),
+            ],
+        )
+
+    def test_the_day_after_the_last_instance_adds_nothing(self) -> None:
+        ics = corpus.recurring_all_day_until_date().replace(
+            b"UNTIL=20280430", b"UNTIL=20270502"
+        )
+        self.assertEqual(
+            self._expand(ics),
+            [
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2027, 5, 1, tzinfo=UTC),
+            ],
+        )
+
+    def test_a_single_instance_series_survives(self) -> None:
+        # The live shape: a birthday added once, bounded a year later
+        # minus a day, with no second instance to hide the loss.
+        ics = corpus.recurring_all_day_until_date().replace(
+            b"UNTIL=20280430", b"UNTIL=20270430"
+        )
+        self.assertEqual(self._expand(ics), [datetime(2026, 5, 1, tzinfo=UTC)])
+
+    def test_the_until_day_is_read_in_the_anchor_s_zone(self) -> None:
+        # DTSTART is 11:00 Madrid (09:00 UTC) on Fridays; UNTIL names
+        # Friday 26 June. Read in Madrid, that day ends at 22:59:59Z,
+        # so the 09:00Z instance is in and the following Friday is out.
+        master = _event(
+            "until-naive-1@example.com",
+            corpus.recurring_until_naive_with_tzid().replace(
+                b"UNTIL=20260626T090000", b"UNTIL=20260626"
+            ),
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+        occs = expand(
+            master=master,
+            window_start=datetime(2026, 5, 1, tzinfo=UTC),
+            window_end=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+        self.assertEqual(occs[-1].start, datetime(2026, 6, 26, 9, 0, tzinfo=UTC))
+
+    def test_an_impossible_until_date_still_raises_an_expansion_error(self) -> None:
+        ics = corpus.recurring_all_day_until_date().replace(
+            b"UNTIL=20280430", b"UNTIL=20280230"
+        )
+        with self.assertRaises(RecurrenceExpansionError):
+            self._expand(ics)
+
+
+class OffRuleDtstartTest(unittest.TestCase):
+    """An override the rule never generates is still an occurrence.
+
+    RFC 5545 §3.3.10 leaves the recurrence set undefined when DTSTART
+    is not synchronized with the rule, and `dateutil` resolves that by
+    generating nothing. A server that sends an override has said the
+    instance exists, so dropping it loses a meeting that every other
+    client shows — which is how a weekly series whose DTSTART fell on a
+    weekday its own BYDAY excluded disappeared from every view.
+    """
+
+    def _master(self) -> VEvent:
+        return _event(
+            "off-rule-1@example.com",
+            corpus.recurring_off_rule_dtstart(),
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+
+    def _override(self) -> VEvent:
+        return _event(
+            "off-rule-1@example.com",
+            corpus.recurring_off_rule_dtstart(),
+            dtstart=datetime(2026, 5, 1, 9, 30, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 30, tzinfo=UTC),
+            recurrence_id="2026-05-01T09:00:00+00:00",
+            summary="Off-rule series (moved)",
+        )
+
+    def _expand(self, *overrides: VEvent) -> list:
+        return expand(
+            master=self._master(),
+            overrides=overrides,
+            window_start=datetime(2026, 1, 1, tzinfo=UTC),
+            window_end=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+
+    def test_the_rule_alone_generates_nothing(self) -> None:
+        self.assertEqual(self._expand(), [])
+
+    def test_the_override_is_kept(self) -> None:
+        occs = self._expand(self._override())
+        self.assertEqual(len(occs), 1)
+        self.assertTrue(occs[0].is_override)
+        self.assertEqual(occs[0].start, datetime(2026, 5, 1, 9, 30, tzinfo=UTC))
+        self.assertEqual(occs[0].end, datetime(2026, 5, 1, 10, 30, tzinfo=UTC))
+        self.assertEqual(occs[0].recurrence_id, "2026-05-01T09:00:00+00:00")
+
+    def test_an_override_outside_the_window_is_not_kept(self) -> None:
+        occs = expand(
+            master=self._master(),
+            overrides=(self._override(),),
+            window_start=datetime(2026, 6, 1, tzinfo=UTC),
+            window_end=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+        self.assertEqual(occs, [])
+
+    def test_an_exdate_still_beats_an_override(self) -> None:
+        # The one case where master and override disagree on purpose:
+        # the instance was cancelled, so it stays cancelled rather than
+        # being resurrected by a lingering override row.
+        master = _event(
+            "with-exceptions-1@example.com",
+            corpus.recurring_with_exceptions(),
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+        cancelled = _event(
+            "with-exceptions-1@example.com",
+            corpus.recurring_with_exceptions(),
+            dtstart=datetime(2026, 5, 15, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 15, 10, 0, tzinfo=UTC),
+            recurrence_id="2026-05-15T09:00:00+00:00",
+        )
+        starts = [
+            occurrence.start
+            for occurrence in expand(
+                master=master,
+                overrides=(cancelled,),
+                window_start=datetime(2026, 5, 1, tzinfo=UTC),
+                window_end=datetime(2026, 5, 31, tzinfo=UTC),
+            )
+        ]
+        self.assertNotIn(datetime(2026, 5, 15, 9, 0, tzinfo=UTC), starts)
+
+    def test_occurrences_come_back_in_order(self) -> None:
+        # An override may move an instance past its neighbours, and an
+        # off-rule one is appended after the generated ones, so the
+        # list is sorted rather than left in generation order.
+        master = _event(
+            "with-exceptions-1@example.com",
+            corpus.recurring_with_exceptions(),
+            dtstart=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+        moved = _event(
+            "with-exceptions-1@example.com",
+            corpus.recurring_with_exceptions(),
+            dtstart=datetime(2026, 5, 2, 9, 0, tzinfo=UTC),
+            dtend=datetime(2026, 5, 2, 10, 0, tzinfo=UTC),
+            recurrence_id="2026-05-22T09:00:00+00:00",
+        )
+        starts = [
+            occurrence.start
+            for occurrence in expand(
+                master=master,
+                overrides=(moved,),
+                window_start=datetime(2026, 5, 1, tzinfo=UTC),
+                window_end=datetime(2026, 5, 31, tzinfo=UTC),
+            )
+        ]
+        self.assertEqual(starts, sorted(starts))
+        self.assertIn(datetime(2026, 5, 2, 9, 0, tzinfo=UTC), starts)
+
+
 class MalformedRruleTest(unittest.TestCase):
     def test_unparseable_rrule_raises_recurrence_error(self) -> None:
         # If normalisation can't help (e.g. a syntactically broken

@@ -135,6 +135,61 @@ END:VEVENT
     )
 
 
+def recurring_all_day_until_date() -> bytes:
+    """A bounded all-day series: `VALUE=DATE` DTSTART, date-only UNTIL.
+
+    RFC 5545 §3.3.10 requires UNTIL to carry DTSTART's value type, so
+    this is the *correct* spelling for a bounded all-day series and the
+    one Google Calendar emits for every birthday and anniversary.
+    `dateutil` refuses a naive UNTIL beside the tz-aware anchor the
+    expansion builds, so the whole series used to be dropped.
+    """
+    return _vcalendar(
+        """
+BEGIN:VEVENT
+UID:all-day-until-date-1@example.com
+DTSTAMP:20260422T120000Z
+DTSTART;VALUE=DATE:20260501
+DTEND;VALUE=DATE:20260502
+RRULE:FREQ=YEARLY;WKST=MO;UNTIL=20280430
+SUMMARY:Birthday
+END:VEVENT
+"""
+    )
+
+
+def recurring_off_rule_dtstart() -> bytes:
+    """A series whose DTSTART falls on a weekday its BYDAY excludes.
+
+    DTSTART is Friday 1 May 2026; the rule asks for Wednesdays and
+    stops before the next one, so the rule generates nothing at all.
+    The server still holds an instance there, as the override in the
+    second component says.
+    """
+    return _vcalendar(
+        """
+BEGIN:VEVENT
+UID:off-rule-1@example.com
+DTSTAMP:20260422T120000Z
+DTSTART:20260501T090000Z
+DTEND:20260501T100000Z
+SUMMARY:Off-rule series
+RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20260505T225959Z
+END:VEVENT
+""",
+        """
+BEGIN:VEVENT
+UID:off-rule-1@example.com
+RECURRENCE-ID:20260501T090000Z
+DTSTAMP:20260422T120000Z
+DTSTART:20260501T093000Z
+DTEND:20260501T103000Z
+SUMMARY:Off-rule series (moved)
+END:VEVENT
+""",
+    )
+
+
 def recurring_weekly() -> bytes:
     return _vcalendar(
         """
@@ -501,6 +556,7 @@ ALL_SINGLE_FIXTURES: tuple[tuple[str, bytes], ...] = (
     ("timed_event_with_tz", timed_event_with_tz()),
     ("all_day_event", all_day_event()),
     ("recurring_all_day", recurring_all_day()),
+    ("recurring_all_day_until_date", recurring_all_day_until_date()),
     ("recurring_weekly", recurring_weekly()),
     ("recurring_with_exceptions", recurring_with_exceptions()),
     ("recurring_count", recurring_count()),

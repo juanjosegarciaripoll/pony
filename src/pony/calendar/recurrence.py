@@ -98,7 +98,7 @@ def expand(
     out: list[Occurrence] = []
     for occ_dt in in_window:
         occ_utc = to_utc(occ_dt)
-        override = override_map.get(occ_utc)
+        override = override_map.pop(occ_utc, None)
         if override is None:
             out.append(
                 Occurrence(
@@ -110,20 +110,69 @@ def expand(
                 )
             )
             continue
-        override_anchor = _anchor(override)
-        if override_anchor is None:
-            continue
-        override_start = to_utc(override_anchor)
-        override_end = _end_time(override, duration)
-        out.append(
-            Occurrence(
-                ref=override.ref,
-                start=override_start,
-                end=override_end,
-                recurrence_id=override.ref.recurrence_id,
-                is_override=True,
-            )
+        emitted = _override_occurrence(override, duration)
+        if emitted is not None:
+            out.append(emitted)
+    out.extend(
+        _unmatched_overrides(
+            override_map,
+            exdates=exdates,
+            duration=duration,
+            window_start=window_start,
+            window_end=window_end,
         )
+    )
+    out.sort(key=lambda occurrence: occurrence.start)
+    return out
+
+
+def _override_occurrence(
+    override: StoredComponent, duration: timedelta | None
+) -> Occurrence | None:
+    anchor = _anchor(override)
+    if anchor is None:
+        return None
+    return Occurrence(
+        ref=override.ref,
+        start=to_utc(anchor),
+        end=_end_time(override, duration),
+        recurrence_id=override.ref.recurrence_id,
+        is_override=True,
+    )
+
+
+def _unmatched_overrides(
+    override_map: dict[datetime, StoredComponent],
+    *,
+    exdates: Sequence[datetime],
+    duration: timedelta | None,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[Occurrence]:
+    """Occurrences for overrides the rule never generated.
+
+    A server that sends an override has said that instance exists, so
+    one at a RECURRENCE-ID outside the rule's output is still part of
+    the series — RFC 5545 §3.3.10 leaves the recurrence set undefined
+    when DTSTART is not synchronized with the rule, and every other
+    client resolves that in favour of showing the instance. Dropping
+    them silently cost a weekly series whose DTSTART fell on a weekday
+    its own BYDAY excluded: the rule produced nothing before UNTIL, so
+    the one meeting the server held vanished from every view.
+
+    An EXDATE is the one case where the two sources disagree on
+    purpose, and there the exclusion wins.
+    """
+    if not override_map:
+        return []
+    excluded = {to_utc(exdate) for exdate in exdates}
+    out: list[Occurrence] = []
+    for instant, override in override_map.items():
+        if instant in excluded or not window_start <= instant < window_end:
+            continue
+        emitted = _override_occurrence(override, duration)
+        if emitted is not None:
+            out.append(emitted)
     return out
 
 
@@ -434,7 +483,7 @@ def _build_ruleset(
 ) -> rruleset:
     ruleset = rruleset()
     if rrule_str is not None:
-        normalized = _normalize_rrule_until(rrule_str)
+        normalized = _normalize_rrule_until(rrule_str, anchor)
         try:
             parsed = rrulestr(f"RRULE:{normalized}", dtstart=anchor)
         except ValueError as exc:
@@ -453,21 +502,28 @@ def _build_ruleset(
 
 
 _NAIVE_UNTIL_DATETIME = re.compile(r"^\d{8}T\d{6}$")
+_UNTIL_DATE = re.compile(r"^\d{8}$")
 
 
-def _normalize_rrule_until(rrule_str: str) -> str:
-    """Add a `Z` suffix to a naive `UNTIL=YYYYMMDDTHHMMSS` value.
+def _normalize_rrule_until(rrule_str: str, anchor: datetime) -> str:
+    """Rewrite an `UNTIL` value `dateutil` would refuse next to `anchor`.
 
     RFC 5545 §3.3.10 says that when DTSTART is timezone-aware, the
-    RRULE's UNTIL value MUST be expressed as UTC (i.e. carry a `Z`
-    suffix). `dateutil.rrule.rrulestr` enforces this — but Google
-    Calendar exports, legacy Outlook calendars, and several CalDAV
-    gateways routinely emit `UNTIL=YYYYMMDDTHHMMSS` with no `Z`.
-    Treat the bare datetime as UTC, the reading every other major
-    calendar client converges on, rather than dropping the recurrence.
+    RRULE's UNTIL value must be a UTC datetime, and
+    `dateutil.rrule.rrulestr` raises `ValueError` for anything else.
+    Our anchor is always aware, so two spellings real servers emit
+    would otherwise cost the whole series:
 
-    Date-only UNTIL (`YYYYMMDD`) and values that already carry `Z` or
-    a timezone offset are left alone.
+    - `UNTIL=YYYYMMDDTHHMMSS` with no `Z`, from Google Calendar
+      exports, legacy Outlook calendars and several CalDAV gateways.
+      Read the bare datetime as UTC, as every other major client does.
+    - `UNTIL=YYYYMMDD`, which is what the same section *requires* when
+      DTSTART is a date — so every bounded all-day series arrives this
+      way. It bounds the recurrence set by a whole day, which becomes
+      the last UTC instant of that day in the anchor's own zone.
+
+    Values that already carry `Z` or a UTC offset, and anything that
+    is not a date at all, are left for `rrulestr` to judge.
     """
     parts = rrule_str.split(";")
     for i, part in enumerate(parts):
@@ -476,9 +532,37 @@ def _normalize_rrule_until(rrule_str: str) -> str:
             continue
         if _NAIVE_UNTIL_DATETIME.match(value):
             parts[i] = f"{key}={value}Z"
+        elif _UNTIL_DATE.match(value) is not None:
+            parts[i] = f"{key}={_end_of_day_utc(value, anchor)}"
         # RRULE has at most one UNTIL; stop scanning either way.
         break
     return ";".join(parts)
+
+
+def _end_of_day_utc(value: str, anchor: datetime) -> str:
+    """Spell a date-valued UNTIL as the last UTC second of that day.
+
+    The day is read in the anchor's zone, so a Madrid series bounded
+    by `UNTIL=20251113` keeps its 13 November instance and drops the
+    14th, rather than losing or gaining one by the reader's offset.
+
+    A date that does not exist comes back untouched, so `rrulestr`
+    reports it and the failure arrives as a `RecurrenceExpansionError`
+    like any other malformed rule.
+    """
+    try:
+        last = datetime(
+            int(value[0:4]),
+            int(value[4:6]),
+            int(value[6:8]),
+            23,
+            59,
+            59,
+            tzinfo=anchor.tzinfo,
+        )
+    except ValueError:
+        return value
+    return to_utc(last).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _index_overrides(

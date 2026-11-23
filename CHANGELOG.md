@@ -353,6 +353,25 @@ A `read_only` list beside a narrow `exclude` — `exclude = ["Spam",
 
 ### Fixed
 
+- **A bounded all-day recurring event is no longer invisible.** RFC 5545
+  requires a recurrence rule's `UNTIL` to carry DTSTART's value type, so
+  an all-day series bounded by a date arrives as `UNTIL=20251113` — the
+  shape Google Calendar gives every birthday, anniversary and holiday
+  with an end. `dateutil` refuses a date-valued `UNTIL` next to the
+  timezone-aware anchor the expansion builds, and the error took the
+  whole series with it: no occurrence rows, so the event appeared in no
+  agenda, day or grid view, with nothing to say it was there. The date
+  is now read as a whole-day bound in the anchor's own zone, which keeps
+  an instance falling on the `UNTIL` day itself.
+- **An event the server holds as an exception to its own rule is no
+  longer dropped.** When DTSTART falls on a weekday the rule's `BYDAY`
+  excludes, `dateutil` generates nothing — but the server had still
+  sent an override for that instant, saying the instance exists. The
+  expansion consulted overrides only at instants the rule produced, so
+  the one meeting in such a series vanished. An override at a
+  `RECURRENCE-ID` the rule never generated is now an occurrence too,
+  unless an `EXDATE` excludes it: that is the one case where master and
+  override disagree on purpose, and the exclusion wins.
 - **A calendar sync that pushes one event no longer re-expands every
   recurring event in the calendar.** When the CTag says the server has
   nothing new, the sync takes the fast path and only pushes what is

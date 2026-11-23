@@ -28,6 +28,8 @@ For non-recurring components, `expand` returns a single `Occurrence` if the comp
 - `EXDATE` values feed `rruleset.exdate(...)`.
 - `RDATE` values feed `rruleset.rdate(...)`.
 - Overrides are applied after `rruleset` expansion: for each expanded instant, if an override exists whose `RECURRENCE-ID` matches (compared as timezone-aware datetimes), replace the expanded occurrence with the override's DTSTART/DTEND.
+- An override whose `RECURRENCE-ID` the rule never generated is still an occurrence, provided it falls in the window and no `EXDATE` excludes that instant. A server that sends an override has asserted the instance exists, and `rruleset` generates nothing for a DTSTART the rule does not match.
+- The returned list is ordered by `start`, which an override that moves an instance past its neighbours can differ from the generation order.
 - The `icalendar` library parses the raw properties; we do not hand-roll RRULE parsing.
 
 ## 4. Cache policy
@@ -45,6 +47,7 @@ For non-recurring components, `expand` returns a single `Occurrence` if the comp
 - **All-day vs timed.** DTSTART as DATE (no TZ) vs DATE-TIME (with TZ). Store both as timestamps; all-day uses 00:00 local at the floating zone defined by the component.
 - **DST transitions.** Floating events (no TZID) shift with local DST; TZ-anchored events keep their wall-clock time. `python-dateutil` handles both if the TZID is registered; we register VTIMEZONEs from the source iCalendar before expanding.
 - **UNTIL in a different TZ from DTSTART.** RFC 5545 requires UNTIL in UTC when DTSTART is timed. When a server supplies UNTIL in the DTSTART TZ (a common bug), we normalise to UTC at expansion time and log.
+- **Date-valued UNTIL.** RFC 5545 §3.3.10 requires UNTIL to carry DTSTART's value type, so a bounded all-day series arrives as `UNTIL=YYYYMMDD`. `dateutil` refuses a naive UNTIL beside the tz-aware anchor expansion builds, so the date is rewritten as the last second of that day in the anchor's own zone — a whole-day bound, which keeps an instance falling on the UNTIL day.
 - **Zero-duration events.** DTEND == DTSTART, or DTEND missing. Treated as a point event; the `occurrences` row has `occurrence_end IS NULL`.
 - **Infinite RRULE** (no COUNT, no UNTIL). Capped at `window_end` during expansion. We never materialise beyond the window.
 - **Count vs until.** Both constrain the series; `rruleset` handles the precedence correctly.
